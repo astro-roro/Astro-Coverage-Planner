@@ -1,0 +1,5 @@
+flask>=3.0
+astropy>=6.0
+numpy>=1.24
+# Optional — only needed for scripts/fetch_catalogs.py
+astroquery>=0.4.7
