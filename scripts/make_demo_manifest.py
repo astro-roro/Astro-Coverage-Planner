@@ -28,7 +28,7 @@ def fov_corners(ra: float, dec: float, w_arcmin: float, h_arcmin: float) -> list
 
 
 def target(tid: int, name: str, ra: float, dec: float, l_deg: float, b_deg: float,
-           filters: dict, telescope: str, fov_arcmin=(120.0, 90.0)) -> dict:
+           filters: dict, telescope: str, camera: str, fov_arcmin=(120.0, 90.0)) -> dict:
     return {
         "target_id": tid,
         "objects": [name],
@@ -41,6 +41,7 @@ def target(tid: int, name: str, ra: float, dec: float, l_deg: float, b_deg: floa
         "corners_icrs": fov_corners(ra, dec, *fov_arcmin),
         "corners_galactic": fov_corners(l_deg, b_deg, *fov_arcmin),
         "telescopes": [telescope],
+        "cameras": [camera],
         "date_range": ["2025-01-01", "2025-12-31"],
         "filters": {f: {"total_hours": h, "files": max(1, int(h * 4))} for f, h in filters.items()},
         "master_files": [f"/demo/masters/{name.replace(' ', '_')}_master.fit"],
@@ -50,15 +51,15 @@ def target(tid: int, name: str, ra: float, dec: float, l_deg: float, b_deg: floa
 def main() -> None:
     targets = [
         target(1, "Eta Carinae",   161.26, -59.68, 287.60, -0.63,
-               {"Ha": 3.2, "OIII": 1.4, "SII": 0.3}, "RedCat 51"),
+               {"Ha": 3.2, "OIII": 1.4, "SII": 0.3}, "RedCat 51", "ASI2600MM Pro"),
         target(2, "Tarantula Nebula", 84.67, -69.10, 279.46, -31.67,
-               {"Ha": 5.1, "OIII": 2.2, "SII": 1.8}, "RedCat 51"),
+               {"Ha": 5.1, "OIII": 2.2, "SII": 1.8}, "RedCat 51", "ASI2600MM Pro"),
         target(3, "Rho Ophiuchi",    246.82, -24.39, 353.15, 16.95,
-               {"L": 2.0, "R": 1.5, "G": 1.5, "B": 1.5}, "HyperStar"),
+               {"L": 2.0, "R": 1.5, "G": 1.5, "B": 1.5}, "HyperStar", "ASI2600MC Pro"),
         target(4, "Helix Nebula",    337.41, -20.84, 36.16, -57.12,
-               {"Ha": 4.2, "OIII": 3.1, "SII": 2.0}, "RedCat 51"),
+               {"Ha": 4.2, "OIII": 3.1, "SII": 2.0}, "RedCat 51", "ASI2600MM Pro"),
         target(5, "Running Chicken", 172.00, -62.68, 294.63, 0.04,
-               {"Ha": 2.6, "OIII": 0.9, "SII": 0.1}, "RedCat 51"),
+               {"Ha": 2.6, "OIII": 0.9, "SII": 0.1}, "RedCat 51", "ASI2600MM Pro"),
     ]
     total_hours = round(sum(
         d["total_hours"] for t in targets for d in t["filters"].values()

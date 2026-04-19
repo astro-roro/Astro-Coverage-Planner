@@ -80,7 +80,14 @@
     <div id="aladin-lite-div"></div>
 
     <aside id="sidePanel" class="panel">
-      <div class="panel-loading">Loading targets…</div>
+      <div class="panel-search">
+        <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search: name, or key:value (e.g. camera:asi2600 filter:Ha hours&gt;3)" />
+        <div class="search-hint">keys: object · filter · telescope · camera · fov&gt;N · fov&lt;N · hours&gt;N · hours&lt;N</div>
+      </div>
+      <div id="panelBody">
+        <div class="panel-loading">Loading targets…</div>
+      </div>
     </aside>
   </main>
 
