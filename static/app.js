@@ -52,6 +52,7 @@ let filterLogic = "any";
 let minHours = 0;
 let gapMode = false;
 let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
+let panelMode = "list"; // "list" | "detail"
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -226,7 +227,64 @@ function summariseFilters(t) {
   return pairs.map(([f, d]) => `${f}=${(d.total_hours || 0).toFixed(1)}h`).join(" · ");
 }
 
+function totalHoursOf(t) {
+  let s = 0;
+  for (const d of Object.values(t.filters || {})) s += (d.total_hours || 0);
+  return s;
+}
+
+function filterDotsHtml(filters) {
+  return FILTER_DOT_ORDER.map(f => {
+    const hrs = filters[f]?.total_hours || 0;
+    const has = hrs > 0;
+    const color = FILTER_COLORS[f] || "#888";
+    const style = has ? `background:${color}` : `background:${color};opacity:0.22`;
+    const title = has ? `${f} ${hrs.toFixed(1)}h` : f;
+    return `<span class="fdot" style="${style}" title="${title}"></span>`;
+  }).join("");
+}
+
+function renderTargetList() {
+  panelMode = "list";
+  const panel = document.getElementById("sidePanel");
+  if (!panel || !manifest) return;
+
+  const matches = manifest.targets.filter(targetMatches);
+  matches.sort((a, b) => totalHoursOf(b) - totalHoursOf(a));
+
+  const rows = matches.map(t => {
+    const name = esc(t.objects?.[0] || "(no name)");
+    const tel = telescopeOf(t);
+    const swatch = telescopeColor[tel] || TELESCOPE_FALLBACK;
+    const total = totalHoursOf(t).toFixed(1);
+    const dots = filterDotsHtml(t.filters || {});
+    return `<li class="target-row" data-target-id="${t.target_id}">
+        <span class="tr-swatch" style="background:${esc(swatch)}" title="${esc(tel)}"></span>
+        <span class="tr-name">#${t.target_id} ${name}</span>
+        <span class="tr-dots">${dots}</span>
+        <span class="tr-hours">${total}h</span>
+      </li>`;
+  }).join("");
+
+  const empty = `<li class="tr-empty">No targets match current filters.</li>`;
+
+  panel.innerHTML = `
+    <div class="panel-list">
+      <h3>Targets <span class="tr-count">${matches.length} of ${manifest.targets.length}</span></h3>
+      <ul class="target-list">${rows || empty}</ul>
+    </div>`;
+
+  panel.querySelectorAll(".target-row").forEach(row => {
+    row.addEventListener("click", () => {
+      const id = parseInt(row.dataset.targetId, 10);
+      const t = manifest.targets.find(x => x.target_id === id);
+      if (t) renderTargetPanel(t);
+    });
+  });
+}
+
 function renderTargetPanel(t) {
+  panelMode = "detail";
   const panel = document.getElementById("sidePanel");
   const filtersSorted = Object.entries(t.filters)
     .sort((a, b) => (b[1].total_hours || 0) - (a[1].total_hours || 0));
@@ -251,6 +309,7 @@ function renderTargetPanel(t) {
 
   panel.innerHTML = `
     <div>
+      <a class="back-link" id="backToList" href="#">← Back to list</a>
       <h3>Target #${t.target_id}: ${objs}</h3>
       <div>${filterPills}</div>
 
@@ -275,6 +334,10 @@ function renderTargetPanel(t) {
       <h4 id="catMatchHdr" style="display:none">Nearby catalog objects</h4>
       <div id="catMatches"></div>
     </div>`;
+
+  // Back-to-list link
+  const back = document.getElementById("backToList");
+  if (back) back.addEventListener("click", (e) => { e.preventDefault(); renderTargetList(); });
 
   // If catalog overlays loaded, show nearby entries
   showCatalogMatchesFor(t);
@@ -379,8 +442,11 @@ function redrawFootprints() {
   }
   if (centerCat) centerCat.addSources(centerSources);
   if (filterBadgeCat) filterBadgeCat.addSources(badgeSources);
-  document.getElementById("coverageStats").innerHTML =
-    `<div style="margin-top:10px;font-size:12px;color:#a2aec2">Showing <strong>${shown}</strong> of ${manifest.targets.length} targets.</div>`;
+  const cs = document.getElementById("coverageStats");
+  if (cs) {
+    cs.innerHTML = `<div style="margin-top:10px;font-size:12px;color:#a2aec2">Showing <strong>${shown}</strong> of ${manifest.targets.length} targets.</div>`;
+  }
+  if (panelMode === "list") renderTargetList();
 }
 
 function setupCatalogOverlays() {
