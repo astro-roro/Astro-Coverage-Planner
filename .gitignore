@@ -16,3 +16,6 @@ data/*.local.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Per-developer Claude Code settings (keep .claude/settings.json committed)
+.claude/settings.local.json

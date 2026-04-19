@@ -36,6 +36,7 @@ CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catal
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # dev: browsers revalidate every request
 app.jinja_env.auto_reload = True
 
 _manifest_cache: dict | None = None
