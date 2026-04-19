@@ -54,6 +54,140 @@ let gapMode = false;
 let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
 let panelMode = "list"; // "list" | "detail"
 let searchTokens = [];  // parsed tokens from the search box
+let selectedTargetId = null; // target_id while in detail view, null otherwise
+
+// --- localStorage persistence ---
+// Bump the version suffix if the shape of the saved state ever changes
+// incompatibly, so stale saves from older clients get ignored.
+const UI_STATE_KEY = "acp.uiState.v1";
+
+function loadUiState() {
+  try { return JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}") || {}; }
+  catch { return {}; }
+}
+
+function applyUiStatePreManifest() {
+  const s = loadUiState();
+
+  const search = document.getElementById("searchInput");
+  if (search && typeof s.search === "string" && s.search) {
+    search.value = s.search;
+    searchTokens = tokenizeSearch(s.search);
+  }
+
+  if (Array.isArray(s.filters)) {
+    selectedFilters = new Set(s.filters);
+    document.querySelectorAll(".filters input[type=checkbox][data-f]").forEach(cb => {
+      cb.checked = selectedFilters.has(cb.dataset.f);
+    });
+  }
+
+  if (typeof s.filterLogic === "string") {
+    filterLogic = s.filterLogic;
+    const sel = document.getElementById("filterLogic");
+    if (sel) sel.value = s.filterLogic;
+  }
+
+  if (typeof s.minHours === "number") {
+    minHours = s.minHours;
+    const slider = document.getElementById("depthSlider");
+    if (slider) slider.value = String(s.minHours);
+    const depthVal = document.getElementById("depthValue");
+    if (depthVal) depthVal.textContent = `${minHours}h`;
+  }
+
+  if (s.gapMode) {
+    gapMode = true;
+    const btn = document.getElementById("gapMode");
+    if (btn) btn.style.background = "#663";
+  }
+
+  if (typeof s.projection === "string" && s.projection) {
+    const proj = document.getElementById("projSel");
+    if (proj) proj.value = s.projection;
+    if (aladin) aladin.setProjection(s.projection);
+  }
+
+  if (typeof s.frame === "string" && s.frame) {
+    const fr = document.getElementById("frameSel");
+    if (fr) fr.value = s.frame;
+    if (aladin) aladin.setFrame(s.frame);
+  }
+
+  if (typeof s.site === "string" && s.site) {
+    const siteSel = document.getElementById("siteSel");
+    if (siteSel) {
+      siteSel.value = s.site;
+      if (s.site === "custom") {
+        document.getElementById("latIn").style.display = "";
+        document.getElementById("lonIn").style.display = "";
+        if (s.customLat) {
+          document.getElementById("latIn").value = s.customLat;
+          currentSite.lat = parseFloat(s.customLat);
+        }
+        if (s.customLon) {
+          document.getElementById("lonIn").value = s.customLon;
+          currentSite.lon = parseFloat(s.customLon);
+        }
+      } else {
+        const opt = siteSel.selectedOptions[0];
+        if (opt && opt.dataset.lat) {
+          currentSite = {
+            lat: parseFloat(opt.dataset.lat),
+            lon: parseFloat(opt.dataset.lon),
+            height: parseFloat(opt.dataset.height || 0),
+          };
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(s.catalogs)) {
+    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
+      const cb = document.getElementById(id);
+      if (cb) cb.checked = s.catalogs.includes(id);
+    }
+  }
+}
+
+function applyUiStatePostManifest() {
+  const s = loadUiState();
+
+  if (Array.isArray(s.telescopes)) {
+    const available = new Set(selectedTelescopes);
+    selectedTelescopes = new Set(s.telescopes.filter(n => available.has(n)));
+    document.querySelectorAll("input[data-telescope]").forEach(cb => {
+      cb.checked = selectedTelescopes.has(cb.dataset.telescope);
+    });
+  }
+
+  if (s.selectedTargetId != null && manifest) {
+    const t = manifest.targets.find(x => x.target_id === s.selectedTargetId);
+    if (t) renderTargetPanel(t);
+  }
+}
+
+function saveUiState() {
+  try {
+    const state = {
+      search: document.getElementById("searchInput")?.value || "",
+      filters: [...selectedFilters],
+      filterLogic,
+      minHours,
+      telescopes: [...selectedTelescopes],
+      catalogs: ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]
+        .filter(id => document.getElementById(id)?.checked),
+      projection: document.getElementById("projSel")?.value || "",
+      frame: document.getElementById("frameSel")?.value || "",
+      site: document.getElementById("siteSel")?.value || "",
+      customLat: document.getElementById("latIn")?.value || "",
+      customLon: document.getElementById("lonIn")?.value || "",
+      gapMode,
+      selectedTargetId,
+    };
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
+  } catch { /* localStorage full / disabled — ignore */ }
+}
 
 // --- Search tokenizer ---
 // Splits `camera:asi2600 filter:Ha "orion neb" hours>3` into tokens.
@@ -358,6 +492,8 @@ function filterDotsHtml(filters) {
 
 function renderTargetList() {
   panelMode = "list";
+  selectedTargetId = null;
+  saveUiState();
   const panel = document.getElementById("panelBody");
   if (!panel || !manifest) return;
 
@@ -397,6 +533,8 @@ function renderTargetList() {
 
 function renderTargetPanel(t) {
   panelMode = "detail";
+  selectedTargetId = t.target_id;
+  saveUiState();
   const panel = document.getElementById("panelBody");
   const filtersSorted = Object.entries(t.filters)
     .sort((a, b) => (b[1].total_hours || 0) - (a[1].total_hours || 0));
@@ -573,7 +711,10 @@ function setupCatalogOverlays() {
   for (const c of cfg) {
     const cb = document.getElementById(c.id);
     if (!cb) continue;
-    cb.addEventListener("change", () => drawCatalogOverlay(c, cb.checked));
+    cb.addEventListener("change", () => {
+      drawCatalogOverlay(c, cb.checked);
+      saveUiState();
+    });
   }
 }
 
@@ -618,6 +759,7 @@ function setupFilterUI() {
   if (searchInput) {
     searchInput.addEventListener("input", () => {
       searchTokens = tokenizeSearch(searchInput.value);
+      saveUiState();
       redrawFootprints();
     });
   }
@@ -626,21 +768,25 @@ function setupFilterUI() {
     cb.addEventListener("change", () => {
       if (cb.checked) selectedFilters.add(cb.dataset.f);
       else selectedFilters.delete(cb.dataset.f);
+      saveUiState();
       redrawFootprints();
     });
   }
   document.getElementById("filterLogic").addEventListener("change", e => {
     filterLogic = e.target.value;
+    saveUiState();
     redrawFootprints();
   });
   document.getElementById("depthSlider").addEventListener("input", e => {
     minHours = parseFloat(e.target.value);
     document.getElementById("depthValue").textContent = `${minHours}h`;
+    saveUiState();
     redrawFootprints();
   });
   document.getElementById("gapMode").addEventListener("click", () => {
     gapMode = !gapMode;
     document.getElementById("gapMode").style.background = gapMode ? "#663" : "";
+    saveUiState();
     redrawFootprints();
   });
   document.getElementById("exportCsv").addEventListener("click", () => {
@@ -649,9 +795,11 @@ function setupFilterUI() {
 
   document.getElementById("projSel").addEventListener("change", e => {
     aladin.setProjection(e.target.value);
+    saveUiState();
   });
   document.getElementById("frameSel").addEventListener("change", e => {
     aladin.setFrame(e.target.value);
+    saveUiState();
   });
 
   const siteSel = document.getElementById("siteSel");
@@ -660,6 +808,7 @@ function setupFilterUI() {
     if (opt.value === "custom") {
       document.getElementById("latIn").style.display = "";
       document.getElementById("lonIn").style.display = "";
+      saveUiState();
       return;
     }
     currentSite = {
@@ -669,14 +818,17 @@ function setupFilterUI() {
     };
     document.getElementById("latIn").style.display = "none";
     document.getElementById("lonIn").style.display = "none";
+    saveUiState();
     updateObsNow();
   });
   document.getElementById("latIn").addEventListener("change", e => {
     currentSite.lat = parseFloat(e.target.value);
+    saveUiState();
     updateObsNow();
   });
   document.getElementById("lonIn").addEventListener("change", e => {
     currentSite.lon = parseFloat(e.target.value);
+    saveUiState();
     updateObsNow();
   });
 }
@@ -761,9 +913,15 @@ function init() {
     selectedTelescopes = new Set(sorted); // all enabled by default
     renderTelescopeLegend(sorted);
 
-    redrawFootprints();
     setupFilterUI();
     setupCatalogOverlays();
+
+    // Restore previous session state before the first draw so the map
+    // reflects saved filters/telescopes/search immediately.
+    applyUiStatePreManifest();
+    applyUiStatePostManifest();
+
+    redrawFootprints();
     loadCatalogs();
     updateObsNow();
     setInterval(updateObsNow, 60_000);
@@ -789,6 +947,7 @@ function renderTelescopeLegend(telescopes) {
       const name = cb.dataset.telescope;
       if (cb.checked) selectedTelescopes.add(name);
       else selectedTelescopes.delete(name);
+      saveUiState();
       redrawFootprints();
     });
   });
