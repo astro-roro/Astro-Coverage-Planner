@@ -1,0 +1,235 @@
+/* Astro Coverage Webapp — basic dark theme */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  background: #0a0d12;
+  color: #e0e4ea;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 14px;
+  background: #0f1319;
+  border-bottom: 1px solid #1f2937;
+  align-items: center;
+}
+
+.title {
+  flex: 0 0 220px;
+}
+.title strong {
+  display: block;
+  font-size: 15px;
+  color: #e8ecf3;
+}
+.title .meta {
+  font-size: 11px;
+  color: #78839a;
+}
+
+.controls, .filters, .catalogs {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+}
+
+.ctrl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #a2aec2;
+}
+
+.ctrl select, .ctrl input {
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #e0e4ea;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.filters, .catalogs, .telescopes {
+  flex-basis: 100%;
+  font-size: 12px;
+}
+
+.tele-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: center;
+}
+
+.tele-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+.label {
+  color: #78839a;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.fchip:hover { background: #212939; }
+.fchip input { margin: 0; }
+
+select, input[type="text"], input[type="number"], input[type="range"], button {
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #e0e4ea;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button:hover { background: #212939; }
+button:active { background: #262e40; }
+
+#depthSlider {
+  width: 120px;
+}
+#depthValue {
+  display: inline-block;
+  width: 32px;
+  font-variant-numeric: tabular-nums;
+  color: #a2aec2;
+}
+
+.layout {
+  display: flex;
+  height: calc(100vh - 120px);
+  min-height: 400px;
+}
+
+#aladin-lite-div {
+  flex: 1;
+  min-width: 0;
+  background: #0a0d12;
+}
+
+.panel {
+  flex: 0 0 380px;   /* wider too, since font is bigger */
+  background: #0f1319;
+  border-left: 1px solid #1f2937;
+  padding: 14px 16px;
+  overflow-y: auto;
+  font-size: 15.5px; /* ~20% larger than body (13 → 15.5) */
+  line-height: 1.4;
+}
+
+.panel h3 {
+  margin: 0 0 10px 0;
+  font-size: 17px;
+  color: #e8ecf3;
+}
+.panel h4 {
+  margin: 14px 0 5px 0;
+  font-size: 14px;
+  color: #a2aec2;
+  font-weight: 600;
+}
+
+.panel-empty {
+  color: #78839a;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.panel table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+  margin-top: 6px;
+}
+.panel th {
+  text-align: left;
+  color: #78839a;
+  font-weight: 600;
+  border-bottom: 1px solid #2a3246;
+  padding: 3px 5px;
+}
+.panel td {
+  padding: 3px 5px;
+  border-bottom: 1px dashed #1a2030;
+}
+.panel td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-pill {
+  display: inline-block;
+  padding: 1px 5px;
+  margin-right: 3px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #0a0d12;
+}
+.fp-Ha   { background: #ff4d4d; }
+.fp-SII  { background: #ffd84d; }
+.fp-OIII { background: #4da6ff; color: #fff; }
+.fp-L    { background: #d0d0d0; }
+.fp-R    { background: #ff8080; color: #fff; }
+.fp-G    { background: #80ff80; }
+.fp-B    { background: #8080ff; color: #fff; }
+.fp-V    { background: #b0b0b0; }
+.fp-IDAS { background: #a0ffd0; }
+
+.statusbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 12px;
+  background: #0a0d12;
+  border-top: 1px solid #1f2937;
+  font-size: 11px;
+  color: #78839a;
+  display: flex;
+  justify-content: space-between;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.pathlist {
+  font-size: 10px;
+  font-family: "SF Mono", Monaco, Consolas, monospace;
+  color: #a2aec2;
+  background: #0a0d12;
+  padding: 4px 6px;
+  border-radius: 3px;
+  max-height: 120px;
+  overflow-y: auto;
+  word-break: break-all;
+}
