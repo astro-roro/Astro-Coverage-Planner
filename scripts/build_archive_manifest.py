@@ -102,6 +102,25 @@ def sanitize_telescope(raw):
     return TELESCOPE_ALIAS.get(lr, s)
 
 
+# INSTRUME values: canonicalize known camera patterns, strip noisy vendor prefixes.
+# Extend as needed for your archive.
+CAMERA_ALIAS = {
+    # Add alias -> canonical mappings here if your INSTRUME strings vary across files.
+}
+
+
+def sanitize_camera(raw):
+    """Return canonical camera name from INSTRUME, or None."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    # Strip a common "ZWO " prefix so "ZWO ASI2600MC Pro" groups with "ASI2600MC Pro".
+    s_stripped = s[4:].strip() if s.lower().startswith("zwo ") else s
+    return CAMERA_ALIAS.get(s_stripped.lower(), s_stripped)
+
+
 FILTER_CANON = {
     "H": "Ha", "HA": "Ha", "Ha": "Ha", "Halpha": "Ha", "H-alpha": "Ha",
     "HALPHA": "Ha", "H_ALPHA": "Ha",
@@ -294,6 +313,7 @@ def read_fits_meta(path: Path) -> dict:
         "date_obs": None,
         "object": None,
         "telescope": None,
+        "camera": None,
         "imagetyp": None,
         "error": None,
     }
@@ -322,7 +342,8 @@ def read_fits_meta(path: Path) -> dict:
             out["naxis2"] = int(h.get("NAXIS2") or 0) or None
             out["date_obs"] = (h.get("DATE-OBS") or "")[:19] or None
             out["object"] = str(h.get("OBJECT") or "").strip() or None
-            out["telescope"] = sanitize_telescope(h.get("TELESCOP") or h.get("INSTRUME"))
+            out["telescope"] = sanitize_telescope(h.get("TELESCOP"))
+            out["camera"] = sanitize_camera(h.get("INSTRUME"))
             out["imagetyp"] = str(h.get("IMAGETYP") or h.get("OBSTYPE") or "").strip() or None
 
             # WCS
@@ -392,6 +413,7 @@ def read_xisf_meta(path: Path) -> dict:
         "date_obs": None,
         "object": None,
         "telescope": None,
+        "camera": None,
         "error": None,
     }
     try:
@@ -428,7 +450,8 @@ def read_xisf_meta(path: Path) -> dict:
                     pass
         out["date_obs"] = str(fk("DATE-OBS") or "")[:19] or None
         out["object"] = str(fk("OBJECT") or "").strip() or None
-        out["telescope"] = sanitize_telescope(fk("TELESCOP") or fk("INSTRUME"))
+        out["telescope"] = sanitize_telescope(fk("TELESCOP"))
+        out["camera"] = sanitize_camera(fk("INSTRUME"))
         out["imagetyp"] = str(fk("IMAGETYP") or fk("OBSTYPE") or "").strip() or None
 
         crval1 = fk("CRVAL1"); crval2 = fk("CRVAL2")
@@ -1223,6 +1246,7 @@ def main(argv: list[str] | None = None):
             },
             "master_files": [m["path"] for m in members if m.get("role") != "folder_sub"],
             "telescopes": sorted({m.get("telescope") for m in members if m.get("telescope")}),
+            "cameras": sorted({m.get("camera") for m in members if m.get("camera")}),
             "date_range": date_range,
             "n_masters": sum(1 for m in members if m.get("role") != "folder_sub"),
             "n_sub_folders": sum(1 for m in members if m.get("role") == "folder_sub"),
