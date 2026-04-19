@@ -141,10 +141,45 @@ button:active { background: #262e40; }
   flex: 0 0 380px;   /* wider too, since font is bigger */
   background: #0f1319;
   border-left: 1px solid #1f2937;
-  padding: 14px 16px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   font-size: 15.5px; /* ~20% larger than body (13 → 15.5) */
   line-height: 1.4;
+}
+
+.panel-search {
+  flex: 0 0 auto;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid #1f2937;
+  background: #0f1319;
+}
+.panel-search input[type="search"] {
+  width: 100%;
+  font-size: 13px;
+  padding: 5px 8px;
+  background: #0a0d12;
+  border: 1px solid #2a3246;
+  color: #e0e4ea;
+  border-radius: 3px;
+}
+.panel-search input[type="search"]:focus {
+  outline: none;
+  border-color: #4da6ff;
+}
+.search-hint {
+  font-size: 10px;
+  color: #78839a;
+  margin-top: 4px;
+  font-family: "SF Mono", Monaco, Consolas, monospace;
+}
+.search-hint.error { color: #ff8080; }
+
+#panelBody {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px 16px;
+  min-height: 0;
 }
 
 .panel h3 {

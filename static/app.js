@@ -53,6 +53,115 @@ let minHours = 0;
 let gapMode = false;
 let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
 let panelMode = "list"; // "list" | "detail"
+let searchTokens = [];  // parsed tokens from the search box
+
+// --- Search tokenizer ---
+// Splits `camera:asi2600 filter:Ha "orion neb" hours>3` into tokens.
+// Supports: bareword (free-text), key:value, key>N / key<N for numeric comparators.
+// Quoted phrases preserve spaces: key:"with spaces" or just "bare phrase".
+const SEARCH_KV_KEYS = new Set(["object", "name", "filter", "telescope", "tel", "camera", "cam"]);
+const SEARCH_CMP_KEYS = new Set(["fov", "hours"]);
+
+function tokenizeSearch(query) {
+  if (!query) return [];
+  // Split the query into raw tokens, preserving quoted values inside key:"..." pairs
+  // and as bare "quoted phrase" tokens.
+  const rawTokens = [];
+  const re = /([a-zA-Z]+:"[^"]*"|[a-zA-Z]+[:><][^\s]+|"[^"]*"|\S+)/g;
+  let m;
+  while ((m = re.exec(query)) !== null) {
+    rawTokens.push(m[1]);
+  }
+  const parsed = [];
+  for (const raw of rawTokens) {
+    if (!raw) continue;
+    // Numeric comparator: key>N or key<N
+    const cmp = raw.match(/^([a-zA-Z]+)([><])(.+)$/);
+    if (cmp && SEARCH_CMP_KEYS.has(cmp[1].toLowerCase())) {
+      const v = parseFloat(cmp[3]);
+      if (isFinite(v)) {
+        parsed.push({ kind: "cmp", key: cmp[1].toLowerCase(), op: cmp[2], value: v });
+        continue;
+      }
+    }
+    // key:value or key:"quoted value"
+    const kv = raw.match(/^([a-zA-Z]+):(.*)$/);
+    if (kv && SEARCH_KV_KEYS.has(kv[1].toLowerCase())) {
+      let val = kv[2];
+      if (val.length >= 2 && val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+      if (val) parsed.push({ kind: "kv", key: kv[1].toLowerCase(), value: val.toLowerCase() });
+      continue;
+    }
+    // Bare quoted phrase
+    if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+      const v = raw.slice(1, -1);
+      if (v) parsed.push({ kind: "text", value: v.toLowerCase() });
+      continue;
+    }
+    // Bareword — matches object, telescope, camera (substring, OR)
+    parsed.push({ kind: "text", value: raw.toLowerCase() });
+  }
+  return parsed;
+}
+
+function targetMatchesSearch(t, tokens) {
+  if (!tokens.length) return true;
+  const objs = (t.objects || []).map(s => String(s).toLowerCase());
+  const tels = (t.telescopes || []).map(s => String(s).toLowerCase());
+  const cams = (t.cameras || []).map(s => String(s).toLowerCase());
+  const filters = t.filters || {};
+  const totalH = (function () {
+    let s = 0;
+    for (const d of Object.values(filters)) s += (d.total_hours || 0);
+    return s;
+  })();
+  const fovMax = Math.max(...((t.fov_arcmin && t.fov_arcmin.length) ? t.fov_arcmin : [0]));
+
+  for (const tok of tokens) {
+    if (tok.kind === "text") {
+      const v = tok.value;
+      if (!objs.some(s => s.includes(v)) &&
+          !tels.some(s => s.includes(v)) &&
+          !cams.some(s => s.includes(v))) return false;
+      continue;
+    }
+    if (tok.kind === "kv") {
+      const v = tok.value;
+      switch (tok.key) {
+        case "object":
+        case "name":
+          if (!objs.some(s => s.includes(v))) return false;
+          break;
+        case "filter": {
+          const fname = Object.keys(filters).find(f => f.toLowerCase() === v);
+          if (!fname || !(filters[fname].total_hours > 0)) return false;
+          break;
+        }
+        case "telescope":
+        case "tel":
+          if (!tels.some(s => s.includes(v))) return false;
+          break;
+        case "camera":
+        case "cam":
+          if (!cams.some(s => s.includes(v))) return false;
+          break;
+        default:
+          return false;
+      }
+      continue;
+    }
+    if (tok.kind === "cmp") {
+      let lhs;
+      if (tok.key === "fov") lhs = fovMax;
+      else if (tok.key === "hours") lhs = totalH;
+      else return false;
+      if (tok.op === ">" && !(lhs > tok.value)) return false;
+      if (tok.op === "<" && !(lhs < tok.value)) return false;
+      continue;
+    }
+  }
+  return true;
+}
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -193,6 +302,9 @@ function telescopeOf(t) {
 }
 
 function targetMatches(t) {
+  // Search tokens AND with the chip/telescope/depth predicates below.
+  if (!targetMatchesSearch(t, searchTokens)) return false;
+
   const hrs = {};
   for (const [f, d] of Object.entries(t.filters)) hrs[f] = d.total_hours || 0;
 
@@ -246,7 +358,7 @@ function filterDotsHtml(filters) {
 
 function renderTargetList() {
   panelMode = "list";
-  const panel = document.getElementById("sidePanel");
+  const panel = document.getElementById("panelBody");
   if (!panel || !manifest) return;
 
   const matches = manifest.targets.filter(targetMatches);
@@ -285,7 +397,7 @@ function renderTargetList() {
 
 function renderTargetPanel(t) {
   panelMode = "detail";
-  const panel = document.getElementById("sidePanel");
+  const panel = document.getElementById("panelBody");
   const filtersSorted = Object.entries(t.filters)
     .sort((a, b) => (b[1].total_hours || 0) - (a[1].total_hours || 0));
 
@@ -303,6 +415,7 @@ function renderTargetPanel(t) {
     </tr>`).join("");
 
   const telescopes = esc((t.telescopes || []).join(", ") || "—");
+  const cameras = esc((t.cameras || []).join(", ") || "—");
   const objs = esc((t.objects && t.objects.length) ? t.objects.join(" / ") : "(no OBJECT tag)");
   const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : "—";
   const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : "—";
@@ -318,7 +431,8 @@ function renderTargetPanel(t) {
         <tr><td>RA / Dec</td><td class="num">${t.center_ra_deg.toFixed(3)}° / ${t.center_dec_deg.toFixed(3)}°</td></tr>
         <tr><td>l / b</td><td class="num">${t.center_l_deg.toFixed(2)}° / ${t.center_b_deg.toFixed(2)}°</td></tr>
         <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : '—'}</td></tr>
-        <tr><td>Instrument</td><td class="num">${telescopes}</td></tr>
+        <tr><td>Telescope</td><td class="num">${telescopes}</td></tr>
+        <tr><td>Camera</td><td class="num">${cameras}</td></tr>
         <tr><td>Date range</td><td class="num">${dateRange}</td></tr>
       </table>
 
@@ -500,6 +614,14 @@ async function loadCatalogs() {
 }
 
 function setupFilterUI() {
+  const searchInput = document.getElementById("searchInput");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      searchTokens = tokenizeSearch(searchInput.value);
+      redrawFootprints();
+    });
+  }
+
   for (const cb of document.querySelectorAll(".filters input[type=checkbox][data-f]")) {
     cb.addEventListener("change", () => {
       if (cb.checked) selectedFilters.add(cb.dataset.f);
