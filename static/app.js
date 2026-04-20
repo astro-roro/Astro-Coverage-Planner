@@ -52,9 +52,21 @@ let filterLogic = "any";
 let minHours = 0;
 let gapMode = false;
 let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
-let panelMode = "list"; // "list" | "detail"
+let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
+
+// --- Planner mode globals ---
+let planningMode = false;      // false = Coverage mode, true = Planning mode
+let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_goals, priority, ...}]
+let gear = { telescopes: [], cameras: [] };  // /api/gear response (v2)
+let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
+let selectedPlanId = null;     // currently-edited plan id
+let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
+let planOverlay = null;        // Aladin overlay for plan footprints (solid — plans with data)
+let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed — not-started plans)
+let planCenterCat = null;      // Aladin catalog for plan center + rotation handle markers
+let dragState = null;          // { mode: "center"|"rotate", planId, start: {x,y}, origin: {...} }
 
 // --- localStorage persistence ---
 // Bump the version suffix if the shape of the saved state ever changes
@@ -148,6 +160,10 @@ function applyUiStatePreManifest() {
       if (cb) cb.checked = s.catalogs.includes(id);
     }
   }
+
+  if (s.planningMode === true) {
+    planningMode = true;
+  }
 }
 
 function applyUiStatePostManifest() {
@@ -184,6 +200,8 @@ function saveUiState() {
       customLon: document.getElementById("lonIn")?.value || "",
       gapMode,
       selectedTargetId,
+      planningMode,
+      selectedPlanId,
     };
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
   } catch { /* localStorage full / disabled — ignore */ }
@@ -880,9 +898,26 @@ function init() {
     });
     aladin.addCatalog(filterBadgeCat);
 
-    // Click on any marker → render panel; works for both target centers and catalog overlays
+    // Planner overlays — always live, populated only while planningMode is true
+    planOverlay = A.graphicOverlay({ color: "#66aaff", lineWidth: 2.5, name: "plans" });
+    aladin.addOverlay(planOverlay);
+    // Dashed overlay for not-started plans. Aladin's lineDash is set per overlay,
+    // not per polygon, so we need a second overlay to mix dashed + solid in one view.
+    planOverlayDashed = A.graphicOverlay({ color: "#66aaff", lineWidth: 2.5, name: "plans_dashed", lineDash: [8, 5] });
+    if (planOverlayDashed.setLineDash) planOverlayDashed.setLineDash([8, 5]);
+    aladin.addOverlay(planOverlayDashed);
+    planCenterCat = A.catalog({ name: "plan_markers", sourceSize: 10, shape: "circle", color: "#ffffff" });
+    aladin.addCatalog(planCenterCat);
+
+    // Click on any marker → render panel; works for target centers, plan centers, and catalog overlays
     aladin.on("objectClicked", src => {
       if (!src) return;
+      if (src.data?.kind === "plan_center" && src.data.plan_id) {
+        const pl = plans.find(p => p.id === src.data.plan_id);
+        if (pl) { if (!planningMode) setPlanningMode(true); renderPlanEditor(pl); }
+        return;
+      }
+      if (src.data?.kind === "plan_rotate") return; // handled by drag
       if (src.data?.target_id != null) {
         const t = manifest.targets.find(x => x.target_id === src.data.target_id);
         if (t) renderTargetPanel(t);
@@ -915,6 +950,13 @@ function init() {
 
     setupFilterUI();
     setupCatalogOverlays();
+    setupPlannerUI();
+
+    // Auto-import any manifest-discovered telescopes/cameras before first gear load
+    // so the planner sees the user's actual rigs from the start.
+    await seedGearFromManifest();
+    // Load planner data in parallel with catalogs
+    await Promise.all([loadGear(), loadPlans(), loadTsTemplates()]);
 
     // Restore previous session state before the first draw so the map
     // reflects saved filters/telescopes/search immediately.
@@ -925,6 +967,10 @@ function init() {
     loadCatalogs();
     updateObsNow();
     setInterval(updateObsNow, 60_000);
+
+    // If planning mode was remembered from last session, switch now (after
+    // manifest + plans loaded so the right panel renders correctly).
+    if (planningMode) setPlanningMode(true);
   });
 }
 
@@ -951,6 +997,1027 @@ function renderTelescopeLegend(telescopes) {
       redrawFootprints();
     });
   });
+}
+
+// === Planner mode ===
+
+async function loadGear() {
+  try {
+    const r = await fetch("/api/gear");
+    const g = await r.json();
+    gear = { version: g.version || 2, telescopes: g.telescopes || [], cameras: g.cameras || [] };
+  } catch { gear = { telescopes: [], cameras: [] }; }
+}
+
+// Merge telescopes/cameras discovered in the coverage manifest into gear.json.
+// Idempotent; safe to call on every app load. Returns {added_telescopes, added_cameras}.
+async function seedGearFromManifest() {
+  try {
+    const r = await fetch("/api/gear/seed", { method: "POST" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (j.added_telescopes?.length || j.added_cameras?.length) {
+      console.log("[gear] auto-imported from coverage manifest:", j);
+    }
+    return j;
+  } catch (e) {
+    console.warn("gear seed failed", e);
+    return null;
+  }
+}
+
+async function saveGear() {
+  const r = await fetch("/api/gear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ telescopes: gear.telescopes, cameras: gear.cameras }),
+  });
+  return r.ok;
+}
+
+async function loadPlans() {
+  try { const r = await fetch("/api/plans"); const j = await r.json(); plans = j.plans || []; }
+  catch { plans = []; }
+}
+
+async function loadTsTemplates() {
+  try { const r = await fetch("/api/ts-templates"); tsTemplates = await r.json(); }
+  catch { tsTemplates = { available: false, templates: [] }; }
+}
+
+function deg2hms(deg) {
+  if (deg == null || !isFinite(deg)) return "";
+  const d = ((deg % 360) + 360) % 360;
+  const hrs = d / 15;
+  const h = Math.floor(hrs);
+  const mflt = (hrs - h) * 60;
+  const m = Math.floor(mflt);
+  const s = (mflt - m) * 60;
+  return `${String(h).padStart(2, "0")}h ${String(m).padStart(2, "0")}m ${s.toFixed(2)}s`;
+}
+
+function deg2dms(deg) {
+  if (deg == null || !isFinite(deg)) return "";
+  const sign = deg < 0 ? "-" : "+";
+  const a = Math.abs(deg);
+  const d = Math.floor(a);
+  const mflt = (a - d) * 60;
+  const m = Math.floor(mflt);
+  const s = (mflt - m) * 60;
+  return `${sign}${String(d).padStart(2, "0")}° ${String(m).padStart(2, "0")}' ${s.toFixed(2)}"`;
+}
+
+function planTelescope(plan) {
+  return gear.telescopes?.find(t => t.id === plan.telescope_id) || gear.telescopes?.[0] || null;
+}
+
+function planCamera(plan) {
+  return gear.cameras?.find(c => c.id === plan.camera_id) || gear.cameras?.[0] || null;
+}
+
+// True if the plan has any logged actual hours on any filter.
+function planHasData(plan) {
+  const goals = plan?.filter_goals || {};
+  for (const g of Object.values(goals)) {
+    if ((Number(g?.actual_hours) || 0) > 0) return true;
+  }
+  return false;
+}
+
+// Normalize a telescope name for fuzzy matching: lowercase, strip punctuation,
+// collapse whitespace, drop common boilerplate suffixes (APO, Pro, Mk II…) so
+// gear-defined "RedCat 51 APO" can match manifest "RedCat 51" from FITS headers.
+function _normTelName(s) {
+  if (!s) return "";
+  return String(s)
+    .toLowerCase()
+    .replace(/\b(apo|pro|mk[\s-]*[ivx]+|edge[\s-]*hd|hd|f\/?\d+(\.\d+)?|mm|inch|in|")\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+// Resolve a plan's footprint color from its selected telescope, matching the
+// legend swatch used for existing coverage. Match order: exact → case-insensitive
+// → normalized substring (either direction). Falls back to a stable palette
+// index hashed from the telescope id/name for gear not present in the manifest.
+function planBorderColor(plan) {
+  const tel = planTelescope(plan);
+  if (!tel || !tel.name) return TELESCOPE_FALLBACK;
+  if (telescopeColor[tel.name]) return telescopeColor[tel.name];
+  const want = tel.name.toLowerCase();
+  for (const k of Object.keys(telescopeColor)) {
+    if (k.toLowerCase() === want) return telescopeColor[k];
+  }
+  const wantN = _normTelName(tel.name);
+  if (wantN) {
+    for (const k of Object.keys(telescopeColor)) {
+      const kN = _normTelName(k);
+      if (!kN) continue;
+      if (kN === wantN || kN.includes(wantN) || wantN.includes(kN)) return telescopeColor[k];
+    }
+  }
+  const key = tel.id || tel.name;
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return TELESCOPE_PALETTE[h % TELESCOPE_PALETTE.length];
+}
+
+function deriveFovArcmin(telescope, camera) {
+  if (!telescope || !camera) return [0, 0];
+  const fl = parseFloat(telescope.focal_length_mm);
+  const px = parseFloat(camera.pixel_size_um);
+  const dims = camera.sensor_px;
+  if (!(fl > 0) || !(px > 0) || !dims || dims.length < 2) return [0, 0];
+  const arcsecPerPx = 206.265 * px / fl;
+  return [+(dims[0] * arcsecPerPx / 60).toFixed(2), +(dims[1] * arcsecPerPx / 60).toFixed(2)];
+}
+
+function planFovArcmin(plan) {
+  return deriveFovArcmin(planTelescope(plan), planCamera(plan));
+}
+
+function planMosaic(plan) {
+  const m = plan.target?.mosaic || {};
+  return {
+    rows: Math.max(1, parseInt(m.rows) || 1),
+    cols: Math.max(1, parseInt(m.cols) || 1),
+    overlap_pct: Math.max(0, Math.min(99, parseFloat(m.overlap_pct) || 0)),
+  };
+}
+
+// Compute per-panel centers [{row, col, ra_deg, dec_deg}] for a rows×cols
+// mosaic. Panel stride = fov × (1 - overlap). Row 0 = north (when rot=0).
+function mosaicPanelCenters(plan) {
+  const tg = plan.target || {};
+  const [fw, fh] = planFovArcmin(plan);
+  const { rows, cols, overlap_pct } = planMosaic(plan);
+  const overlap = Math.max(0, Math.min(0.99, overlap_pct / 100));
+  const strideW = (fw / 60) * (1 - overlap);
+  const strideH = (fh / 60) * (1 - overlap);
+  const R = (tg.rotation_deg || 0) * Math.PI / 180;
+  const cosR = Math.cos(R), sinR = Math.sin(R);
+  const cosD = Math.max(1e-6, Math.cos((tg.center_dec_deg || 0) * Math.PI / 180));
+  const panels = [];
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const cx = (j - (cols - 1) / 2) * strideW;
+      const cy = ((rows - 1) / 2 - i) * strideH;
+      const de =  cx * cosR + cy * sinR;
+      const dn = -cx * sinR + cy * cosR;
+      panels.push({
+        row: i, col: j,
+        ra_deg: (tg.center_ra_deg || 0) + de / cosD,
+        dec_deg: (tg.center_dec_deg || 0) + dn,
+      });
+    }
+  }
+  return panels;
+}
+
+function planPanelCorners(plan) {
+  // Returns an array of corner-arrays, one per panel, each [[ra,dec], ...] SW/NW/NE/SE.
+  const [fw, fh] = planFovArcmin(plan);
+  const rot = plan.target?.rotation_deg || 0;
+  return mosaicPanelCenters(plan).map(p => computePlanCorners(p.ra_deg, p.dec_deg, fw, fh, rot));
+}
+
+// Bounding rectangle of the whole mosaic in sky coords, used to place the
+// rotation handle at the overall NE corner. Returns [[ra,dec],...] SW/NW/NE/SE.
+function planMosaicBoundsCorners(plan) {
+  const tg = plan.target || {};
+  const [fw, fh] = planFovArcmin(plan);
+  const { rows, cols, overlap_pct } = planMosaic(plan);
+  const overlap = Math.max(0, Math.min(0.99, overlap_pct / 100));
+  const totalW = fw * ((cols - 1) * (1 - overlap) + 1);
+  const totalH = fh * ((rows - 1) * (1 - overlap) + 1);
+  return computePlanCorners(tg.center_ra_deg, tg.center_dec_deg, totalW, totalH, tg.rotation_deg || 0);
+}
+
+// Compute the 4 corners of a rectangular FOV box centered on (ra, dec) with
+// given width/height in arcmin and rotation_deg (PA, degrees east of north for
+// the camera's +Y axis — NINA's convention). Returns [[ra, dec], ...] in
+// order SW, NW, NE, SE so the NE corner (index 2) can host a rotation handle.
+function computePlanCorners(ra_deg, dec_deg, fov_w_arcmin, fov_h_arcmin, rot_deg) {
+  const toRad = x => x * Math.PI / 180;
+  const half_w = fov_w_arcmin / 2 / 60;   // degrees
+  const half_h = fov_h_arcmin / 2 / 60;
+  const R = toRad(rot_deg || 0);
+  const cosR = Math.cos(R), sinR = Math.sin(R);
+  const cosD = Math.max(1e-6, Math.cos(toRad(dec_deg)));
+  const local = [
+    [-half_w, -half_h],
+    [-half_w, +half_h],
+    [+half_w, +half_h],
+    [+half_w, -half_h],
+  ];
+  return local.map(([lx, ly]) => {
+    // Camera-Y sits at PA = R east of north, so rotate the camera-plane
+    // offsets into (east, north) sky offsets:
+    const de =  lx * cosR + ly * sinR;
+    const dn = -lx * sinR + ly * cosR;
+    return [ra_deg + de / cosD, dec_deg + dn];
+  });
+}
+
+function newEmptyPlan() {
+  let ra = 180, dec = 0;
+  try { const c = aladin.getRaDec(); if (c && c.length === 2) { ra = c[0]; dec = c[1]; } } catch {}
+  const tel = gear.telescopes?.[0];
+  const cam = gear.cameras?.[0];
+  return {
+    id: `plan-${Date.now().toString(36)}`,
+    project_name: "",
+    target: {
+      name: "", target_id: null,
+      center_ra_deg: ra, center_dec_deg: dec, rotation_deg: 0,
+      mosaic: { rows: 1, cols: 1, overlap_pct: 15 },
+    },
+    telescope_id: tel?.id || "",
+    camera_id: cam?.id || "",
+    filter_goals: {},
+    priority: "normal",
+    min_altitude_deg: 30,
+    meridian_window_min: 0,
+    state: "draft",
+  };
+}
+
+function renderPlanList() {
+  panelMode = "plan-list";
+  editingPlan = null;
+  selectedPlanId = null;
+  saveUiState();
+  const panel = document.getElementById("panelBody");
+  if (!panel) return;
+
+  const rows = plans.map(pl => {
+    const name = esc(pl.target?.name || pl.id);
+    const proj = esc(pl.project_name || "(no project)");
+    const pri = pl.priority || "normal";
+    const goals = pl.filter_goals || {};
+    const dots = FILTER_DOT_ORDER.map(f => {
+      const g = goals[f];
+      const color = FILTER_COLORS[f] || "#888";
+      if (!g || !(g.target_hours > 0)) {
+        return `<span class="plan-goal-dot todo" style="background:${color}" title="${f}: no goal"></span>`;
+      }
+      const th = g.target_hours;
+      const ah = g.actual_hours || 0;
+      const cls = ah >= th ? "done" : (ah > 0 ? "partial" : "todo");
+      return `<span class="plan-goal-dot ${cls}" style="background:${color}" title="${f}: ${ah.toFixed(1)}/${th}h"></span>`;
+    }).join("");
+    let remaining = 0;
+    for (const g of Object.values(goals)) remaining += Math.max(0, (g.target_hours || 0) - (g.actual_hours || 0));
+    return `<li class="plan-row" data-plan-id="${esc(pl.id)}">
+        <span class="plan-pri plan-pri-${pri}">${pri}</span>
+        <span class="plan-name">${name}</span>
+        <span class="plan-project">${proj}</span>
+        <span class="plan-goals">${dots}</span>
+        <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
+      </li>`;
+  }).join("");
+
+  const empty = `<li class="tr-empty">No plans yet. Click "+ New plan" to start.</li>`;
+
+  panel.innerHTML = `
+    <div class="planner-toolbar">
+      <button id="planNew" class="btn-primary">+ New plan</button>
+      <button id="planSync">Sync to NINA</button>
+      <button id="planGear">Edit gear</button>
+    </div>
+    <div class="panel-list">
+      <h3>Plans <span class="tr-count">${plans.length}</span></h3>
+      <ul class="target-list">${rows || empty}</ul>
+    </div>
+    <div id="syncResult"></div>`;
+
+  panel.querySelector("#planNew").addEventListener("click", () => {
+    const p = newEmptyPlan();
+    plans.push(p);
+    renderPlanEditor(p);
+  });
+  panel.querySelector("#planSync").addEventListener("click", syncPlans);
+  panel.querySelector("#planGear").addEventListener("click", () => renderGearEditor());
+  panel.querySelectorAll(".plan-row").forEach(row => {
+    row.addEventListener("click", () => {
+      const pl = plans.find(p => p.id === row.dataset.planId);
+      if (pl) renderPlanEditor(pl);
+    });
+  });
+  redrawPlanFootprints();
+}
+
+function renderPlanEditor(plan) {
+  panelMode = "plan-edit";
+  selectedPlanId = plan.id;
+  editingPlan = JSON.parse(JSON.stringify(plan));
+  saveUiState();
+
+  const panel = document.getElementById("panelBody");
+  const telescope = planTelescope(editingPlan);
+  const camera = planCamera(editingPlan);
+  const [fw, fh] = planFovArcmin(editingPlan);
+  const filters = camera?.filters ? Object.keys(camera.filters) : ["Ha", "OIII", "SII", "L", "R", "G", "B"];
+  const mos = planMosaic(editingPlan);
+
+  const telOpts = (gear.telescopes || []).map(t =>
+    `<option value="${esc(t.id)}" ${t.id === editingPlan.telescope_id ? "selected" : ""}>${esc(t.name)} (${t.focal_length_mm}mm)</option>`
+  ).join("") || `<option value="">(no telescopes — open Edit gear)</option>`;
+  const camOpts = (gear.cameras || []).map(c =>
+    `<option value="${esc(c.id)}" ${c.id === editingPlan.camera_id ? "selected" : ""}>${esc(c.name)}</option>`
+  ).join("") || `<option value="">(no cameras — open Edit gear)</option>`;
+
+  const goalRows = filters.map(f => {
+    const g = editingPlan.filter_goals[f] || {};
+    const color = FILTER_COLORS[f] || "#888";
+    const filtCfg = camera?.filters?.[f] || {};
+    const th = g.target_hours ?? "";
+    const sub = g.sub_exposure_s ?? filtCfg.default_sub_s ?? 300;
+    const ah = g.actual_hours || 0;
+    const ahClass = (g.target_hours > 0 && ah >= g.target_hours) ? "done" : (ah > 0 ? "partial" : "todo");
+    let tsOpts = `<option value="">(none)</option>`;
+    if (tsTemplates.available) {
+      const matching = tsTemplates.templates.filter(t => (t.filter || "").toLowerCase() === f.toLowerCase());
+      tsOpts += matching.map(t =>
+        `<option value="${esc(t.id)}" ${String(t.id) === String(filtCfg.ts_template_id) ? "selected" : ""}>${esc(t.name)} (exp=${t.default_exposure_s}s)</option>`
+      ).join("");
+    }
+    return `<tr>
+      <td><span class="filter-pill fp-${f}" style="background:${color};color:#000">${f}</span></td>
+      <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${f}" value="${th}" placeholder="hrs"></td>
+      <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${f}" value="${sub}"></td>
+      <td><span class="goal-status ${ahClass}">${ah.toFixed(1)}h</span></td>
+      <td>${tsTemplates.available ? `<select class="tmpl-sel" data-f="${f}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">—</span>`}</td>
+    </tr>`;
+  }).join("");
+
+  const tg = editingPlan.target;
+
+  panel.innerHTML = `
+    <a class="back-link" id="backToPlans" href="#">← Back to plans</a>
+    <h3>Plan: ${esc(tg.name || "(unnamed)")}</h3>
+    <form class="plan-form" id="planForm" onsubmit="return false">
+      <fieldset>
+        <legend>Target</legend>
+        <label><span class="lab">Name</span>
+          <input type="text" class="wide" id="f_name" value="${esc(tg.name)}" placeholder="e.g. Eta Carina">
+        </label>
+        <label><span class="lab">Project</span>
+          <input type="text" class="wide" id="f_project" value="${esc(editingPlan.project_name)}" placeholder="groups plans into a TS project">
+        </label>
+        <div class="coord-row">
+          <label style="flex:1"><span class="lab">RA (deg)</span>
+            <input type="number" step="0.0001" id="f_ra" value="${Number(tg.center_ra_deg).toFixed(4)}">
+          </label>
+          <span class="hms" id="f_ra_hms">${deg2hms(tg.center_ra_deg)}</span>
+        </div>
+        <div class="coord-row">
+          <label style="flex:1"><span class="lab">Dec (deg)</span>
+            <input type="number" step="0.0001" id="f_dec" value="${Number(tg.center_dec_deg).toFixed(4)}">
+          </label>
+          <span class="hms" id="f_dec_dms">${deg2dms(tg.center_dec_deg)}</span>
+        </div>
+        <div class="coord-row">
+          <label style="flex:1"><span class="lab">Rotation (° PA)</span>
+            <input type="number" step="1" id="f_rot" value="${tg.rotation_deg || 0}">
+          </label>
+          <button type="button" id="aladinLookup">Lookup</button>
+        </div>
+        <div class="drag-help">Drag the blue center marker to reposition · drag the yellow NE handle to rotate.</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Gear <button type="button" id="openGearEditor" style="float:right;font-size:10px;padding:2px 8px">Edit gear</button></legend>
+        <label><span class="lab">Telescope</span>
+          <select id="f_telescope">${telOpts}</select>
+        </label>
+        <label><span class="lab">Camera</span>
+          <select id="f_camera">${camOpts}</select>
+        </label>
+        <div style="font-size:11px;color:#78839a">Single-panel FOV: ${fw.toFixed(1)}' × ${fh.toFixed(1)}'</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Mosaic</legend>
+        <div class="coord-row">
+          <label style="flex:1"><span class="lab">Rows</span>
+            <input type="number" id="f_mrows" min="1" max="20" step="1" value="${mos.rows}">
+          </label>
+          <label style="flex:1"><span class="lab">Cols</span>
+            <input type="number" id="f_mcols" min="1" max="20" step="1" value="${mos.cols}">
+          </label>
+          <label style="flex:1"><span class="lab">Overlap %</span>
+            <input type="number" id="f_moverlap" min="0" max="90" step="1" value="${mos.overlap_pct}">
+          </label>
+        </div>
+        <div style="font-size:11px;color:#78839a" id="mosaicSummary"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Filter goals</legend>
+        <table class="goals-table">
+          <thead><tr><th>Filter</th><th>Target h</th><th>Sub (s)</th><th>Done</th><th>TS template</th></tr></thead>
+          <tbody>${goalRows}</tbody>
+        </table>
+      </fieldset>
+
+      <fieldset>
+        <legend>Constraints</legend>
+        <label><span class="lab">Priority</span>
+          <select id="f_priority">
+            <option value="high"   ${editingPlan.priority==="high"?"selected":""}>High</option>
+            <option value="normal" ${editingPlan.priority==="normal"?"selected":""}>Normal</option>
+            <option value="low"    ${editingPlan.priority==="low"?"selected":""}>Low</option>
+          </select>
+        </label>
+        <label><span class="lab">Min altitude (°)</span>
+          <input type="number" step="1" min="0" max="90" id="f_minalt" value="${editingPlan.min_altitude_deg ?? 30}">
+        </label>
+        <label><span class="lab">Meridian window (min, 0 = none)</span>
+          <input type="number" step="1" min="0" id="f_merid" value="${editingPlan.meridian_window_min ?? 0}">
+        </label>
+        <label><span class="lab">Notes</span>
+          <textarea id="f_notes">${esc(editingPlan.notes || "")}</textarea>
+        </label>
+      </fieldset>
+
+      <div class="plan-editor-actions">
+        <button type="button" id="planSave" class="btn-primary">Save</button>
+        <button type="button" id="planCancel">Cancel</button>
+        <button type="button" id="planDelete" class="btn-danger">Delete</button>
+      </div>
+    </form>`;
+
+  // Wire live-edit handlers
+  panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
+  panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
+  panel.querySelector("#f_ra")?.addEventListener("input", e => {
+    const v = parseFloat(e.target.value);
+    if (isFinite(v)) { editingPlan.target.center_ra_deg = v; document.getElementById("f_ra_hms").textContent = deg2hms(v); redrawPlanFootprints(); }
+  });
+  panel.querySelector("#f_dec")?.addEventListener("input", e => {
+    const v = parseFloat(e.target.value);
+    if (isFinite(v)) { editingPlan.target.center_dec_deg = v; document.getElementById("f_dec_dms").textContent = deg2dms(v); redrawPlanFootprints(); }
+  });
+  panel.querySelector("#f_rot")?.addEventListener("input", e => {
+    const v = parseFloat(e.target.value);
+    if (isFinite(v)) { editingPlan.target.rotation_deg = v; redrawPlanFootprints(); }
+  });
+  panel.querySelector("#f_telescope")?.addEventListener("change", e => {
+    editingPlan.telescope_id = e.target.value;
+    renderPlanEditor(editingPlan);
+  });
+  panel.querySelector("#f_camera")?.addEventListener("change", e => {
+    editingPlan.camera_id = e.target.value;
+    renderPlanEditor(editingPlan);
+  });
+  panel.querySelector("#openGearEditor")?.addEventListener("click", () => renderGearEditor());
+
+  const updateMosaicSummary = () => {
+    const m = planMosaic(editingPlan);
+    const [w, h] = planFovArcmin(editingPlan);
+    const overlap = Math.max(0, Math.min(0.99, m.overlap_pct / 100));
+    const totalW = w * ((m.cols - 1) * (1 - overlap) + 1);
+    const totalH = h * ((m.rows - 1) * (1 - overlap) + 1);
+    const el = document.getElementById("mosaicSummary");
+    if (el) el.textContent = `${m.rows * m.cols} panel${m.rows * m.cols === 1 ? "" : "s"} · total ${totalW.toFixed(1)}' × ${totalH.toFixed(1)}'`;
+  };
+  updateMosaicSummary();
+
+  panel.querySelector("#f_mrows")?.addEventListener("input", e => {
+    editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
+    editingPlan.target.mosaic.rows = Math.max(1, parseInt(e.target.value) || 1);
+    updateMosaicSummary(); redrawPlanFootprints();
+  });
+  panel.querySelector("#f_mcols")?.addEventListener("input", e => {
+    editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
+    editingPlan.target.mosaic.cols = Math.max(1, parseInt(e.target.value) || 1);
+    updateMosaicSummary(); redrawPlanFootprints();
+  });
+  panel.querySelector("#f_moverlap")?.addEventListener("input", e => {
+    editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
+    editingPlan.target.mosaic.overlap_pct = Math.max(0, Math.min(90, parseFloat(e.target.value) || 0));
+    updateMosaicSummary(); redrawPlanFootprints();
+  });
+  panel.querySelectorAll(".goal-target-hours").forEach(el => el.addEventListener("input", e => {
+    const f = e.target.dataset.f;
+    const v = parseFloat(e.target.value);
+    editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
+    if (isFinite(v) && v > 0) editingPlan.filter_goals[f].target_hours = v;
+    else delete editingPlan.filter_goals[f];
+  }));
+  panel.querySelectorAll(".goal-sub-s").forEach(el => el.addEventListener("input", e => {
+    const f = e.target.dataset.f;
+    const v = parseFloat(e.target.value);
+    if (isFinite(v) && v > 0) {
+      editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
+      editingPlan.filter_goals[f].sub_exposure_s = v;
+    }
+  }));
+  panel.querySelectorAll(".tmpl-sel").forEach(el => el.addEventListener("change", async e => {
+    const f = e.target.dataset.f;
+    const cam = planCamera(editingPlan);
+    if (!cam) return;
+    cam.filters = cam.filters || {};
+    cam.filters[f] = cam.filters[f] || {};
+    cam.filters[f].ts_template_id = e.target.value || null;
+    const opt = e.target.selectedOptions[0];
+    cam.filters[f].ts_template_name = opt?.textContent?.split(" (")[0] || null;
+    // Persist to data/gear.json so the mapping survives a reload
+    await saveGear();
+  }));
+  panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
+  panel.querySelector("#f_minalt")?.addEventListener("input", e => {
+    const v = parseFloat(e.target.value); if (isFinite(v)) editingPlan.min_altitude_deg = v;
+  });
+  panel.querySelector("#f_merid")?.addEventListener("input", e => {
+    const v = parseFloat(e.target.value); if (isFinite(v)) editingPlan.meridian_window_min = v;
+  });
+  panel.querySelector("#f_notes")?.addEventListener("input", e => { editingPlan.notes = e.target.value; });
+
+  panel.querySelector("#aladinLookup")?.addEventListener("click", () => {
+    const q = editingPlan.target.name || prompt("Object name to look up?");
+    if (!q) return;
+    try {
+      aladin.gotoObject(q, {
+        success: () => {
+          const c = aladin.getRaDec();
+          if (c && c.length === 2) {
+            editingPlan.target.center_ra_deg = c[0];
+            editingPlan.target.center_dec_deg = c[1];
+            renderPlanEditor(editingPlan);
+          }
+        },
+        error: () => alert(`Couldn't resolve "${q}".`),
+      });
+    } catch (e) { alert("Lookup failed: " + e); }
+  });
+
+  panel.querySelector("#backToPlans")?.addEventListener("click", e => {
+    e.preventDefault();
+    // Discard scratch (unsaved) plan
+    const orig = plans.find(p => p.id === editingPlan.id);
+    if (orig && !orig.guid) plans = plans.filter(p => p !== orig);
+    renderPlanList();
+  });
+  panel.querySelector("#planSave")?.addEventListener("click", savePlan);
+  panel.querySelector("#planCancel")?.addEventListener("click", () => {
+    const orig = plans.find(p => p.id === editingPlan.id);
+    if (orig && !orig.guid) plans = plans.filter(p => p !== orig);
+    renderPlanList();
+  });
+  panel.querySelector("#planDelete")?.addEventListener("click", async () => {
+    if (!editingPlan.guid) {
+      plans = plans.filter(p => p.id !== editingPlan.id);
+      renderPlanList();
+      return;
+    }
+    if (!confirm("Delete this plan?")) return;
+    const r = await fetch(`/api/plans/${encodeURIComponent(editingPlan.id)}`, { method: "DELETE" });
+    if (r.status === 204) {
+      plans = plans.filter(p => p.id !== editingPlan.id);
+      renderPlanList();
+    } else {
+      alert("Delete failed: " + r.status);
+    }
+  });
+
+  redrawPlanFootprints();
+}
+
+async function savePlan() {
+  if (!editingPlan) return;
+  const r = await fetch("/api/plans", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(editingPlan),
+  });
+  if (!r.ok) { alert("Save failed: " + r.status); return; }
+  const saved = await r.json();
+  const idx = plans.findIndex(p => p.id === saved.id);
+  if (idx >= 0) plans[idx] = saved; else plans.push(saved);
+  editingPlan = saved;
+  const btn = document.getElementById("planSave");
+  if (btn) { const orig = btn.textContent; btn.textContent = "Saved ✓"; setTimeout(() => { if (btn.textContent === "Saved ✓") btn.textContent = orig; }, 1500); }
+}
+
+async function syncPlans() {
+  const holder = document.getElementById("syncResult");
+  if (holder) holder.innerHTML = `<div style="font-size:12px;color:#78839a;margin-top:8px">Syncing…</div>`;
+  const r = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" } });
+  const body = await r.json().catch(() => ({}));
+  if (!holder) return;
+  if (!r.ok) {
+    holder.innerHTML = `<div class="sync-warn"><h4>Sync failed</h4><div>${esc(body.error || r.statusText)}</div></div>`;
+    return;
+  }
+  const success = `<div class="sync-warn" style="border-color:#3a7a3a;background:#1e2a1e;margin-top:8px">
+    <h4 style="color:#b0ffb0">✓ Exported ${body.plan_count || 0} plan(s), ${body.project_count || 0} project(s), ${body.template_count || 0} template(s)</h4>
+    <div style="font-size:11px">Zip: ${esc(body.zip_path || "")}</div>
+    <div style="font-size:11px;margin-top:4px">In NINA → Target Scheduler → Manage Profiles → <strong>Import Profile</strong> → pick the zip.</div>
+  </div>`;
+  const warnings = body.warnings || [];
+  let warnBlock = "";
+  if (warnings.length) {
+    const rows = warnings.map(w => `
+      <div class="rename-row">
+        <span title="${esc(w.message || "")}">${esc(w.project_name)} · ${esc(w.kind)} → resolved to <strong>${esc(String(w.resolved))}</strong></span>
+        <input type="text" data-plan="${esc(w.plan_id)}" value="${esc(w.suggested_name || "")}" placeholder="rename to split into its own project">
+      </div>`).join("");
+    warnBlock = `<div class="sync-warn">
+      <h4>⚠ ${warnings.length} strictest-wins resolution(s)</h4>
+      <div style="font-size:12px">The zip above was built with the strictest value. If you want a plan to live in its own project instead, rename below and re-sync.</div>
+      ${rows}
+      <div style="margin-top:8px"><button id="syncRetry" class="btn-primary">Apply renames &amp; re-sync</button></div>
+    </div>`;
+  }
+  holder.innerHTML = success + warnBlock;
+  if (warnings.length) {
+    document.getElementById("syncRetry")?.addEventListener("click", async () => {
+      for (const inp of holder.querySelectorAll(".rename-row input")) {
+        if (!inp.value) continue;
+        const pl = plans.find(p => p.id === inp.dataset.plan);
+        if (!pl) continue;
+        pl.project_name = inp.value;
+        await fetch("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pl) });
+      }
+      await loadPlans();
+      syncPlans();
+    });
+  }
+  await loadPlans();
+}
+
+function redrawPlanFootprints() {
+  if (!planOverlay) return;
+  planOverlay.removeAll();
+  if (planOverlayDashed) planOverlayDashed.removeAll();
+  if (planCenterCat) planCenterCat.removeAll();
+  if (!planningMode) return;
+
+  const srcs = [];
+  for (const pl of plans) {
+    if (pl.target?.center_ra_deg == null) continue;
+    const isEditing = editingPlan && editingPlan.id === pl.id;
+    const actual = isEditing ? editingPlan : pl;
+    const pri = actual.priority || "normal";
+    const color = planBorderColor(actual);
+    const hasData = planHasData(actual);
+    const panelCorners = planPanelCorners(actual);
+    const targetOverlay = (hasData || !planOverlayDashed) ? planOverlay : planOverlayDashed;
+    for (const corners of panelCorners) {
+      const poly = A.polygon(corners, {
+        color,
+        lineWidth: isEditing ? 3 : 2,
+        fillColor: color + (hasData ? "20" : "10"),
+      });
+      poly._plan = actual;
+      targetOverlay.add(poly);
+    }
+
+    const centerSrc = A.marker(actual.target.center_ra_deg, actual.target.center_dec_deg, {
+      popupTitle: actual.target.name || actual.id,
+      popupDesc: `${actual.project_name || ""} · ${pri}${hasData ? "" : " · not started"}${panelCorners.length > 1 ? ` · ${panelCorners.length}-panel mosaic` : ""}`,
+      useMarkerDefaultIcon: false,
+      color, shape: "circle",
+      sourceSize: isEditing ? 14 : 10,
+    });
+    centerSrc.data = { plan_id: actual.id, kind: "plan_center" };
+    srcs.push(centerSrc);
+
+    if (isEditing) {
+      const bounds = planMosaicBoundsCorners(actual);
+      const [nera, nedec] = bounds[2]; // overall NE corner of the full mosaic
+      const handle = A.marker(nera, nedec, {
+        popupTitle: "Drag to rotate",
+        useMarkerDefaultIcon: false,
+        color: "#ffd84d", shape: "square", sourceSize: 14,
+      });
+      handle.data = { plan_id: actual.id, kind: "plan_rotate" };
+      srcs.push(handle);
+    }
+  }
+  if (planCenterCat && srcs.length) planCenterCat.addSources(srcs);
+}
+
+function setupModeToggle() {
+  document.getElementById("modeCoverage")?.addEventListener("click", () => setPlanningMode(false));
+  document.getElementById("modePlanning")?.addEventListener("click", () => setPlanningMode(true));
+}
+
+function setPlanningMode(on) {
+  planningMode = !!on;
+  const mc = document.getElementById("modeCoverage");
+  const mp = document.getElementById("modePlanning");
+  if (mc) { mc.classList.toggle("active", !on); mc.setAttribute("aria-selected", String(!on)); }
+  if (mp) { mp.classList.toggle("active",  on); mp.setAttribute("aria-selected", String( on)); }
+  // Hide the coverage-only filters row while planning; keep telescopes & catalogues available in both modes.
+  const f = document.querySelector(".filters");
+  if (f) f.style.display = on ? "none" : "";
+  saveUiState();
+  if (on) {
+    if (selectedPlanId) {
+      const pl = plans.find(p => p.id === selectedPlanId);
+      if (pl) { renderPlanEditor(pl); return; }
+    }
+    renderPlanList();
+  } else {
+    if (selectedTargetId && manifest) {
+      const t = manifest.targets.find(x => x.target_id === selectedTargetId);
+      if (t) { renderTargetPanel(t); redrawPlanFootprints(); return; }
+    }
+    renderTargetList();
+    redrawPlanFootprints();
+  }
+}
+
+function setupMapDrag() {
+  const mapDiv = document.getElementById("aladin-lite-div");
+  if (!mapDiv) return;
+  mapDiv.addEventListener("mousedown", onMapMouseDown, true);
+  window.addEventListener("mousemove", onMapMouseMove, true);
+  window.addEventListener("mouseup", onMapMouseUp, true);
+}
+
+function _pixelIn(mapDiv, evt) {
+  const r = mapDiv.getBoundingClientRect();
+  return [evt.clientX - r.left, evt.clientY - r.top];
+}
+
+function onMapMouseDown(evt) {
+  if (!planningMode || !editingPlan || !aladin?.world2pix) return;
+  const mapDiv = document.getElementById("aladin-lite-div");
+  if (!mapDiv) return;
+  const [px, py] = _pixelIn(mapDiv, evt);
+  const bounds = planMosaicBoundsCorners(editingPlan);
+  const nePix = aladin.world2pix(bounds[2][0], bounds[2][1]);
+  if (nePix && isFinite(nePix[0]) && Math.hypot(nePix[0] - px, nePix[1] - py) < 14) {
+    dragState = { mode: "rotate", planId: editingPlan.id };
+    evt.preventDefault(); evt.stopPropagation();
+    return;
+  }
+  const cPix = aladin.world2pix(editingPlan.target.center_ra_deg, editingPlan.target.center_dec_deg);
+  if (cPix && isFinite(cPix[0]) && Math.hypot(cPix[0] - px, cPix[1] - py) < 16) {
+    dragState = { mode: "center", planId: editingPlan.id };
+    evt.preventDefault(); evt.stopPropagation();
+  }
+}
+
+function onMapMouseMove(evt) {
+  if (!dragState || !editingPlan || !aladin?.pix2world) return;
+  const mapDiv = document.getElementById("aladin-lite-div");
+  if (!mapDiv) return;
+  const [px, py] = _pixelIn(mapDiv, evt);
+  if (dragState.mode === "center") {
+    const world = aladin.pix2world(px, py);
+    if (!world) return;
+    editingPlan.target.center_ra_deg = world[0];
+    editingPlan.target.center_dec_deg = world[1];
+    const raEl = document.getElementById("f_ra"); if (raEl) raEl.value = world[0].toFixed(4);
+    const decEl = document.getElementById("f_dec"); if (decEl) decEl.value = world[1].toFixed(4);
+    const rahms = document.getElementById("f_ra_hms"); if (rahms) rahms.textContent = deg2hms(world[0]);
+    const ddms = document.getElementById("f_dec_dms"); if (ddms) ddms.textContent = deg2dms(world[1]);
+  } else if (dragState.mode === "rotate") {
+    const cPix = aladin.world2pix(editingPlan.target.center_ra_deg, editingPlan.target.center_dec_deg);
+    if (!cPix) return;
+    const dx = px - cPix[0];
+    const dy = py - cPix[1];
+    // Screen: +x right, +y down. North is up (−y), East is left (−x) on typical sky renders.
+    // PA = atan2(east, north) = atan2(−dx, −dy); then subtract the NE corner's intrinsic offset.
+    const paDeg = Math.atan2(-dx, -dy) * 180 / Math.PI;
+    // Handle sits at the overall mosaic NE corner, so base the offset on total dims.
+    const [fw, fh] = planFovArcmin(editingPlan);
+    const mos = planMosaic(editingPlan);
+    const overlap = Math.max(0, Math.min(0.99, mos.overlap_pct / 100));
+    const totalW = fw * ((mos.cols - 1) * (1 - overlap) + 1);
+    const totalH = fh * ((mos.rows - 1) * (1 - overlap) + 1);
+    const cornerOffsetDeg = Math.atan2(totalW / 2, totalH / 2) * 180 / Math.PI;
+    let newRot = paDeg - cornerOffsetDeg;
+    newRot = Math.round(((newRot % 360) + 360) % 360);
+    editingPlan.target.rotation_deg = newRot;
+    const rotEl = document.getElementById("f_rot"); if (rotEl) rotEl.value = newRot;
+  }
+  redrawPlanFootprints();
+  evt.preventDefault(); evt.stopPropagation();
+}
+
+function onMapMouseUp() {
+  if (dragState) dragState = null;
+}
+
+function setupPlannerUI() {
+  setupModeToggle();
+  setupMapDrag();
+}
+
+// === Gear editor ===
+
+function _slugId(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `id-${Date.now().toString(36)}`;
+}
+
+function renderGearEditor() {
+  panelMode = "gear-edit";
+  saveUiState();
+  const panel = document.getElementById("panelBody");
+  if (!panel) return;
+  // Work on a deep clone so Cancel discards cleanly.
+  const draft = JSON.parse(JSON.stringify({ telescopes: gear.telescopes || [], cameras: gear.cameras || [] }));
+  const FILTER_KEYS = ["Ha", "OIII", "SII", "L", "R", "G", "B", "V"];
+
+  function render() {
+    const telRows = draft.telescopes.map((t, i) => `
+      <tr data-tel="${i}">
+        <td><input type="text" data-field="name"             value="${esc(t.name || "")}" placeholder="Telescope name"></td>
+        <td><input type="number" data-field="focal_length_mm" value="${t.focal_length_mm ?? ""}" step="1" style="width:70px"></td>
+        <td><input type="number" data-field="aperture_mm"     value="${t.aperture_mm ?? ""}" step="1" style="width:60px"></td>
+        <td><button type="button" class="btn-danger" data-del-tel="${i}">✕</button></td>
+      </tr>`).join("");
+
+    const camRows = draft.cameras.map((c, i) => {
+      const dims = c.sensor_px || [0, 0];
+      c.filters = c.filters || {};
+      const camFilterKeys = Object.keys(c.filters);
+      const filtersBody = camFilterKeys.length === 0
+        ? `<tr><td colspan="6" style="color:#78839a;font-size:11px">No filters. Add one below.</td></tr>`
+        : camFilterKeys.map(f => {
+            const fc = c.filters[f] || {};
+            return `<tr data-filter="${esc(f)}">
+              <td style="padding-right:4px">${esc(f)}</td>
+              <td><input type="number" data-field="default_sub_s" value="${fc.default_sub_s ?? ""}" step="10" style="width:60px" placeholder="sub s"></td>
+              <td><input type="number" data-field="gain"          value="${fc.gain ?? -1}" step="1" style="width:48px"></td>
+              <td><input type="number" data-field="offset"        value="${fc.offset ?? -1}" step="1" style="width:48px"></td>
+              <td><input type="number" data-field="bin"           value="${fc.bin ?? 1}" step="1" min="1" style="width:36px"></td>
+              <td><button type="button" class="btn-danger" data-del-filter="${esc(f)}" title="Remove filter">✕</button></td>
+            </tr>`;
+          }).join("");
+      const addOptions = FILTER_KEYS
+        .filter(k => !(k in c.filters))
+        .map(k => `<option value="${k}">${k}</option>`).join("");
+      return `<div class="cam-block" data-cam="${i}" style="border:1px solid #2a3246;border-radius:4px;padding:6px 8px;margin-bottom:8px">
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="text"   data-field="name"           value="${esc(c.name || "")}" placeholder="Camera name" style="flex:1">
+          <input type="number" data-field="pixel_size_um"  value="${c.pixel_size_um ?? ""}" step="0.01" placeholder="px µm" style="width:70px">
+          <input type="number" data-field="sensor_w"       value="${dims[0] ?? ""}" step="1" placeholder="w px" style="width:70px">
+          <input type="number" data-field="sensor_h"       value="${dims[1] ?? ""}" step="1" placeholder="h px" style="width:70px">
+          <button type="button" class="btn-danger" data-del-cam="${i}">✕</button>
+        </div>
+        <details style="margin-top:4px" open>
+          <summary style="font-size:11px;color:#78839a;cursor:pointer">Filters — ${camFilterKeys.length} (sub s · gain · offset · bin)</summary>
+          <table class="goals-table" style="margin-top:4px"><tbody>${filtersBody}</tbody></table>
+          <div style="display:flex;gap:4px;align-items:center;margin-top:4px;font-size:11px">
+            <select data-role="add-filter-preset" style="width:70px">
+              <option value="">Pick…</option>
+              ${addOptions}
+              <option value="__custom__">Custom…</option>
+            </select>
+            <input type="text" data-role="add-filter-name" placeholder="or type name" style="flex:1;max-width:100px">
+            <button type="button" data-role="add-filter-btn" class="btn-primary" style="font-size:10px;padding:2px 8px">+ Add filter</button>
+          </div>
+          <div style="font-size:10px;color:#78839a;margin-top:2px">Gain/offset/bin/sub become TS ExposureTemplate fields on sync. TS template mapping is set from the plan editor.</div>
+        </details>
+      </div>`;
+    }).join("");
+
+    panel.innerHTML = `
+      <a class="back-link" id="backToPlans" href="#">← Back to plans</a>
+      <h3>Edit gear</h3>
+      <fieldset>
+        <legend>Telescopes <button type="button" id="addTel" class="btn-primary" style="float:right;font-size:10px;padding:2px 8px">+ Add</button></legend>
+        <table class="goals-table" style="width:100%">
+          <thead><tr><th style="text-align:left">Name</th><th>Focal (mm)</th><th>Aperture (mm)</th><th></th></tr></thead>
+          <tbody>${telRows || `<tr><td colspan="4" style="color:#78839a">No telescopes yet.</td></tr>`}</tbody>
+        </table>
+      </fieldset>
+      <fieldset>
+        <legend>Cameras <button type="button" id="addCam" class="btn-primary" style="float:right;font-size:10px;padding:2px 8px">+ Add</button></legend>
+        ${camRows || `<div style="color:#78839a;font-size:12px">No cameras yet.</div>`}
+      </fieldset>
+      <div class="plan-editor-actions">
+        <button type="button" id="gearSave" class="btn-primary">Save gear</button>
+        <button type="button" id="gearCancel">Cancel</button>
+        <button type="button" id="gearScanCoverage" style="margin-left:auto" title="Scan coverage manifest for telescopes/cameras not yet in gear">Scan coverage</button>
+      </div>`;
+
+    // Telescope row inputs
+    panel.querySelectorAll("tr[data-tel]").forEach(tr => {
+      const idx = parseInt(tr.dataset.tel, 10);
+      tr.querySelectorAll("input[data-field]").forEach(inp => inp.addEventListener("input", e => {
+        const key = e.target.dataset.field;
+        const v = e.target.value;
+        draft.telescopes[idx][key] = (key === "name") ? v : (parseFloat(v) || 0);
+      }));
+    });
+    panel.querySelectorAll("[data-del-tel]").forEach(b => b.addEventListener("click", () => {
+      draft.telescopes.splice(parseInt(b.dataset.delTel, 10), 1);
+      render();
+    }));
+    panel.querySelector("#addTel").addEventListener("click", () => {
+      draft.telescopes.push({ id: _slugId("telescope-" + (draft.telescopes.length + 1)), name: "New telescope", focal_length_mm: 500, aperture_mm: 80 });
+      render();
+    });
+
+    // Camera block inputs
+    panel.querySelectorAll(".cam-block").forEach(block => {
+      const idx = parseInt(block.dataset.cam, 10);
+      block.querySelectorAll("input[data-field]").forEach(inp => inp.addEventListener("input", e => {
+        const key = e.target.dataset.field;
+        const v = e.target.value;
+        const cam = draft.cameras[idx];
+        if (key === "name") cam.name = v;
+        else if (key === "pixel_size_um") cam.pixel_size_um = parseFloat(v) || 0;
+        else if (key === "sensor_w") { cam.sensor_px = cam.sensor_px || [0, 0]; cam.sensor_px[0] = parseInt(v) || 0; }
+        else if (key === "sensor_h") { cam.sensor_px = cam.sensor_px || [0, 0]; cam.sensor_px[1] = parseInt(v) || 0; }
+      }));
+      block.querySelectorAll("tr[data-filter]").forEach(tr => {
+        const f = tr.dataset.filter;
+        tr.querySelectorAll("input[data-field]").forEach(inp => inp.addEventListener("input", e => {
+          const key = e.target.dataset.field;
+          const v = parseFloat(e.target.value);
+          const cam = draft.cameras[idx];
+          cam.filters = cam.filters || {};
+          cam.filters[f] = cam.filters[f] || {};
+          cam.filters[f][key] = isFinite(v) ? v : null;
+        }));
+      });
+      block.querySelectorAll("[data-del-filter]").forEach(b => b.addEventListener("click", () => {
+        const f = b.dataset.delFilter;
+        const cam = draft.cameras[idx];
+        if (cam.filters && f in cam.filters) delete cam.filters[f];
+        render();
+      }));
+      const addBtn = block.querySelector("[data-role=add-filter-btn]");
+      if (addBtn) addBtn.addEventListener("click", () => {
+        const cam = draft.cameras[idx];
+        const presetSel = block.querySelector("[data-role=add-filter-preset]");
+        const nameIn = block.querySelector("[data-role=add-filter-name]");
+        let name = (nameIn?.value || "").trim();
+        const preset = presetSel?.value || "";
+        if (!name && preset && preset !== "__custom__") name = preset;
+        if (!name) { nameIn?.focus(); return; }
+        cam.filters = cam.filters || {};
+        if (name in cam.filters) { alert(`Filter "${name}" already exists on ${cam.name || "camera"}.`); return; }
+        const isLum = /^L$|lum/i.test(name);
+        const isNarrow = /^(Ha|OIII|SII|NII|OI)$/i.test(name);
+        cam.filters[name] = {
+          ts_template_id: null,
+          ts_template_name: null,
+          default_sub_s: isNarrow ? 300 : (isLum ? 120 : 120),
+          gain: -1, offset: -1, bin: 1,
+        };
+        render();
+      });
+    });
+    panel.querySelectorAll("[data-del-cam]").forEach(b => b.addEventListener("click", () => {
+      draft.cameras.splice(parseInt(b.dataset.delCam, 10), 1);
+      render();
+    }));
+    panel.querySelector("#addCam").addEventListener("click", () => {
+      const defaults = {};
+      for (const f of FILTER_KEYS) defaults[f] = { ts_template_id: null, ts_template_name: null, default_sub_s: 300, gain: -1, offset: -1, bin: 1 };
+      draft.cameras.push({
+        id: _slugId("camera-" + (draft.cameras.length + 1)),
+        name: "New camera",
+        pixel_size_um: 3.76,
+        sensor_px: [6000, 4000],
+        filters: defaults,
+      });
+      render();
+    });
+
+    panel.querySelector("#gearSave").addEventListener("click", async () => {
+      // Ensure each row has a stable id (derived from name if missing)
+      for (const t of draft.telescopes) if (!t.id) t.id = _slugId(t.name);
+      for (const c of draft.cameras)    if (!c.id) c.id = _slugId(c.name);
+      gear.telescopes = draft.telescopes;
+      gear.cameras = draft.cameras;
+      const ok = await saveGear();
+      if (!ok) { alert("Save failed"); return; }
+      renderPlanList();
+    });
+    panel.querySelector("#gearCancel").addEventListener("click", () => renderPlanList());
+    panel.querySelector("#backToPlans").addEventListener("click", e => { e.preventDefault(); renderPlanList(); });
+    panel.querySelector("#gearScanCoverage")?.addEventListener("click", async () => {
+      // Persist any in-progress edits first so the scan merges into the saved state.
+      gear.telescopes = draft.telescopes;
+      gear.cameras = draft.cameras;
+      const saveOk = await saveGear();
+      if (!saveOk) { alert("Couldn't save current edits before scanning."); return; }
+      const j = await seedGearFromManifest();
+      await loadGear();
+      draft.telescopes = JSON.parse(JSON.stringify(gear.telescopes));
+      draft.cameras = JSON.parse(JSON.stringify(gear.cameras));
+      render();
+      const addedT = j?.added_telescopes || [];
+      const addedC = j?.added_cameras || [];
+      if (addedT.length || addedC.length) {
+        alert(`Added from coverage:\n• Telescopes: ${addedT.join(", ") || "none"}\n• Cameras: ${addedC.join(", ") || "none"}`);
+      } else {
+        alert("No new gear found in coverage (all telescopes/cameras already present).");
+      }
+    });
+  }
+  render();
 }
 
 init();
