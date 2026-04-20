@@ -1091,7 +1091,7 @@ function _normTelName(s) {
   if (!s) return "";
   return String(s)
     .toLowerCase()
-    .replace(/\b(apo|pro|mk[\s-]*[ivx]+|edge[\s-]*hd|hd|f\/?\d+(\.\d+)?|mm|inch|in|")\b/g, " ")
+    .replace(/\b(apo|pro|mk[\s-]*[ivx]+|edge[\s-]*hd|hd|f\/?\d+(\.\d+)?|mm|inch|in|"|zwo|qhy|celestron|svbony|sky[-\s]*watcher|williams?[\s-]*optics?|askar|takahashi)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
@@ -1603,6 +1603,18 @@ async function savePlan() {
 
 async function syncPlans() {
   const holder = document.getElementById("syncResult");
+  const previouslySynced = plans.filter(p => p.last_synced_at);
+  if (previouslySynced.length) {
+    const last = previouslySynced
+      .map(p => p.last_synced_at).sort().slice(-1)[0];
+    const msg = `${previouslySynced.length} of ${plans.length} plan(s) have been synced before `
+      + `(most recent: ${last}).\n\nTarget Scheduler import is append-only — re-syncing will `
+      + `create duplicate projects/targets in NINA. Prune the old ones in NINA first, or cancel.\n\nContinue?`;
+    if (!confirm(msg)) {
+      if (holder) holder.innerHTML = `<div style="font-size:12px;color:#78839a;margin-top:8px">Sync cancelled.</div>`;
+      return;
+    }
+  }
   if (holder) holder.innerHTML = `<div style="font-size:12px;color:#78839a;margin-top:8px">Syncing…</div>`;
   const r = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" } });
   const body = await r.json().catch(() => ({}));
