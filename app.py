@@ -141,7 +141,7 @@ def save_gear(data: dict) -> None:
 
 # Normalize a telescope/camera name for fuzzy matching. Mirrors _normTelName
 # in static/app.js so client and server agree on what counts as "the same rig".
-_NORM_STRIP = re.compile(r"\b(apo|pro|mk[\s-]*[ivx]+|edge[\s-]*hd|hd|f\/?\d+(\.\d+)?|mm|inch|in|\")\b")
+_NORM_STRIP = re.compile(r"\b(apo|pro|mk[\s-]*[ivx]+|edge[\s-]*hd|hd|f\/?\d+(\.\d+)?|mm|inch|in|\"|zwo|qhy|celestron|svbony|sky[-\s]*watcher|williams?[\s-]*optics?|askar|takahashi)\b")
 _NORM_WS = re.compile(r"[^a-z0-9]+")
 
 def _norm_gear_name(s: str) -> str:
@@ -158,6 +158,12 @@ def _slug_id(name: str) -> str:
     return s or "item"
 
 
+def _looks_truncated(name: str) -> bool:
+    if not name:
+        return True
+    return name.count("(") != name.count(")") or name.count("[") != name.count("]")
+
+
 def _extract_gear_from_manifest() -> dict:
     """Walk the manifest and collect telescope + camera metadata observed in the
     data. Pulls whatever the manifest exposes today (telescope names, filters per
@@ -171,12 +177,12 @@ def _extract_gear_from_manifest() -> dict:
     cams: dict[str, dict] = {}
     for target in manifest.get("targets", []) or []:
         for name in (target.get("telescopes") or []):
-            if name:
+            if name and not _looks_truncated(name):
                 tels.setdefault(name, {"filters": set(), "pix_arcsecs": [], "fovs": [],
                                        "focal_mm": [], "aperture_mm": [], "cameras_seen": set()})
         for m in (target.get("per_master_fov") or []):
             name = m.get("telescope")
-            if not name:
+            if not name or _looks_truncated(name):
                 continue
             t = tels.setdefault(name, {"filters": set(), "pix_arcsecs": [], "fovs": [],
                                        "focal_mm": [], "aperture_mm": [], "cameras_seen": set()})
@@ -194,7 +200,7 @@ def _extract_gear_from_manifest() -> dict:
                     try: t[bucket].append(float(v))
                     except (TypeError, ValueError): pass
             cam_name = m.get("camera") or m.get("instrument")
-            if cam_name:
+            if cam_name and not _looks_truncated(cam_name):
                 t["cameras_seen"].add(cam_name)
                 c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": []})
                 if m.get("filter"): c["filters"].add(m["filter"])

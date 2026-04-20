@@ -20,5 +20,5 @@ data/*.local.json
 .DS_Store
 Thumbs.db
 
-# Per-developer Claude Code settings (keep .claude/settings.json committed)
-.claude/settings.local.json
+# Claude Code settings — keep local, never push
+.claude/
