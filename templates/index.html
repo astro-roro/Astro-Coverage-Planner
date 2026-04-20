@@ -13,6 +13,11 @@
       <span class="meta">{{ total_targets }} targets · {{ total_hours }}h · scan {{ scan_date }}</span>
     </div>
 
+    <div class="mode-toggle" role="tablist" aria-label="App mode">
+      <button id="modeCoverage" class="mode-btn active" role="tab" aria-selected="true">Coverage</button>
+      <button id="modePlanning" class="mode-btn"          role="tab" aria-selected="false">Planning</button>
+    </div>
+
     <div class="controls">
       <label class="ctrl">Projection:
         <select id="projSel">
