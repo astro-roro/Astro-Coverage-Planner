@@ -37,7 +37,7 @@ Plus: a small **"remaining hours"** block appears inside the existing per-target
    - Mobile layout? Current panel is fixed 380px — won't work on phones.
    - Plan export format — CSV? JSON? NINA sequence file?
    - NINA integration beyond copy-paste (e.g. NINA's HTTP API if it exposes one)?
-3. **Catalog sharing:** the scan manifest currently includes full file paths from `master_files`. For sharing with friends, do we want a "sanitize for sharing" mode that strips those paths (since they're local to your filesystem)?
+3. **Catalog sharing (parked 2026-04-20):** add a "sanitise for sharing" mode that strips `master_files` local paths (and anything else machine-specific) from the manifest before export. Use cases: swap coverage maps with astro friends to see who has hours on what, collaborate on top-up imaging, show off an archive publicly without leaking drive letters / usernames / folder structure. Implementation sketch: `--sanitise` flag on the scanner, or a button in the UI that exports a cleaned copy. Park until after Target Scheduler integration lands.
 
 ---
 
