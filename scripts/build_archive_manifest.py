@@ -1,34 +1,30 @@
 #!/usr/bin/env python
-"""Deep archive scan — build a manifest.json the webapp can render.
+"""Build the coverage manifest the planner reads from your FITS/XISF archive.
 
-Walks one or more folder trees for FITS/XISF files, classifies each as
-sub/master/calibration/processed, reads WCS headers for masters, clusters
-files into targets by spatial position, and emits a JSON manifest matching
-the schema documented in README.md.
+Scans one or more image roots for FITS + XISF files, reads WCS + gear headers
+(TELESCOP, INSTRUME, FOCALLEN, XPIXSZ, APTDIA, GAIN, OFFSET, XBINNING, etc.),
+clusters files into targets by spatial position, and emits the JSON manifest
+the Coverage Planner reads from ``data/manifest.json``.
 
-Usage:
+Environment variables (all optional):
+  FITS_ROOTS     Semicolon-separated list of image roots to scan.
+                 Default: the paths listed in ``NAS_ROOTS`` below — edit for
+                 your setup or set this env var instead.
+  FULL_MASTERS   Extra root of stacked masters (optional).
+                 Default: ``<repo>/state/full_masters`` if it exists.
+  MANIFEST_PATH  Where to write the manifest. Default: ``<repo>/data/manifest.json``
+                 (i.e. exactly where the Coverage Planner expects it).
+  PIPELINE_DB    Optional sqlite DB with a ``frames`` table for per-sub hours
+                 (calibration-tool's job_queue.db). Missing is fine — hours
+                 then come solely from master-file headers.
 
-    python scripts/build_archive_manifest.py --scan-root /path/to/archive
+Run:
+  python scripts/build_archive_manifest.py
 
-    python scripts/build_archive_manifest.py \\
-        --scan-root /mnt/nas/Astro/Images \\
-        --scan-root ./my_masters
-
-    # Optional pipeline DB with a `frames` table (object_name, filter_name,
-    # exptime, captured_at, path) for per-target sub-integration hours
-    python scripts/build_archive_manifest.py --scan-root /data --db pipeline.db
-
-Env vars (alternative to CLI):
-    MANIFEST_SCAN_ROOTS   os.pathsep-separated list of roots
-    MANIFEST_DB_PATH      optional SQLite DB path
-    MANIFEST_PATH         output path (default ./data/manifest.json)
-
-This scan is slow on large archives (~5 min for 100k files) because it opens
-every master's FITS header to read WCS.
+Then start the planner; the manifest will be picked up automatically.
 """
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sqlite3
@@ -51,17 +47,32 @@ warnings.filterwarnings("ignore", category=Warning)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Populated by main() from CLI args / env vars.
-SCAN_ROOTS: list[Path] = []
-DB_PATH: Path | None = None
-MANIFEST_PATH: Path = REPO_ROOT / "data" / "manifest.json"
-SUMMARY_PATH: Path = REPO_ROOT / "data" / "manifest_summary.md"
+def _env_paths(var: str) -> list[Path] | None:
+    raw = os.environ.get(var)
+    if not raw:
+        return None
+    return [Path(p.strip()) for p in raw.split(";") if p.strip()]
 
-# Optional path-translation: if your FITS headers record Linux-mount paths but
-# files live on a Windows drive letter (or vice versa), set these env vars so
-# the manifest reports consistent paths. Default: no translation.
-NAS_PREFIX = os.environ.get("MANIFEST_NAS_PREFIX", "")
-LOCAL_NAS_PREFIX = os.environ.get("MANIFEST_LOCAL_NAS_PREFIX", "")
+# NAS roots (Windows SMB mappings) — edit this list for your setup, or override
+# with FITS_ROOTS="D:/Astro/Images;E:/Archive" before running.
+NAS_ROOTS = _env_paths("FITS_ROOTS") or [
+    Path("Z:/Astro/Images"),
+]
+NAS_PREFIX = "/mnt/remotes/NAS/"
+LOCAL_NAS_PREFIX = "Z:/"
+
+# Optional extra root of stacked full-master files (skipped if it doesn't exist).
+FULL_MASTERS = Path(os.environ.get("FULL_MASTERS") or (REPO_ROOT / "state" / "full_masters"))
+
+# Optional pipeline DB for per-sub hours aggregation. Missing is fine; hours
+# then come solely from master-file EXPTIME × NCOMBINE.
+DB_PATH = Path(os.environ.get("PIPELINE_DB") or (REPO_ROOT / "state" / "job_queue.db"))
+
+# Manifest output — default to ``data/manifest.json`` (the path the planner
+# reads by default). Override with MANIFEST_PATH if you want it elsewhere.
+MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH") or (REPO_ROOT / "data" / "manifest.json"))
+REPORT_DIR = MANIFEST_PATH.parent
+SUMMARY_PATH = REPORT_DIR / "archive_manifest_summary.md"
 
 EXTENSIONS = (".fit", ".fits", ".fts", ".xisf")
 
@@ -100,25 +111,6 @@ def sanitize_telescope(raw):
     if any(p in lr for p in MOUNT_TELESCOP_PATTERNS):
         return None
     return TELESCOPE_ALIAS.get(lr, s)
-
-
-# INSTRUME values: canonicalize known camera patterns, strip noisy vendor prefixes.
-# Extend as needed for your archive.
-CAMERA_ALIAS = {
-    # Add alias -> canonical mappings here if your INSTRUME strings vary across files.
-}
-
-
-def sanitize_camera(raw):
-    """Return canonical camera name from INSTRUME, or None."""
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    if not s:
-        return None
-    # Strip a common "ZWO " prefix so "ZWO ASI2600MC Pro" groups with "ASI2600MC Pro".
-    s_stripped = s[4:].strip() if s.lower().startswith("zwo ") else s
-    return CAMERA_ALIAS.get(s_stripped.lower(), s_stripped)
 
 
 FILTER_CANON = {
@@ -307,13 +299,18 @@ def read_fits_meta(path: Path) -> dict:
         "pix_arcsec_focal": None,
         "focallen": None,
         "xpixsz": None,
+        "ypixsz": None,
+        "aperture_mm": None,
+        "camera": None,
+        "gain": None,
+        "offset": None,
+        "xbinning": None,
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
         "date_obs": None,
         "object": None,
         "telescope": None,
-        "camera": None,
         "imagetyp": None,
         "error": None,
     }
@@ -342,9 +339,33 @@ def read_fits_meta(path: Path) -> dict:
             out["naxis2"] = int(h.get("NAXIS2") or 0) or None
             out["date_obs"] = (h.get("DATE-OBS") or "")[:19] or None
             out["object"] = str(h.get("OBJECT") or "").strip() or None
-            out["telescope"] = sanitize_telescope(h.get("TELESCOP"))
-            out["camera"] = sanitize_camera(h.get("INSTRUME"))
+            out["telescope"] = sanitize_telescope(h.get("TELESCOP") or h.get("INSTRUME"))
+            # Record INSTRUME independently as the camera identity — the telescope
+            # fallback above is a legacy workaround for files missing TELESCOP.
+            cam_raw = str(h.get("INSTRUME") or "").strip()
+            out["camera"] = cam_raw or None
             out["imagetyp"] = str(h.get("IMAGETYP") or h.get("OBSTYPE") or "").strip() or None
+            # Sensor/exposure settings useful for TS template seeding.
+            for src_key, dst_key, caster in (
+                ("GAIN", "gain", float), ("OFFSET", "offset", float),
+                ("XBINNING", "xbinning", int),
+            ):
+                v = h.get(src_key)
+                if v is not None:
+                    try: out[dst_key] = caster(v)
+                    except (TypeError, ValueError): pass
+            try:
+                apt = float(h.get("APTDIA") or 0) or None
+                if apt and apt > 0:
+                    out["aperture_mm"] = apt
+            except (TypeError, ValueError):
+                pass
+            try:
+                ypsz = float(h.get("YPIXSZ") or h.get("PIXSIZE2") or 0) or None
+                if ypsz and ypsz > 0:
+                    out["ypixsz"] = ypsz
+            except (TypeError, ValueError):
+                pass
 
             # WCS
             if "CRVAL1" in h and "CRVAL2" in h and out["naxis1"] and out["naxis2"]:
@@ -407,13 +428,18 @@ def read_xisf_meta(path: Path) -> dict:
         "pix_arcsec_focal": None,
         "focallen": None,
         "xpixsz": None,
+        "ypixsz": None,
+        "aperture_mm": None,
+        "camera": None,
+        "gain": None,
+        "offset": None,
+        "xbinning": None,
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
         "date_obs": None,
         "object": None,
         "telescope": None,
-        "camera": None,
         "error": None,
     }
     try:
@@ -450,9 +476,30 @@ def read_xisf_meta(path: Path) -> dict:
                     pass
         out["date_obs"] = str(fk("DATE-OBS") or "")[:19] or None
         out["object"] = str(fk("OBJECT") or "").strip() or None
-        out["telescope"] = sanitize_telescope(fk("TELESCOP"))
-        out["camera"] = sanitize_camera(fk("INSTRUME"))
+        out["telescope"] = sanitize_telescope(fk("TELESCOP") or fk("INSTRUME"))
+        cam_raw = str(fk("INSTRUME") or "").strip()
+        out["camera"] = cam_raw or None
         out["imagetyp"] = str(fk("IMAGETYP") or fk("OBSTYPE") or "").strip() or None
+        for src_key, dst_key, caster in (
+            ("GAIN", "gain", float), ("OFFSET", "offset", float),
+            ("XBINNING", "xbinning", int),
+        ):
+            v = fk(src_key)
+            if v is not None:
+                try: out[dst_key] = caster(v)
+                except (TypeError, ValueError): pass
+        try:
+            apt = float(fk("APTDIA") or 0) or None
+            if apt and apt > 0:
+                out["aperture_mm"] = apt
+        except (TypeError, ValueError):
+            pass
+        try:
+            ypsz = float(fk("YPIXSZ") or 0) or None
+            if ypsz and ypsz > 0:
+                out["ypixsz"] = ypsz
+        except (TypeError, ValueError):
+            pass
 
         crval1 = fk("CRVAL1"); crval2 = fk("CRVAL2")
         if crval1 is not None and crval2 is not None and out["naxis1"]:
@@ -516,8 +563,6 @@ def glob_archive(roots, extensions, log=print):
 
 
 def translate_nas_path(p: str) -> str:
-    if not NAS_PREFIX:
-        return p
     return p.replace(NAS_PREFIX, LOCAL_NAS_PREFIX)
 
 
@@ -683,11 +728,15 @@ def aggregate_db_subs(db_path: Path, log=print) -> dict:
     """Read DB frames table; return mapping (object_name, canonical_filter) → {hours, n, dates}."""
     import sqlite3 as _sqlite3
     out = defaultdict(lambda: {"hours": 0.0, "n_subs": 0, "dates": set()})
-    if db_path is None or not db_path.exists():
-        if db_path is not None:
-            log(f"  DB missing: {db_path}")
+    if not db_path.exists():
+        log(f"  DB missing: {db_path}")
         return out
+    # Windows UNC may fail — try Y: prefix
     db_to_open = db_path
+    if str(db_path).startswith("\\\\"):
+        alt = Path("CONFIGURED_DB_PATH")
+        if alt.exists():
+            db_to_open = alt
     try:
         c = _sqlite3.connect(str(db_to_open))
         c.row_factory = _sqlite3.Row
@@ -711,63 +760,25 @@ def aggregate_db_subs(db_path: Path, log=print) -> dict:
     return dict(out)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Scan FITS/XISF archives and emit a manifest.json for the webapp.",
-    )
-    p.add_argument("--scan-root", action="append", default=[], metavar="DIR",
-                   help="Archive folder to scan (repeat for multiple roots). "
-                        "Alternatively set MANIFEST_SCAN_ROOTS env var, "
-                        f"{os.pathsep}-separated.")
-    p.add_argument("--db", default=None, metavar="PATH",
-                   help="Optional SQLite DB with a `frames` table for sub-integration "
-                        "hours. Columns: object_name, filter_name, exptime, captured_at, path. "
-                        "Alt: MANIFEST_DB_PATH.")
-    p.add_argument("-o", "--output", default=None, metavar="PATH",
-                   help="Output manifest path (default ./data/manifest.json). "
-                        "Alt: MANIFEST_PATH.")
-    return p.parse_args(argv)
-
-
-def _resolve_config(args: argparse.Namespace) -> None:
-    """Populate module-level SCAN_ROOTS/DB_PATH/MANIFEST_PATH from args + env."""
-    global SCAN_ROOTS, DB_PATH, MANIFEST_PATH, SUMMARY_PATH
-
-    roots: list[str] = list(args.scan_root)
-    if not roots and os.environ.get("MANIFEST_SCAN_ROOTS"):
-        roots = [r for r in os.environ["MANIFEST_SCAN_ROOTS"].split(os.pathsep) if r]
-    if not roots:
-        print("error: no scan roots. Pass --scan-root DIR (repeatable) "
-              "or set MANIFEST_SCAN_ROOTS.", file=sys.stderr)
-        sys.exit(2)
-    SCAN_ROOTS = [Path(r).expanduser() for r in roots]
-    missing = [r for r in SCAN_ROOTS if not r.exists()]
-    if missing:
-        print(f"error: scan roots not found: {missing}", file=sys.stderr)
-        sys.exit(2)
-
-    db_str = args.db or os.environ.get("MANIFEST_DB_PATH", "")
-    DB_PATH = Path(db_str).expanduser() if db_str else None
-
-    out_str = args.output or os.environ.get("MANIFEST_PATH", "")
-    if out_str:
-        MANIFEST_PATH = Path(out_str).expanduser()
-    SUMMARY_PATH = MANIFEST_PATH.with_name(MANIFEST_PATH.stem + "_summary.md")
-
-
-def main(argv: list[str] | None = None):
-    args = parse_args(argv)
-    _resolve_config(args)
-
+def main():
     t0 = time.time()
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    print(f"scan roots: {[str(r) for r in SCAN_ROOTS]}")
-    print(f"db: {DB_PATH or '(none)'}")
-    print(f"output: {MANIFEST_PATH}")
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"[{time.time()-t0:6.1f}s] Phase 1: Deep archive scan")
     print(f"[{time.time()-t0:6.1f}s] Step 1: Globbing file tree")
-    files = glob_archive(SCAN_ROOTS, EXTENSIONS,
+    scan_roots = list(NAS_ROOTS)
+    if FULL_MASTERS.exists():
+        scan_roots.append(FULL_MASTERS)
+    missing = [r for r in scan_roots if not r.exists()]
+    if missing:
+        print(f"[{time.time()-t0:6.1f}s] WARNING: roots missing and will be skipped: {missing}")
+    scan_roots = [r for r in scan_roots if r.exists()]
+    if not scan_roots:
+        print(f"[{time.time()-t0:6.1f}s] ERROR: no valid roots to scan. Set FITS_ROOTS "
+              f"(e.g. FITS_ROOTS='D:/Astro/Images;E:/Archive') or edit NAS_ROOTS at the "
+              f"top of {Path(__file__).name}.")
+        sys.exit(1)
+    files = glob_archive(scan_roots, EXTENSIONS,
                          log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
     print(f"[{time.time()-t0:6.1f}s] Found {len(files)} files total")
 
@@ -1176,14 +1187,32 @@ def main(argv: list[str] | None = None):
         for mm in master_members:
             fov_mm, pix_mm, method = compute_fov_from_meta(mm)
             if fov_mm:
-                per_master_fov.append({
+                entry = {
                     "path": mm["path"],
                     "fov_arcmin": [round(fov_mm[0], 2), round(fov_mm[1], 2)],
                     "pix_arcsec": round(pix_mm, 3),
                     "method": method,
                     "filter": mm.get("filter"),
                     "telescope": mm.get("telescope"),
-                })
+                }
+                # Surface extra FITS-derived fields used by the Coverage-Planner
+                # to auto-seed gear and do physics-based telescope/camera matching.
+                # All optional — omitted when the source header didn't carry them.
+                for k_src, k_out in (
+                    ("camera", "camera"),
+                    ("focallen", "focal_length_mm"),
+                    ("xpixsz", "pixel_size_um"),
+                    ("aperture_mm", "aperture_mm"),
+                    ("gain", "gain"),
+                    ("offset", "offset"),
+                    ("xbinning", "bin"),
+                ):
+                    v = mm.get(k_src)
+                    if v is not None:
+                        entry[k_out] = v
+                if mm.get("naxis1") and mm.get("naxis2"):
+                    entry["sensor_px"] = [int(mm["naxis1"]), int(mm["naxis2"])]
+                per_master_fov.append(entry)
         fov_arcmin = None
         pix_arcsec = None
         fov_flag = "from_master"
@@ -1246,7 +1275,6 @@ def main(argv: list[str] | None = None):
             },
             "master_files": [m["path"] for m in members if m.get("role") != "folder_sub"],
             "telescopes": sorted({m.get("telescope") for m in members if m.get("telescope")}),
-            "cameras": sorted({m.get("camera") for m in members if m.get("camera")}),
             "date_range": date_range,
             "n_masters": sum(1 for m in members if m.get("role") != "folder_sub"),
             "n_sub_folders": sum(1 for m in members if m.get("role") == "folder_sub"),
@@ -1317,7 +1345,7 @@ def main(argv: list[str] | None = None):
     manifest = {
         "scan_date": datetime.now().isoformat(),
         "scan_duration_sec": round(time.time() - t0, 1),
-        "scan_roots": [str(r) for r in SCAN_ROOTS],
+        "scan_roots": [str(r) for r in scan_roots],
         "total_files_scanned": len(files),
         "file_role_counts": dict(roles_count),
         "total_targets": len(targets),

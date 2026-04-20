@@ -23,7 +23,12 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
+import re
+import sqlite3
+import uuid
+import zipfile
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -33,6 +38,13 @@ from flask import Flask, jsonify, render_template, request
 REPO_ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
+GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
+PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+TS_DB_PATH = os.environ.get(
+    "TS_DB_PATH",
+    str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
+)
+ZIP_OUTPUT_DIR = Path(os.environ.get("ZIP_OUTPUT_DIR", REPO_ROOT / "data" / "exports"))
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -43,6 +55,10 @@ _manifest_cache: dict | None = None
 _manifest_cache_mtime: float | None = None
 _catalogs_cache: dict | None = None
 _catalogs_cache_mtime: float | None = None
+_gear_cache: dict | None = None
+_gear_cache_mtime: float | None = None
+_plans_cache: dict | None = None
+_plans_cache_mtime: float | None = None
 
 
 def load_manifest() -> dict | None:
@@ -67,6 +83,234 @@ def load_catalogs() -> dict:
         _catalogs_cache = json.loads(CATALOGS_PATH.read_text(encoding="utf-8"))
         _catalogs_cache_mtime = mtime
     return _catalogs_cache
+
+
+def load_gear() -> dict:
+    global _gear_cache, _gear_cache_mtime
+    if not GEAR_PATH.exists():
+        return {"version": 1, "presets": []}
+    mtime = GEAR_PATH.stat().st_mtime
+    if _gear_cache is None or _gear_cache_mtime != mtime:
+        _gear_cache = json.loads(GEAR_PATH.read_text(encoding="utf-8"))
+        _gear_cache_mtime = mtime
+    return _gear_cache
+
+
+def load_plans() -> dict:
+    global _plans_cache, _plans_cache_mtime
+    if not PLANS_PATH.exists():
+        return {"version": 1, "plans": []}
+    mtime = PLANS_PATH.stat().st_mtime
+    if _plans_cache is None or _plans_cache_mtime != mtime:
+        _plans_cache = json.loads(PLANS_PATH.read_text(encoding="utf-8"))
+        _plans_cache_mtime = mtime
+    return _plans_cache
+
+
+def save_plans(data: dict) -> None:
+    global _plans_cache, _plans_cache_mtime
+    PLANS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PLANS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _plans_cache = data
+    _plans_cache_mtime = PLANS_PATH.stat().st_mtime
+
+
+def _fov_arcmin(telescope: dict | None, camera: dict | None) -> list[float]:
+    """Derive FOV from a telescope + camera pair. arcsec/px = 206.265 × pixel_um / fl_mm."""
+    if not telescope or not camera:
+        return [0.0, 0.0]
+    try:
+        fl = float(telescope["focal_length_mm"])
+        px_um = float(camera["pixel_size_um"])
+        w_px, h_px = camera["sensor_px"]
+    except (KeyError, ValueError, TypeError):
+        return [0.0, 0.0]
+    if fl <= 0:
+        return [0.0, 0.0]
+    arcsec_per_px = 206.265 * px_um / fl
+    return [round(w_px * arcsec_per_px / 60.0, 2), round(h_px * arcsec_per_px / 60.0, 2)]
+
+
+def save_gear(data: dict) -> None:
+    global _gear_cache, _gear_cache_mtime
+    GEAR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    GEAR_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _gear_cache = data
+    _gear_cache_mtime = GEAR_PATH.stat().st_mtime
+
+
+# Normalize a telescope/camera name for fuzzy matching. Mirrors _normTelName
+# in static/app.js so client and server agree on what counts as "the same rig".
+_NORM_STRIP = re.compile(r"\b(apo|pro|mk[\s-]*[ivx]+|edge[\s-]*hd|hd|f\/?\d+(\.\d+)?|mm|inch|in|\")\b")
+_NORM_WS = re.compile(r"[^a-z0-9]+")
+
+def _norm_gear_name(s: str) -> str:
+    if not s:
+        return ""
+    s = s.lower()
+    s = _NORM_STRIP.sub(" ", s)
+    s = _NORM_WS.sub(" ", s)
+    return s.strip()
+
+
+def _slug_id(name: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", (name or "").strip()).strip("-").lower()
+    return s or "item"
+
+
+def _extract_gear_from_manifest() -> dict:
+    """Walk the manifest and collect telescope + camera metadata observed in the
+    data. Pulls whatever the manifest exposes today (telescope names, filters per
+    telescope, pix_arcsec, fov_arcmin) and also looks for richer FITS-derived
+    fields (camera, focal_length_mm, pixel_size_um, aperture_mm) if the upstream
+    manifest builder has started surfacing them — safe if absent."""
+    manifest = load_manifest()
+    if not manifest:
+        return {"telescopes": [], "cameras": []}
+    tels: dict[str, dict] = {}
+    cams: dict[str, dict] = {}
+    for target in manifest.get("targets", []) or []:
+        for name in (target.get("telescopes") or []):
+            if name:
+                tels.setdefault(name, {"filters": set(), "pix_arcsecs": [], "fovs": [],
+                                       "focal_mm": [], "aperture_mm": [], "cameras_seen": set()})
+        for m in (target.get("per_master_fov") or []):
+            name = m.get("telescope")
+            if not name:
+                continue
+            t = tels.setdefault(name, {"filters": set(), "pix_arcsecs": [], "fovs": [],
+                                       "focal_mm": [], "aperture_mm": [], "cameras_seen": set()})
+            if m.get("filter"): t["filters"].add(m["filter"])
+            if m.get("pix_arcsec"):
+                try: t["pix_arcsecs"].append(float(m["pix_arcsec"]))
+                except (TypeError, ValueError): pass
+            fov = m.get("fov_arcmin")
+            if isinstance(fov, (list, tuple)) and len(fov) == 2:
+                try: t["fovs"].append([float(fov[0]), float(fov[1])])
+                except (TypeError, ValueError): pass
+            for k, bucket in (("focal_length_mm", "focal_mm"), ("aperture_mm", "aperture_mm")):
+                v = m.get(k)
+                if v is not None:
+                    try: t[bucket].append(float(v))
+                    except (TypeError, ValueError): pass
+            cam_name = m.get("camera") or m.get("instrument")
+            if cam_name:
+                t["cameras_seen"].add(cam_name)
+                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": []})
+                if m.get("filter"): c["filters"].add(m["filter"])
+                if m.get("pixel_size_um"):
+                    try: c["pixel_um"].append(float(m["pixel_size_um"]))
+                    except (TypeError, ValueError): pass
+                sensor = m.get("sensor_px")
+                if isinstance(sensor, (list, tuple)) and len(sensor) == 2:
+                    try: c["sensor_px"].append([int(sensor[0]), int(sensor[1])])
+                    except (TypeError, ValueError): pass
+
+    def _median(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2] if xs else None
+
+    telescopes = []
+    for name, info in tels.items():
+        telescopes.append({
+            "name": name,
+            "filters": sorted(info["filters"]),
+            "focal_length_mm": _median(info["focal_mm"]) or 0,
+            "aperture_mm": _median(info["aperture_mm"]) or 0,
+            "observed_pix_arcsec": round(_median(info["pix_arcsecs"]), 3) if info["pix_arcsecs"] else None,
+            "observed_fov_arcmin": _median([f[0] for f in info["fovs"]]) if info["fovs"] else None,
+            "cameras_seen": sorted(info["cameras_seen"]),
+        })
+    cameras = []
+    for name, info in cams.items():
+        cameras.append({
+            "name": name,
+            "filters": sorted(info["filters"]),
+            "pixel_size_um": _median(info["pixel_um"]) or 0,
+            "sensor_px": info["sensor_px"][-1] if info["sensor_px"] else None,
+        })
+    return {"telescopes": telescopes, "cameras": cameras}
+
+
+def _seed_gear_from_manifest() -> dict:
+    """Idempotent: merge unseen manifest telescopes + cameras into gear.json.
+    Uses normalized-name fuzzy matching so existing gear isn't duplicated."""
+    extracted = _extract_gear_from_manifest()
+    gear = load_gear()
+    gear.setdefault("version", 2)
+    telescopes = gear.setdefault("telescopes", [])
+    cameras = gear.setdefault("cameras", [])
+
+    existing_tel_norms = {_norm_gear_name(t.get("name", "")) for t in telescopes} - {""}
+    existing_tel_ids = {t.get("id") for t in telescopes}
+    existing_cam_norms = {_norm_gear_name(c.get("name", "")) for c in cameras} - {""}
+    existing_cam_ids = {c.get("id") for c in cameras}
+
+    # Default filter config for a camera seeded from observed filter names.
+    def _default_filter_cfg(f):
+        is_narrow = f in ("Ha", "OIII", "SII", "NII", "OI")
+        return {
+            "ts_template_id": None, "ts_template_name": None,
+            "default_sub_s": 300 if is_narrow else 120,
+            "gain": -1, "offset": -1, "bin": 1,
+        }
+
+    added_tels = []
+    for info in extracted["telescopes"]:
+        if _norm_gear_name(info["name"]) in existing_tel_norms:
+            continue
+        tel_id = _slug_id(info["name"])
+        base = tel_id; n = 2
+        while tel_id in existing_tel_ids:
+            tel_id = f"{base}-{n}"; n += 1
+        new_tel = {
+            "id": tel_id,
+            "name": info["name"],
+            "focal_length_mm": info["focal_length_mm"] or 0,
+            "aperture_mm": info["aperture_mm"] or 0,
+        }
+        if info["observed_pix_arcsec"] is not None:
+            new_tel["observed_pix_arcsec"] = info["observed_pix_arcsec"]
+        if info["observed_fov_arcmin"] is not None:
+            new_tel["observed_fov_arcmin"] = round(info["observed_fov_arcmin"], 2)
+        telescopes.append(new_tel)
+        added_tels.append(info["name"])
+        existing_tel_norms.add(_norm_gear_name(info["name"]))
+        existing_tel_ids.add(tel_id)
+
+    added_cams = []
+    for info in extracted["cameras"]:
+        if _norm_gear_name(info["name"]) in existing_cam_norms:
+            continue
+        cam_id = _slug_id(info["name"])
+        base = cam_id; n = 2
+        while cam_id in existing_cam_ids:
+            cam_id = f"{base}-{n}"; n += 1
+        cameras.append({
+            "id": cam_id,
+            "name": info["name"],
+            "pixel_size_um": info["pixel_size_um"] or 0,
+            "sensor_px": info["sensor_px"] or [0, 0],
+            "filters": {f: _default_filter_cfg(f) for f in info["filters"]},
+        })
+        added_cams.append(info["name"])
+        existing_cam_norms.add(_norm_gear_name(info["name"]))
+        existing_cam_ids.add(cam_id)
+
+    if added_tels or added_cams:
+        save_gear(gear)
+    return {
+        "ok": True,
+        "added_telescopes": added_tels,
+        "added_cameras": added_cams,
+        "scanned_telescopes": [t["name"] for t in extracted["telescopes"]],
+        "scanned_cameras": [c["name"] for c in extracted["cameras"]],
+    }
+
+
+@app.route("/api/gear/seed", methods=["POST"])
+def api_gear_seed():
+    return jsonify(_seed_gear_from_manifest())
 
 
 @app.route("/")
@@ -232,6 +476,328 @@ def api_export_priority():
         "Content-Type": "text/csv",
         "Content-Disposition": "attachment; filename=priority_sii_targets.csv",
     }
+
+
+@app.route("/api/gear", methods=["GET", "POST"])
+def api_gear():
+    if request.method == "GET":
+        g = load_gear()
+        return jsonify({
+            "version": g.get("version", 2),
+            "telescopes": g.get("telescopes", []),
+            "cameras": g.get("cameras", []),
+        })
+    payload = request.get_json(silent=True) or {}
+    if "telescopes" not in payload or "cameras" not in payload:
+        return jsonify({"error": "telescopes and cameras arrays required"}), 400
+    save_gear({
+        "version": 2,
+        "telescopes": payload.get("telescopes", []),
+        "cameras": payload.get("cameras", []),
+    })
+    return jsonify({"ok": True})
+
+
+@app.route("/api/plans", methods=["GET", "POST"])
+def api_plans():
+    data = load_plans()
+    if request.method == "GET":
+        return jsonify(data)
+    payload = request.get_json(silent=True) or {}
+    if "id" not in payload or not payload["id"]:
+        return jsonify({"error": "id required"}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    payload.setdefault("guid", str(uuid.uuid4()))
+    payload.setdefault("created_at", now)
+    payload.setdefault("last_synced_at", None)
+    payload["updated_at"] = now
+    plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
+    plans.append(payload)
+    save_plans({"version": data.get("version", 1), "plans": plans})
+    return jsonify(payload), 201
+
+
+@app.route("/api/plans/<plan_id>", methods=["GET", "PUT", "DELETE"])
+def api_plan(plan_id: str):
+    data = load_plans()
+    plans = data.get("plans", [])
+    idx = next((i for i, p in enumerate(plans) if p.get("id") == plan_id), None)
+    if idx is None:
+        return jsonify({"error": "not found"}), 404
+    if request.method == "GET":
+        return jsonify(plans[idx])
+    if request.method == "DELETE":
+        plans.pop(idx)
+        save_plans({"version": data.get("version", 1), "plans": plans})
+        return ("", 204)
+    payload = request.get_json(silent=True) or {}
+    existing = plans[idx]
+    payload["id"] = plan_id
+    payload["guid"] = existing.get("guid") or str(uuid.uuid4())
+    payload["created_at"] = existing.get("created_at") or datetime.now(timezone.utc).isoformat()
+    payload.setdefault("last_synced_at", existing.get("last_synced_at"))
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    plans[idx] = payload
+    save_plans({"version": data.get("version", 1), "plans": plans})
+    return jsonify(payload)
+
+
+@app.route("/api/ts-templates")
+def api_ts_templates():
+    """Read-only dump of user's Target Scheduler ExposureTemplates. Falls back gracefully if DB unreachable."""
+    path = Path(os.path.expandvars(TS_DB_PATH))
+    if not path.exists():
+        return jsonify({
+            "available": False,
+            "path": str(path),
+            "error": "TS database not found at configured path",
+            "templates": [],
+        })
+    try:
+        uri = f"file:{path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT Id, profileId, name, filtername, defaultexposure, gain, offset, bin "
+            "FROM exposuretemplate ORDER BY filtername, name"
+        ).fetchall()
+        conn.close()
+    except sqlite3.Error as e:
+        return jsonify({
+            "available": False,
+            "path": str(path),
+            "error": f"sqlite: {e}",
+            "templates": [],
+        })
+    templates = [{
+        "id": r["Id"],
+        "profile_id": r["profileId"],
+        "name": r["name"],
+        "filter": r["filtername"],
+        "default_exposure_s": r["defaultexposure"],
+        "gain": r["gain"],
+        "offset": r["offset"],
+        "bin": r["bin"],
+    } for r in rows]
+    return jsonify({"available": True, "path": str(path), "templates": templates})
+
+
+PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
+
+
+def _mosaic_panel_centers(ra_c: float, dec_c: float, fov_w_arcmin: float, fov_h_arcmin: float,
+                          rot_deg: float, rows: int, cols: int, overlap_pct: float) -> list[dict]:
+    """Return per-panel centers [{row, col, ra_deg, dec_deg}] for an rows×cols mosaic
+    anchored on (ra_c, dec_c). Panel stride = fov × (1 − overlap). Row 0 is north."""
+    rows = max(1, int(rows))
+    cols = max(1, int(cols))
+    overlap = max(0.0, min(0.99, float(overlap_pct) / 100.0))
+    # stride in degrees (camera-frame)
+    stride_w = (fov_w_arcmin / 60.0) * (1.0 - overlap)
+    stride_h = (fov_h_arcmin / 60.0) * (1.0 - overlap)
+    R = math.radians(rot_deg or 0)
+    cosR = math.cos(R)
+    sinR = math.sin(R)
+    cosD = max(1e-6, math.cos(math.radians(dec_c)))
+    panels = []
+    for i in range(rows):
+        for j in range(cols):
+            # Camera-frame offset: row 0 at top (+camy = north when rot=0), col 0 at left
+            cx = (j - (cols - 1) / 2.0) * stride_w
+            cy = ((rows - 1) / 2.0 - i) * stride_h
+            # Rotate into sky (east, north) — camera-Y sits at PA east-of-north
+            de =  cx * cosR + cy * sinR
+            dn = -cx * sinR + cy * cosR
+            panels.append({
+                "row": i, "col": j,
+                "ra_deg": ra_c + de / cosD,
+                "dec_deg": dec_c + dn,
+            })
+    return panels
+
+
+def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
+    """Group plans by project_name, apply strictest-wins for constraints, expand
+    mosaics into per-panel targets, and emit TS-shape project + exposureTemplate
+    records. Returns (payload, warnings)."""
+    telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", [])}
+    cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", [])}
+
+    projects_by_name: dict[str, list] = {}
+    for pl in plans_list:
+        pname = (pl.get("project_name") or "").strip() or "Unassigned"
+        projects_by_name.setdefault(pname, []).append(pl)
+
+    ts_projects: list[dict] = []
+    ts_templates: list[dict] = []
+    template_seen: dict[tuple[str, str], dict] = {}
+    warnings: list[dict] = []
+
+    def _warn(kind: str, pname: str, resolved, group: list, suggested_suffix: str, msg: str) -> None:
+        warnings.append({
+            "project_name": pname, "kind": kind, "resolved": resolved,
+            "plan_ids": [p["id"] for p in group],
+            "plan_name": group[0].get("target", {}).get("name") or group[0]["id"],
+            "plan_id": group[0]["id"],
+            "suggested_name": f"{pname} ({suggested_suffix})",
+            "message": msg,
+        })
+
+    for pname, group in projects_by_name.items():
+        min_alt = max(float(p.get("min_altitude_deg") or 0) for p in group)
+        merid_vals = [float(p.get("meridian_window_min") or 0) for p in group]
+        nonzero = [v for v in merid_vals if v > 0]
+        meridian = min(nonzero) if nonzero else 0.0
+        pri_name = max(group, key=lambda p: PRIORITY_RANK.get(p.get("priority", "normal"), 1)).get("priority", "normal")
+
+        if len(set(p.get("min_altitude_deg") or 0 for p in group)) > 1:
+            _warn("min_altitude", pname, min_alt, group, "strict",
+                  f"Min altitude differed across plans; using strictest ({min_alt}°).")
+        if len(set(p.get("meridian_window_min") or 0 for p in group)) > 1:
+            _warn("meridian_window", pname, meridian, group, "narrow",
+                  f"Meridian window differed; using {meridian} min.")
+        if len(set(p.get("priority", "normal") for p in group)) > 1:
+            _warn("priority", pname, pri_name, group, pri_name,
+                  f"Priority differed; using '{pri_name}'.")
+
+        ts_targets: list[dict] = []
+        for pl in group:
+            tg = pl.get("target") or {}
+            ra_deg = float(tg.get("center_ra_deg") or 0)
+            dec_deg = float(tg.get("center_dec_deg") or 0)
+            rot_deg = float(tg.get("rotation_deg") or 0)
+            telescope = telescopes_by_id.get(pl.get("telescope_id") or "")
+            camera = cameras_by_id.get(pl.get("camera_id") or "")
+            fov_w, fov_h = _fov_arcmin(telescope, camera)
+
+            mosaic = tg.get("mosaic") or {"rows": 1, "cols": 1, "overlap_pct": 0}
+            rows = max(1, int(mosaic.get("rows") or 1))
+            cols = max(1, int(mosaic.get("cols") or 1))
+            overlap = float(mosaic.get("overlap_pct") or 0)
+
+            # Build exposure plans once per plan (shared across mosaic panels)
+            exp_plans: list[dict] = []
+            for fname, goal in (pl.get("filter_goals") or {}).items():
+                th = float(goal.get("target_hours") or 0)
+                if th <= 0:
+                    continue
+                sub_s = int(goal.get("sub_exposure_s") or 300)
+                desired = max(1, int(math.ceil(th * 3600.0 / max(1, sub_s))))
+                acquired = int(round(float(goal.get("actual_hours") or 0) * 3600.0 / max(1, sub_s)))
+                # Dedupe ExposureTemplate by (camera_id, filter) — gain/offset/etc live on the camera.
+                key = (pl.get("camera_id") or "", fname)
+                if key not in template_seen:
+                    filt_cfg = (camera or {}).get("filters", {}).get(fname, {}) if camera else {}
+                    tpl_name = filt_cfg.get("ts_template_name") or (
+                        f"{fname} ({camera['name']})" if camera else fname
+                    )
+                    tpl = {
+                        "name": tpl_name,
+                        "filtername": fname,
+                        "defaultexposure": filt_cfg.get("default_sub_s") or sub_s,
+                        "gain": filt_cfg.get("gain", -1),
+                        "offset": filt_cfg.get("offset", -1),
+                        "bin": filt_cfg.get("bin", 1),
+                    }
+                    template_seen[key] = tpl
+                    ts_templates.append(tpl)
+                tpl = template_seen[key]
+                exp_plans.append({
+                    "exposure": sub_s,
+                    "desired": desired,
+                    "acquired": acquired,
+                    "accepted": acquired,
+                    "exposureTemplateName": tpl["name"],
+                    "filtername": fname,
+                })
+
+            base_name = tg.get("name") or pl.get("id")
+            if rows > 1 or cols > 1:
+                if fov_w <= 0 or fov_h <= 0:
+                    warnings.append({
+                        "project_name": pname, "kind": "mosaic_no_fov", "resolved": "skipped",
+                        "plan_ids": [pl["id"]], "plan_id": pl["id"],
+                        "plan_name": base_name, "suggested_name": base_name,
+                        "message": f"Mosaic '{base_name}' has no valid FOV (pick a telescope + camera). Emitted as single target.",
+                    })
+                    rows = cols = 1
+
+            panels = _mosaic_panel_centers(ra_deg, dec_deg, fov_w, fov_h, rot_deg, rows, cols, overlap)
+            multi = len(panels) > 1
+            for panel in panels:
+                pname_suffix = f" r{panel['row'] + 1}c{panel['col'] + 1}" if multi else ""
+                ts_targets.append({
+                    "name": f"{base_name}{pname_suffix}",
+                    "active": True,
+                    # Target Scheduler stores RA in HOURS, Dec in degrees.
+                    "ra": panel["ra_deg"] / 15.0,
+                    "dec": panel["dec_deg"],
+                    "rotation": rot_deg,
+                    "roi": 100,
+                    "exposurePlans": exp_plans,
+                })
+
+        ts_projects.append({
+            "name": pname,
+            "description": "",
+            "state": 1,  # Active
+            "priority": PRIORITY_RANK.get(pri_name, 1),
+            "minimumAltitude": min_alt,
+            "meridianWindow": meridian,
+            "filterSwitchFrequency": 0,
+            "ditherEvery": 0,
+            "enableGrader": False,
+            "targets": ts_targets,
+        })
+
+    return {"projects": ts_projects, "exposureTemplates": ts_templates}, warnings
+
+
+@app.route("/api/sync", methods=["POST"])
+def api_sync():
+    """Build a Target Scheduler Import Profile zip from current plans.
+
+    Writes metadata.json, profilePreference.json, exposureTemplates.json, and
+    projects.json into a zip under ZIP_OUTPUT_DIR. Returns the zip path and any
+    strictest-wins warnings so the UI can offer an inline rename and re-sync.
+    """
+    data = load_plans()
+    pls = data.get("plans", [])
+    if not pls:
+        return jsonify({"error": "no plans to sync"}), 400
+
+    payload, warnings = _build_ts_export(pls, load_gear())
+
+    ZIP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    zip_path = ZIP_OUTPUT_DIR / f"acp-sync-{stamp}.zip"
+
+    metadata = {
+        "version": 5,
+        "sourceProfileName": "Astro Coverage Planner",
+        "sourceDate": datetime.now(timezone.utc).isoformat(),
+    }
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("metadata.json", json.dumps(metadata, indent=2))
+        zf.writestr("profilePreference.json", json.dumps({}, indent=2))
+        zf.writestr("exposureTemplates.json", json.dumps(payload["exposureTemplates"], indent=2))
+        zf.writestr("projects.json", json.dumps(payload["projects"], indent=2))
+
+    now = datetime.now(timezone.utc).isoformat()
+    for pl in pls:
+        pl["last_synced_at"] = now
+    save_plans({"version": data.get("version", 1), "plans": pls})
+
+    return jsonify({
+        "ok": True,
+        "plan_count": len(pls),
+        "project_count": len(payload["projects"]),
+        "template_count": len(payload["exposureTemplates"]),
+        "zip_path": str(zip_path),
+        "warnings": warnings,
+        "conflicts": warnings,  # alias — the UI inspects this to offer renames
+    })
 
 
 if __name__ == "__main__":
