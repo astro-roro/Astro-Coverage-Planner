@@ -8,6 +8,9 @@ env/
 # User's private archive data — never commit
 data/manifest.json
 data/catalogs.json
+data/gear.json
+data/plans.json
+data/exports/
 data/*.local.json
 .cache/
 
