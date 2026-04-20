@@ -1,16 +1,18 @@
 # Astro Coverage Planner
 
-A web-based sky-coverage viewer for astrophotographers. Feed it a manifest of
-what you've imaged — which targets, which filters, how many hours — and it
-renders every field of view on an Aladin Lite sky map, with filter/telescope
-toggles, depth filtering, altitude/observability for your site, and optional
-catalog overlays (SNRs, HII regions) for finding gap targets.
+A web-based sky-coverage viewer **and session planner** for astrophotographers.
+Feed it a manifest of what you've imaged — which targets, which filters, how
+many hours — and it renders every field of view on an Aladin Lite sky map,
+with filter/telescope toggles, depth filtering, altitude/observability for
+your site, and optional catalog overlays (SNRs, HII regions) for finding gap
+targets. Then switch to **Planning mode** to lay out future sessions with
+mosaic support and export them straight into NINA's Target Scheduler plugin.
 
 Built originally against Rohan's Ha/SII/OIII archive to find targets where
 Ha data exists but SII doesn't — spun out here so others can point it at
 their own manifests.
 
-## Quickstart
+## Quickstart (demo data)
 
 ```bash
 pip install -r requirements.txt
@@ -18,42 +20,82 @@ python scripts/make_demo_manifest.py       # writes data/manifest.json (demo)
 python app.py                              # http://127.0.0.1:5555
 ```
 
-Open `http://127.0.0.1:5555/` in your browser. The demo has five
-well-known southern-sky targets so you can see what the viewer does.
+Open `http://127.0.0.1:5555/` in your browser. The demo has five well-known
+southern-sky targets so you can see what the viewer does.
 
-## Pointing it at your own FITS archive
+## Full setup (your own FITS archive)
 
-Replace the demo manifest by scanning your imaging folder:
+1. **Install dependencies.**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Build the manifest** from your FITS/XISF archive. Set `FITS_ROOTS` (one
+   or more image roots, semicolon-separated) before running:
+   ```bash
+   FITS_ROOTS="D:/Astro/Images;E:/Archive" python scripts/build_archive_manifest.py
+   ```
+   On Windows PowerShell:
+   ```powershell
+   $env:FITS_ROOTS="D:/Astro/Images;E:/Archive"
+   python scripts/build_archive_manifest.py
+   ```
+   This walks the folder tree, opens every master FITS/XISF to read its WCS
+   + gear headers (TELESCOP, INSTRUME, FOCALLEN, XPIXSZ, APTDIA, GAIN,
+   OFFSET, XBINNING), clusters results into targets by sky position, and
+   writes `data/manifest.json`. On a ~100k-file archive it takes ~5 minutes.
+
+3. **Launch the webapp.**
+   ```bash
+   python app.py
+   ```
+   The app hot-reloads on manifest mtime, so you can rebuild without restarting.
+
+4. **Open Planning mode → gear auto-seeds.** Switch to the "Planning" tab
+   in the top bar. On first load, the planner scans your manifest and
+   auto-imports every telescope + camera it finds (names, focal length,
+   aperture, pixel size, sensor size, observed filters) into `data/gear.json`.
+   Open the gear editor (pencil/"Edit gear" button in the plan editor) to
+   review, fill in anything the headers didn't carry (e.g. `gain`/`offset`
+   if your FITS didn't record them), and hit "Scan coverage" to re-merge
+   later after rebuilding the manifest. The planner uses fuzzy name matching
+   so "RedCat 51 APO" in your gear matches "RedCat 51" from a FITS header.
+
+5. **Plan a session.** Click "+ New plan", pick a target (by name or by
+   clicking the sky), select telescope + camera, set filter goals and
+   mosaic geometry if needed. Footprints update live on the map — solid
+   borders for plans with data logged, dashed for not-yet-started. Border
+   color matches the telescope you selected.
+
+6. **Sync to NINA Target Scheduler** (optional). Click "Sync" to export
+   a TS plugin zip (metadata.json, profilePreference.json, exposureTemplates.json,
+   projects.json) that imports directly into NINA. Mosaics expand to per-panel
+   TS targets. See the Planner section below.
+
+### Multiple image roots / output path / pipeline DB
+
+The manifest builder takes its paths from env vars:
+
+| Env var         | Default                            | Purpose                                                 |
+|-----------------|------------------------------------|---------------------------------------------------------|
+| `FITS_ROOTS`    | hardcoded list at top of script    | Semicolon-separated list of image roots                 |
+| `MANIFEST_PATH` | `./data/manifest.json`             | Where to write (and where the webapp reads from)        |
+| `FULL_MASTERS`  | `./state/full_masters` (if exists) | Extra root of stacked masters                           |
+| `PIPELINE_DB`   | `./state/job_queue.db` (if exists) | Optional sqlite DB with `frames` table for sub-hours    |
 
 ```bash
-python scripts/build_archive_manifest.py --scan-root /path/to/your/archive
-```
+FITS_ROOTS="D:/Astro/Images;E:/Archive" \
+MANIFEST_PATH=./data/custom_manifest.json \
+PIPELINE_DB=./my_pipeline.db \
+    python scripts/build_archive_manifest.py
 
-This walks the folder tree, opens every master FITS/XISF file to read its
-WCS, clusters results into targets by sky position, and writes
-`data/manifest.json`. On a ~100k-file archive it takes ~5 minutes. The
-webapp hot-reloads on mtime, so you can rebuild without restarting.
-
-Multiple roots (e.g. NAS + local masters):
-
-```bash
-python scripts/build_archive_manifest.py \
-    --scan-root /mnt/nas/Astro/Images \
-    --scan-root ./my_masters
-```
-
-Output location:
-
-```bash
-python scripts/build_archive_manifest.py --scan-root /data -o custom.json
-MANIFEST_PATH=custom.json python app.py
+MANIFEST_PATH=./data/custom_manifest.json python app.py
 ```
 
 The scanner expects one FITS/XISF file per master (stacked frame) with
-standard WCS keywords (CRVAL1/CRVAL2/CD1_1 etc. or CDELT1/CDELT2). Filter
-is read from the `FILTER` header; telescope from `TELESCOP`; object name
-from `OBJECT`. Files classified as "sub" (unstacked individual exposures)
-are counted but not plotted — only masters with WCS become FOV polygons.
+standard WCS keywords (CRVAL1/CRVAL2/CD1_1 etc. or CDELT1/CDELT2). Files
+classified as "sub" (unstacked individual exposures) are counted for hours
+but not plotted — only masters with WCS become FOV polygons.
 
 ### Optional: sub-integration hours from a pipeline DB
 
@@ -70,32 +112,22 @@ CREATE TABLE frames (
 );
 ```
 
-you can feed it in and the manifest will also report per-target sub-hours
-(useful when you have far more subs than you've stacked):
-
-```bash
-python scripts/build_archive_manifest.py --scan-root /data --db pipeline.db
-```
-
-Without `--db`, only master integration (NCOMBINE × EXPTIME from master
-headers) is counted.
-
-### Env vars (alternative to CLI)
-
-| Var                       | Equivalent flag       |
-|---------------------------|-----------------------|
-| `MANIFEST_SCAN_ROOTS`     | `--scan-root` (`;`- or `:`-separated) |
-| `MANIFEST_DB_PATH`        | `--db`                |
-| `MANIFEST_PATH`           | `--output` + tells the webapp where to read |
+point `PIPELINE_DB` at it and the manifest will include per-target sub-hours
+(useful when you have far more subs captured than you've stacked). Without
+it, hours come solely from master headers (NCOMBINE × EXPTIME).
 
 ## Configuration (env vars)
 
-| Var              | Default              | Purpose                       |
-|------------------|----------------------|-------------------------------|
-| `MANIFEST_PATH`  | `./data/manifest.json`  | Path to manifest JSON       |
-| `CATALOGS_PATH`  | `./data/catalogs.json`  | Path to overlay catalogs    |
-| `HOST`           | `127.0.0.1`          | Bind host (use `0.0.0.0` only on trusted networks) |
-| `PORT`           | `5555`               | Bind port                     |
+| Var               | Default                                                     | Purpose                                              |
+|-------------------|-------------------------------------------------------------|------------------------------------------------------|
+| `MANIFEST_PATH`   | `./data/manifest.json`                                      | Path to manifest JSON (read by app; written by builder) |
+| `CATALOGS_PATH`   | `./data/catalogs.json`                                      | Path to overlay catalogs                             |
+| `GEAR_PATH`       | `./data/gear.json`                                          | Telescopes + cameras for the planner                 |
+| `PLANS_PATH`      | `./data/plans.json`                                         | Saved session plans                                  |
+| `TS_DB_PATH`      | `%LOCALAPPDATA%/NINA/SchedulerPlugin/schedulerdb.sqlite`    | NINA Target Scheduler DB (optional)                  |
+| `ZIP_OUTPUT_DIR`  | `./data/exports`                                            | Where TS-sync zips are written                       |
+| `HOST`            | `127.0.0.1`                                                 | Bind host (use `0.0.0.0` only on trusted networks)   |
+| `PORT`            | `5555`                                                      | Bind port                                            |
 
 ## Optional: catalog overlays
 
@@ -133,6 +165,32 @@ VizieR; first run takes ~30s and is cached.
 
 ### Export
 - CSV of overlay candidates where Ha ≥ 1h but SII < 0.5h (validation-gap bucket).
+
+### Planner (Planning mode)
+Switch to the "Planning" tab in the top bar.
+
+- **Gear auto-seed from coverage.** On first load the planner scans your
+  manifest and adds every telescope + camera it finds to `data/gear.json`.
+  Re-run any time via the "Scan coverage" button in the gear editor after
+  rebuilding the manifest.
+- **Plan editor.** Pick a target (name, coordinates, or click on the sky),
+  select telescope + camera, set filter goals (target hours + sub-exposure),
+  priority, min altitude, meridian window.
+- **Mosaics.** Set rows × columns × overlap % and the planner tiles panels
+  around your center RA/Dec. Rotate the whole mosaic by dragging the handle.
+  Default overlap is 15%, which is the sweet spot for gradient blending.
+- **Live footprint previews.** Footprint color matches the selected
+  telescope (same colors as your coverage legend; fuzzy name match handles
+  "RedCat 51 APO" vs "RedCat 51"). Dashed borders for plans with no data
+  yet; solid once you've logged actual hours.
+- **NINA Target Scheduler sync.** "Sync" builds a TS plugin zip with
+  projects.json / targets / exposureTemplates, merging plans by project,
+  applying strictest-wins for conflicting altitude/priority/meridian
+  settings. Templates map to your existing TS templates by name (set per
+  filter in the gear editor) or are generated from camera gain/offset/bin.
+- **TS template mapping.** If NINA Target Scheduler is installed locally,
+  the planner reads its sqlite DB (`%LOCALAPPDATA%/NINA/SchedulerPlugin/
+  schedulerdb.sqlite`) to offer existing templates in a dropdown.
 
 ## Manifest schema
 
@@ -174,14 +232,20 @@ See `scripts/make_demo_manifest.py` for a runnable example.
 
 ## API
 
-| Endpoint                           | Purpose                              |
-|------------------------------------|--------------------------------------|
-| `GET /`                            | Frontend HTML                        |
-| `GET /api/manifest`                | Slim manifest JSON                   |
-| `GET /api/target/<id>`             | Full target detail                   |
-| `GET /api/catalogs`                | Overlay catalogs                     |
-| `GET /api/observability?lat=&lon=&time=` | Altaz for every target         |
-| `GET /api/export/priority`         | CSV of Ha-but-no-SII candidates      |
+| Endpoint                                 | Purpose                                   |
+|------------------------------------------|-------------------------------------------|
+| `GET /`                                  | Frontend HTML                             |
+| `GET /api/manifest`                      | Slim manifest JSON                        |
+| `GET /api/target/<id>`                   | Full target detail                        |
+| `GET /api/catalogs`                      | Overlay catalogs                          |
+| `GET /api/observability?lat=&lon=&time=` | Altaz for every target                    |
+| `GET /api/export/priority`               | CSV of Ha-but-no-SII candidates           |
+| `GET  /api/gear`                         | Current gear (telescopes + cameras)       |
+| `POST /api/gear`                         | Persist gear edits                        |
+| `POST /api/gear/seed`                    | Merge manifest-derived gear into gear.json|
+| `GET  /api/plans`, `POST`, `PUT`, `DELETE` | CRUD for session plans                  |
+| `GET  /api/ts-templates`                 | TS plugin's exposure templates (if installed) |
+| `POST /api/sync`                         | Build NINA Target Scheduler import zip    |
 
 ## Security notes
 
