@@ -10,6 +10,7 @@ data/manifest.json
 data/catalogs.json
 data/gear.json
 data/plans.json
+data/target_overrides.json
 data/exports/
 data/*.local.json
 .cache/

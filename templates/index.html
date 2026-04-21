@@ -43,49 +43,69 @@
         <input type="number" id="lonIn"  step="0.01" placeholder="lon"  style="display:none;width:75px" />
       </label>
     </div>
-
-    <div class="filters">
-      <span class="label">Filters:</span>
-      <label class="fchip"><input type="checkbox" data-f="Ha"   checked /> Ha</label>
-      <label class="fchip"><input type="checkbox" data-f="SII"  checked /> SII</label>
-      <label class="fchip"><input type="checkbox" data-f="OIII" checked /> OIII</label>
-      <label class="fchip"><input type="checkbox" data-f="L"    /> L</label>
-      <label class="fchip"><input type="checkbox" data-f="R"    /> R</label>
-      <label class="fchip"><input type="checkbox" data-f="G"    /> G</label>
-      <label class="fchip"><input type="checkbox" data-f="B"    /> B</label>
-      <label class="fchip"><input type="checkbox" data-f="V"    /> V</label>
-      <span class="label">Logic:</span>
-      <select id="filterLogic">
-        <option value="any">ANY selected filter</option>
-        <option value="all">ALL selected filters</option>
-        <option value="ha_not_sii">Have Ha but NOT SII</option>
-      </select>
-      <span class="label">Min hours/filter:</span>
-      <input type="range" id="depthSlider" min="0" max="10" step="0.5" value="0" />
-      <span id="depthValue">0h</span>
-    </div>
-
-    <div class="telescopes">
-      <span class="label">Telescopes:</span>
-      <div id="telescopeChips" class="tele-chips"></div>
-    </div>
-
-    <div class="catalogs">
-      <span class="label">Catalogues:</span>
-      <label class="fchip"><input type="checkbox" id="cat_green" /> Green SNRs</label>
-      <label class="fchip"><input type="checkbox" id="cat_smgps" /> SMGPS cand.</label>
-      <label class="fchip"><input type="checkbox" id="cat_emu" /> EMU cand.</label>
-      <label class="fchip"><input type="checkbox" id="cat_hii" /> WISE HII</label>
-      <button id="gapMode">Gap mode: Ha ∧ ¬SII</button>
-      <button id="exportCsv">Export priority CSV</button>
-    </div>
   </header>
 
   <main class="layout">
     <div id="aladin-lite-div"></div>
 
     <aside id="sidePanel" class="panel">
-      <div class="panel-search">
+      <details id="railFilters" class="rail-accordion filters" open>
+        <summary>Filters</summary>
+        <div class="accordion-body">
+          <div class="row">
+            <span class="label">Filters:</span>
+            <label class="fchip"><input type="checkbox" data-f="Ha"   checked /> Ha</label>
+            <label class="fchip"><input type="checkbox" data-f="SII"  checked /> SII</label>
+            <label class="fchip"><input type="checkbox" data-f="OIII" checked /> OIII</label>
+            <label class="fchip"><input type="checkbox" data-f="L"    /> L</label>
+            <label class="fchip"><input type="checkbox" data-f="R"    /> R</label>
+            <label class="fchip"><input type="checkbox" data-f="G"    /> G</label>
+            <label class="fchip"><input type="checkbox" data-f="B"    /> B</label>
+            <label class="fchip"><input type="checkbox" data-f="V"    /> V</label>
+          </div>
+          <div class="row">
+            <span class="label">Logic:</span>
+            <select id="filterLogic">
+              <option value="any">ANY selected filter</option>
+              <option value="all">ALL selected filters</option>
+              <option value="ha_not_sii">Have Ha but NOT SII</option>
+            </select>
+          </div>
+          <div class="row">
+            <span class="label">Min hours/filter:</span>
+            <input type="range" id="depthSlider" min="0" max="10" step="0.5" value="0" />
+            <span id="depthValue">0h</span>
+          </div>
+          <div class="row">
+            <span class="label">Telescopes:</span>
+            <div id="telescopeChips" class="tele-chips"></div>
+          </div>
+          <div class="row" id="completionFilterRow">
+            <span class="label">Completion:</span>
+            <label class="fchip"><input type="radio" name="completionFilter" value="all" checked /> All</label>
+            <label class="fchip"><input type="radio" name="completionFilter" value="unfinished" /> Unfinished</label>
+            <label class="fchip"><input type="radio" name="completionFilter" value="finished" /> Finished</label>
+          </div>
+        </div>
+      </details>
+
+      <details id="railCatalogs" class="rail-accordion catalogs">
+        <summary>Catalogues <span class="broken-note">(broken — see TODO)</span></summary>
+        <div class="accordion-body">
+          <div class="row">
+            <label class="fchip"><input type="checkbox" id="cat_green" /> Green SNRs</label>
+            <label class="fchip"><input type="checkbox" id="cat_smgps" /> SMGPS cand.</label>
+            <label class="fchip"><input type="checkbox" id="cat_emu" /> EMU cand.</label>
+            <label class="fchip"><input type="checkbox" id="cat_hii" /> WISE HII</label>
+          </div>
+          <div class="row">
+            <button id="gapMode">Gap mode: Ha ∧ ¬SII</button>
+            <button id="exportCsv">Export priority CSV</button>
+          </div>
+        </div>
+      </details>
+
+      <div id="panelSearchWrap" class="panel-search">
         <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
                placeholder="Search: name, or key:value (e.g. camera:asi2600 filter:Ha hours&gt;3)" />
         <div class="search-hint">keys: object · filter · telescope · camera · fov&gt;N · fov&lt;N · hours&gt;N · hours&lt;N</div>
