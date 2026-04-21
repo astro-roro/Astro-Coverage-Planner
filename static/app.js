@@ -41,9 +41,13 @@ const TELESCOPE_FALLBACK = "#888";
 
 let manifest = null;
 let aladin = null;
-let overlay = null;     // main target footprints (polygons)
-let centerCat = null;   // target-center markers (click/hover source)
+let overlay = null;     // main target footprints (polygons) — polygons themselves are the click/hover target now
+let hoverOverlay = null; // transient highlight overlay for the polygon currently under the cursor
 let filterBadgeCat = null; // single catalog of "filter badges" (one source per target, custom draw)
+let coverageHitList = []; // [{poly, target, corners}] — mirror of overlay for hit-testing
+let planHitList = [];     // [{poly, plan, corners}] — mirror of plan overlays for hit-testing
+let hoveredHit = null;    // currently-hovered entry from the active hit list (null otherwise)
+let lastClickStack = null; // {ra, dec, ids: [...], cycleIdx} — for repeat-click cycling through overlapping polys
 let catOverlays = {};   // catalog overlays (Phase 3)
 let selectedFilters = new Set(["Ha", "SII", "OIII"]);
 let selectedTelescopes = new Set(); // populated after manifest loads
@@ -55,6 +59,8 @@ let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
+let completionFilter = "all"; // "all" | "finished" | "unfinished"
+let targetOverrides = {};     // target_id (string) → { finished: bool, updated_at: ... }
 
 // --- Planner mode globals ---
 let planningMode = false;      // false = Coverage mode, true = Planning mode
@@ -120,6 +126,10 @@ function applyUiStatePreManifest() {
     if (aladin) aladin.setProjection(s.projection);
   }
 
+  if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
+    try { aladin.setImageSurvey(s.imageSurvey); } catch { /* unknown id — keep default */ }
+  }
+
   if (typeof s.frame === "string" && s.frame) {
     const fr = document.getElementById("frameSel");
     if (fr) fr.value = s.frame;
@@ -161,6 +171,20 @@ function applyUiStatePreManifest() {
     }
   }
 
+  if (typeof s.completionFilter === "string"
+      && ["all", "finished", "unfinished"].includes(s.completionFilter)) {
+    completionFilter = s.completionFilter;
+    const radio = document.querySelector(`input[name=completionFilter][value=${s.completionFilter}]`);
+    if (radio) radio.checked = true;
+  }
+
+  if (s.accordions && typeof s.accordions === "object") {
+    for (const [id, open] of Object.entries(s.accordions)) {
+      const el = document.getElementById(id);
+      if (el && "open" in el) el.open = !!open;
+    }
+  }
+
   if (s.planningMode === true) {
     planningMode = true;
   }
@@ -185,6 +209,11 @@ function applyUiStatePostManifest() {
 
 function saveUiState() {
   try {
+    let imageSurvey = "";
+    try {
+      const layer = aladin?.getBaseImageLayer?.();
+      imageSurvey = layer?.id || layer?.url || "";
+    } catch { /* older Aladin — skip */ }
     const state = {
       search: document.getElementById("searchInput")?.value || "",
       filters: [...selectedFilters],
@@ -198,13 +227,29 @@ function saveUiState() {
       site: document.getElementById("siteSel")?.value || "",
       customLat: document.getElementById("latIn")?.value || "",
       customLon: document.getElementById("lonIn")?.value || "",
+      imageSurvey,
       gapMode,
       selectedTargetId,
       planningMode,
       selectedPlanId,
+      completionFilter,
+      accordions: {
+        railFilters: !!document.getElementById("railFilters")?.open,
+        railCatalogs: !!document.getElementById("railCatalogs")?.open,
+      },
     };
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
   } catch { /* localStorage full / disabled — ignore */ }
+}
+
+// Show the search box only while browsing a top-level list (targets or plans).
+// Inside a single target/plan/gear editor there's nothing to search for, so
+// we hide it to reclaim vertical space for the detail content.
+function updateSearchVisibility() {
+  const wrap = document.getElementById("panelSearchWrap");
+  if (!wrap) return;
+  const topLevel = panelMode === "list" || panelMode === "plan-list";
+  wrap.style.display = topLevel ? "" : "none";
 }
 
 // --- Search tokenizer ---
@@ -468,6 +513,9 @@ function targetMatches(t) {
   const tel = telescopeOf(t);
   if (tel && selectedTelescopes.size > 0 && !selectedTelescopes.has(tel)) return false;
 
+  if (completionFilter === "finished" && !isTargetFinished(t)) return false;
+  if (completionFilter === "unfinished" && isTargetFinished(t)) return false;
+
   if (gapMode) {
     return hasAny("Ha") && !hasAny("SII") && (hrs.Ha || 0) >= minHours;
   }
@@ -482,6 +530,30 @@ function targetMatches(t) {
     return hasAny("Ha") && !hasAny("SII");
   }
   return true;
+}
+
+// Resolve a target's finished state. Precedence: manual override > plan-derived
+// (all goals met across every plan attached to this target_id) > default false.
+function isTargetFinished(t) {
+  if (!t) return false;
+  const key = String(t.target_id);
+  const ov = targetOverrides[key];
+  if (ov && typeof ov.finished === "boolean") return ov.finished;
+  const attached = plans.filter(p => String(p.target?.target_id) === key);
+  if (attached.length === 0) return false;
+  return attached.every(planGoalsMet);
+}
+
+function planGoalsMet(plan) {
+  const goals = plan?.filter_goals || {};
+  const filterNames = Object.keys(goals);
+  if (filterNames.length === 0) return false;
+  const target = manifest?.targets?.find(x => String(x.target_id) === String(plan.target?.target_id));
+  const actualHrs = f => target?.filters?.[f]?.total_hours || 0;
+  return filterNames.every(f => {
+    const tgt = parseFloat(goals[f]?.target_hours || 0);
+    return tgt > 0 && actualHrs(f) >= tgt;
+  });
 }
 
 function summariseFilters(t) {
@@ -510,6 +582,7 @@ function filterDotsHtml(filters) {
 
 function renderTargetList() {
   panelMode = "list";
+  updateSearchVisibility();
   selectedTargetId = null;
   saveUiState();
   const panel = document.getElementById("panelBody");
@@ -524,9 +597,10 @@ function renderTargetList() {
     const swatch = telescopeColor[tel] || TELESCOPE_FALLBACK;
     const total = totalHoursOf(t).toFixed(1);
     const dots = filterDotsHtml(t.filters || {});
+    const finishedMark = isTargetFinished(t) ? `<span class="finished-badge" title="marked finished">✓</span>` : "";
     return `<li class="target-row" data-target-id="${t.target_id}">
         <span class="tr-swatch" style="background:${esc(swatch)}" title="${esc(tel)}"></span>
-        <span class="tr-name">#${t.target_id} ${name}</span>
+        <span class="tr-name">#${t.target_id} ${name}${finishedMark}</span>
         <span class="tr-dots">${dots}</span>
         <span class="tr-hours">${total}h</span>
       </li>`;
@@ -551,6 +625,7 @@ function renderTargetList() {
 
 function renderTargetPanel(t) {
   panelMode = "detail";
+  updateSearchVisibility();
   selectedTargetId = t.target_id;
   saveUiState();
   const panel = document.getElementById("panelBody");
@@ -576,11 +651,31 @@ function renderTargetPanel(t) {
   const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : "—";
   const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : "—";
 
+  const finished = isTargetFinished(t);
+  const overrideKey = String(t.target_id);
+  const hasOverride = !!targetOverrides[overrideKey];
+  const hasPlans = plans.some(p => String(p.target?.target_id) === overrideKey);
+  const statusText = finished
+    ? (hasOverride ? "Marked finished manually." : "All plan goals met.")
+    : (hasPlans ? "Plan goals not yet met." : "No plan set — treated as unfinished.");
+  const primaryBtn = finished
+    ? `<button id="markUnfinishedBtn">Mark in-progress</button>`
+    : `<button id="markFinishedBtn">Mark finished</button>`;
+  const clearBtn = hasOverride
+    ? `<button id="clearOverrideBtn" title="Remove manual override; fall back to plan-derived status">Clear override</button>`
+    : "";
+
   panel.innerHTML = `
     <div>
       <a class="back-link" id="backToList" href="#">← Back to list</a>
       <h3>Target #${t.target_id}: ${objs}</h3>
       <div>${filterPills}</div>
+
+      <div class="mark-finished-row">
+        <span class="status-text">${finished ? "✓ " : ""}${esc(statusText)}</span>
+        ${primaryBtn}
+        ${clearBtn}
+      </div>
 
       <h4>Position</h4>
       <table>
@@ -608,6 +703,15 @@ function renderTargetPanel(t) {
   // Back-to-list link
   const back = document.getElementById("backToList");
   if (back) back.addEventListener("click", (e) => { e.preventDefault(); renderTargetList(); });
+
+  const reopen = async (flag) => {
+    await setTargetFinished(t.target_id, flag);
+    redrawFootprints();
+    renderTargetPanel(t);
+  };
+  panel.querySelector("#markFinishedBtn")?.addEventListener("click", () => reopen(true));
+  panel.querySelector("#markUnfinishedBtn")?.addEventListener("click", () => reopen(false));
+  panel.querySelector("#clearOverrideBtn")?.addEventListener("click", () => reopen(null));
 
   // If catalog overlays loaded, show nearby entries
   showCatalogMatchesFor(t);
@@ -646,16 +750,177 @@ function angularSep(ra1, dec1, ra2, dec2) {
   return Math.acos(Math.max(-1, Math.min(1, cosA))) * 180 / Math.PI * 60; // arcmin
 }
 
+// Ray-cast point-in-polygon in RA/Dec. Polygons here are small (< a few degrees);
+// flat math is fine. Handles RA wraparound by unwrapping vertices + query point
+// onto a common 360°-shifted frame when the polygon spans the 0/360° seam.
+function _ptInRaDecPoly(ra, dec, corners) {
+  let ras = corners.map(c => c[0]);
+  const decs = corners.map(c => c[1]);
+  if (Math.max(...ras) - Math.min(...ras) > 180) {
+    ras = ras.map(r => r < 180 ? r + 360 : r);
+    if (ra < 180) ra += 360;
+  }
+  let inside = false;
+  for (let i = 0, j = ras.length - 1; i < ras.length; j = i++) {
+    const rai = ras[i], deci = decs[i], raj = ras[j], decj = decs[j];
+    if (((deci > dec) !== (decj > dec)) &&
+        (ra < (raj - rai) * (dec - deci) / (decj - deci) + rai)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Bounding-box area in deg² — only used to rank overlapping polygons consistently
+// so the smallest (tightest framing) wins on click.
+function _polyBBoxArea(corners) {
+  const ras = corners.map(c => c[0]);
+  const decs = corners.map(c => c[1]);
+  return Math.abs(Math.max(...ras) - Math.min(...ras)) * Math.abs(Math.max(...decs) - Math.min(...decs));
+}
+
+// Find all polygons containing the given sky point, sorted smallest-first.
+// In planning mode only plans are hit-testable; in viewing mode only coverage.
+function hitPolygonsAt(ra, dec) {
+  const list = planningMode ? planHitList : coverageHitList;
+  const out = [];
+  for (const h of list) {
+    if (_ptInRaDecPoly(ra, dec, h.corners)) {
+      out.push({ ...h, area: _polyBBoxArea(h.corners) });
+    }
+  }
+  out.sort((a, b) => a.area - b.area);
+  return out;
+}
+
+function _hitId(h) { return h?.target ? `t:${h.target.target_id}` : h?.plan ? `p:${h.plan.id}` : null; }
+
+// Normalize any CSS-ish hex (#rgb, #rgba, #rrggbb, #rrggbbaa) to #rrggbb + the
+// requested alpha byte. Aladin expects a uniform 8-char hex for fillColor alpha;
+// without this, short forms like "#888" produce "#88855" which Canvas rejects
+// silently, so the fill vanishes and only the stroke remains.
+function _hexWithAlpha(hex, alphaByte) {
+  const h = _hex6(hex);
+  const a = Math.max(0, Math.min(255, alphaByte | 0)).toString(16).padStart(2, "0");
+  return "#" + h + a;
+}
+
+function _hex6(hex) {
+  let h = String(hex || "").trim();
+  if (h.startsWith("#")) h = h.slice(1);
+  if (h.length === 3 || h.length === 4) h = h.slice(0, 3).split("").map(c => c + c).join("");
+  if (h.length === 8) h = h.slice(0, 6);
+  if (h.length !== 6) h = "888888";
+  return h;
+}
+
+// Blend toward white to produce a lighter "highlighted" version of a border
+// colour — used for the hover outline so it pops against the base polygon.
+function _brighten(hex, amount) {
+  const h = _hex6(hex);
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const k = Math.max(0, Math.min(1, amount));
+  const nr = Math.round(r + (255 - r) * k);
+  const ng = Math.round(g + (255 - g) * k);
+  const nb = Math.round(b + (255 - b) * k);
+  return "#" + [nr, ng, nb].map(v => v.toString(16).padStart(2, "0")).join("");
+}
+
+function clearHoverHighlight() {
+  hoveredHit = null;
+  if (hoverOverlay) hoverOverlay.removeAll();
+  const mapEl = document.getElementById("aladin-lite-div");
+  if (mapEl) mapEl.style.cursor = "";
+}
+
+function setHoverHit(hit) {
+  if (_hitId(hit) === _hitId(hoveredHit)) return;
+  hoveredHit = hit;
+  const mapEl = document.getElementById("aladin-lite-div");
+  if (mapEl) mapEl.style.cursor = hit ? "pointer" : "";
+  if (hoverOverlay) {
+    hoverOverlay.removeAll();
+    if (hit) {
+      // Use the entity's own border colour and (for mosaics) the full mosaic
+      // bounds — not the individual panel — so hover reads as "this whole rig
+      // is what you're about to select."
+      let color = "#ffffff", outline = hit.corners;
+      if (hit.target) {
+        const tel = telescopeOf(hit.target);
+        color = telescopeColor[tel] || TELESCOPE_FALLBACK;
+      } else if (hit.plan) {
+        color = planBorderColor(hit.plan);
+        outline = planMosaicBoundsCorners(hit.plan) || hit.corners;
+      }
+      // Two layered polygons: a translucent fill at saturated alpha to tint the
+      // interior, then a brighter + thicker outline on top so the "this is what
+      // you'll select" target reads clearly even if Aladin drops the fill on
+      // some graphics backends.
+      hoverOverlay.add(A.polygon(outline, { color, lineWidth: 0.01, fillColor: _hexWithAlpha(color, 0x66) }));
+      hoverOverlay.add(A.polygon(outline, { color: _brighten(color, 0.55), lineWidth: 5, fillColor: _hexWithAlpha(color, 0x33) }));
+    }
+  }
+  const tip = document.getElementById("tooltip");
+  if (tip) {
+    if (hit?.target) {
+      const t = hit.target;
+      tip.textContent = `#${t.target_id} ${t.objects?.[0] || ""} — ${summariseFilters(t)}`;
+    } else if (hit?.plan) {
+      const pl = hit.plan;
+      const panels = (planPanelCorners(pl) || []).length;
+      const goals = Object.keys(pl.filter_goals || {}).join("/");
+      const mosaicBit = panels > 1 ? ` · ${panels}-panel mosaic` : "";
+      tip.textContent = `${pl.target?.name || pl.id}${pl.project_name ? ` · ${pl.project_name}` : ""}${goals ? ` · ${goals}` : ""}${mosaicBit}`;
+    } else {
+      tip.textContent = "";
+    }
+  }
+}
+
+function onMapPolyClick(ra, dec) {
+  const hits = hitPolygonsAt(ra, dec);
+  if (!hits.length) { lastClickStack = null; return; }
+
+  const ids = hits.map(_hitId);
+  const prev = lastClickStack;
+  const sameStack = prev && prev.ids.length === ids.length && prev.ids.every((v, i) => v === ids[i]);
+  const fovDeg = (aladin?.getFov?.()?.[0]) || 10;
+  const threshold = fovDeg * 0.02; // ~2% of view ≈ 15 px at default canvas
+  const cosDec = Math.cos(dec * Math.PI / 180) || 1;
+  const sameSpot = prev
+    && Math.abs((ra - prev.ra) * cosDec) < threshold
+    && Math.abs(dec - prev.dec) < threshold;
+
+  let idx = 0;
+  if (sameStack && sameSpot) idx = (prev.cycleIdx + 1) % hits.length;
+  lastClickStack = { ra, dec, ids, cycleIdx: idx };
+
+  const chosen = hits[idx];
+  if (chosen.target) {
+    renderTargetPanel(chosen.target);
+  } else if (chosen.plan) {
+    if (!planningMode) setPlanningMode(true);
+    renderPlanEditor(chosen.plan);
+  }
+
+  if (hits.length > 1) {
+    const tip = document.getElementById("tooltip");
+    if (tip) tip.textContent = `${idx + 1} of ${hits.length} overlapping here — click again to cycle`;
+  }
+}
+
 let catalogsData = {}; // {green_snrs: [...], smgps_candidates: [...], ...}
 
 function redrawFootprints() {
   if (!overlay || !manifest) return;
   overlay.removeAll();
-  if (centerCat) centerCat.removeAll();
   if (filterBadgeCat) filterBadgeCat.removeAll();
+  coverageHitList = [];
+  clearHoverHighlight();
 
   let shown = 0;
-  const centerSources = [];
   const badgeSources = [];
 
   for (const t of manifest.targets) {
@@ -668,24 +933,15 @@ function redrawFootprints() {
     const borderColor = telescopeColor[tel] || TELESCOPE_FALLBACK;
     const fillColor = (FILTER_COLORS[deepest] || "#888") + "20";
 
-    // Aladin v3: polygon from [[ra,dec],...] — border = telescope, fill = filter-priority
     const poly = A.polygon(t.corners_icrs, {
       color: borderColor,
       lineWidth: 2.5,
       fillColor,
     });
     poly._target = t;
+    poly._corners = t.corners_icrs;
     overlay.add(poly);
-
-    // Clickable center marker (invisible-ish dot that carries the target id)
-    const src = A.marker(t.center_ra_deg, t.center_dec_deg, {
-      popupTitle: `#${t.target_id} ${t.objects?.[0] || "(no name)"}`,
-      popupDesc: summariseFilters(t),
-      useMarkerDefaultIcon: false,
-      color: borderColor, shape: "circle", sourceSize: 8,
-    });
-    src.data = { target_id: t.target_id };
-    centerSources.push(src);
+    coverageHitList.push({ poly, target: t, corners: t.corners_icrs });
 
     // Filter badge: anchor at corners_icrs[1] (the NW corner — on standard N-up
     // E-left sky renders, NW is the top-right of the FOV on screen). Store the
@@ -710,7 +966,6 @@ function redrawFootprints() {
     }
     shown++;
   }
-  if (centerCat) centerCat.addSources(centerSources);
   if (filterBadgeCat) filterBadgeCat.addSources(badgeSources);
   const cs = document.getElementById("coverageStats");
   if (cs) {
@@ -811,6 +1066,21 @@ function setupFilterUI() {
     window.location = "/api/export/priority";
   });
 
+  for (const radio of document.querySelectorAll("input[name=completionFilter]")) {
+    radio.addEventListener("change", e => {
+      if (!e.target.checked) return;
+      completionFilter = e.target.value;
+      saveUiState();
+      redrawFootprints();
+      if (panelMode === "list") renderTargetList();
+    });
+  }
+
+  for (const id of ["railFilters", "railCatalogs"]) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("toggle", () => saveUiState());
+  }
+
   document.getElementById("projSel").addEventListener("change", e => {
     aladin.setProjection(e.target.value);
     saveUiState();
@@ -885,9 +1155,6 @@ function init() {
     overlay = A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
     aladin.addOverlay(overlay);
 
-    centerCat = A.catalog({ name: "Target centers", sourceSize: 8, shape: "circle", color: "#ffffff" });
-    aladin.addCatalog(centerCat);
-
     // One catalog for filter-coverage badges (custom shape draws a pill of 7 dots).
     // sourceSize must be >= ~8 or Aladin's default shape prelude errors with
     // "negative radius" in arc(). We override with our own shape function.
@@ -909,34 +1176,73 @@ function init() {
     planCenterCat = A.catalog({ name: "plan_markers", sourceSize: 10, shape: "circle", color: "#ffffff" });
     aladin.addCatalog(planCenterCat);
 
-    // Click on any marker → render panel; works for target centers, plan centers, and catalog overlays
+    // Transient hover highlight — registered LAST so it renders on top of every
+    // other overlay (coverage + plan polygons). Otherwise plan polygons would
+    // occlude the hover fill entirely in planning mode.
+    hoverOverlay = A.graphicOverlay({ color: "#ffffff", lineWidth: 4, name: "hover_highlight" });
+    aladin.addOverlay(hoverOverlay);
+
+    // Aladin marker click — now only fires for catalog overlays (SNRs, HII) and the
+    // plan_rotate drag handle. Target + plan selection is handled by the map-click
+    // handler below so users can click anywhere inside a FOV polygon.
     aladin.on("objectClicked", src => {
       if (!src) return;
-      if (src.data?.kind === "plan_center" && src.data.plan_id) {
-        const pl = plans.find(p => p.id === src.data.plan_id);
-        if (pl) { if (!planningMode) setPlanningMode(true); renderPlanEditor(pl); }
-        return;
-      }
-      if (src.data?.kind === "plan_rotate") return; // handled by drag
-      if (src.data?.target_id != null) {
-        const t = manifest.targets.find(x => x.target_id === src.data.target_id);
-        if (t) renderTargetPanel(t);
-        return;
-      }
-      // catalog marker
+      if (src.data?.kind === "plan_rotate") return; // drag handler owns this
       const tip = document.getElementById("tooltip");
-      tip.textContent = src.data?.name ? `catalog: ${src.data.catalog || ""} ${src.data.name}` : "";
+      if (tip) tip.textContent = src.data?.name ? `catalog: ${src.data.catalog || ""} ${src.data.name}` : "";
     });
     aladin.on("objectHovered", src => {
       if (!src) return;
-      if (src.data?.target_id != null) {
-        const t = manifest.targets.find(x => x.target_id === src.data.target_id);
-        if (t) document.getElementById("tooltip").textContent =
-          `#${t.target_id} ${t.objects?.[0] || ""} — ${summariseFilters(t)}`;
-      } else if (src.data?.name) {
+      if (src.data?.name) {
         document.getElementById("tooltip").textContent = `${src.data.catalog || ""} ${src.data.name}`;
       }
     });
+
+    // Map-click selection: click anywhere inside a FOV polygon to select that target / plan.
+    // Overlapping polygons resolve smallest-first; repeat-clicks cycle through the stack.
+    aladin.on("click", o => {
+      if (!o || o.ra == null || o.dec == null) return;
+      if (dragState) return; // a drag just ended; ignore the synthetic click
+      onMapPolyClick(o.ra, o.dec);
+    });
+
+    // Reset cycle state on any camera movement — previous stack indices stop making sense.
+    aladin.on("zoomChanged", () => { lastClickStack = null; });
+    aladin.on("positionChanged", () => { lastClickStack = null; });
+
+    // Persist the chosen HiPS survey across reloads. Aladin v3 may or may not emit
+    // "layerChanged" depending on build; a 3s poll is a cheap backstop.
+    try { aladin.on("layerChanged", saveUiState); } catch { /* event not supported */ }
+    let _lastSurveyId = null;
+    setInterval(() => {
+      try {
+        const layer = aladin?.getBaseImageLayer?.();
+        const id = layer?.id || layer?.url;
+        if (id && id !== _lastSurveyId) {
+          if (_lastSurveyId !== null) saveUiState(); // skip the first observation (init)
+          _lastSurveyId = id;
+        }
+      } catch { /* no-op */ }
+    }, 3000);
+
+    // Hover highlight — attach to the Aladin container; convert pixel → world, hit-test.
+    const mapEl = document.getElementById("aladin-lite-div");
+    if (mapEl) {
+      let hoverRaf = 0;
+      mapEl.addEventListener("mousemove", ev => {
+        if (hoverRaf) return;
+        hoverRaf = requestAnimationFrame(() => {
+          hoverRaf = 0;
+          if (!aladin?.pix2world) return;
+          const r = mapEl.getBoundingClientRect();
+          const w = aladin.pix2world(ev.clientX - r.left, ev.clientY - r.top);
+          if (!w) { setHoverHit(null); return; }
+          const hits = hitPolygonsAt(w[0], w[1]);
+          setHoverHit(hits[0] || null);
+        });
+      });
+      mapEl.addEventListener("mouseleave", () => setHoverHit(null));
+    }
 
     // Load manifest
     const r = await fetch("/api/manifest");
@@ -956,7 +1262,7 @@ function init() {
     // so the planner sees the user's actual rigs from the start.
     await seedGearFromManifest();
     // Load planner data in parallel with catalogs
-    await Promise.all([loadGear(), loadPlans(), loadTsTemplates()]);
+    await Promise.all([loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides()]);
 
     // Restore previous session state before the first draw so the map
     // reflects saved filters/telescopes/search immediately.
@@ -1038,6 +1344,30 @@ async function saveGear() {
 async function loadPlans() {
   try { const r = await fetch("/api/plans"); const j = await r.json(); plans = j.plans || []; }
   catch { plans = []; }
+}
+
+async function loadTargetOverrides() {
+  try {
+    const r = await fetch("/api/target-overrides");
+    const j = await r.json();
+    targetOverrides = j.overrides || {};
+  } catch { targetOverrides = {}; }
+}
+
+async function setTargetFinished(targetId, finished) {
+  // finished: true | false | null (null clears the override → revert to plan-derived).
+  const body = { target_id: targetId, finished };
+  try {
+    const r = await fetch("/api/target-overrides", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j && j.overrides) targetOverrides = j.overrides;
+  } catch (e) {
+    console.warn("target-overrides write failed", e);
+  }
 }
 
 async function loadTsTemplates() {
@@ -1244,6 +1574,7 @@ function newEmptyPlan() {
 
 function renderPlanList() {
   panelMode = "plan-list";
+  updateSearchVisibility();
   editingPlan = null;
   selectedPlanId = null;
   saveUiState();
@@ -1309,6 +1640,7 @@ function renderPlanList() {
 
 function renderPlanEditor(plan) {
   panelMode = "plan-edit";
+  updateSearchVisibility();
   selectedPlanId = plan.id;
   editingPlan = JSON.parse(JSON.stringify(plan));
   saveUiState();
@@ -1665,6 +1997,8 @@ function redrawPlanFootprints() {
   planOverlay.removeAll();
   if (planOverlayDashed) planOverlayDashed.removeAll();
   if (planCenterCat) planCenterCat.removeAll();
+  planHitList = [];
+  clearHoverHighlight();
   if (!planningMode) return;
 
   const srcs = [];
@@ -1672,7 +2006,6 @@ function redrawPlanFootprints() {
     if (pl.target?.center_ra_deg == null) continue;
     const isEditing = editingPlan && editingPlan.id === pl.id;
     const actual = isEditing ? editingPlan : pl;
-    const pri = actual.priority || "normal";
     const color = planBorderColor(actual);
     const hasData = planHasData(actual);
     const panelCorners = planPanelCorners(actual);
@@ -1684,18 +2017,10 @@ function redrawPlanFootprints() {
         fillColor: color + (hasData ? "20" : "10"),
       });
       poly._plan = actual;
+      poly._corners = corners;
       targetOverlay.add(poly);
+      planHitList.push({ poly, plan: actual, corners });
     }
-
-    const centerSrc = A.marker(actual.target.center_ra_deg, actual.target.center_dec_deg, {
-      popupTitle: actual.target.name || actual.id,
-      popupDesc: `${actual.project_name || ""} · ${pri}${hasData ? "" : " · not started"}${panelCorners.length > 1 ? ` · ${panelCorners.length}-panel mosaic` : ""}`,
-      useMarkerDefaultIcon: false,
-      color, shape: "circle",
-      sourceSize: isEditing ? 14 : 10,
-    });
-    centerSrc.data = { plan_id: actual.id, kind: "plan_center" };
-    srcs.push(centerSrc);
 
     if (isEditing) {
       const bounds = planMosaicBoundsCorners(actual);
@@ -1723,9 +2048,6 @@ function setPlanningMode(on) {
   const mp = document.getElementById("modePlanning");
   if (mc) { mc.classList.toggle("active", !on); mc.setAttribute("aria-selected", String(!on)); }
   if (mp) { mp.classList.toggle("active",  on); mp.setAttribute("aria-selected", String( on)); }
-  // Hide the coverage-only filters row while planning; keep telescopes & catalogues available in both modes.
-  const f = document.querySelector(".filters");
-  if (f) f.style.display = on ? "none" : "";
   saveUiState();
   if (on) {
     if (selectedPlanId) {
@@ -1830,6 +2152,7 @@ function _slugId(s) {
 
 function renderGearEditor() {
   panelMode = "gear-edit";
+  updateSearchVisibility();
   saveUiState();
   const panel = document.getElementById("panelBody");
   if (!panel) return;

@@ -40,6 +40,8 @@ MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manif
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+TARGET_OVERRIDES_PATH = Path(os.environ.get(
+    "TARGET_OVERRIDES_PATH", REPO_ROOT / "data" / "target_overrides.json"))
 TS_DB_PATH = os.environ.get(
     "TS_DB_PATH",
     str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
@@ -59,6 +61,8 @@ _gear_cache: dict | None = None
 _gear_cache_mtime: float | None = None
 _plans_cache: dict | None = None
 _plans_cache_mtime: float | None = None
+_target_overrides_cache: dict | None = None
+_target_overrides_cache_mtime: float | None = None
 
 
 def load_manifest() -> dict | None:
@@ -113,6 +117,25 @@ def save_plans(data: dict) -> None:
     PLANS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _plans_cache = data
     _plans_cache_mtime = PLANS_PATH.stat().st_mtime
+
+
+def load_target_overrides() -> dict:
+    global _target_overrides_cache, _target_overrides_cache_mtime
+    if not TARGET_OVERRIDES_PATH.exists():
+        return {"version": 1, "overrides": {}}
+    mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
+    if _target_overrides_cache is None or _target_overrides_cache_mtime != mtime:
+        _target_overrides_cache = json.loads(TARGET_OVERRIDES_PATH.read_text(encoding="utf-8"))
+        _target_overrides_cache_mtime = mtime
+    return _target_overrides_cache
+
+
+def save_target_overrides(data: dict) -> None:
+    global _target_overrides_cache, _target_overrides_cache_mtime
+    TARGET_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TARGET_OVERRIDES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _target_overrides_cache = data
+    _target_overrides_cache_mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
 
 
 def _fov_arcmin(telescope: dict | None, camera: dict | None) -> list[float]:
@@ -546,6 +569,36 @@ def api_plan(plan_id: str):
     plans[idx] = payload
     save_plans({"version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
+
+
+@app.route("/api/target-overrides", methods=["GET", "POST"])
+def api_target_overrides():
+    """Per-target state the user sets manually — primarily the finished flag for
+    targets that have no plan but should still be treated as done. Keyed by
+    target_id (string) to survive JSON round-trips cleanly."""
+    data = load_target_overrides()
+    if request.method == "GET":
+        return jsonify({
+            "version": data.get("version", 1),
+            "overrides": data.get("overrides", {}),
+        })
+    payload = request.get_json(silent=True) or {}
+    tid = payload.get("target_id")
+    if tid is None or (isinstance(tid, str) and not tid.strip()):
+        return jsonify({"error": "target_id required"}), 400
+    key = str(tid)
+    overrides = dict(data.get("overrides", {}))
+    # A null/missing "finished" deletes the override so the target falls back to
+    # plan-derived status — this is how the frontend clears a manual mark.
+    if "finished" not in payload or payload["finished"] is None:
+        overrides.pop(key, None)
+    else:
+        overrides[key] = {
+            "finished": bool(payload["finished"]),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    save_target_overrides({"version": data.get("version", 1), "overrides": overrides})
+    return jsonify({"ok": True, "overrides": overrides})
 
 
 @app.route("/api/ts-templates")
