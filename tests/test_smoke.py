@@ -14,6 +14,12 @@ app_module.PLANS_PATH = _tmp_plans
 app_module._plans_cache = None
 app_module._plans_cache_mtime = None
 
+# Same redirection for the new target-overrides file.
+_tmp_overrides = Path(tempfile.mkdtemp()) / "target_overrides.json"
+app_module.TARGET_OVERRIDES_PATH = _tmp_overrides
+app_module._target_overrides_cache = None
+app_module._target_overrides_cache_mtime = None
+
 c = app.test_client()
 
 r = c.get("/")
@@ -137,6 +143,25 @@ assert r.status_code == 204
 r = c.get(f"/api/plans/{new_plan['id']}")
 print(f"GET /api/plans/{new_plan['id']} (after delete)", r.status_code)
 assert r.status_code == 404
+
+# --- Target overrides ---
+
+r = c.get("/api/target-overrides")
+print("GET /api/target-overrides (empty)", r.status_code)
+assert r.status_code == 200 and r.get_json()["overrides"] == {}
+
+r = c.post("/api/target-overrides", json={"target_id": 7, "finished": True})
+print("POST /api/target-overrides (mark finished)", r.status_code)
+assert r.status_code == 200
+assert r.get_json()["overrides"]["7"]["finished"] is True
+
+r = c.post("/api/target-overrides", json={"target_id": 7, "finished": None})
+print("POST /api/target-overrides (clear)", r.status_code)
+assert r.status_code == 200 and "7" not in r.get_json()["overrides"]
+
+r = c.post("/api/target-overrides", json={})
+print("POST /api/target-overrides (missing target_id)", r.status_code)
+assert r.status_code == 400
 
 r = c.get("/api/ts-templates")
 print("GET /api/ts-templates", r.status_code)
