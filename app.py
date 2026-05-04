@@ -199,6 +199,9 @@ class JsonManifestSource:
         self._kind = kind
         self._cache: dict | None = None
         self._cache_mtime: float | None = None
+        # Phase 4: per-filter MOC cache keyed by (filter_name, manifest mtime).
+        # Tuple-keyed so an mtime change auto-invalidates without bookkeeping.
+        self._moc_cache: dict[tuple[str, float], object] = {}
 
     def id(self) -> str:
         return self._source_id
@@ -245,6 +248,47 @@ class JsonManifestSource:
                     "telescopes": list(t.get("telescopes") or []),
                 },
             }
+
+    def coverage_moc(self, filter_name: str):
+        """Union of every target polygon that has >0 hours at `filter_name`.
+
+        Cached per (filter, manifest-mtime). Returns None if mocpy is missing,
+        the manifest is absent, or no target carries this filter.
+        """
+        if not _MOCPY_AVAILABLE:
+            return None
+        manifest = self._load()
+        if not manifest:
+            return None
+        cache_key = (filter_name, self._cache_mtime or 0.0)
+        if cache_key in self._moc_cache:
+            return self._moc_cache[cache_key]
+
+        from astropy.coordinates import SkyCoord  # local: keep app boot cheap
+        import astropy.units as u
+
+        per_target: list = []
+        for t in manifest.get("targets", []) or []:
+            f = (t.get("filters") or {}).get(filter_name)
+            if not f or float(f.get("total_hours", 0.0)) <= 0.0:
+                continue
+            corners = t.get("corners_icrs") or []
+            if len(corners) < 3:
+                continue
+            ras = [float(ra) for ra, _ in corners]
+            decs = [float(dec) for _, dec in corners]
+            sc = SkyCoord(ras, decs, unit=u.deg, frame="icrs")
+            per_target.append(MOC.from_polygon_skycoord(sc, max_depth=10))
+
+        if not per_target:
+            self._moc_cache[cache_key] = None
+            return None
+        # union(another, *rest): single arg is fine for a 2-element list,
+        # variadic for >2. Slice into head + tail to satisfy both.
+        merged = per_target[0] if len(per_target) == 1 \
+            else per_target[0].union(*per_target[1:])
+        self._moc_cache[cache_key] = merged
+        return merged
 
 
 def ManifestCoverageSource() -> JsonManifestSource:
@@ -360,6 +404,7 @@ class MocCoverageSource:
         self._filter_name = filter_name
         self._cache_dir = Path(cache_dir) if cache_dir else MOC_CACHE_DIR
         self._lock = threading.Lock()
+        self._parsed_moc = None  # lazy parse of the cached FITS for coverage_moc
 
     def id(self) -> str:
         return self._source_id
@@ -378,6 +423,24 @@ class MocCoverageSource:
         # union/intersection. For Phase 3 we leave this empty — the frontend
         # consumes /api/moc/<id> directly, not coverage().
         return iter(())
+
+    def coverage_moc(self, filter_name: str):
+        """Return the cached MOC if it exists on disk and `filter_name` matches.
+
+        Lazy: never triggers a network fetch. Caller (gap-finder) decides
+        whether to pre-warm the cache via ensure_cached() in advance.
+        """
+        if not _MOCPY_AVAILABLE:
+            return None
+        if filter_name != self._filter_name:
+            return None
+        if self._parsed_moc is not None:
+            return self._parsed_moc
+        fits_path, _ = self._cache_paths()
+        if not fits_path.exists():
+            return None
+        self._parsed_moc = MOC.from_fits(str(fits_path))
+        return self._parsed_moc
 
     @property
     def moc_url(self) -> str:

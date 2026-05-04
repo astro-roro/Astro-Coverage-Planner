@@ -7,7 +7,10 @@ no Flask, no astropy, no astroquery — extensions and the app both import
 this. See docs/extensions.md (TODO) for authoring.
 """
 
-from typing import Iterable, Literal, Protocol, TypedDict, Union
+from typing import TYPE_CHECKING, Iterable, Literal, Optional, Protocol, TypedDict, Union
+
+if TYPE_CHECKING:
+    from mocpy import MOC  # noqa: F401  # forward decl only — keeps import-cheap
 
 __all__ = [
     "CoverageSource",
@@ -103,4 +106,14 @@ class CoverageSource(Protocol):
         Idempotent modulo underlying manifest mtime. No side effects and
         no network on the hot path — caching is the source's job.
         """
+        ...
+
+    # Phase 4 fast path: hand the gap-finder a single MOC for one filter
+    # rather than making it re-derive one from polygon iteration on every
+    # call. Implementations may cache. Returns None when:
+    #   - mocpy isn't importable in this process,
+    #   - the source has no coverage at `filter_name`,
+    #   - or the source can't synthesise a MOC (e.g. cache file absent and
+    #     the implementation refuses to trigger network from this path).
+    def coverage_moc(self, filter_name: str) -> "Optional[MOC]":
         ...
