@@ -1572,6 +1572,37 @@ async function updateObsNow() {
   }
 }
 
+// --- Catalog hover tooltip (objectHovered → near-cursor popover) ---
+// One reusable DOM node, positioned via fixed coords from the latest mousemove.
+// We track cursor in module scope because Aladin's objectHovered event doesn't
+// pass screen coordinates.
+let _catCursor = { x: 0, y: 0 };
+function showCatTooltip(html) {
+  const el = document.getElementById("catTooltip");
+  if (!el) return;
+  el.innerHTML = html;
+  el.hidden = false;
+  positionCatTooltip();
+}
+function hideCatTooltip() {
+  const el = document.getElementById("catTooltip");
+  if (el) el.hidden = true;
+}
+function positionCatTooltip() {
+  const el = document.getElementById("catTooltip");
+  if (!el || el.hidden) return;
+  // Default placement = lower-right of cursor (12px offset). Flip to upper-left
+  // if either edge would clip the viewport.
+  const pad = 12;
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let x = _catCursor.x + pad;
+  let y = _catCursor.y + pad;
+  if (x + w > window.innerWidth)  x = _catCursor.x - pad - w;
+  if (y + h > window.innerHeight) y = _catCursor.y - pad - h;
+  el.style.left = `${Math.max(0, x)}px`;
+  el.style.top  = `${Math.max(0, y)}px`;
+}
+
 function init() {
   A.init.then(async () => {
     aladin = A.aladin("#aladin-lite-div", {
@@ -1630,10 +1661,28 @@ function init() {
       if (tip) tip.textContent = src.data?.name ? `catalog: ${src.data.catalog || ""} ${src.data.name}` : "";
     });
     aladin.on("objectHovered", src => {
-      if (!src) return;
-      if (src.data?.name) {
-        document.getElementById("tooltip").textContent = `${src.data.catalog || ""} ${src.data.name}`;
+      // Falsy = hover-out. Hide both the status-bar text and the floating tooltip.
+      if (!src || !src.data?.name) {
+        hideCatTooltip();
+        return;
       }
+      const d = src.data;
+      // Status-bar mirror (pre-existing behaviour).
+      document.getElementById("tooltip").textContent = `${d.catalog || ""} ${d.name}`;
+      // Floating near-cursor tooltip. catalog overlays carry {name, catalog, ...row}
+      // — pull up to 2 non-null extras (freq, flag_3color, etc.) for context.
+      const extras = [];
+      const skip = new Set(["name", "catalog", "ra_deg", "dec_deg"]);
+      for (const k of Object.keys(d)) {
+        if (skip.has(k)) continue;
+        const v = d[k];
+        if (v == null || v === "") continue;
+        extras.push(`${esc(k)}=${esc(String(v))}`);
+        if (extras.length >= 2) break;
+      }
+      const tag = d.catalog ? `<span class="cat-tag">${esc(d.catalog)}</span>` : "";
+      const ex  = extras.length ? `<span class="cat-extra">${extras.join(" ")}</span>` : "";
+      showCatTooltip(`<strong>${esc(d.name)}</strong>${tag}${ex}`);
     });
 
     // Map-click selection: click anywhere inside a FOV polygon to select that target / plan.
@@ -1670,6 +1719,10 @@ function init() {
     if (mapEl) {
       let hoverRaf = 0;
       mapEl.addEventListener("mousemove", ev => {
+        // Track latest cursor position so objectHovered's tooltip placement
+        // stays glued to the pointer even when Aladin's event lacks coords.
+        _catCursor = { x: ev.clientX, y: ev.clientY };
+        positionCatTooltip();
         // Promote the press to a "drag" once the pointer has travelled far
         // enough — this is what suppresses pan-then-release from acting as a click.
         if (_pressInfo && !_pressInfo.dragged) {
@@ -1691,7 +1744,7 @@ function init() {
         if (ev.button !== 0) return; // primary button only
         _pressInfo = { x: ev.clientX, y: ev.clientY, t: performance.now(), dragged: false };
       });
-      mapEl.addEventListener("mouseleave", () => setHoverHit(null));
+      mapEl.addEventListener("mouseleave", () => { setHoverHit(null); hideCatTooltip(); });
     }
 
     // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
