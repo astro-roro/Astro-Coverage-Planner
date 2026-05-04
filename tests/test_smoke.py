@@ -69,8 +69,10 @@ print("GET /api/observability (bad time)", r.status_code)
 assert r.status_code == 400
 
 r = c.get("/api/export/priority")
-print("GET /api/export/priority (no catalogs)", r.status_code)
-assert r.status_code == 404  # no catalogs.json yet
+print("GET /api/export/priority", r.status_code)
+# 404 when data/catalogs.json hasn't been generated yet, 200 once it has.
+# Either is fine; a 500 means a real bug (missing dep, etc).
+assert r.status_code in (200, 404), f"unexpected status {r.status_code}"
 
 # --- Planner endpoints ---
 
