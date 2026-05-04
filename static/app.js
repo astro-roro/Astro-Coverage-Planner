@@ -1113,7 +1113,14 @@ function drawCatalogOverlay(cfg, enabled) {
 // list ordering on /api/sources is stable too — manifest first, then
 // extensions in registration order).
 const SOURCE_PALETTE = ["#7aa2ff", "#ff8a3d", "#65c275", "#c87aff", "#ffc857", "#44d9d3"];
-let sourcesEnabled = {};   // source_id -> bool. Phase-1 storage only; map filtering arrives later.
+// Hydrated from localStorage at script-load so any saveUiState() that fires
+// during boot (accordion toggles, image-survey events, etc.) before the
+// async loadSources() has populated this map doesn't write sources: {} and
+// wipe the user's previously-saved per-source toggles.
+let sourcesEnabled = (() => {
+  try { return JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}").sources || {}; }
+  catch { return {}; }
+})();
 
 async function loadSources() {
   const host = document.getElementById("sourcesList");
