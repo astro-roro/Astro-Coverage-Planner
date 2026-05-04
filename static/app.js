@@ -61,6 +61,9 @@ let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
 let completionFilter = "all"; // "all" | "finished" | "unfinished"
 let targetOverrides = {};     // target_id (string) → { finished: bool, updated_at: ... }
+let _pressInfo = null;        // {x, y, t, dragged} — last mousedown over the map. The Aladin
+                              // "click" event fires on every mouseup whether the user dragged
+                              // or not, so we use this to suppress pan-clicks from selecting/deselecting.
 
 // --- Planner mode globals ---
 let planningMode = false;      // false = Coverage mode, true = Planning mode
@@ -556,6 +559,92 @@ function planGoalsMet(plan) {
   });
 }
 
+// --- Esc / empty-sky "go up one level" navigation ---
+//
+// Each entry maps a panelMode to a function that performs the up-one-level
+// navigation from that mode. Modes not in the map are top-level (no parent →
+// no-op). Add new modes here when nesting deepens.
+const PANEL_PARENTS = {
+  "detail":    () => renderTargetList(),
+  "plan-edit": () => requestNavigateAwayFromPlanEdit(renderPlanList),
+  "gear-edit": () => renderPlanList(),
+};
+
+function goUpOneLevel() {
+  const handler = PANEL_PARENTS[panelMode];
+  if (handler) handler();
+}
+
+function planIsDirty() {
+  if (!editingPlan) return false;
+  const orig = plans.find(p => p.id === editingPlan.id);
+  if (!orig) return true; // detached — treat as dirty so we don't silently lose work
+  return JSON.stringify(editingPlan) !== JSON.stringify(orig);
+}
+
+// Pre-flight for any "leave plan-edit" navigation. If the user has unsaved
+// edits, prompt; otherwise (or after they choose) call `then()` to actually
+// navigate. Discard mirrors the existing Cancel-button logic — scratch plans
+// without a guid get pulled back out of `plans[]`.
+function requestNavigateAwayFromPlanEdit(then) {
+  if (!planIsDirty()) {
+    const orig = plans.find(p => p.id === editingPlan?.id);
+    if (orig && !orig.guid) plans = plans.filter(p => p !== orig);
+    then();
+    return;
+  }
+  showUnsavedPlanModal({
+    onSave: async () => {
+      const ok = await savePlan();
+      if (ok) then();
+      // On save failure, savePlan() already alerted; stay on the editor so the user can retry.
+    },
+    onDiscard: () => {
+      const orig = plans.find(p => p.id === editingPlan?.id);
+      if (orig && !orig.guid) plans = plans.filter(p => p !== orig);
+      then();
+    },
+    onCancel: () => { /* stay put */ },
+  });
+}
+
+function isModalOpen() {
+  return !!document.querySelector(".dirty-modal-backdrop");
+}
+
+function showUnsavedPlanModal({ onSave, onDiscard, onCancel }) {
+  document.querySelector(".dirty-modal-backdrop")?.remove();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "dirty-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="dirty-modal" role="dialog" aria-modal="true" aria-labelledby="dirtyModalTitle">
+      <h4 id="dirtyModalTitle">Unsaved plan changes</h4>
+      <p>You have unsaved edits to this plan. What would you like to do?</p>
+      <div class="dirty-modal-buttons">
+        <button data-action="cancel">Cancel</button>
+        <button data-action="discard">Discard</button>
+        <button class="btn-primary" data-action="save">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  const handle = async (action) => {
+    close();
+    if (action === "save")    await onSave();
+    else if (action === "discard") onDiscard();
+    else onCancel();
+  };
+  backdrop.addEventListener("click", e => { if (e.target === backdrop) handle("cancel"); });
+  backdrop.querySelectorAll("button").forEach(btn => {
+    btn.addEventListener("click", () => handle(btn.dataset.action));
+  });
+  // Focus the safe default (Cancel) so a stray Enter doesn't auto-save.
+  backdrop.querySelector('button[data-action="cancel"]')?.focus();
+}
+
 function summariseFilters(t) {
   const pairs = Object.entries(t.filters)
     .filter(([f, d]) => (d.total_hours || 0) > 0)
@@ -881,7 +970,11 @@ function setHoverHit(hit) {
 
 function onMapPolyClick(ra, dec) {
   const hits = hitPolygonsAt(ra, dec);
-  if (!hits.length) { lastClickStack = null; return; }
+  if (!hits.length) {
+    lastClickStack = null;
+    goUpOneLevel();
+    return;
+  }
 
   const ids = hits.map(_hitId);
   const prev = lastClickStack;
@@ -979,7 +1072,9 @@ function setupCatalogOverlays() {
     { id: "cat_green", name: "green_snrs",       color: "#ff3030", size: 12, marker: "square" },
     { id: "cat_smgps", name: "smgps_candidates", color: "#ff9900", size: 10, marker: "triangle" },
     { id: "cat_emu",   name: "emu_candidates",   color: "#ffff33", size: 10, marker: "plus" },
-    { id: "cat_hii",   name: "anderson_hii",     color: "#66cc66", size:  6, marker: "dot" },
+    // sourceSize must be >= 8 — Aladin's default-shape prelude errors below that
+    // (see filterBadgeCat note above). "dot" is not a valid Aladin shape; use "circle".
+    { id: "cat_hii",   name: "anderson_hii",     color: "#66cc66", size:  8, marker: "circle" },
   ];
   for (const c of cfg) {
     const cb = document.getElementById(c.id);
@@ -1015,6 +1110,7 @@ async function loadCatalogs() {
   try {
     const r = await fetch("/api/catalogs");
     catalogsData = await r.json();
+    updateCatalogStatusHint();
     // if any catalog toggle is already checked, redraw
     for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
       const cb = document.getElementById(id);
@@ -1023,7 +1119,26 @@ async function loadCatalogs() {
     return catalogsData;
   } catch (e) {
     console.warn("catalogs not available yet:", e);
+    updateCatalogStatusHint();
     return {};
+  }
+}
+
+// Surface "no catalogs loaded" in the rail summary so the user knows toggles
+// are no-ops until scripts/fetch_catalogs.py has been run. Empty payload is
+// the silent-failure path: file missing on disk → /api/catalogs returns {}.
+function updateCatalogStatusHint() {
+  const note = document.querySelector("#railCatalogs .broken-note");
+  if (!note) return;
+  const total = Object.values(catalogsData || {})
+    .reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+  if (total > 0) {
+    note.style.display = "none";
+  } else {
+    note.style.display = "";
+    note.textContent = "(no catalogs loaded — run scripts/fetch_catalogs.py)";
+    note.title = "Catalog overlays need data/catalogs.json. "
+      + "Run `python scripts/fetch_catalogs.py` once (network I/O, ~30s) and reload.";
   }
 }
 
@@ -1200,9 +1315,11 @@ function init() {
 
     // Map-click selection: click anywhere inside a FOV polygon to select that target / plan.
     // Overlapping polygons resolve smallest-first; repeat-clicks cycle through the stack.
+    // Empty-sky clicks navigate up one panel level (see onMapPolyClick → goUpOneLevel).
     aladin.on("click", o => {
+      if (_pressInfo?.dragged) return; // pan, not a real click
       if (!o || o.ra == null || o.dec == null) return;
-      if (dragState) return; // a drag just ended; ignore the synthetic click
+      if (dragState) return; // a plan-handle drag just ended; ignore the synthetic click
       onMapPolyClick(o.ra, o.dec);
     });
 
@@ -1230,6 +1347,12 @@ function init() {
     if (mapEl) {
       let hoverRaf = 0;
       mapEl.addEventListener("mousemove", ev => {
+        // Promote the press to a "drag" once the pointer has travelled far
+        // enough — this is what suppresses pan-then-release from acting as a click.
+        if (_pressInfo && !_pressInfo.dragged) {
+          const dx = ev.clientX - _pressInfo.x, dy = ev.clientY - _pressInfo.y;
+          if (dx * dx + dy * dy >= 25) _pressInfo.dragged = true; // ≥5px
+        }
         if (hoverRaf) return;
         hoverRaf = requestAnimationFrame(() => {
           hoverRaf = 0;
@@ -1241,8 +1364,28 @@ function init() {
           setHoverHit(hits[0] || null);
         });
       });
+      mapEl.addEventListener("mousedown", ev => {
+        if (ev.button !== 0) return; // primary button only
+        _pressInfo = { x: ev.clientX, y: ev.clientY, t: performance.now(), dragged: false };
+      });
       mapEl.addEventListener("mouseleave", () => setHoverHit(null));
     }
+
+    // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
+    // Skip if focus is in a form control — Esc should keep its native blur/clear
+    // behaviour there. The dirty-edit modal handles its own Esc → cancel.
+    document.addEventListener("keydown", ev => {
+      if (ev.key !== "Escape") return;
+      if (isModalOpen()) {
+        document.querySelector(".dirty-modal-backdrop")?.remove();
+        ev.preventDefault();
+        return;
+      }
+      const ae = document.activeElement;
+      const tag = ae?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae?.isContentEditable) return;
+      goUpOneLevel();
+    });
 
     // Load manifest
     const r = await fetch("/api/manifest");
@@ -1918,19 +2061,20 @@ function renderPlanEditor(plan) {
 }
 
 async function savePlan() {
-  if (!editingPlan) return;
+  if (!editingPlan) return false;
   const r = await fetch("/api/plans", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(editingPlan),
   });
-  if (!r.ok) { alert("Save failed: " + r.status); return; }
+  if (!r.ok) { alert("Save failed: " + r.status); return false; }
   const saved = await r.json();
   const idx = plans.findIndex(p => p.id === saved.id);
   if (idx >= 0) plans[idx] = saved; else plans.push(saved);
   editingPlan = saved;
   const btn = document.getElementById("planSave");
   if (btn) { const orig = btn.textContent; btn.textContent = "Saved ✓"; setTimeout(() => { if (btn.textContent === "Saved ✓") btn.textContent = orig; }, 1500); }
+  return true;
 }
 
 async function syncPlans() {
