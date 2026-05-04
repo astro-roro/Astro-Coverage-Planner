@@ -1,0 +1,11 @@
+[
+  {
+    "id": "iphas_ha",
+    "label": "IPHAS Hα",
+    "color": "#c25b5b",
+    "filter": "Ha",
+    "moc_url": "https://alasky.cds.unistra.fr/IPHAS/DR2/halpha/Moc.fits",
+    "attribution": "INT/IPHAS DR2 (Drew et al. 2014)",
+    "enabled_default": false
+  }
+]

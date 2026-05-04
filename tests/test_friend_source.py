@@ -82,6 +82,10 @@ def _reload_app_with_env(env_value: str | None) -> tuple[object, _LogCapture]:
     return mod, cap
 
 
+def _friend_sources(mod) -> list:
+    return [s for s in mod.app.coverage_sources if s.metadata()["kind"] == "friend"]
+
+
 def test_env_var_round_trip() -> None:
     sanitised = sanitise_dict(_raw_manifest(), label="Dave")
     tmp = Path(tempfile.mkdtemp())
@@ -89,9 +93,9 @@ def test_env_var_round_trip() -> None:
     path.write_text(json.dumps(sanitised), encoding="utf-8")
 
     mod, cap = _reload_app_with_env(str(path))
-    sources = mod.app.coverage_sources
-    assert len(sources) == 2, [s.id() for s in sources]
-    friend = sources[1]
+    friends = _friend_sources(mod)
+    assert len(friends) == 1, [s.id() for s in mod.app.coverage_sources]
+    friend = friends[0]
     meta = friend.metadata()
     assert meta["kind"] == "friend"
     assert meta["attribution"] == "Shared by Dave"
@@ -114,7 +118,7 @@ def test_tripwire_rejects_unsanitised() -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     mod, cap = _reload_app_with_env(str(path))
-    assert len(mod.app.coverage_sources) == 1, [s.id() for s in mod.app.coverage_sources]
+    assert _friend_sources(mod) == [], [s.id() for s in mod.app.coverage_sources]
     assert any("sanitised" in w for w in cap.warnings), cap.warnings
     print("test_tripwire_rejects_unsanitised OK")
 
@@ -125,7 +129,7 @@ def test_malformed_json_is_skipped() -> None:
     path.write_text("{not valid json", encoding="utf-8")
 
     mod, cap = _reload_app_with_env(str(path))
-    assert len(mod.app.coverage_sources) == 1, [s.id() for s in mod.app.coverage_sources]
+    assert _friend_sources(mod) == [], [s.id() for s in mod.app.coverage_sources]
     assert any(str(path) in w for w in cap.warnings), cap.warnings
     print("test_malformed_json_is_skipped OK")
 
@@ -134,7 +138,7 @@ def test_missing_path_is_skipped() -> None:
     tmp = Path(tempfile.mkdtemp())
     path = tmp / "does_not_exist.json"  # never created
     mod, cap = _reload_app_with_env(str(path))
-    assert len(mod.app.coverage_sources) == 1
+    assert _friend_sources(mod) == []
     assert any("path not found" in w for w in cap.warnings), cap.warnings
     print("test_missing_path_is_skipped OK")
 
@@ -149,8 +153,9 @@ def test_source_id_sanitiser() -> None:
     path.write_text(json.dumps(sanitised), encoding="utf-8")
 
     mod, _cap = _reload_app_with_env(str(path))
-    assert len(mod.app.coverage_sources) == 2
-    sid = mod.app.coverage_sources[1].id()
+    friends = _friend_sources(mod)
+    assert len(friends) == 1
+    sid = friends[0].id()
     # All characters must be in the canonical safe set; the space in the stem
     # should have been replaced.
     assert all(c.isalnum() or c in "_-" for c in sid), sid
@@ -170,9 +175,9 @@ def test_two_friends_via_semicolon() -> None:
     p2.write_text(json.dumps(s2), encoding="utf-8")
 
     mod, cap = _reload_app_with_env(f"{p1};{p2}")
-    sources = mod.app.coverage_sources
-    assert len(sources) == 3, [s.id() for s in sources]
-    labels = [s.metadata()["label"] for s in sources[1:]]
+    friends = _friend_sources(mod)
+    assert len(friends) == 2, [s.id() for s in mod.app.coverage_sources]
+    labels = [s.metadata()["label"] for s in friends]
     assert labels == ["Dave", "Sara"], labels
     assert not cap.warnings, cap.warnings
     print("test_two_friends_via_semicolon OK")

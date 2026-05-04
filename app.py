@@ -11,12 +11,14 @@ Endpoints:
 - GET /api/target/<id>           full per-target detail
 - GET /api/catalogs              optional overlay catalogs
 - GET /api/sources               list of registered coverage sources
+- GET /api/moc/<source_id>       FITS MOC blob for a survey source (lazy-fetched, cached)
 - GET /api/observability         altaz for all targets at (lat, lon, time)
 - GET /api/export/priority       CSV of gap-mode candidates
 
 Env:
 - MANIFEST_PATH   path to archive manifest JSON  (default: ./data/manifest.json)
 - CATALOGS_PATH   path to catalogs JSON          (default: ./data/catalogs.json)
+- ACP_SURVEYS_PATH  path to survey registry JSON (default: ./data/surveys.json)
 - HOST            bind host                      (default: 127.0.0.1)
 - PORT            bind port                      (default: 5555)
 - ACP_EXTENSIONS_DIR  directory of optional extension modules (default: unset)
@@ -25,6 +27,7 @@ Env:
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import math
@@ -32,13 +35,27 @@ import os
 import re
 import sqlite3
 import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
+
+try:
+    from mocpy import MOC  # noqa: F401
+    _MOCPY_AVAILABLE = True
+except ImportError:
+    _MOCPY_AVAILABLE = False
+    logging.warning(
+        "mocpy is not installed — MOC overlays disabled. "
+        "Install with `pip install mocpy>=0.13` to enable /api/moc/<id>."
+    )
 
 REPO_ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
@@ -52,6 +69,17 @@ TS_DB_PATH = os.environ.get(
     str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
 )
 ZIP_OUTPUT_DIR = Path(os.environ.get("ZIP_OUTPUT_DIR", REPO_ROOT / "data" / "exports"))
+SURVEYS_PATH = Path(os.environ.get("ACP_SURVEYS_PATH", REPO_ROOT / "data" / "surveys.json"))
+MOC_CACHE_DIR = Path(os.environ.get("ACP_MOC_CACHE_DIR", REPO_ROOT / "data" / "moc_cache"))
+
+# Hostname allowlist for MOC fetches. Both entries point at the same CDS
+# infrastructure: alasky.u-strasbg.fr is the legacy hostname kept alive for
+# backward compat. New entries should be reviewed in PR — this is the trust
+# boundary for the only ACP feature that fetches over the network at runtime.
+_MOC_ALLOWED_HOSTS = frozenset({"alasky.cds.unistra.fr", "alasky.u-strasbg.fr"})
+_MOC_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+_MOC_FETCH_TIMEOUT_S = 30
+_MOC_CACHE_TTL_S = 30 * 24 * 3600  # 30 days
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -246,6 +274,171 @@ def FriendManifestSource(*, source_id: str, label: str, color: str,
     )
 
 
+def _validate_moc_url(moc_url: str) -> None:
+    """HTTPS-only, hostname-allowlisted. Raises ValueError on rejection.
+
+    Run at config-load time (registration) and again before every fetch — the
+    on-fetch check defends against an attacker who can swap in a registered
+    source's URL between boot and first hit.
+    """
+    if not isinstance(moc_url, str) or not moc_url:
+        raise ValueError("moc_url is empty")
+    parsed = urllib.parse.urlparse(moc_url)
+    if parsed.scheme != "https":
+        raise ValueError(f"moc_url must use https:// (got {parsed.scheme!r})")
+    if parsed.hostname not in _MOC_ALLOWED_HOSTS:
+        raise ValueError(
+            f"moc_url host {parsed.hostname!r} not in allowlist "
+            f"({sorted(_MOC_ALLOWED_HOSTS)})"
+        )
+
+
+class _MocFetchError(Exception):
+    """Upstream fetch / validation failed in a way the route surfaces as 502."""
+
+
+def _fetch_moc_bytes(moc_url: str) -> bytes:
+    """Download a MOC over HTTPS with a streamed size cap.
+
+    Refuses Content-Length headers above the cap up front, and aborts mid-read
+    if a server with no/wrong Content-Length tries to feed us more than the
+    cap. The bytes returned are the raw FITS payload — the caller is
+    responsible for handing them to MOC.from_fits for validation.
+    """
+    _validate_moc_url(moc_url)
+    req = urllib.request.Request(moc_url, headers={"User-Agent": "ACP-MOC/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=_MOC_FETCH_TIMEOUT_S) as resp:
+            cl = resp.headers.get("Content-Length")
+            if cl is not None:
+                try:
+                    if int(cl) > _MOC_MAX_BYTES:
+                        raise _MocFetchError(
+                            f"Content-Length {cl} exceeds cap {_MOC_MAX_BYTES}"
+                        )
+                except ValueError:
+                    pass  # malformed header → fall through to streaming check
+            buf = BytesIO()
+            # 64 KiB chunks: small enough to abort early on a runaway body,
+            # large enough that a 200 KB MOC takes ~3 reads.
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                if buf.tell() + len(chunk) > _MOC_MAX_BYTES:
+                    raise _MocFetchError(
+                        f"response body exceeded cap {_MOC_MAX_BYTES}"
+                    )
+                buf.write(chunk)
+            return buf.getvalue()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        raise _MocFetchError(f"fetch failed: {exc}") from exc
+
+
+class MocCoverageSource:
+    """Coverage source backed by a CDS-hosted FITS MOC blob.
+
+    Lazy fetch on first hit to /api/moc/<id>; cached on disk under
+    data/moc_cache/<id>.fits with a 30-day TTL sidecar. The Phase 3 frontend
+    consumes the FITS bytes directly via Aladin Lite and never needs the
+    coverage() iterator — see comment in coverage() for Phase 4 plans.
+    """
+
+    def __init__(self, *, source_id: str, label: str, color: str,
+                 attribution: str, enabled_default: bool, moc_url: str,
+                 filter_name: str | None = None,
+                 cache_dir: Path | None = None) -> None:
+        # Re-validate on construct so a malformed URL slipped past the loader
+        # still fails loudly, not at first /api/moc hit.
+        _validate_moc_url(moc_url)
+        self._source_id = source_id
+        self._label = label
+        self._color = color
+        self._attribution = attribution
+        self._enabled_default = enabled_default
+        self._moc_url = moc_url
+        self._filter_name = filter_name
+        self._cache_dir = Path(cache_dir) if cache_dir else MOC_CACHE_DIR
+        self._lock = threading.Lock()
+
+    def id(self) -> str:
+        return self._source_id
+
+    def metadata(self) -> dict:
+        return {
+            "label": self._label,
+            "color": self._color,
+            "kind": "moc",
+            "attribution": self._attribution,
+            "enabled_default": self._enabled_default,
+        }
+
+    def coverage(self):
+        # Phase 4's gap-finder will need real region yielding from MOC
+        # union/intersection. For Phase 3 we leave this empty — the frontend
+        # consumes /api/moc/<id> directly, not coverage().
+        return iter(())
+
+    @property
+    def moc_url(self) -> str:
+        return self._moc_url
+
+    def _cache_paths(self) -> tuple[Path, Path]:
+        return (
+            self._cache_dir / f"{self._source_id}.fits",
+            self._cache_dir / f"{self._source_id}.meta.json",
+        )
+
+    def _cache_fresh(self, fits_path: Path, meta_path: Path) -> bool:
+        if not fits_path.exists() or not meta_path.exists():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        # URL drift in surveys.json must invalidate the cached blob.
+        if meta.get("url") != self._moc_url:
+            return False
+        try:
+            fetched_at = datetime.fromisoformat(meta["fetched_at"])
+        except (KeyError, ValueError):
+            return False
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - fetched_at).total_seconds()
+        return age < _MOC_CACHE_TTL_S
+
+    def ensure_cached(self) -> Path:
+        """Return the path to a fresh local FITS MOC, fetching if needed.
+
+        Per-source lock prevents two concurrent first-hit requests from racing
+        the same network fetch. Raises _MocFetchError on upstream / validation
+        failure; the route translates that to 502.
+        """
+        if not _MOCPY_AVAILABLE:
+            # Caller (the route) checks this first; re-checking here keeps the
+            # invariant local — no half-fetched bytes hit disk without mocpy.
+            raise _MocFetchError("mocpy not available")
+        fits_path, meta_path = self._cache_paths()
+        with self._lock:
+            if self._cache_fresh(fits_path, meta_path):
+                return fits_path
+            data = _fetch_moc_bytes(self._moc_url)
+            try:
+                MOC.from_fits(BytesIO(data))
+            except Exception as exc:
+                # Don't write malformed bytes to disk — next hit refetches.
+                raise _MocFetchError(f"invalid MOC FITS: {exc}") from exc
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            fits_path.write_bytes(data)
+            meta_path.write_text(json.dumps({
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "content_sha256": hashlib.sha256(data).hexdigest(),
+                "url": self._moc_url,
+            }, indent=2), encoding="utf-8")
+            return fits_path
+
+
 # Caps applied during friend-manifest validation. Loose enough that any
 # legitimate hobby archive will fit, tight enough that a malformed (or
 # malicious) file can't blow up parse cost or memory.
@@ -354,6 +547,47 @@ if _friend_paths:
             source_id=source_id, label=label, color="", path=p,
         ))
         logging.info("Loaded friend manifest: %s (%s)", label, p)
+
+
+# Survey MOC sources — declarative registry committed at data/surveys.json (or
+# ACP_SURVEYS_PATH). The file is intentionally tracked: PRs welcome to add
+# more surveys. Per-entry validation failures log a warning and skip; bad
+# entries must not block app boot.
+def _load_surveys_registry() -> list[dict]:
+    if not SURVEYS_PATH.exists():
+        logging.info("Surveys registry not found at %s — no MOC sources", SURVEYS_PATH)
+        return []
+    try:
+        data = json.loads(SURVEYS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning("Surveys registry %s unreadable: %s", SURVEYS_PATH, exc)
+        return []
+    if not isinstance(data, list):
+        logging.warning("Surveys registry %s: top-level value must be a list", SURVEYS_PATH)
+        return []
+    return data
+
+
+for _entry in _load_surveys_registry():
+    _eid = (_entry or {}).get("id", "<unknown>")
+    try:
+        if not isinstance(_entry, dict):
+            raise ValueError("entry is not an object")
+        for _required in ("id", "label", "moc_url", "attribution"):
+            if not _entry.get(_required):
+                raise ValueError(f"missing required field {_required!r}")
+        app.coverage_sources.append(MocCoverageSource(
+            source_id=_entry["id"],
+            label=_entry["label"],
+            color=_entry.get("color", ""),
+            attribution=_entry["attribution"],
+            enabled_default=bool(_entry.get("enabled_default", False)),
+            moc_url=_entry["moc_url"],
+            filter_name=_entry.get("filter"),
+        ))
+        logging.info("Loaded MOC source: %s (%s)", _entry["label"], _entry["id"])
+    except (ValueError, TypeError) as exc:
+        logging.warning("Skipping MOC source %s: %s", _eid, exc)
 
 
 # Optional extensions — load any user-supplied modules from the directory
@@ -636,6 +870,38 @@ def api_sources():
             "enabled_default": meta["enabled_default"],
         })
     return jsonify(out)
+
+
+@app.route("/api/moc/<source_id>")
+def api_moc(source_id: str):
+    """Serve the cached FITS MOC blob for a registered MOC source.
+
+    Lazy-fetches on first hit. Returns 404 for unknown ids or non-MOC sources,
+    503 when mocpy is missing, 502 when the upstream fetch or validation
+    fails. Successful responses are application/octet-stream — Aladin Lite's
+    FITS MOC loader takes the bytes directly.
+    """
+    src = next(
+        (s for s in app.coverage_sources
+         if s.id() == source_id and isinstance(s, MocCoverageSource)),
+        None,
+    )
+    if src is None:
+        return jsonify({"error": "MOC source not found"}), 404
+    if not _MOCPY_AVAILABLE:
+        return jsonify({
+            "error": "mocpy not installed; MOC overlays disabled",
+        }), 503
+    try:
+        fits_path = src.ensure_cached()
+    except _MocFetchError as exc:
+        logging.warning("MOC fetch failed for %s: %s", source_id, exc)
+        return jsonify({"error": f"upstream fetch failed: {exc}"}), 502
+    return Response(
+        fits_path.read_bytes(),
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{source_id}.fits"'},
+    )
 
 
 def _clamped_float(name: str, default: float, lo: float, hi: float) -> float:
