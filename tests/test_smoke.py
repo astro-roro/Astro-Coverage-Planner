@@ -129,6 +129,40 @@ print("GET /api/export/priority", r.status_code)
 # Either is fine; a 500 means a real bug (missing dep, etc).
 assert r.status_code in (200, 404), f"unexpected status {r.status_code}"
 
+# --- Gap finder ----------------------------------------------------------
+r = c.get("/api/gaps")
+print("GET /api/gaps (defaults)", r.status_code)
+assert r.status_code in (200, 503)
+if r.status_code == 200:
+    body = r.get_json()
+    for k in ("have_filter", "missing_filter", "have_sources", "missing_sources",
+              "gap_sky_fraction", "candidates", "skipped"):
+        assert k in body, f"missing {k} in gap response"
+    assert body["have_filter"] == "Ha"
+    assert body["missing_filter"] == "SII"
+
+r = c.get("/api/gaps?have=Ha&missing=SII&sources=manifest&min_have_hours=0")
+print("GET /api/gaps (sources=manifest, min_have=0)", r.status_code)
+assert r.status_code in (200, 503)
+if r.status_code == 200:
+    body = r.get_json()
+    if body["have_sources"]:
+        assert body["gap_sky_fraction"] >= 0
+
+r = c.get("/api/gaps?have=NotARealFilter&missing=SII")
+print("GET /api/gaps (unknown filter)", r.status_code)
+assert r.status_code in (200, 503)
+if r.status_code == 200:
+    body = r.get_json()
+    assert body["gap_sky_fraction"] == 0.0
+    assert body["candidates"] == []
+
+r = c.get("/api/gaps/moc.fits")
+print("GET /api/gaps/moc.fits", r.status_code)
+assert r.status_code in (200, 404, 503), f"unexpected status {r.status_code}"
+if r.status_code == 200:
+    assert r.data[:8] == b"SIMPLE  ", r.data[:16]
+
 # --- Planner endpoints ---
 
 r = c.get("/api/gear")
