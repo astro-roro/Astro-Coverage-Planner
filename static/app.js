@@ -539,10 +539,12 @@ function targetMatches(t) {
   const has = f => (hrs[f] || 0) >= minHours;
   const hasAny = f => (hrs[f] || 0) > 0;
 
-  // Telescope toggle: if no telescopes selected (before init), allow all.
-  // If a target has no telescope tag, leave it visible regardless.
+  // Telescope toggle: a tagged target is visible only if its telescope is in
+  // the selected set. Empty set = hide every tagged target (so the user can
+  // untick all telescopes to clear the rectangles and just see overlays).
+  // Untagged targets stay visible regardless — they have nothing to filter on.
   const tel = telescopeOf(t);
-  if (tel && selectedTelescopes.size > 0 && !selectedTelescopes.has(tel)) return false;
+  if (tel && !selectedTelescopes.has(tel)) return false;
 
   if (completionFilter === "finished" && !isTargetFinished(t)) return false;
   if (completionFilter === "unfinished" && isTargetFinished(t)) return false;
