@@ -63,7 +63,11 @@ let gapMinHave = 1.0;
 let gapMaxMissing = 0.5;
 let gapSourceIds = [];     // explicit selection; empty = "all enabled"
 let gapMocLayer = null;    // live A.MOCFromURL overlay for the gap region
-let gapCandidatesCat = null; // live A.catalog for catalog candidates inside the gap
+// catalog name -> Set of object names that fall inside the active gap MOC.
+// When non-empty AND gapEnabled is true, drawCatalogOverlay filters each
+// catalog to just these entries — so users see "Find gaps × catalog X" by
+// simply ticking catalog X in the Catalogues rail.
+let gapNamesByCatalog = {};
 let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
@@ -1119,10 +1123,25 @@ function drawCatalogOverlay(cfg, enabled) {
   if (!ovr) return;
   ovr.removeAll();
   if (!enabled) return;
-  for (const e of catalogsData[cfg.name]) {
+  // In gap mode, restrict to entries the server told us are inside the gap MOC.
+  // Outside gap mode (or when this catalog had no gap matches), show the full set.
+  const gapNames = gapEnabled ? gapNamesByCatalog[cfg.name] : null;
+  const data = gapNames
+    ? catalogsData[cfg.name].filter(e => gapNames.has(e.name))
+    : catalogsData[cfg.name];
+  for (const e of data) {
     if (e.ra_deg == null) continue;
     const src = A.source(e.ra_deg, e.dec_deg, { name: e.name, catalog: cfg.name, ...e });
     ovr.addSources([src]);
+  }
+}
+
+// Re-fires the change event on every checked catalog checkbox so its overlay
+// re-renders against the current gap-mode filter (or the full data, when off).
+function redrawEnabledCatalogs() {
+  for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
+    const cb = document.getElementById(id);
+    if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
   }
 }
 
@@ -1258,10 +1277,9 @@ function clearGapOverlays() {
     try { aladin.removeOverlay(gapMocLayer); } catch (err) { console.warn("gap MOC remove failed:", err); }
     gapMocLayer = null;
   }
-  if (gapCandidatesCat) {
-    try { aladin.removeOverlay(gapCandidatesCat); } catch (err) { console.warn("gap candidates remove failed:", err); }
-    gapCandidatesCat = null;
-  }
+  // Drop the gap-name filter and redraw any catalog overlays back to full.
+  gapNamesByCatalog = {};
+  redrawEnabledCatalogs();
 }
 
 async function loadGaps() {
@@ -1313,25 +1331,20 @@ async function loadGaps() {
     aladin.addMOC(gapMocLayer);
   }
 
+  // Build a per-catalog name filter from the response. Catalog overlays toggled
+  // on in the Catalogues rail will draw only their gap-matching entries.
   const cands = data.candidates || [];
-  if (cands.length > 0) {
-    gapCandidatesCat = A.catalog({
-      name: "gap_candidates",
-      color: "#ffe27a",
-      sourceSize: 8,
-      shape: "circle",
-    });
-    aladin.addCatalog(gapCandidatesCat);
-    const sources = cands
-      .filter(c => c.ra_deg != null && c.dec_deg != null)
-      .map(c => A.source(c.ra_deg, c.dec_deg, { name: c.name, catalog: c.catalog }));
-    if (sources.length > 0) gapCandidatesCat.addSources(sources);
+  gapNamesByCatalog = {};
+  for (const c of cands) {
+    if (!c.catalog || !c.name) continue;
+    (gapNamesByCatalog[c.catalog] ||= new Set()).add(c.name);
   }
+  redrawEnabledCatalogs();
 
   if (stats) {
     const pct = (100 * (data.gap_sky_fraction || 0)).toFixed(2);
     const from = (data.have_sources || []).join(", ") || "(none)";
-    stats.textContent = `sky ${pct}% • ${cands.length} candidates • from ${from}`;
+    stats.textContent = `sky ${pct}% • ${cands.length} candidates in gap (tick catalogs to view) • from ${from}`;
   }
 }
 
