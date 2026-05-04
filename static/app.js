@@ -187,7 +187,7 @@ function applyUiStatePreManifest() {
   }
 
   if (Array.isArray(s.catalogs)) {
-    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
+    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
       const cb = document.getElementById(id);
       if (cb) cb.checked = s.catalogs.includes(id);
     }
@@ -242,7 +242,7 @@ function saveUiState() {
       filterLogic,
       minHours,
       telescopes: [...selectedTelescopes],
-      catalogs: ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]
+      catalogs: ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]
         .filter(id => document.getElementById(id)?.checked),
       projection: document.getElementById("projSel")?.value || "",
       frame: document.getElementById("frameSel")?.value || "",
@@ -1095,12 +1095,15 @@ function redrawFootprints() {
 
 function setupCatalogOverlays() {
   const cfg = [
-    { id: "cat_green", name: "green_snrs",       color: "#ff3030", size: 12, marker: "square" },
-    { id: "cat_smgps", name: "smgps_candidates", color: "#ff9900", size: 10, marker: "triangle" },
-    { id: "cat_emu",   name: "emu_candidates",   color: "#ffff33", size: 10, marker: "plus" },
+    { id: "cat_green",     name: "green_snrs",       color: "#ff3030", size: 12, marker: "square" },
+    { id: "cat_smgps",     name: "smgps_candidates", color: "#ff9900", size: 10, marker: "triangle" },
+    { id: "cat_emu",       name: "emu_candidates",   color: "#ffff33", size: 10, marker: "plus" },
     // sourceSize must be >= 8 — Aladin's default-shape prelude errors below that
     // (see filterBadgeCat note above). "dot" is not a valid Aladin shape; use "circle".
-    { id: "cat_hii",   name: "anderson_hii",     color: "#66cc66", size:  8, marker: "circle" },
+    { id: "cat_hii",       name: "anderson_hii",     color: "#66cc66", size:  8, marker: "circle" },
+    { id: "cat_messier",   name: "messier",          color: "#5bd9ff", size: 12, marker: "square" },
+    { id: "cat_sharpless", name: "sharpless",        color: "#7be0a3", size:  9, marker: "circle" },
+    { id: "cat_eso_pne",   name: "eso_pne",          color: "#a070ff", size: 10, marker: "triangle" },
   ];
   for (const c of cfg) {
     const cb = document.getElementById(c.id);
@@ -1141,7 +1144,7 @@ function drawCatalogOverlay(cfg, enabled) {
 // Re-fires the change event on every checked catalog checkbox so its overlay
 // re-renders against the current gap-mode filter (or the full data, when off).
 function redrawEnabledCatalogs() {
-  for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
+  for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
     const cb = document.getElementById(id);
     if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
   }
@@ -1422,7 +1425,7 @@ async function loadCatalogs() {
     catalogsData = await r.json();
     updateCatalogStatusHint();
     // if any catalog toggle is already checked, redraw
-    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
+    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
       const cb = document.getElementById(id);
       if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
     }
