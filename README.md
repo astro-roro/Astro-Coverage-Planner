@@ -162,6 +162,7 @@ point `PIPELINE_DB` at it and the manifest will include per-target sub-hours (us
 | `HOST`            | `127.0.0.1`                                                 | Bind host (use `0.0.0.0` only on trusted networks)   |
 | `PORT`            | `5555`                                                      | Bind port                                            |
 | `ACP_EXTENSIONS_DIR` | `%APPDATA%/acp/extensions` (Win) / `~/.config/acp/extensions` | Directory of extension modules — see [Extensions](#extensions) |
+| `ACP_FRIEND_MANIFESTS` | unset | Semicolon-separated paths to sanitised friend manifests — see [Sharing](#sharing-coverage-with-friends) |
 
 ## Optional: catalog overlays
 
@@ -305,6 +306,43 @@ Drop the file in, restart, hit `http://127.0.0.1:5555/api/ext/friend-fovs.csv`.
 **Trust.** Extensions run in-process as your user with no sandbox, so only load code you've read or written yourself.
 
 **Failures.** Load and registration errors are logged via Python's `logging` under the `acp.extensions` logger — check there if an extension silently doesn't show up.
+
+## Sharing coverage with friends
+
+Planning narrowband sessions is easier when you can see your imaging buddies' coverage gaps next to your own — split the sky, agree who's chasing OIII on a given target, avoid duplicating Ha hours someone else already has stacked. ACP can load any number of *sanitised* friend manifests as additional toggleable layers in the Sources rail.
+
+**What gets stripped vs kept.** The sanitiser rebuilds the manifest from a small whitelist:
+
+- **Stripped:** `master_files` arrays, all on-disk paths, telescope/camera serials and exact model strings, exact dates (truncated to month), per-frame file lists, `scan_roots`, anything else that fingerprints the imager's setup.
+- **Kept:** polygon footprints (`corners_icrs`), per-filter integration hours (rounded to 0.1h), aperture-class telescope info (e.g. `"110mm refractor"`), public catalog target names (`"M 42"`, `"Eta Carinae"`), month of last activity.
+- **Tripwire:** the loader refuses any file missing `"sanitised": true` so you can't accidentally share an unsanitised manifest.
+
+**How to produce one.** Two paths:
+
+```bash
+# Option A: re-run the scanner with --sanitise alongside the regular write
+python scripts/build_archive_manifest.py --sanitise dave_to_share.json --label "Dave"
+
+# Option B: sanitise an existing manifest in place
+python scripts/sanitise_manifest.py data/manifest.json dave_to_share.json --label "Dave"
+```
+
+Inspect the output before sending — it's plain JSON.
+
+**How to consume one.** Point `ACP_FRIEND_MANIFESTS` at a semicolon-separated list of paths before launching:
+
+```bash
+# Linux/macOS
+ACP_FRIEND_MANIFESTS="/path/to/dave.json;/path/to/sara.json" python app.py
+
+# Windows PowerShell
+$env:ACP_FRIEND_MANIFESTS = "C:\shared\dave.json;C:\shared\sara.json"
+python app.py
+```
+
+Each manifest becomes its own toggleable layer in the **Sources** rail with a distinct color from the palette.
+
+**Failure modes.** Rejected manifests log a `WARNING` to Python's `logging` channel and are skipped; other friends still load and the app still starts. Hard caps applied during validation: 10,000 targets, 64 polygons per target, 64 vertices per polygon.
 
 ## Security notes
 
