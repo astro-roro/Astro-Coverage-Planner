@@ -14,6 +14,8 @@ Endpoints:
 - GET /api/moc/<source_id>       FITS MOC blob for a survey source (lazy-fetched, cached)
 - GET /api/observability         altaz for all targets at (lat, lon, time)
 - GET /api/export/priority       CSV of gap-mode candidates
+- GET /api/gaps                  multi-source gap-finder (JSON)
+- GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
 
 Env:
 - MANIFEST_PATH   path to archive manifest JSON  (default: ./data/manifest.json)
@@ -56,6 +58,8 @@ except ImportError:
         "mocpy is not installed — MOC overlays disabled. "
         "Install with `pip install mocpy>=0.13` to enable /api/moc/<id>."
     )
+
+from gaps import candidates_in_moc, compute_gap_moc
 
 REPO_ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
@@ -1018,9 +1022,217 @@ def api_observability():
     return jsonify({"lat": lat, "lon": lon, "time": iso, "targets": out})
 
 
+def _gaps_query_params() -> tuple[dict, tuple[Response, int] | None]:
+    """Parse + validate /api/gaps query params. Returns (params, error_response).
+
+    On success error_response is None. On bad input it's a (response, status)
+    tuple ready to return from the route. Defaults match the documented
+    "Ha covered, SII not yet" recipe.
+    """
+    have = request.args.get("have", "Ha")
+    missing = request.args.get("missing", "SII")
+    if not isinstance(have, str) or not have or not isinstance(missing, str) or not missing:
+        return {}, (jsonify({"error": "have/missing must be non-empty strings"}), 400)
+    sources_raw = request.args.get("sources")
+    if sources_raw is not None:
+        wanted = [s.strip() for s in sources_raw.split(",") if s.strip()]
+    else:
+        wanted = None  # None = all enabled-by-default sources
+    try:
+        min_have = float(request.args.get("min_have_hours", 1.0))
+        max_missing = float(request.args.get("max_missing_hours", 0.5))
+    except (TypeError, ValueError):
+        return {}, (jsonify({"error": "min_have_hours/max_missing_hours must be numeric"}), 400)
+    return {
+        "have": have, "missing": missing,
+        "source_ids": wanted,
+        "min_have_hours": min_have,
+        "max_missing_hours": max_missing,
+    }, None
+
+
+def _source_passes_threshold(src, filter_name: str, min_hours: float) -> bool:
+    """True if any region from src.coverage() has >= min_hours of filter_name.
+
+    Returns True for sources without per-region hours (MOC sources): the
+    threshold is meaningless there, so they always qualify if their declared
+    filter matches — that match is enforced separately by compute_gap_moc.
+    """
+    coverage = getattr(src, "coverage", None)
+    if coverage is None:
+        return True
+    saw_any_region = False
+    for region in coverage():
+        saw_any_region = True
+        f = (region.get("filters") or {}).get(filter_name)
+        if f and float(f.get("hours", 0.0)) >= min_hours:
+            return True
+    # No regions at all → MOC source (or empty manifest). Don't filter it out
+    # here; compute_gap_moc will skip it if it has no coverage at this filter.
+    return not saw_any_region
+
+
+def _select_gap_sources(have: str, missing: str, source_ids: list[str] | None,
+                       min_have: float, max_missing: float) -> tuple[list, list[str], list[tuple[str, str]]]:
+    """Filter app.coverage_sources by id + per-side hour thresholds.
+
+    Returns (sources_to_pass_in, restricted_ids, threshold_skipped). Sources
+    that satisfy *either* side's threshold are passed through; compute_gap_moc
+    sorts out which side they actually contribute to.
+    """
+    candidates = list(app.coverage_sources)
+    if source_ids is not None:
+        wanted = set(source_ids)
+        candidates = [s for s in candidates if s.id() in wanted]
+    else:
+        # Default = enabled-by-default sources only.
+        candidates = [s for s in candidates if s.metadata().get("enabled_default")]
+
+    selected: list = []
+    selected_ids: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for src in candidates:
+        ok_have = _source_passes_threshold(src, have, min_have)
+        ok_missing = _source_passes_threshold(src, missing, max_missing)
+        if ok_have or ok_missing:
+            selected.append(src)
+            selected_ids.append(src.id())
+        else:
+            skipped.append((src.id(),
+                            f"below {min_have}h threshold for {have} and "
+                            f"below {max_missing}h threshold for {missing}"))
+    return selected, selected_ids, skipped
+
+
+@app.route("/api/gaps")
+def api_gaps():
+    """Multi-source gap finder — where `have` is covered but `missing` isn't.
+
+    Returns 503 when mocpy isn't installed (MOC algebra is the whole point of
+    this route; CSV consumers fall back via /api/export/priority instead).
+    """
+    if not _MOCPY_AVAILABLE:
+        return jsonify({"error": "mocpy not installed"}), 503
+    params, err = _gaps_query_params()
+    if err is not None:
+        return err
+
+    sources, selected_ids, threshold_skipped = _select_gap_sources(
+        params["have"], params["missing"], params["source_ids"],
+        params["min_have_hours"], params["max_missing_hours"],
+    )
+    result = compute_gap_moc(
+        sources,
+        have_filter=params["have"],
+        missing_filter=params["missing"],
+        source_ids=selected_ids,
+    )
+    skipped_payload = [{"source_id": sid, "reason": reason}
+                       for sid, reason in (threshold_skipped + result.skipped)]
+
+    if result.gap_moc is None:
+        return jsonify({
+            "have_filter": params["have"],
+            "missing_filter": params["missing"],
+            "have_sources": result.have_sources,
+            "missing_sources": result.missing_sources,
+            "gap_sky_fraction": 0.0,
+            "candidates": [],
+            "skipped": skipped_payload,
+        })
+
+    cands = candidates_in_moc(result.gap_moc, load_catalogs())
+    # moc_url echoes the same query string so a frontend can fetch the FITS
+    # without re-parsing — keep the param order stable for cache-friendliness.
+    qs = urllib.parse.urlencode({
+        "have": params["have"],
+        "missing": params["missing"],
+        "sources": ",".join(selected_ids),
+        "min_have_hours": params["min_have_hours"],
+        "max_missing_hours": params["max_missing_hours"],
+    })
+    return jsonify({
+        "have_filter": params["have"],
+        "missing_filter": params["missing"],
+        "have_sources": result.have_sources,
+        "missing_sources": result.missing_sources,
+        "gap_sky_fraction": result.gap_sky_fraction,
+        "candidates": [
+            {"catalog": c.catalog, "name": c.name,
+             "ra_deg": c.ra_deg, "dec_deg": c.dec_deg}
+            for c in cands
+        ],
+        "skipped": skipped_payload,
+        "moc_url": f"/api/gaps/moc.fits?{qs}",
+    })
+
+
+@app.route("/api/gaps/moc.fits")
+def api_gaps_moc_fits():
+    """Serve the gap MOC as raw FITS bytes."""
+    if not _MOCPY_AVAILABLE:
+        return jsonify({"error": "mocpy not installed"}), 503
+    params, err = _gaps_query_params()
+    if err is not None:
+        return err
+
+    sources, selected_ids, _ = _select_gap_sources(
+        params["have"], params["missing"], params["source_ids"],
+        params["min_have_hours"], params["max_missing_hours"],
+    )
+    result = compute_gap_moc(
+        sources,
+        have_filter=params["have"],
+        missing_filter=params["missing"],
+        source_ids=selected_ids,
+    )
+    if result.gap_moc is None:
+        return jsonify({"error": "no gap region for these parameters"}), 404
+
+    buf = BytesIO()
+    result.gap_moc.serialize(format="fits").writeto(buf)
+    return Response(
+        buf.getvalue(),
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": 'inline; filename="gap.fits"'},
+    )
+
+
+# Catalogs that contributed to the legacy /api/export/priority CSV. Kept here
+# because the gap-finder pulls candidates from the entire load_catalogs() dict
+# but the CSV consumer expects only these three.
+_PRIORITY_CSV_CATALOGS = ("green_snrs", "smgps_candidates", "emu_candidates")
+_PRIORITY_CSV_HEADER = [
+    "catalog", "name", "ra_deg", "dec_deg", "l_deg", "b_deg",
+    "overlap_target_id", "overlap_target_objects",
+    "ha_hours", "sii_hours", "oiii_hours",
+]
+
+
+def _priority_csv_response(rows: list[list]) -> tuple[str, int, dict]:
+    out = StringIO()
+    w = csv.writer(out)
+    w.writerow(_PRIORITY_CSV_HEADER)
+    for row in rows:
+        w.writerow(row)
+    return out.getvalue(), 200, {
+        "Content-Type": "text/csv",
+        "Content-Disposition": "attachment; filename=priority_sii_targets.csv",
+    }
+
+
 @app.route("/api/export/priority")
 def api_export_priority():
-    """CSV of overlay candidates where Ha >= 1h but SII < 0.5h (validation-gap bucket)."""
+    """CSV of overlay candidates where Ha >= 1h but SII < 0.5h (validation-gap bucket).
+
+    With mocpy installed: thin wrapper over compute_gap_moc against the user's
+    own manifest. CSV-shaped per-target overlap fields (galactic l/b, target id,
+    filter hours) are re-derived here — they're export-shape, not gap-math, so
+    they don't belong inside gaps.py.
+
+    Without mocpy: falls back to the original inline implementation so the CSV
+    keeps working on stripped-down installs.
+    """
     cats = load_catalogs()
     m = load_manifest()
     if m is None or not cats:
@@ -1032,6 +1244,61 @@ def api_export_priority():
     except Exception:
         return ("astropy missing", 500)
 
+    if _MOCPY_AVAILABLE:
+        manifest_src = next(
+            (s for s in app.coverage_sources if s.id() == "manifest"), None,
+        )
+        if manifest_src is None:
+            return ("manifest source not registered", 404)
+        result = compute_gap_moc(
+            [manifest_src],
+            have_filter="Ha", missing_filter="SII",
+            source_ids=["manifest"],
+        )
+        if result.gap_moc is None:
+            return _priority_csv_response([])
+
+        # Restrict to the legacy CSV's catalog subset before MOC-filtering.
+        scoped = {k: v for k, v in cats.items() if k in _PRIORITY_CSV_CATALOGS}
+        candidates = candidates_in_moc(result.gap_moc, scoped)
+
+        target_ras = [t["center_ra_deg"] for t in m["targets"]]
+        target_decs = [t["center_dec_deg"] for t in m["targets"]]
+        target_coords = (
+            SkyCoord(target_ras * u.deg, target_decs * u.deg) if target_ras else None
+        )
+        cat_lookup = {(name, e.get("name", "")): e
+                      for name, entries in scoped.items() for e in entries}
+
+        rows: list[list] = []
+        for c in candidates:
+            entry = cat_lookup.get((c.catalog, c.name), {})
+            match_tid, match_objs = "", ""
+            ha = sii = oiii = 0.0
+            if target_coords is not None:
+                cand_sc = SkyCoord(c.ra_deg * u.deg, c.dec_deg * u.deg)
+                idx, sep, _ = cand_sc.match_to_catalog_sky(target_coords)
+                if float(sep.arcminute) <= 45:
+                    t = m["targets"][int(idx)]
+                    match_tid = t["target_id"]
+                    match_objs = "|".join(t.get("objects", []))
+                    ha = t["filters"].get("Ha", {}).get("total_hours", 0.0)
+                    sii = t["filters"].get("SII", {}).get("total_hours", 0.0)
+                    oiii = t["filters"].get("OIII", {}).get("total_hours", 0.0)
+            # Re-apply the 1h/0.5h gate: the gap MOC is union-of-Ha minus
+            # union-of-SII at the cell level, but the legacy CSV gates on the
+            # nearest-target's hours. Targets near a candidate but with low Ha
+            # would otherwise sneak in.
+            if ha < 1.0 or sii >= 0.5:
+                continue
+            rows.append([
+                c.catalog, c.name, c.ra_deg, c.dec_deg,
+                entry.get("l_deg", ""), entry.get("b_deg", ""),
+                match_tid, match_objs, ha, sii, oiii,
+            ])
+        return _priority_csv_response(rows)
+
+    # --- mocpy-missing fallback: pre-Phase-4 inline implementation ----------
     target_ras = [t["center_ra_deg"] for t in m["targets"]]
     target_decs = [t["center_dec_deg"] for t in m["targets"]]
     target_coords = (
@@ -1040,14 +1307,10 @@ def api_export_priority():
 
     out = StringIO()
     w = csv.writer(out)
-    w.writerow([
-        "catalog", "name", "ra_deg", "dec_deg", "l_deg", "b_deg",
-        "overlap_target_id", "overlap_target_objects",
-        "ha_hours", "sii_hours", "oiii_hours",
-    ])
+    w.writerow(_PRIORITY_CSV_HEADER)
 
     for cat_name, entries in cats.items():
-        if cat_name not in ("green_snrs", "smgps_candidates", "emu_candidates"):
+        if cat_name not in _PRIORITY_CSV_CATALOGS:
             continue
         valid = [e for e in entries if e.get("ra_deg") is not None and e.get("dec_deg") is not None]
         if not valid:
@@ -1056,7 +1319,6 @@ def api_export_priority():
             cras = [e["ra_deg"] for e in valid]
             cdecs = [e["dec_deg"] for e in valid]
             cand = SkyCoord(cras * u.deg, cdecs * u.deg)
-            # match_to_catalog_sky returns nearest target for each candidate
             idx, sep, _ = cand.match_to_catalog_sky(target_coords)
             sep_arcmin = sep.arcminute
         else:
