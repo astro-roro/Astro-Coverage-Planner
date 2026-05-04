@@ -1360,7 +1360,9 @@ function init() {
       fov: 180,
       projection: "AIT",
       cooFrame: "ICRSd",
-      survey: "P/DSS2/color",
+      // DSS2/red (grayscale, single-channel) is ~1/3 the bandwidth and decode cost
+      // of DSS2/color. Switch via Aladin's layers control if you want a colour survey.
+      survey: "P/DSS2/red",
       showReticle: false,
       showZoomControl: true,
       showFullscreenControl: true,
