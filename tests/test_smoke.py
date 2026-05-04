@@ -51,6 +51,7 @@ assert first["id"] == "manifest"
 assert first["label"] == "Your archive"
 for k in ("label", "color", "kind", "attribution", "enabled_default"):
     assert k in first, f"missing {k} in source metadata"
+_baseline_source_count = len(sources)  # may include built-in MOC sources from data/surveys.json
 
 # --- Friend manifest source (Option B: hand-construct + append to registry) ---
 # Build a synthetic sanitised manifest, write it to a tempfile, register a
@@ -88,9 +89,9 @@ try:
     print("GET /api/sources (with friend)", r.status_code)
     assert r.status_code == 200
     src_list = r.get_json()
-    assert len(src_list) == 2, src_list
-    friend = src_list[1]
-    assert friend["id"] == "friend_dave"
+    assert len(src_list) == _baseline_source_count + 1, src_list
+    friend = next((s for s in src_list if s["id"] == "friend_dave"), None)
+    assert friend is not None, src_list
     assert friend["label"] == "Dave"
     assert friend["kind"] == "friend"
     assert friend["color"] == ""  # frontend palette assigns
