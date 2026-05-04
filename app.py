@@ -20,15 +20,18 @@ Env:
 - HOST            bind host                      (default: 127.0.0.1)
 - PORT            bind port                      (default: 5555)
 - ACP_EXTENSIONS_DIR  directory of optional extension modules (default: unset)
+- ACP_FRIEND_MANIFESTS  semicolon-separated paths to sanitised friend manifests (default: unset)
 """
 from __future__ import annotations
 
 import csv
 import json
+import logging
 import math
 import os
 import re
 import sqlite3
+import sys
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -147,29 +150,51 @@ def save_target_overrides(data: dict) -> None:
     _target_overrides_cache_mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
 
 
-class ManifestCoverageSource:
-    """Built-in coverage source backed by the local archive manifest.
+class JsonManifestSource:
+    """Coverage source backed by a JSON manifest file on local disk.
 
-    Adapts the manifest's per-target shape to the `CoverageSource` protocol
-    in `sources.py` without duplicating any loading logic — `coverage()` is
-    a thin generator over `load_manifest()`.
+    Drives both the user's own archive (path = MANIFEST_PATH) and any
+    sanitised friend manifests configured via ACP_FRIEND_MANIFESTS. The
+    manifest shape is identical for both — the only difference is the
+    surfaced metadata (label, kind, attribution).
     """
 
+    def __init__(self, *, source_id: str, label: str, color: str,
+                 attribution: str, enabled_default: bool, path: Path | str,
+                 kind: str = "manifest") -> None:
+        self._source_id = source_id
+        self._label = label
+        self._color = color
+        self._attribution = attribution
+        self._enabled_default = enabled_default
+        self._path = Path(path)
+        self._kind = kind
+        self._cache: dict | None = None
+        self._cache_mtime: float | None = None
+
     def id(self) -> str:
-        return "manifest"
+        return self._source_id
 
     def metadata(self) -> dict:
-        # Empty color string lets the frontend assign from a palette.
         return {
-            "label": "Your archive",
-            "color": "",
-            "kind": "manifest",
-            "attribution": "Local archive scan",
-            "enabled_default": True,
+            "label": self._label,
+            "color": self._color,
+            "kind": self._kind,
+            "attribution": self._attribution,
+            "enabled_default": self._enabled_default,
         }
 
+    def _load(self) -> dict | None:
+        if not self._path.exists():
+            return None
+        mtime = self._path.stat().st_mtime
+        if self._cache is None or self._cache_mtime != mtime:
+            self._cache = json.loads(self._path.read_text(encoding="utf-8"))
+            self._cache_mtime = mtime
+        return self._cache
+
     def coverage(self):
-        manifest = load_manifest()
+        manifest = self._load()
         if not manifest:
             return
         for t in manifest.get("targets", []) or []:
@@ -194,10 +219,142 @@ class ManifestCoverageSource:
             }
 
 
+def ManifestCoverageSource() -> JsonManifestSource:
+    """Built-in source backed by the user's own archive manifest."""
+    return JsonManifestSource(
+        source_id="manifest",
+        label="Your archive",
+        color="",
+        attribution="Local archive scan",
+        enabled_default=True,
+        path=MANIFEST_PATH,
+        kind="manifest",
+    )
+
+
+def FriendManifestSource(*, source_id: str, label: str, color: str,
+                         path: Path | str) -> JsonManifestSource:
+    """Sanitised manifest shared by another imager."""
+    return JsonManifestSource(
+        source_id=source_id,
+        label=label,
+        color=color,
+        attribution=f"Shared by {label}",
+        enabled_default=True,
+        path=path,
+        kind="friend",
+    )
+
+
+# Caps applied during friend-manifest validation. Loose enough that any
+# legitimate hobby archive will fit, tight enough that a malformed (or
+# malicious) file can't blow up parse cost or memory.
+_FRIEND_MAX_TARGETS = 10000
+_FRIEND_MAX_VERTICES = 64
+_FRIEND_MAX_POLYGONS = 64
+
+
+def _validate_friend_manifest(data: object, source_label: str) -> None:
+    """Reject any sanitised manifest that fails the safety checks.
+
+    Raises ValueError on the first failure. The caller logs and skips —
+    a bad friend manifest must not block the app from starting.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("top-level value is not an object")
+    # Tripwire: refuse anything not explicitly produced by the sanitiser.
+    # If a user accidentally points ACP_FRIEND_MANIFESTS at their own raw
+    # manifest, their filesystem paths would surface in the public UI.
+    if not data.get("sanitised"):
+        raise ValueError("missing 'sanitised: true' flag — refusing to load "
+                         "(probably an unsanitised manifest)")
+    targets = data.get("targets")
+    if not isinstance(targets, list):
+        raise ValueError("'targets' is not a list")
+    if len(targets) > _FRIEND_MAX_TARGETS:
+        raise ValueError(
+            f"target count {len(targets)} exceeds cap {_FRIEND_MAX_TARGETS}"
+        )
+    for i, t in enumerate(targets):
+        if not isinstance(t, dict):
+            raise ValueError(f"targets[{i}] is not an object")
+        corners = t.get("corners_icrs") or []
+        if not isinstance(corners, list):
+            raise ValueError(f"targets[{i}].corners_icrs is not a list")
+        # corners_icrs in the sanitiser is a single polygon (list of [ra,dec]
+        # pairs). Treat the whole list as one polygon for vertex counting,
+        # but defend against a future shape with multiple polygons too.
+        if corners and isinstance(corners[0], (list, tuple)) and corners[0] \
+                and isinstance(corners[0][0], (list, tuple)):
+            polygons = corners
+        else:
+            polygons = [corners]
+        if len(polygons) > _FRIEND_MAX_POLYGONS:
+            raise ValueError(
+                f"targets[{i}] has {len(polygons)} polygons "
+                f"(cap {_FRIEND_MAX_POLYGONS})"
+            )
+        for j, poly in enumerate(polygons):
+            if not isinstance(poly, list):
+                raise ValueError(
+                    f"targets[{i}].corners_icrs[{j}] is not a list"
+                )
+            if len(poly) > _FRIEND_MAX_VERTICES:
+                raise ValueError(
+                    f"targets[{i}] polygon {j} has {len(poly)} vertices "
+                    f"(cap {_FRIEND_MAX_VERTICES})"
+                )
+    # Final safety net — scan the entire object for path-shaped strings.
+    # Imported lazily so app startup doesn't pay the cost when the env var
+    # is unset.
+    _scripts_dir = str(REPO_ROOT / "scripts")
+    if _scripts_dir not in sys.path:
+        sys.path.insert(0, _scripts_dir)
+    from sanitise_manifest import validate_no_paths  # noqa: WPS433
+    validate_no_paths(data)
+
+
 # Coverage-source registry. Extensions can append their own sources to this
 # list inside their `register(app)` body; the built-in manifest source ships
 # pre-registered so a stock checkout always exposes one entry on /api/sources.
 app.coverage_sources = [ManifestCoverageSource()]
+
+
+# Friend manifests — semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
+# is validated (sanitised flag + caps + path-leak scan) before joining the
+# registry; failures log a warning and skip without crashing the app.
+_friend_paths = os.environ.get("ACP_FRIEND_MANIFESTS", "").strip()
+if _friend_paths:
+    for raw_path in _friend_paths.split(";"):
+        raw_path = raw_path.strip()
+        if not raw_path:
+            continue
+        p = Path(raw_path).expanduser()
+        if not p.is_file():
+            logging.warning(
+                "ACP_FRIEND_MANIFESTS: path not found, skipping: %s", p
+            )
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            _validate_friend_manifest(data, source_label=p.stem)
+        except (OSError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+            logging.warning(
+                "ACP_FRIEND_MANIFESTS: skipping %s — %s", p, exc
+            )
+            continue
+        label = (data.get("friend_label") or p.stem) or "Friend"
+        # Path-traversal-safe: stem already strips dirs; sanitise to alnum/_/-
+        # so the id is URL-safe even for adversarial filenames.
+        raw_id = f"friend_{p.stem.lower()}"
+        source_id = "".join(
+            c if c.isalnum() or c in "_-" else "_" for c in raw_id
+        )
+        app.coverage_sources.append(FriendManifestSource(
+            source_id=source_id, label=label, color="", path=p,
+        ))
+        logging.info("Loaded friend manifest: %s (%s)", label, p)
+
 
 # Optional extensions — load any user-supplied modules from the directory
 # named by ACP_EXTENSIONS_DIR. No-op when the env var is unset or the loader

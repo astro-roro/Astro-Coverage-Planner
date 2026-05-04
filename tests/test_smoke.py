@@ -52,6 +52,60 @@ assert first["label"] == "Your archive"
 for k in ("label", "color", "kind", "attribution", "enabled_default"):
     assert k in first, f"missing {k} in source metadata"
 
+# --- Friend manifest source (Option B: hand-construct + append to registry) ---
+# Build a synthetic sanitised manifest, write it to a tempfile, register a
+# JsonManifestSource pointing at it, and confirm it surfaces in /api/sources
+# and yields polygons through coverage(). Pop it after to keep other tests
+# (and the registry) untouched.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from sanitise_manifest import sanitise_dict  # noqa: E402
+
+_friend_raw = {
+    "scan_date": "2026-04-19T00:00:00",
+    "targets": [{
+        "target_id": 99,
+        "objects": ["Synthetic Nebula"],
+        "center_ra_deg": 161.26, "center_dec_deg": -59.68,
+        "center_l_deg": 287.6, "center_b_deg": -0.63,
+        "fov_arcmin": [60, 45], "pix_arcsec": 1.0,
+        "corners_icrs": [[160, -60], [160, -59], [162, -59], [162, -60]],
+        "corners_galactic": [],
+        "telescopes": ["AP110 GTX"],
+        "filters": {"Ha": {"total_hours": 5.0, "files": 20}},
+    }],
+}
+_friend_data = sanitise_dict(_friend_raw, label="Dave")
+_friend_dir = Path(tempfile.mkdtemp())
+_friend_path = _friend_dir / "dave.json"
+_friend_path.write_text(json.dumps(_friend_data), encoding="utf-8")
+
+_friend_src = app_module.FriendManifestSource(
+    source_id="friend_dave", label="Dave", color="", path=_friend_path,
+)
+app.coverage_sources.append(_friend_src)
+try:
+    r = c.get("/api/sources")
+    print("GET /api/sources (with friend)", r.status_code)
+    assert r.status_code == 200
+    src_list = r.get_json()
+    assert len(src_list) == 2, src_list
+    friend = src_list[1]
+    assert friend["id"] == "friend_dave"
+    assert friend["label"] == "Dave"
+    assert friend["kind"] == "friend"
+    assert friend["color"] == ""  # frontend palette assigns
+    assert friend["attribution"] == "Shared by Dave"
+    # Coverage round-trip — polygons should reach the consumer.
+    regions = list(_friend_src.coverage())
+    assert len(regions) == 1, regions
+    assert regions[0]["kind"] == "polygon"
+    assert len(regions[0]["vertices"]) == 4
+    assert regions[0]["filters"]["Ha"]["hours"] == 5.0
+    print("friend manifest source OK")
+finally:
+    app.coverage_sources.pop()
+    _friend_path.unlink(missing_ok=True)
+
 r = c.get("/api/observability?lat=-33.87&lon=151.21")
 print("GET /api/observability (valid)", r.status_code)
 assert r.status_code == 200
