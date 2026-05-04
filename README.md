@@ -375,6 +375,30 @@ The loader enforces an HTTPS-only hostname allowlist (currently `alasky.cds.unis
 
 **`ACP_SURVEYS_PATH`.** Point at a custom JSON file to override the bundled registry — handy for testing or per-machine survey curation.
 
+## Finding coverage gaps
+
+When planning narrowband sessions you usually want to know where one filter has been imaged but another hasn't yet — so a follow-up session adds new data instead of duplicating coverage. ACP unions every coverage source you've enabled (your manifest, friend manifests, public-survey MOCs), intersects that union with public catalog candidates, and gives you a CSV you can paste into NINA.
+
+The control lives in the **Catalogues** rail:
+
+- **Have** / **Missing** dropdowns — pick the two filters. Defaults to `Ha` and `SII`.
+- Two hour thresholds — `≥ N h` for the *have* side (a region only counts as covered if at least one source has stacked at least this many hours), `< N h` for the *missing* side. Defaults: `1.0` and `0.5`.
+- **Use sources** — checkbox per registered source. All checked by default.
+- **Find gaps** — fetches `/api/gaps`, mounts a yellow MOC over the gap region on the map, scatters catalog candidates that fall inside it, and writes a one-line summary (`sky 0.84% • 1808 candidates • from manifest, iphas_ha`) under the buttons. Click again to hide.
+
+Endpoints:
+
+```
+GET /api/gaps?have=Ha&missing=SII&sources=manifest,iphas_ha&min_have_hours=1&max_missing_hours=0.5
+GET /api/gaps/moc.fits?<same query>
+```
+
+The JSON response carries `gap_sky_fraction`, `candidates`, the resolved `have_sources` / `missing_sources` lists, any sources skipped (with reasons), and a `moc_url` pointing at the FITS MOC for the same query. The FITS endpoint serves raw bytes — useful if you'd rather load the gap into Aladin desktop or `mocpy` directly.
+
+The legacy `/api/export/priority` CSV route stays for back-compat — same shape and headers as before, hardcoded to "Ha but no SII over the manifest source only". The new gap-finder doesn't replace it; pick whichever fits your workflow.
+
+**Without `mocpy`.** `/api/gaps` and `/api/gaps/moc.fits` return `503` (MOC algebra is the whole point of the route). `/api/export/priority` still works — it falls back to the original inline implementation. `pip install mocpy` to enable the gap-finder UI.
+
 ## Security notes
 
 - `app.py` binds to `127.0.0.1` by default. Only switch to `0.0.0.0` on a trusted LAN — the server has no authentication and exposes your manifest (including file paths) over HTTP.
