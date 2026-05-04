@@ -18,6 +18,7 @@ Env:
 - CATALOGS_PATH   path to catalogs JSON          (default: ./data/catalogs.json)
 - HOST            bind host                      (default: 127.0.0.1)
 - PORT            bind port                      (default: 5555)
+- ACP_EXTENSIONS_DIR  directory of optional extension modules (default: unset)
 """
 from __future__ import annotations
 
@@ -52,6 +53,15 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # dev: browsers revalidate every request
 app.jinja_env.auto_reload = True
+
+# Optional extensions — load any user-supplied modules from the directory
+# named by ACP_EXTENSIONS_DIR. No-op when the env var is unset or the loader
+# is absent, so a stock checkout runs unchanged.
+try:
+    from extensions import load_extensions
+    load_extensions(app)
+except ImportError:
+    pass
 
 _manifest_cache: dict | None = None
 _manifest_cache_mtime: float | None = None
