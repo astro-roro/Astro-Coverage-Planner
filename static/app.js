@@ -1122,6 +1122,46 @@ let sourcesEnabled = (() => {
   catch { return {}; }
 })();
 
+// Live MOC overlays keyed by source_id. Populated by mocToggleOn / cleared by
+// mocToggleOff. Aladin's removeOverlayByName is best-effort, so we hold the
+// instance too in case we need to fall back to deleteSelf().
+const mocLayers = {};
+
+function mocToggleOn(sourceId, color, checkbox) {
+  const url = `/api/moc/${encodeURIComponent(sourceId)}`;
+  let moc;
+  try {
+    // First toggle hits the network; subsequent toggles use the server-side disk cache.
+    moc = A.MOCFromURL(url, {
+      color,
+      opacity: 0.25,
+      lineWidth: 1,
+      name: `moc_${sourceId}`,
+    });
+  } catch (err) {
+    console.warn(`MOC source ${sourceId} failed to load:`, err);
+    if (checkbox) checkbox.checked = false;
+    sourcesEnabled[sourceId] = false;
+    return;
+  }
+  if (!moc) {
+    console.warn(`MOC source ${sourceId} failed to load: A.MOCFromURL returned`, moc);
+    if (checkbox) checkbox.checked = false;
+    sourcesEnabled[sourceId] = false;
+    return;
+  }
+  aladin.addMOC(moc);
+  mocLayers[sourceId] = moc;
+}
+
+function mocToggleOff(sourceId) {
+  const moc = mocLayers[sourceId];
+  if (!moc) return;
+  try { aladin.removeOverlayByName(`moc_${sourceId}`); } catch { /* best effort */ }
+  try { moc.deleteSelf?.(); } catch { /* best effort */ }
+  delete mocLayers[sourceId];
+}
+
 async function loadSources() {
   const host = document.getElementById("sourcesList");
   if (!host) return;
@@ -1137,26 +1177,39 @@ async function loadSources() {
   // server-supplied enabled_default for sources we haven't seen before.
   const saved = (loadUiState().sources || {});
   host.innerHTML = "";
+  // Track resolved color per source so the checkbox handler reuses the same
+  // swatch the user sees in the rail rather than recomputing it.
+  const colorById = {};
   sources.forEach((s, i) => {
     const enabled = (s.id in saved) ? !!saved[s.id] : !!s.enabled_default;
     sourcesEnabled[s.id] = enabled;
     const color = s.color || SOURCE_PALETTE[i % SOURCE_PALETTE.length];
+    colorById[s.id] = color;
     const row = document.createElement("label");
     row.className = "fchip src-row";
     if (s.attribution) row.title = s.attribution;
     row.innerHTML = `
-      <input type="checkbox" data-source="${esc(s.id)}" ${enabled ? "checked" : ""} />
+      <input type="checkbox" data-source="${esc(s.id)}" data-kind="${esc(s.kind || "")}" ${enabled ? "checked" : ""} />
       <span class="tele-swatch" style="background:${esc(color)}"></span>
       ${esc(s.label)}`;
     host.appendChild(row);
   });
   for (const cb of host.querySelectorAll("input[type=checkbox][data-source]")) {
     cb.addEventListener("change", () => {
-      sourcesEnabled[cb.dataset.source] = cb.checked;
+      const id = cb.dataset.source;
+      sourcesEnabled[id] = cb.checked;
       saveUiState();
-      // Phase 1: state-bearing no-op. Per-source visibility filtering on the
-      // map is wired in a later phase; the toggle locks in the UX shape now.
+      if (cb.dataset.kind === "moc") {
+        if (cb.checked) mocToggleOn(id, colorById[id], cb);
+        else mocToggleOff(id);
+      }
+      // Non-MOC kinds (manifest, friend) remain a state-bearing no-op here;
+      // their map filtering lands in a later phase.
     });
+  }
+  // Initial render: paint MOC layers for any source already toggled on.
+  for (const cb of host.querySelectorAll('input[type=checkbox][data-source][data-kind="moc"]')) {
+    if (cb.checked) mocToggleOn(cb.dataset.source, colorById[cb.dataset.source], cb);
   }
 }
 
