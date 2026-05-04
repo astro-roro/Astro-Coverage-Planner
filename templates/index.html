@@ -105,9 +105,24 @@
             <label class="fchip"><input type="checkbox" id="cat_emu" /> EMU cand.</label>
             <label class="fchip"><input type="checkbox" id="cat_hii" /> WISE HII</label>
           </div>
-          <div class="row">
-            <button id="gapMode">Gap mode: Ha ∧ ¬SII</button>
-            <button id="exportCsv">Export priority CSV</button>
+          <div class="gap-finder">
+            <div class="row gap-row">
+              <label class="gap-label">Have <select id="gapHave"></select></label>
+              <label class="gap-label">Missing <select id="gapMissing"></select></label>
+            </div>
+            <div class="row gap-row">
+              <label class="gap-label small">&ge; <input id="gapMinHave" type="number" step="0.1" min="0" style="width:5em" /> h</label>
+              <label class="gap-label small">&lt; <input id="gapMaxMissing" type="number" step="0.1" min="0" style="width:5em" /> h</label>
+            </div>
+            <div class="gap-sources">
+              <div class="gap-sources-label">Use sources:</div>
+              <div id="gapSourcesList"></div>
+            </div>
+            <div class="row gap-row">
+              <button id="gapMode">Find gaps</button>
+              <button id="exportCsv">Export priority CSV</button>
+            </div>
+            <div id="gapStats" class="gap-stats"></div>
           </div>
         </div>
       </details>

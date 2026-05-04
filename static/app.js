@@ -54,7 +54,16 @@ let selectedTelescopes = new Set(); // populated after manifest loads
 let telescopeColor = {};  // telescope name → color
 let filterLogic = "any";
 let minHours = 0;
-let gapMode = false;
+// Gap-finder: server-side multi-source gap analysis (Phase 4b). Replaces the
+// old client-side `Ha ∧ ¬SII` toggle that just filtered the panel list.
+let gapEnabled = false;
+let gapHave = "Ha";
+let gapMissing = "SII";
+let gapMinHave = 1.0;
+let gapMaxMissing = 0.5;
+let gapSourceIds = [];     // explicit selection; empty = "all enabled"
+let gapMocLayer = null;    // live A.MOCFromURL overlay for the gap region
+let gapCandidatesCat = null; // live A.catalog for catalog candidates inside the gap
 let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
@@ -117,10 +126,16 @@ function applyUiStatePreManifest() {
     if (depthVal) depthVal.textContent = `${minHours}h`;
   }
 
-  if (s.gapMode) {
-    gapMode = true;
-    const btn = document.getElementById("gapMode");
-    if (btn) btn.style.background = "#663";
+  // Gap-finder restore. The gap-finder DOM (selects, source list) hasn't been
+  // populated yet at this point — populateGapDropdowns / populateGapSources will
+  // see these state vars and pick the right values when they run.
+  if (s.gap && typeof s.gap === "object") {
+    if (typeof s.gap.have === "string") gapHave = s.gap.have;
+    if (typeof s.gap.missing === "string") gapMissing = s.gap.missing;
+    if (typeof s.gap.minHave === "number") gapMinHave = s.gap.minHave;
+    if (typeof s.gap.maxMissing === "number") gapMaxMissing = s.gap.maxMissing;
+    if (Array.isArray(s.gap.sourceIds)) gapSourceIds = s.gap.sourceIds.slice();
+    // `enabled` is handled after the manifest loads (see init()).
   }
 
   if (typeof s.projection === "string" && s.projection) {
@@ -231,7 +246,14 @@ function saveUiState() {
       customLat: document.getElementById("latIn")?.value || "",
       customLon: document.getElementById("lonIn")?.value || "",
       imageSurvey,
-      gapMode,
+      gap: {
+        have: gapHave,
+        missing: gapMissing,
+        minHave: gapMinHave,
+        maxMissing: gapMaxMissing,
+        sourceIds: gapSourceIds.slice(),
+        enabled: gapEnabled,
+      },
       selectedTargetId,
       planningMode,
       selectedPlanId,
@@ -520,10 +542,6 @@ function targetMatches(t) {
 
   if (completionFilter === "finished" && !isTargetFinished(t)) return false;
   if (completionFilter === "unfinished" && isTargetFinished(t)) return false;
-
-  if (gapMode) {
-    return hasAny("Ha") && !hasAny("SII") && (hrs.Ha || 0) >= minHours;
-  }
 
   if (filterLogic === "any") {
     return [...selectedFilters].some(f => has(f));
@@ -1158,6 +1176,165 @@ function mocToggleOff(sourceId) {
   delete mocLayers[sourceId];
 }
 
+// --- Gap finder (Phase 4b) ---
+
+// Walk every target's filters dict and produce a sorted, deduped list of
+// filter names that actually appear in this manifest. We don't trust a
+// hardcoded ["Ha","SII","OIII",...] because friend manifests / future surveys
+// may carry filters this client doesn't know about.
+function manifestFilterNames() {
+  const seen = new Set();
+  for (const t of (manifest?.targets || [])) {
+    for (const f of Object.keys(t.filters || {})) seen.add(f);
+  }
+  return [...seen].sort();
+}
+
+function populateGapDropdowns() {
+  const have = document.getElementById("gapHave");
+  const missing = document.getElementById("gapMissing");
+  if (!have || !missing) return;
+  const names = manifestFilterNames();
+  // Empty manifest fallback — keep the selects populated with the persisted
+  // values so the user can still type/submit.
+  if (names.length === 0) names.push(gapHave, gapMissing);
+  const opts = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  have.innerHTML = opts;
+  missing.innerHTML = opts;
+  have.value = names.includes(gapHave) ? gapHave : (names[0] || "Ha");
+  missing.value = names.includes(gapMissing) ? gapMissing : (names[1] || names[0] || "SII");
+  gapHave = have.value;
+  gapMissing = missing.value;
+
+  document.getElementById("gapMinHave").value = String(gapMinHave);
+  document.getElementById("gapMaxMissing").value = String(gapMaxMissing);
+
+  have.addEventListener("change", e => { gapHave = e.target.value; saveUiState(); });
+  missing.addEventListener("change", e => { gapMissing = e.target.value; saveUiState(); });
+  document.getElementById("gapMinHave").addEventListener("change", e => {
+    const v = parseFloat(e.target.value);
+    if (isFinite(v) && v >= 0) { gapMinHave = v; saveUiState(); }
+  });
+  document.getElementById("gapMaxMissing").addEventListener("change", e => {
+    const v = parseFloat(e.target.value);
+    if (isFinite(v) && v >= 0) { gapMaxMissing = v; saveUiState(); }
+  });
+}
+
+function populateGapSources(sources) {
+  const host = document.getElementById("gapSourcesList");
+  if (!host) return;
+  host.innerHTML = "";
+  // First-run default = every source checked. Persisted state wins after that.
+  const persisted = gapSourceIds.length > 0
+    ? new Set(gapSourceIds)
+    : new Set(sources.map(s => s.id));
+  gapSourceIds = sources.filter(s => persisted.has(s.id)).map(s => s.id);
+  for (const s of sources) {
+    const row = document.createElement("label");
+    row.className = "fchip";
+    if (s.attribution) row.title = s.attribution;
+    const checked = persisted.has(s.id) ? "checked" : "";
+    row.innerHTML = `
+      <input type="checkbox" data-gap-source="${esc(s.id)}" ${checked} />
+      ${esc(s.label)}`;
+    host.appendChild(row);
+  }
+  for (const cb of host.querySelectorAll("input[data-gap-source]")) {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.gapSource;
+      if (cb.checked) {
+        if (!gapSourceIds.includes(id)) gapSourceIds.push(id);
+      } else {
+        gapSourceIds = gapSourceIds.filter(x => x !== id);
+      }
+      saveUiState();
+    });
+  }
+}
+
+function clearGapOverlays() {
+  if (gapMocLayer) {
+    try { aladin.removeOverlay(gapMocLayer); } catch (err) { console.warn("gap MOC remove failed:", err); }
+    gapMocLayer = null;
+  }
+  if (gapCandidatesCat) {
+    try { aladin.removeOverlay(gapCandidatesCat); } catch (err) { console.warn("gap candidates remove failed:", err); }
+    gapCandidatesCat = null;
+  }
+}
+
+async function loadGaps() {
+  const stats = document.getElementById("gapStats");
+  const params = new URLSearchParams({
+    have: gapHave,
+    missing: gapMissing,
+    min_have_hours: String(gapMinHave),
+    max_missing_hours: String(gapMaxMissing),
+  });
+  if (gapSourceIds.length > 0) params.set("sources", gapSourceIds.join(","));
+  let resp;
+  try {
+    resp = await fetch(`/api/gaps?${params.toString()}`);
+  } catch (e) {
+    console.warn("gap fetch failed:", e);
+    if (stats) stats.textContent = "(network error)";
+    return;
+  }
+  if (resp.status === 503) {
+    if (stats) stats.textContent = "(mocpy not installed — gap-finder unavailable)";
+    return;
+  }
+  if (!resp.ok) {
+    let msg = `(error ${resp.status})`;
+    try { const j = await resp.json(); if (j.error) msg = `(${j.error})`; } catch {}
+    if (stats) stats.textContent = msg;
+    console.warn("gap fetch returned", resp.status);
+    return;
+  }
+  const data = await resp.json();
+
+  // Drop the previous overlays before mounting the new ones — Aladin doesn't
+  // de-dupe by name, layered ghosts tank FPS at high MOC orders.
+  clearGapOverlays();
+
+  if (data.moc_url) {
+    // Same perimeter+fill recipe as mocToggleOn — explicitly off `edge` mode
+    // (per-cell borders), which is the FPS killer at order 11+.
+    gapMocLayer = A.MOCFromURL(data.moc_url, {
+      name: "gap_moc",
+      perimeter: true,
+      fill: true,
+      color: "#ffd24d",
+      fillColor: "#ffd24d",
+      lineWidth: 2,
+      opacity: 0.35,
+    });
+    aladin.addMOC(gapMocLayer);
+  }
+
+  const cands = data.candidates || [];
+  if (cands.length > 0) {
+    gapCandidatesCat = A.catalog({
+      name: "gap_candidates",
+      color: "#ffe27a",
+      sourceSize: 8,
+      shape: "circle",
+    });
+    aladin.addCatalog(gapCandidatesCat);
+    const sources = cands
+      .filter(c => c.ra_deg != null && c.dec_deg != null)
+      .map(c => A.source(c.ra_deg, c.dec_deg, { name: c.name, catalog: c.catalog }));
+    if (sources.length > 0) gapCandidatesCat.addSources(sources);
+  }
+
+  if (stats) {
+    const pct = (100 * (data.gap_sky_fraction || 0)).toFixed(2);
+    const from = (data.have_sources || []).join(", ") || "(none)";
+    stats.textContent = `sky ${pct}% • ${cands.length} candidates • from ${from}`;
+  }
+}
+
 async function loadSources() {
   const host = document.getElementById("sourcesList");
   if (!host) return;
@@ -1206,6 +1383,21 @@ async function loadSources() {
   // Initial render: paint MOC layers for any source already toggled on.
   for (const cb of host.querySelectorAll('input[type=checkbox][data-source][data-kind="moc"]')) {
     if (cb.checked) mocToggleOn(cb.dataset.source, colorById[cb.dataset.source], cb);
+  }
+  // Hand the same source list to the gap-finder rail.
+  populateGapSources(sources);
+  // If the user had the gap overlay on at last save, fire it now that both
+  // dropdowns and source list are wired up. mocpy-missing sessions silently
+  // 503; user re-toggles to retry.
+  const savedGap = loadUiState();
+  if (savedGap?.gap?.enabled) {
+    gapEnabled = true;
+    const btn = document.getElementById("gapMode");
+    if (btn) {
+      btn.textContent = "Hide gaps";
+      btn.style.background = "#663";
+    }
+    loadGaps();
   }
 }
 
@@ -1274,11 +1466,22 @@ function setupFilterUI() {
     saveUiState();
     redrawFootprints();
   });
+  populateGapDropdowns();
   document.getElementById("gapMode").addEventListener("click", () => {
-    gapMode = !gapMode;
-    document.getElementById("gapMode").style.background = gapMode ? "#663" : "";
+    gapEnabled = !gapEnabled;
+    const btn = document.getElementById("gapMode");
+    if (gapEnabled) {
+      btn.textContent = "Hide gaps";
+      btn.style.background = "#663";
+      loadGaps();
+    } else {
+      btn.textContent = "Find gaps";
+      btn.style.background = "";
+      clearGapOverlays();
+      const stats = document.getElementById("gapStats");
+      if (stats) stats.textContent = "";
+    }
     saveUiState();
-    redrawFootprints();
   });
   document.getElementById("exportCsv").addEventListener("click", () => {
     window.location = "/api/export/priority";
