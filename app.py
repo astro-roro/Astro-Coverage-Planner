@@ -10,6 +10,7 @@ Endpoints:
 - GET /api/manifest              slim manifest (no large path lists)
 - GET /api/target/<id>           full per-target detail
 - GET /api/catalogs              optional overlay catalogs
+- GET /api/sources               list of registered coverage sources
 - GET /api/observability         altaz for all targets at (lat, lon, time)
 - GET /api/export/priority       CSV of gap-mode candidates
 
@@ -53,15 +54,6 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # dev: browsers revalidate every request
 app.jinja_env.auto_reload = True
-
-# Optional extensions — load any user-supplied modules from the directory
-# named by ACP_EXTENSIONS_DIR. No-op when the env var is unset or the loader
-# is absent, so a stock checkout runs unchanged.
-try:
-    from extensions import load_extensions
-    load_extensions(app)
-except ImportError:
-    pass
 
 if not CATALOGS_PATH.exists():
     print(
@@ -153,6 +145,69 @@ def save_target_overrides(data: dict) -> None:
     TARGET_OVERRIDES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _target_overrides_cache = data
     _target_overrides_cache_mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
+
+
+class ManifestCoverageSource:
+    """Built-in coverage source backed by the local archive manifest.
+
+    Adapts the manifest's per-target shape to the `CoverageSource` protocol
+    in `sources.py` without duplicating any loading logic — `coverage()` is
+    a thin generator over `load_manifest()`.
+    """
+
+    def id(self) -> str:
+        return "manifest"
+
+    def metadata(self) -> dict:
+        # Empty color string lets the frontend assign from a palette.
+        return {
+            "label": "Your archive",
+            "color": "",
+            "kind": "manifest",
+            "attribution": "Local archive scan",
+            "enabled_default": True,
+        }
+
+    def coverage(self):
+        manifest = load_manifest()
+        if not manifest:
+            return
+        for t in manifest.get("targets", []) or []:
+            corners = t.get("corners_icrs") or []
+            vertices = [(float(ra), float(dec)) for ra, dec in corners]
+            filters = {
+                fname: {
+                    "hours": float(d.get("total_hours", 0.0)),
+                    "files": int(d.get("files", 0)),
+                }
+                for fname, d in (t.get("filters") or {}).items()
+            }
+            yield {
+                "kind": "polygon",
+                "vertices": vertices,
+                "filters": filters,
+                "name": ", ".join(t.get("objects") or []),
+                "metadata": {
+                    "target_id": t.get("target_id"),
+                    "telescopes": list(t.get("telescopes") or []),
+                },
+            }
+
+
+# Coverage-source registry. Extensions can append their own sources to this
+# list inside their `register(app)` body; the built-in manifest source ships
+# pre-registered so a stock checkout always exposes one entry on /api/sources.
+app.coverage_sources = [ManifestCoverageSource()]
+
+# Optional extensions — load any user-supplied modules from the directory
+# named by ACP_EXTENSIONS_DIR. No-op when the env var is unset or the loader
+# is absent, so a stock checkout runs unchanged. Loaded after the built-in
+# source registers so extensions can read or extend `app.coverage_sources`.
+try:
+    from extensions import load_extensions
+    load_extensions(app)
+except ImportError:
+    pass
 
 
 def _fov_arcmin(telescope: dict | None, camera: dict | None) -> list[float]:
@@ -407,6 +462,23 @@ def api_target(target_id: int):
 @app.route("/api/catalogs")
 def api_catalogs():
     return jsonify(load_catalogs())
+
+
+@app.route("/api/sources")
+def api_sources():
+    """List of registered coverage sources for the frontend Sources rail."""
+    out = []
+    for src in app.coverage_sources:
+        meta = src.metadata()
+        out.append({
+            "id": src.id(),
+            "label": meta["label"],
+            "color": meta["color"],
+            "kind": meta["kind"],
+            "attribution": meta["attribution"],
+            "enabled_default": meta["enabled_default"],
+        })
+    return jsonify(out)
 
 
 def _clamped_float(name: str, default: float, lo: float, hi: float) -> float:

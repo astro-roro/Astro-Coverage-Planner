@@ -41,6 +41,17 @@ r = c.get("/api/catalogs")
 print("GET /api/catalogs", r.status_code)
 assert r.status_code == 200
 
+r = c.get("/api/sources")
+print("GET /api/sources", r.status_code)
+assert r.status_code == 200
+sources = r.get_json()
+assert isinstance(sources, list) and sources, "expected at least one registered source"
+first = sources[0]
+assert first["id"] == "manifest"
+assert first["label"] == "Your archive"
+for k in ("label", "color", "kind", "attribution", "enabled_default"):
+    assert k in first, f"missing {k} in source metadata"
+
 r = c.get("/api/observability?lat=-33.87&lon=151.21")
 print("GET /api/observability (valid)", r.status_code)
 assert r.status_code == 200

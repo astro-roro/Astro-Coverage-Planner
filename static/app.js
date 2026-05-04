@@ -238,8 +238,10 @@ function saveUiState() {
       completionFilter,
       accordions: {
         railFilters: !!document.getElementById("railFilters")?.open,
+        railSources: !!document.getElementById("railSources")?.open,
         railCatalogs: !!document.getElementById("railCatalogs")?.open,
       },
+      sources: sourcesEnabled,
     };
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
   } catch { /* localStorage full / disabled — ignore */ }
@@ -1106,6 +1108,51 @@ function drawCatalogOverlay(cfg, enabled) {
   }
 }
 
+// Palette for source swatches when a source's metadata.color is empty.
+// Fixed cycle so each source gets a stable color across reloads (the
+// list ordering on /api/sources is stable too — manifest first, then
+// extensions in registration order).
+const SOURCE_PALETTE = ["#7aa2ff", "#ff8a3d", "#65c275", "#c87aff", "#ffc857", "#44d9d3"];
+let sourcesEnabled = {};   // source_id -> bool. Phase-1 storage only; map filtering arrives later.
+
+async function loadSources() {
+  const host = document.getElementById("sourcesList");
+  if (!host) return;
+  let sources = [];
+  try {
+    const r = await fetch("/api/sources");
+    sources = await r.json();
+  } catch (e) {
+    console.warn("sources unavailable:", e);
+    return;
+  }
+  // Restore previously-saved per-source enabled state, falling back to the
+  // server-supplied enabled_default for sources we haven't seen before.
+  const saved = (loadUiState().sources || {});
+  host.innerHTML = "";
+  sources.forEach((s, i) => {
+    const enabled = (s.id in saved) ? !!saved[s.id] : !!s.enabled_default;
+    sourcesEnabled[s.id] = enabled;
+    const color = s.color || SOURCE_PALETTE[i % SOURCE_PALETTE.length];
+    const row = document.createElement("label");
+    row.className = "fchip src-row";
+    if (s.attribution) row.title = s.attribution;
+    row.innerHTML = `
+      <input type="checkbox" data-source="${esc(s.id)}" ${enabled ? "checked" : ""} />
+      <span class="tele-swatch" style="background:${esc(color)}"></span>
+      ${esc(s.label)}`;
+    host.appendChild(row);
+  });
+  for (const cb of host.querySelectorAll("input[type=checkbox][data-source]")) {
+    cb.addEventListener("change", () => {
+      sourcesEnabled[cb.dataset.source] = cb.checked;
+      saveUiState();
+      // Phase 1: state-bearing no-op. Per-source visibility filtering on the
+      // map is wired in a later phase; the toggle locks in the UX shape now.
+    });
+  }
+}
+
 async function loadCatalogs() {
   try {
     const r = await fetch("/api/catalogs");
@@ -1191,7 +1238,7 @@ function setupFilterUI() {
     });
   }
 
-  for (const id of ["railFilters", "railCatalogs"]) {
+  for (const id of ["railFilters", "railSources", "railCatalogs"]) {
     const el = document.getElementById(id);
     if (el) el.addEventListener("toggle", () => saveUiState());
   }
@@ -1414,6 +1461,7 @@ function init() {
 
     redrawFootprints();
     loadCatalogs();
+    loadSources();
     updateObsNow();
     setInterval(updateObsNow, 60_000);
 
