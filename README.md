@@ -163,6 +163,7 @@ point `PIPELINE_DB` at it and the manifest will include per-target sub-hours (us
 | `PORT`            | `5555`                                                      | Bind port                                            |
 | `ACP_EXTENSIONS_DIR` | `%APPDATA%/acp/extensions` (Win) / `~/.config/acp/extensions` | Directory of extension modules — see [Extensions](#extensions) |
 | `ACP_FRIEND_MANIFESTS` | unset | Semicolon-separated paths to sanitised friend manifests — see [Sharing](#sharing-coverage-with-friends) |
+| `ACP_SURVEYS_PATH` | `./data/surveys.json` | Path to the survey registry — see [Public surveys](#public-surveys) |
 
 ## Optional: catalog overlays
 
@@ -343,6 +344,36 @@ python app.py
 Each manifest becomes its own toggleable layer in the **Sources** rail with a distinct color from the palette.
 
 **Failure modes.** Rejected manifests log a `WARNING` to Python's `logging` channel and are skipped; other friends still load and the app still starts. Hard caps applied during validation: 10,000 targets, 64 polygons per target, 64 vertices per polygon.
+
+## Public surveys
+
+ACP can pull public-survey footprints (IPHAS, VPHAS+, etc.) from CDS as MOCs and overlay them on the map alongside your own coverage. Useful for spotting where a survey already has Hα coverage so you can prioritise the gaps. Ships with one survey wired up; adding more is a one-line PR to `data/surveys.json`.
+
+**What ships out of the box.** IPHAS DR2 Hα (northern Galactic plane). Toggleable in the **Sources** rail, off by default.
+
+**Adding a survey.** Append an entry to `data/surveys.json`:
+
+```json
+{
+  "id": "vphas_ha",
+  "label": "VPHAS+ Hα",
+  "color": "#5b9bc2",
+  "filter": "Ha",
+  "moc_url": "https://alasky.cds.unistra.fr/...",
+  "attribution": "VPHAS+ DR4 (Drew et al. 2014)",
+  "enabled_default": false
+}
+```
+
+The loader enforces an HTTPS-only hostname allowlist (currently `alasky.cds.unistra.fr` and `alasky.u-strasbg.fr`). Adding other CDS mirrors or other survey hosts means editing the allowlist constant in `app.py` — flag this as the right place to push back in PR review.
+
+**How fetching works.** Lazy on first `/api/moc/<id>` hit. Cached at `data/moc_cache/<id>.fits` with a 30-day TTL and content-hash invalidation. Subsequent toggles re-use the cache.
+
+**Hard limits enforced.** 10MB per MOC, 30s fetch timeout, response must parse as a FITS MOC via `mocpy` before being cached, otherwise `502`.
+
+**Without `mocpy`.** ACP runs fine. Sources still appear in the rail but `/api/moc/<id>` returns `503`. `pip install mocpy` to enable.
+
+**`ACP_SURVEYS_PATH`.** Point at a custom JSON file to override the bundled registry — handy for testing or per-machine survey curation.
 
 ## Security notes
 
