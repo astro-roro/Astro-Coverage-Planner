@@ -1367,6 +1367,19 @@ def main():
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"[{time.time()-t0:6.1f}s] Wrote {MANIFEST_PATH}")
 
+    # Optional sanitised copy for sharing — same data, but stripped of paths,
+    # serials, and exact dates. See scripts/sanitise_manifest.py.
+    if _CLI_ARGS and _CLI_ARGS.sanitise:
+        from sanitise_manifest import sanitise_dict, validate_no_paths
+        out_path = Path(_CLI_ARGS.sanitise)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        sanitised = sanitise_dict(manifest, label=_CLI_ARGS.label or "")
+        validate_no_paths(sanitised)
+        out_path.write_text(
+            json.dumps(sanitised, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        print(f"[{time.time()-t0:6.1f}s] Wrote sanitised copy to {out_path}")
+
     # Step 8: Summary markdown
     write_summary(manifest)
     print(f"[{time.time()-t0:6.1f}s] Wrote {SUMMARY_PATH}")
@@ -1450,7 +1463,22 @@ def write_summary(m: dict):
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")
 
 
+_CLI_ARGS = None
+
+
+def _parse_cli(argv: list[str] | None = None):
+    import argparse
+    ap = argparse.ArgumentParser(description="Build the coverage manifest.")
+    ap.add_argument("--sanitise", metavar="OUT",
+                    help="After writing the manifest, also write a sanitised "
+                         "(shareable) copy to this path.")
+    ap.add_argument("--label", default="",
+                    help="Friend-label embedded in the sanitised manifest.")
+    return ap.parse_args(argv)
+
+
 if __name__ == "__main__":
+    _CLI_ARGS = _parse_cli()
     try:
         main()
     except Exception:
