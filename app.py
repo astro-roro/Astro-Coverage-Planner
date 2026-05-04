@@ -63,6 +63,13 @@ try:
 except ImportError:
     pass
 
+if not CATALOGS_PATH.exists():
+    print(
+        f"[acp] WARN: catalogs file not found at {CATALOGS_PATH} — "
+        "right-rail catalog overlays (Green SNR / SMGPS / EMU / WISE HII) will be empty. "
+        "Run scripts/fetch_catalogs.py to populate (network I/O, ~30s)."
+    )
+
 _manifest_cache: dict | None = None
 _manifest_cache_mtime: float | None = None
 _catalogs_cache: dict | None = None
