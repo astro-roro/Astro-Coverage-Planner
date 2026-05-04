@@ -1123,33 +1123,30 @@ let sourcesEnabled = (() => {
 })();
 
 // Live MOC overlays keyed by source_id. Populated by mocToggleOn / cleared by
-// mocToggleOff. Aladin's removeOverlayByName is best-effort, so we hold the
-// instance too in case we need to fall back to deleteSelf().
+// mocToggleOff.
 const mocLayers = {};
 
 function mocToggleOn(sourceId, color, checkbox) {
   const url = `/api/moc/${encodeURIComponent(sourceId)}`;
-  let moc;
-  try {
-    // First toggle hits the network; subsequent toggles use the server-side disk cache.
-    moc = A.MOCFromURL(url, {
-      color,
-      opacity: 0.25,
-      lineWidth: 1,
-      name: `moc_${sourceId}`,
-    });
-  } catch (err) {
-    console.warn(`MOC source ${sourceId} failed to load:`, err);
+  // First toggle hits the network; subsequent toggles use the server-side disk cache.
+  // perimeter+fill explicitly disables `edge` (per-HEALPix-cell borders), which the
+  // MOC constructor force-enables when all three render modes are falsy and which
+  // murders FPS at order 11+.
+  const moc = A.MOCFromURL(url, {
+    name: `moc_${sourceId}`,
+    perimeter: true,
+    fill: true,
+    color,
+    fillColor: color,
+    lineWidth: 1,
+    opacity: 0.25,
+  }, undefined, () => {
+    // errorCallback — fetch or wasm parse failed.
+    console.warn(`MOC source ${sourceId} failed to load`);
     if (checkbox) checkbox.checked = false;
     sourcesEnabled[sourceId] = false;
-    return;
-  }
-  if (!moc) {
-    console.warn(`MOC source ${sourceId} failed to load: A.MOCFromURL returned`, moc);
-    if (checkbox) checkbox.checked = false;
-    sourcesEnabled[sourceId] = false;
-    return;
-  }
+    delete mocLayers[sourceId];
+  });
   aladin.addMOC(moc);
   mocLayers[sourceId] = moc;
 }
@@ -1157,8 +1154,7 @@ function mocToggleOn(sourceId, color, checkbox) {
 function mocToggleOff(sourceId) {
   const moc = mocLayers[sourceId];
   if (!moc) return;
-  try { aladin.removeOverlayByName(`moc_${sourceId}`); } catch { /* best effort */ }
-  try { moc.deleteSelf?.(); } catch { /* best effort */ }
+  try { aladin.removeOverlay(moc); } catch (err) { console.warn("removeOverlay failed:", err); }
   delete mocLayers[sourceId];
 }
 
