@@ -12,6 +12,7 @@ data/gear.json
 data/plans.json
 data/target_overrides.json
 data/exports/
+data/moc_cache/
 data/*.local.json
 .cache/
 
