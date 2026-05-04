@@ -538,8 +538,12 @@ if _friend_paths:
             continue
         label = (data.get("friend_label") or p.stem) or "Friend"
         # Path-traversal-safe: stem already strips dirs; sanitise to alnum/_/-
-        # so the id is URL-safe even for adversarial filenames.
-        raw_id = f"friend_{p.stem.lower()}"
+        # so the id is URL-safe even for adversarial filenames. Skip the
+        # `friend_` prefix if the filename already starts with one (case- and
+        # whitespace-insensitive) to avoid `friend_friend_dave` ids.
+        stem_lower = p.stem.lower()
+        stem_canonical = stem_lower.replace(" ", "_")
+        raw_id = stem_lower if stem_canonical.startswith("friend_") else f"friend_{stem_lower}"
         source_id = "".join(
             c if c.isalnum() or c in "_-" else "_" for c in raw_id
         )
