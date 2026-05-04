@@ -23,3 +23,6 @@ Thumbs.db
 
 # Claude Code settings — keep local, never push
 .claude/
+
+# Private extensions (loaded at runtime from outside the repo)
+blueprints/
