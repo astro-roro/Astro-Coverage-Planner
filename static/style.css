@@ -662,3 +662,55 @@ button:active { background: #262e40; }
   color: #a2aec2;
 }
 .plan-remaining-block strong { color: #e8ecf3; font-weight: 600; }
+
+/* Gap-finder block in the Catalogues accordion. */
+.gap-finder {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+}
+.gap-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.gap-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #a2aec2;
+  font-size: 12px;
+}
+.gap-label.small { font-size: 0.85em; }
+.gap-sources { margin-top: 2px; }
+.gap-sources-label {
+  color: #78839a;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+#gapSourcesList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#gapSourcesList .fchip {
+  padding: 1px 5px;
+  font-size: 11px;
+}
+#gapSourcesList .fchip input { transform: scale(0.85); }
+.gap-stats {
+  font-style: italic;
+  color: #888;
+  font-size: 11px;
+  margin-top: 4px;
+  min-height: 14px;
+}
+#gapHave, #gapMissing {
+  padding: 2px 6px;
+  font-size: 11px;
+}
