@@ -49,17 +49,23 @@ def target(tid: int, name: str, ra: float, dec: float, l_deg: float, b_deg: floa
 
 
 def main() -> None:
+    # Five well-known targets spanning both hemispheres, with three
+    # rig combos so the legend shows visual variety. All telescope and
+    # camera labels are deliberately generic (no brand names) — this is
+    # a "look how the viewer works" demo, not "look at the author's gear".
     targets = [
-        target(1, "Eta Carinae",   161.26, -59.68, 287.60, -0.63,
-               {"Ha": 3.2, "OIII": 1.4, "SII": 0.3}, "RedCat 51", "ASI2600MM Pro"),
-        target(2, "Tarantula Nebula", 84.67, -69.10, 279.46, -31.67,
-               {"Ha": 5.1, "OIII": 2.2, "SII": 1.8}, "RedCat 51", "ASI2600MM Pro"),
-        target(3, "Rho Ophiuchi",    246.82, -24.39, 353.15, 16.95,
-               {"L": 2.0, "R": 1.5, "G": 1.5, "B": 1.5}, "HyperStar", "ASI2600MC Pro"),
-        target(4, "Helix Nebula",    337.41, -20.84, 36.16, -57.12,
-               {"Ha": 4.2, "OIII": 3.1, "SII": 2.0}, "RedCat 51", "ASI2600MM Pro"),
-        target(5, "Running Chicken", 172.00, -62.68, 294.63, 0.04,
-               {"Ha": 2.6, "OIII": 0.9, "SII": 0.1}, "RedCat 51", "ASI2600MM Pro"),
+        target(1, "Orion Nebula (M 42)",       83.82,  -5.39, 209.01, -19.38,
+               {"Ha": 3.4, "OIII": 1.8, "SII": 0.6}, "Wide-field refractor", "Mono CMOS"),
+        target(2, "Andromeda Galaxy (M 31)",   10.68,  41.27, 121.17, -21.57,
+               {"L": 4.1, "R": 2.0, "G": 2.0, "B": 2.0}, "Wide-field refractor", "Colour CMOS",
+               fov_arcmin=(180.0, 135.0)),
+        target(3, "Eta Carinae Nebula",       161.26, -59.68, 287.60,  -0.63,
+               {"Ha": 5.6, "OIII": 2.4, "SII": 1.9}, "Wide-field refractor", "Mono CMOS"),
+        target(4, "Pleiades (M 45)",           56.85,  24.12, 166.57, -23.51,
+               {"L": 2.2, "R": 1.4, "G": 1.4, "B": 1.4}, "Wide-field refractor", "Colour CMOS"),
+        target(5, "Lagoon Nebula (M 8)",      270.92, -24.39,   6.02,  -1.18,
+               {"Ha": 4.8, "OIII": 0.4, "L": 1.5}, "8-inch SCT", "Mono CMOS",
+               fov_arcmin=(50.0, 38.0)),
     ]
     total_hours = round(sum(
         d["total_hours"] for t in targets for d in t["filters"].values()

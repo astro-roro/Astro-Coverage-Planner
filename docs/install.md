@@ -140,7 +140,7 @@ Once your manifest is built, refresh the browser tab — your archive will appea
 
 ## Optional: load demo data first
 
-If you'd like to poke around the viewer before doing the work to scan your archive, you can load five well-known southern-sky targets as a sample:
+If you'd like to poke around the viewer before doing the work to scan your archive, you can load five well-known targets (M 42, M 31, Eta Carinae, M 45, M 8 — spanning both hemispheres) as sample data:
 
     python scripts/make_demo_manifest.py
 
