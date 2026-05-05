@@ -26,6 +26,12 @@ app_module.SITES_PATH = _tmp_sites
 app_module._sites_cache = None
 app_module._sites_cache_mtime = None
 
+# Same for saved searches.
+_tmp_saved = Path(tempfile.mkdtemp()) / "saved_searches.json"
+app_module.SAVED_SEARCHES_PATH = _tmp_saved
+app_module._saved_searches_cache = None
+app_module._saved_searches_cache_mtime = None
+
 c = app.test_client()
 
 r = c.get("/")
@@ -483,6 +489,38 @@ r = c.post("/api/sites", json={"sites": [
 ]})
 print("POST /api/sites (duplicate id)", r.status_code)
 assert r.status_code == 400
+
+# --- Saved Inventory searches (Plan 6) ---
+r = c.get("/api/saved-searches")
+print("GET /api/saved-searches (empty)", r.status_code)
+assert r.status_code == 200 and r.get_json()["searches"] == []
+
+r = c.post("/api/saved-searches", json={
+    "name": "PNe needing OIII",
+    "source_id": "demo_tiles",
+    "filters": {"priorities": [1, 2], "missing": ["OIII"], "categories": ["PNe"], "hidePlanned": True},
+})
+print("POST /api/saved-searches", r.status_code)
+assert r.status_code == 201
+saved = r.get_json()
+assert saved["id"] and saved["name"] == "PNe needing OIII"
+assert saved["filters"]["hidePlanned"] is True
+saved_id = saved["id"]
+
+r = c.get("/api/saved-searches")
+assert len(r.get_json()["searches"]) == 1
+
+r = c.post("/api/saved-searches", json={"source_id": "x", "filters": {}})
+print("POST /api/saved-searches (no name)", r.status_code)
+assert r.status_code == 400
+
+r = c.delete(f"/api/saved-searches/{saved_id}")
+print("DELETE /api/saved-searches/<id>", r.status_code)
+assert r.status_code == 204
+
+r = c.delete(f"/api/saved-searches/{saved_id}")
+print("DELETE /api/saved-searches/<id> (already gone)", r.status_code)
+assert r.status_code == 404
 
 r = c.get("/api/ts-templates")
 print("GET /api/ts-templates", r.status_code)

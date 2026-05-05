@@ -13,6 +13,8 @@ Endpoints:
 - GET /api/catalog-registry      declarative list of catalogues to surface in the rail
 - GET /api/tile-sources          metadata for every registered PrioritisedTilesSource
 - GET /api/tiles/<source_id>     tile list for one source (filtered server-side optionally)
+- GET /api/saved-searches, POST  CRUD for saved Inventory filter bundles
+- DELETE /api/saved-searches/<id>
 - GET /api/sources               list of registered coverage sources
 - GET /api/moc/<source_id>       FITS MOC blob for a survey source (lazy-fetched, cached)
 - GET /api/observability         altaz for all targets at (lat, lon, time)
@@ -73,6 +75,8 @@ CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catal
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
 SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
+SAVED_SEARCHES_PATH = Path(os.environ.get(
+    "SAVED_SEARCHES_PATH", REPO_ROOT / "data" / "saved_searches.json"))
 TARGET_OVERRIDES_PATH = Path(os.environ.get(
     "TARGET_OVERRIDES_PATH", REPO_ROOT / "data" / "target_overrides.json"))
 TS_DB_PATH = os.environ.get(
@@ -118,6 +122,8 @@ _target_overrides_cache: dict | None = None
 _target_overrides_cache_mtime: float | None = None
 _sites_cache: dict | None = None
 _sites_cache_mtime: float | None = None
+_saved_searches_cache: dict | None = None
+_saved_searches_cache_mtime: float | None = None
 # Per-(site, manifest, year) cache of computed visibility bins. Visibility is
 # essentially constant year-to-year (sun barycentric position is fixed
 # relative to RA/Dec) so a one-shot compute per site is fine, and the entry
@@ -225,6 +231,26 @@ def save_sites(data: dict) -> None:
     SITES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _sites_cache = data
     _sites_cache_mtime = SITES_PATH.stat().st_mtime
+
+
+def load_saved_searches() -> dict:
+    global _saved_searches_cache, _saved_searches_cache_mtime
+    if not SAVED_SEARCHES_PATH.exists():
+        return {"version": 1, "searches": []}
+    mtime = SAVED_SEARCHES_PATH.stat().st_mtime
+    if _saved_searches_cache is None or _saved_searches_cache_mtime != mtime:
+        _saved_searches_cache = json.loads(
+            SAVED_SEARCHES_PATH.read_text(encoding="utf-8"))
+        _saved_searches_cache_mtime = mtime
+    return _saved_searches_cache
+
+
+def save_saved_searches(data: dict) -> None:
+    global _saved_searches_cache, _saved_searches_cache_mtime
+    SAVED_SEARCHES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SAVED_SEARCHES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _saved_searches_cache = data
+    _saved_searches_cache_mtime = SAVED_SEARCHES_PATH.stat().st_mtime
 
 
 def load_catalog_registry() -> dict:
@@ -1158,6 +1184,70 @@ def api_tiles(source_id: str):
         logging.warning("tile source %r tiles() raised: %s", source_id, exc)
         return jsonify({"error": f"source raised: {exc}"}), 500
     return jsonify({"id": source_id, "tiles": tiles_out})
+
+
+# --- Saved Inventory searches (Plan 6) -----------------------------------
+# Each entry: {id, name, source_id, filters: {priorities, missing,
+# categories, hidePlanned}, created_at}. Per-source so the user can have
+# different named searches against different tile sources.
+
+def _validate_saved_search(s: dict) -> str | None:
+    if not isinstance(s, dict):
+        return "search must be an object"
+    if not isinstance(s.get("name"), str) or not s["name"].strip():
+        return "name must be a non-empty string"
+    if not isinstance(s.get("source_id"), str) or not s["source_id"].strip():
+        return "source_id must be a non-empty string"
+    f = s.get("filters") or {}
+    if not isinstance(f, dict):
+        return "filters must be an object"
+    for k in ("priorities", "missing", "categories"):
+        if k in f and not isinstance(f[k], list):
+            return f"filters.{k} must be a list"
+    if "hidePlanned" in f and not isinstance(f["hidePlanned"], bool):
+        return "filters.hidePlanned must be a boolean"
+    return None
+
+
+@app.route("/api/saved-searches", methods=["GET", "POST"])
+def api_saved_searches():
+    if request.method == "GET":
+        return jsonify(load_saved_searches())
+    payload = request.get_json(silent=True) or {}
+    err = _validate_saved_search(payload)
+    if err:
+        return jsonify({"error": err}), 400
+    data = load_saved_searches()
+    searches = list(data.get("searches", []))
+    sid = payload.get("id") or str(uuid.uuid4())
+    f = payload.get("filters") or {}
+    entry = {
+        "id": sid,
+        "name": payload["name"].strip(),
+        "source_id": payload["source_id"].strip(),
+        "filters": {
+            "priorities": list(f.get("priorities") or []),
+            "missing":    list(f.get("missing") or []),
+            "categories": list(f.get("categories") or []),
+            "hidePlanned": bool(f.get("hidePlanned")),
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # upsert by id
+    searches = [s for s in searches if s.get("id") != sid]
+    searches.append(entry)
+    save_saved_searches({"version": 1, "searches": searches})
+    return jsonify(entry), 201
+
+
+@app.route("/api/saved-searches/<search_id>", methods=["DELETE"])
+def api_saved_search_delete(search_id: str):
+    data = load_saved_searches()
+    searches = [s for s in data.get("searches", []) if s.get("id") != search_id]
+    if len(searches) == len(data.get("searches", [])):
+        return jsonify({"error": "not found"}), 404
+    save_saved_searches({"version": 1, "searches": searches})
+    return ("", 204)
 
 
 @app.route("/api/catalog-registry")
