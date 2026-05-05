@@ -1,78 +1,70 @@
 # Capture checklist for README screenshots and GIFs
 
-The README references images in this directory. Capture each one with the suggested filename and content. Aim for ~1600px wide for screenshots, ~800px wide / 15-30s for GIFs (use [Peek](https://github.com/phw/peek) or [ScreenToGif](https://www.screentogif.com/) on Windows).
+The README references images in this directory. Capture each one with the suggested filename and content. Aim for ~1600px wide for screenshots, ~1000px wide / 10–25s for GIFs.
+
+**Tool**: [ScreenToGif](https://www.screentogif.com/) on Windows. Capture at native res, then in the editor: trim dead air at start/end, resize to ~1000px wide, set frame rate to 15fps, export with the Octree or Neural quantizer. Aim for <5MB per GIF.
 
 All images: dark UI, no developer-tools panes visible, no personal file paths in shot if possible (the manifest leaks paths in `/api/manifest`, so close devtools and zoom into the map area).
 
-## Required
+## The "See it in action" reel — 4 captures ✓ done
 
-### `hero-coverage-map.png`
-Hero shot. Open the app on a real archive with several telescopes and several filters represented. Show:
-- Aitoff projection, equatorial frame.
-- Many FOV polygons in distinct telescope colors.
-- A few filter badges visible on the NW corners of polygons.
-- Right rail collapsed or showing a short target list.
-- No selected target (clean view).
-**Suggested:** zoom on the southern Milky Way region so RedCat wide fields and EdgeHD tight fields contrast nicely.
+All four are GIFs, captured at native 2501×1500 then optimised down to ~1MB each via ffmpeg palette+rescale (1000px wide, 256-colour palette, Bayer dither). Total weight ~4.4 MB across all four.
 
-### `loop-scan-to-app.gif`
-Core loop demo. ~20-30 seconds. Sequence:
-1. Terminal: run `python scripts/build_archive_manifest.py` (cut/speed up the long part).
-2. Terminal: `python app.py`.
-3. Browser opens, map loads, polygons draw.
-4. Click a single FOV polygon — right rail shows target detail with filter coverage bars and observed hours.
-5. Click another nearby FOV.
-**Tip:** run against the demo manifest so the scan finishes in seconds.
+### 1. `survey-swap.gif` ✓
 
-### `loop-planning-mode.gif`
-Planning demo. ~25-40 seconds. Sequence:
-1. Click "Planning" in the topbar.
-2. Click "+ New plan".
-3. Click on the sky to drop a target center.
-4. Pick telescope + camera from dropdown — FOV box appears.
-5. Set rows × cols × overlap to make a 2×2 mosaic.
-6. Drag the rotation handle to spin the mosaic.
-7. Set per-filter target hours.
-8. Click "Sync" — watch the TS export zip get written.
+Background survey switching — your FOV polygons over a region of sky, background cycling through optical → Hα → infrared → radio. Polygons stay locked in place while the sky transforms. Captured 2026-05-05.
 
-### `feature-search.png`
-Smart search bar in action. Show the right rail with:
-- Search box visible at top.
-- Active query in the box: `filter:Ha hours>2 tel:redcat`
-- Filtered target list below showing only matching targets.
-- One target highlighted/selected (optional).
+### 2. `smart-search.gif` ✓
 
-### `feature-catalogs.png`
-Catalog overlays. Show:
-- The catalogs accordion expanded in the right rail.
-- Two or three catalog checkboxes ticked (e.g. Green SNR + WISE HII).
-- Map showing the overlay markers spread across the galactic plane.
-**Note:** this is currently a known bug (todo.md item 5) — capture this AFTER the catalog overlay rendering bug is fixed.
+Right-rail search bar with a query being typed (e.g. `filter:Ha hours>2 tel:redcat`) and the target list filtering live as the keys land. Captured 2026-05-05.
 
-### `feature-gear-editor.png`
-Gear editor open. Show:
-- Modal/panel with telescope + camera lists.
-- A row in edit state with the FOV box auto-derived from focal length + sensor size.
-- The "Scan coverage" button visible.
+### 3. `feature-catalogues.gif` ✓
 
-### `feature-ts-sync.png`
-NINA TS sync result. Either:
-- (a) The "Sync" button moment in-app, with a success toast/dialog showing the zip path; OR
-- (b) A split shot — left half the planner with two plans selected, right half NINA's Target Scheduler showing the imported projects.
-**(b) is more impressive but harder to capture cleanly.**
+Catalogues rail with overlays being toggled — markers light up across the galactic plane as each catalogue is enabled. Captured 2026-05-05.
 
-## Optional
+### 4. `planning-mode.gif` ✓
 
-### `feature-panel.png`
-Right-rail panel after the topbar restructure (see todo.md item 7 for the related viewport-overflow fix). Capture once that lands so it doesn't go stale.
+End-to-end planning demo: Planning tab → + New plan → click sky → pick telescope+camera → 2×2 mosaic → drag rotation handle → set Ha hours → save (mosaic stays on map with dashed borders). Captured 2026-05-05.
+
+## Already captured
+
+### `hero-coverage-map.png` ✓
+
+Hero shot, top of README. Mellinger optical background, Aitoff projection, equatorial, no selected target. Resized to 1600px wide. Captured 2026-05-05.
+
+## Optional / future
+
+### `feature-gap-finder.gif`
+
+Gap-finder demo (held back from the main reel for now, but worth capturing later as a "power features" callout).
+1. In Catalogues rail, set Have=Ha, Missing=SII, defaults for thresholds.
+2. Click "Find gaps".
+3. Yellow MOC paints in over the gap region.
+4. Catalogue candidates scatter as dots inside it.
+5. Summary line appears (`sky 0.84% • 1808 candidates • from manifest, iphas_ha`).
+6. Hover a candidate to show its name.
 
 ### `feature-mosaic-rotate.gif`
-Standalone GIF of just the mosaic rotation handle being dragged. Useful for socials. ~5-10 seconds.
+
+Standalone short of the rotation handle being dragged around. ~5-10s. Useful for socials.
+
+### `feature-gear-editor.png`
+
+Gear editor open. Modal/panel with telescope + camera lists, FOV box auto-derived from focal length + sensor size, "Scan coverage" button visible.
+
+### `feature-ts-sync.png`
+
+NINA TS sync moment — the "Sync" button click with a success toast/dialog showing the zip path. Hard to capture cleanly; deferred.
+
+### `loop-scan-to-app.gif`
+
+The scan-and-launch core loop. Functional but not headline-worthy — already explained in the setup section text, no need to GIF it.
 
 ## Hosting
 
-All captures live in this `docs/images/` directory and are committed to the repo so the README renders correctly on GitHub. Keep file sizes under ~2MB each — use `pngquant` for PNGs and `gifsicle -O3` for GIFs if needed:
+All captures live in this `docs/images/` directory and are committed to the repo so the README renders correctly on GitHub. Keep file sizes under ~5MB each.
 
+If you need to compress further:
 ```bash
 pngquant --quality=70-85 hero-coverage-map.png -o hero-coverage-map.png --force
 gifsicle -O3 loop-planning-mode.gif -o loop-planning-mode.gif

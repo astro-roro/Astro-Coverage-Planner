@@ -34,14 +34,14 @@
         </select>
       </label>
       <label class="ctrl">Site:
-        <select id="siteSel">
-          <option value="sydney" data-lat="-33.87" data-lon="151.21" data-height="20">Sydney (-33.87, 151.21)</option>
-          <option value="victoria" data-lat="-37.50" data-lon="145.00" data-height="700">Victoria obs. (-37.50, 145.00)</option>
-          <option value="custom" data-lat="" data-lon="">Custom…</option>
-        </select>
-        <input type="number" id="latIn"  step="0.01" placeholder="lat"  style="display:none;width:75px" />
-        <input type="number" id="lonIn"  step="0.01" placeholder="lon"  style="display:none;width:75px" />
+        <select id="siteSel"></select>
+        <button type="button" id="siteEditBtn" class="icon-btn" title="Edit active site">✎</button>
+        <button type="button" id="siteAddBtn"  class="icon-btn" title="Add new site">+</button>
       </label>
+      <button type="button" id="timeAwareToggle" class="toggle-btn" aria-pressed="false"
+              title="Toggle site-aware time/visibility features (year curves, what's up tonight, horizon shading).">
+        <span class="toggle-icon">🕐</span><span class="toggle-lbl">Time-aware</span>
+      </button>
     </div>
   </header>
 
@@ -97,17 +97,21 @@
         </div>
       </details>
 
+      <!-- Hidden until at least one PrioritisedTilesSource is registered.
+           Populated dynamically by initInventory() from /api/tile-sources. -->
+      <details id="railInventory" class="rail-accordion inventory" hidden>
+        <summary>Inventory</summary>
+        <div class="accordion-body">
+          <div id="inventoryList"></div>
+        </div>
+      </details>
+
       <details id="railCatalogs" class="rail-accordion catalogs">
         <summary>Catalogues <span class="broken-note" style="display:none"></span></summary>
         <div class="accordion-body">
-          <div class="row">
-            <label class="fchip"><input type="checkbox" id="cat_green" /> Green SNRs</label>
-            <label class="fchip"><input type="checkbox" id="cat_smgps" /> SMGPS cand.</label>
-            <label class="fchip"><input type="checkbox" id="cat_emu" /> EMU cand.</label>
-            <label class="fchip"><input type="checkbox" id="cat_hii" /> WISE HII</label>
-            <label class="fchip"><input type="checkbox" id="cat_messier" /> Messier</label>
-            <label class="fchip"><input type="checkbox" id="cat_sharpless" /> Sharpless HII</label>
-            <label class="fchip"><input type="checkbox" id="cat_eso_pne" /> ESO PNe</label>
+          <div class="row" id="catChips">
+            <!-- Populated dynamically from /api/catalog-registry; empty until
+                 setupCatalogOverlays() resolves. -->
           </div>
           <div class="gap-finder">
             <div class="row gap-row">
@@ -141,6 +145,39 @@
       </div>
     </aside>
   </main>
+
+  <dialog id="siteModal" class="acp-modal">
+    <form id="siteForm" method="dialog">
+      <h3 id="siteModalTitle">Add site</h3>
+      <label class="modal-row">
+        <span>Name</span>
+        <input type="text" id="siteFName" required maxlength="60" autocomplete="off" />
+      </label>
+      <div class="modal-row two-col">
+        <label><span>Latitude (°)</span>
+          <input type="number" id="siteFLat" step="0.0001" min="-90" max="90" required />
+        </label>
+        <label><span>Longitude (°)</span>
+          <input type="number" id="siteFLon" step="0.0001" min="-180" max="180" required />
+        </label>
+      </div>
+      <div class="modal-row two-col">
+        <label><span>Elevation (m)</span>
+          <input type="number" id="siteFElev" step="1" min="-430" max="9000" placeholder="optional" />
+        </label>
+        <label><span>Min altitude (°)</span>
+          <input type="number" id="siteFMinAlt" step="1" min="0" max="90" value="30" />
+        </label>
+      </div>
+      <div id="siteFormError" class="modal-error" hidden></div>
+      <div class="modal-actions">
+        <button type="button" id="siteFDelete" class="danger" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" id="siteFCancel">Cancel</button>
+        <button type="submit" id="siteFSave" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
 
   <footer class="statusbar">
     <span id="tooltip"></span>

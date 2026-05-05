@@ -19,6 +19,11 @@ __all__ = [
     "MocCoverage",
     "FilterCoverage",
     "SourceMetadata",
+    "BandStatus",
+    "TileCell",
+    "PrioritisedTilesSource",
+    "CatalogObject",
+    "CategorisedCatalogSource",
 ]
 
 
@@ -116,4 +121,122 @@ class CoverageSource(Protocol):
     #   - or the source can't synthesise a MOC (e.g. cache file absent and
     #     the implementation refuses to trigger network from this path).
     def coverage_moc(self, filter_name: str) -> "Optional[MOC]":
+        ...
+
+
+# --- Prioritised tiles / inventory sources --------------------------------
+# Distinct from CoverageSource: a tiles source publishes a curated, ranked
+# list of "interesting cells on the sky" with per-band coverage status,
+# rather than raw observed footprints. Use this when a third party (or an
+# extension) has done the prioritisation work upstream and the renderer
+# only needs to display it. The renderer dispatches on type, not on `kind`,
+# so PrioritisedTilesSource is a separate Protocol.
+
+class BandStatus(TypedDict, total=False):
+    """Status of a single band for one tile.
+
+    All fields optional — `covered` is the only one renderers must
+    interpret. `source` is a free-form label (e.g. "personal", "external",
+    "survey:foo") so the consumer can group/filter without baking in a
+    fixed source taxonomy. `quality` is an ordinal rank — higher = better
+    — useful for "is my own future imaging worth pointing here?" filters.
+    `hours` is integration time when applicable.
+    """
+
+    covered: bool
+    source: str
+    quality: int
+    hours: float
+
+
+class TileCell(TypedDict, total=False):
+    """One curated sky cell ready to be plotted and filtered.
+
+    Geometry: `(ra_deg, dec_deg)` is the centre, `footprint` is an
+    ordered ICRS polygon. If `footprint` is omitted, the renderer falls
+    back to a square box derived from `fov_arcmin`.
+
+    Ranking: `priority_level` is an ordinal — 1 = most urgent — that
+    drives the colour bucket. `score` is the within-bucket sort key.
+
+    Filtering: `per_band` lets the inventory panel build "missing band
+    X" filters; `category_counts` gives per-class chip filters
+    ("only cells with at least one PN candidate"). Extensions can
+    stuff arbitrary extras into `metadata`.
+    """
+
+    id: str
+    ra_deg: float
+    dec_deg: float
+    footprint: list[tuple[float, float]]
+    fov_arcmin: tuple[float, float]
+    priority_level: int
+    score: float
+    per_band: dict[str, BandStatus]
+    category_counts: dict[str, int]
+    metadata: dict
+
+
+class PrioritisedTilesSource(Protocol):
+    """A source of curated, ranked sky cells with per-band coverage.
+
+    Distinct from CoverageSource because the rendering and filtering UI
+    are different shapes (cells with priority + per-band status vs raw
+    footprint regions). Extensions register an instance via
+    `app.tile_sources.append(...)`.
+    """
+
+    def id(self) -> str:
+        ...
+
+    def metadata(self) -> SourceMetadata:
+        ...
+
+    def tiles(self) -> Iterable[TileCell]:
+        """Yield ranked cells. Idempotent modulo upstream data mtime."""
+        ...
+
+
+# --- Categorised catalogue sources ----------------------------------------
+# Generic point-catalogue with per-object class tags. Replaces the
+# hard-coded Green/SMGPS/EMU/WISE/Messier/Sharpless/ESO catalogue handling
+# with a registry-driven model where any extension can publish a class-
+# tagged list of objects and get the same chip-filter UI for free.
+
+class CatalogObject(TypedDict, total=False):
+    """One point object in a categorised catalogue.
+
+    `category` is a free-form string (e.g. "PNe", "HII", "SNR"); the
+    renderer groups by it for chip filters. `metadata` carries any
+    extras the source wants to expose in tooltips (frequency, flag,
+    diameter, …).
+    """
+
+    name: str
+    ra_deg: float
+    dec_deg: float
+    category: str
+    metadata: dict
+
+
+class CategorisedCatalogSource(Protocol):
+    """A source of class-tagged point objects.
+
+    Implementations declare which categories they publish so the rail
+    can render chip filters before the catalogue data has finished
+    loading. Extensions register via `app.catalog_sources.append(...)`.
+    """
+
+    def id(self) -> str:
+        ...
+
+    def metadata(self) -> SourceMetadata:
+        ...
+
+    def categories(self) -> list[str]:
+        """Ordered list of category labels this source publishes."""
+        ...
+
+    def objects(self) -> Iterable[CatalogObject]:
+        """Yield catalogue objects. Idempotent modulo upstream mtime."""
         ...
