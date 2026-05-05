@@ -20,10 +20,12 @@ html, body {
   background: #0f1319;
   border-bottom: 1px solid #1f2937;
   align-items: center;
+  min-height: 44px;
 }
 
 .title {
   flex: 0 0 220px;
+  margin-right: auto;
 }
 .title strong {
   display: block;
@@ -35,7 +37,7 @@ html, body {
   color: #78839a;
 }
 
-.controls, .filters, .catalogs {
+.controls {
   display: flex;
   align-items: center;
   gap: 6px 10px;
@@ -56,11 +58,6 @@ html, body {
   color: #e0e4ea;
   padding: 3px 6px;
   border-radius: 3px;
-  font-size: 12px;
-}
-
-.filters, .catalogs, .telescopes {
-  flex-basis: 100%;
   font-size: 12px;
 }
 
@@ -127,7 +124,7 @@ button:active { background: #262e40; }
 
 .layout {
   display: flex;
-  height: calc(100vh - 120px);
+  height: calc(100vh - 44px);
   min-height: 400px;
 }
 
@@ -344,6 +341,98 @@ button:active { background: #262e40; }
   max-height: 120px;
   overflow-y: auto;
   word-break: break-all;
+}
+
+/* --- Right-rail accordions (Filters, Catalogues) --- */
+
+.rail-accordion {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #1f2937;
+  background: #0f1319;
+  font-size: 12px;
+}
+.rail-accordion > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 14px;
+  color: #a2aec2;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  user-select: none;
+  position: relative;
+  padding-right: 26px;
+}
+.rail-accordion > summary::-webkit-details-marker { display: none; }
+.rail-accordion > summary::after {
+  content: "▸";
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: transform 0.12s ease;
+  color: #78839a;
+  font-size: 10px;
+}
+.rail-accordion[open] > summary::after { transform: translateY(-50%) rotate(90deg); }
+.rail-accordion > summary:hover { background: #141a24; color: #e0e4ea; }
+
+.rail-accordion .accordion-body {
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rail-accordion .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.broken-note {
+  color: #d08060;
+  text-transform: none;
+  font-weight: 500;
+  letter-spacing: 0;
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.finished-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #2d6030;
+  color: #e0ffe0;
+  font-weight: 600;
+  margin-left: 6px;
+}
+.finished-badge.incomplete {
+  background: #2a3246;
+  color: #78839a;
+}
+
+.mark-finished-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  background: #0a0d12;
+  border: 1px dashed #2a3246;
+  border-radius: 4px;
+}
+.mark-finished-row .status-text {
+  flex: 1;
+  color: #a2aec2;
+  font-size: 12px;
+}
+.mark-finished-row button {
+  font-size: 12px;
+  padding: 3px 8px;
 }
 
 /* --- Planner --- */
@@ -573,3 +662,77 @@ button:active { background: #262e40; }
   color: #a2aec2;
 }
 .plan-remaining-block strong { color: #e8ecf3; font-weight: 600; }
+
+/* Gap-finder block in the Catalogues accordion. */
+.gap-finder {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+}
+.gap-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.gap-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #a2aec2;
+  font-size: 12px;
+}
+.gap-label.small { font-size: 0.85em; }
+.gap-sources { margin-top: 2px; }
+.gap-sources-label {
+  color: #78839a;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+#gapSourcesList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#gapSourcesList .fchip {
+  padding: 1px 5px;
+  font-size: 11px;
+}
+#gapSourcesList .fchip input { transform: scale(0.85); }
+.gap-stats {
+  font-style: italic;
+  color: #888;
+  font-size: 11px;
+  margin-top: 4px;
+  min-height: 14px;
+}
+#gapHave, #gapMissing {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+/* --- Catalog hover tooltip (objectHovered → near-cursor popover) --- */
+
+.cat-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: rgba(20, 26, 38, 0.95);
+  border: 1px solid #2a3246;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #e0e4ea;
+  pointer-events: none;
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.cat-tooltip strong { color: #ffe27a; }
+.cat-tooltip .cat-tag { color: #888; font-size: 10px; margin-left: 6px; }
+.cat-tooltip .cat-extra { color: #a2aec2; font-size: 10px; margin-left: 6px; }
