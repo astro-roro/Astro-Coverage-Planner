@@ -153,6 +153,7 @@ Minimal shape:
       "corners_icrs":     [[ra,dec], [ra,dec], [ra,dec], [ra,dec]],
       "corners_galactic": [[l,b],    [l,b],    [l,b],    [l,b]   ],
       "telescopes": ["RedCat 51"],
+      "cameras": ["ZWO ASI2600MM Pro"],
       "date_range": ["2025-01-01", "2025-12-31"],
       "filters": {
         "Ha":  {"total_hours": 3.2, "files": 12},
