@@ -10,7 +10,9 @@ data/manifest.json
 data/catalogs.json
 data/gear.json
 data/plans.json
+data/target_overrides.json
 data/exports/
+data/moc_cache/
 data/*.local.json
 .cache/
 
@@ -22,3 +24,6 @@ Thumbs.db
 
 # Claude Code settings — keep local, never push
 .claude/
+
+# Private extensions (loaded at runtime from outside the repo)
+blueprints/

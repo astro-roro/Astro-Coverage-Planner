@@ -41,20 +41,42 @@ const TELESCOPE_FALLBACK = "#888";
 
 let manifest = null;
 let aladin = null;
-let overlay = null;     // main target footprints (polygons)
-let centerCat = null;   // target-center markers (click/hover source)
+let overlay = null;     // main target footprints (polygons) — polygons themselves are the click/hover target now
+let hoverOverlay = null; // transient highlight overlay for the polygon currently under the cursor
 let filterBadgeCat = null; // single catalog of "filter badges" (one source per target, custom draw)
+let coverageHitList = []; // [{poly, target, corners}] — mirror of overlay for hit-testing
+let planHitList = [];     // [{poly, plan, corners}] — mirror of plan overlays for hit-testing
+let hoveredHit = null;    // currently-hovered entry from the active hit list (null otherwise)
+let lastClickStack = null; // {ra, dec, ids: [...], cycleIdx} — for repeat-click cycling through overlapping polys
 let catOverlays = {};   // catalog overlays (Phase 3)
 let selectedFilters = new Set(["Ha", "SII", "OIII"]);
 let selectedTelescopes = new Set(); // populated after manifest loads
 let telescopeColor = {};  // telescope name → color
 let filterLogic = "any";
 let minHours = 0;
-let gapMode = false;
+// Gap-finder: server-side multi-source gap analysis (Phase 4b). Replaces the
+// old client-side `Ha ∧ ¬SII` toggle that just filtered the panel list.
+let gapEnabled = false;
+let gapHave = "Ha";
+let gapMissing = "SII";
+let gapMinHave = 1.0;
+let gapMaxMissing = 0.5;
+let gapSourceIds = [];     // explicit selection; empty = "all enabled"
+let gapMocLayer = null;    // live A.MOCFromURL overlay for the gap region
+// catalog name -> Set of object names that fall inside the active gap MOC.
+// When non-empty AND gapEnabled is true, drawCatalogOverlay filters each
+// catalog to just these entries — so users see "Find gaps × catalog X" by
+// simply ticking catalog X in the Catalogues rail.
+let gapNamesByCatalog = {};
 let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
+let completionFilter = "all"; // "all" | "finished" | "unfinished"
+let targetOverrides = {};     // target_id (string) → { finished: bool, updated_at: ... }
+let _pressInfo = null;        // {x, y, t, dragged} — last mousedown over the map. The Aladin
+                              // "click" event fires on every mouseup whether the user dragged
+                              // or not, so we use this to suppress pan-clicks from selecting/deselecting.
 
 // --- Planner mode globals ---
 let planningMode = false;      // false = Coverage mode, true = Planning mode
@@ -108,16 +130,26 @@ function applyUiStatePreManifest() {
     if (depthVal) depthVal.textContent = `${minHours}h`;
   }
 
-  if (s.gapMode) {
-    gapMode = true;
-    const btn = document.getElementById("gapMode");
-    if (btn) btn.style.background = "#663";
+  // Gap-finder restore. The gap-finder DOM (selects, source list) hasn't been
+  // populated yet at this point — populateGapDropdowns / populateGapSources will
+  // see these state vars and pick the right values when they run.
+  if (s.gap && typeof s.gap === "object") {
+    if (typeof s.gap.have === "string") gapHave = s.gap.have;
+    if (typeof s.gap.missing === "string") gapMissing = s.gap.missing;
+    if (typeof s.gap.minHave === "number") gapMinHave = s.gap.minHave;
+    if (typeof s.gap.maxMissing === "number") gapMaxMissing = s.gap.maxMissing;
+    if (Array.isArray(s.gap.sourceIds)) gapSourceIds = s.gap.sourceIds.slice();
+    // `enabled` is handled after the manifest loads (see init()).
   }
 
   if (typeof s.projection === "string" && s.projection) {
     const proj = document.getElementById("projSel");
     if (proj) proj.value = s.projection;
     if (aladin) aladin.setProjection(s.projection);
+  }
+
+  if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
+    try { aladin.setImageSurvey(s.imageSurvey); } catch { /* unknown id — keep default */ }
   }
 
   if (typeof s.frame === "string" && s.frame) {
@@ -155,9 +187,23 @@ function applyUiStatePreManifest() {
   }
 
   if (Array.isArray(s.catalogs)) {
-    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
+    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
       const cb = document.getElementById(id);
       if (cb) cb.checked = s.catalogs.includes(id);
+    }
+  }
+
+  if (typeof s.completionFilter === "string"
+      && ["all", "finished", "unfinished"].includes(s.completionFilter)) {
+    completionFilter = s.completionFilter;
+    const radio = document.querySelector(`input[name=completionFilter][value=${s.completionFilter}]`);
+    if (radio) radio.checked = true;
+  }
+
+  if (s.accordions && typeof s.accordions === "object") {
+    for (const [id, open] of Object.entries(s.accordions)) {
+      const el = document.getElementById(id);
+      if (el && "open" in el) el.open = !!open;
     }
   }
 
@@ -185,26 +231,56 @@ function applyUiStatePostManifest() {
 
 function saveUiState() {
   try {
+    let imageSurvey = "";
+    try {
+      const layer = aladin?.getBaseImageLayer?.();
+      imageSurvey = layer?.id || layer?.url || "";
+    } catch { /* older Aladin — skip */ }
     const state = {
       search: document.getElementById("searchInput")?.value || "",
       filters: [...selectedFilters],
       filterLogic,
       minHours,
       telescopes: [...selectedTelescopes],
-      catalogs: ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]
+      catalogs: ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]
         .filter(id => document.getElementById(id)?.checked),
       projection: document.getElementById("projSel")?.value || "",
       frame: document.getElementById("frameSel")?.value || "",
       site: document.getElementById("siteSel")?.value || "",
       customLat: document.getElementById("latIn")?.value || "",
       customLon: document.getElementById("lonIn")?.value || "",
-      gapMode,
+      imageSurvey,
+      gap: {
+        have: gapHave,
+        missing: gapMissing,
+        minHave: gapMinHave,
+        maxMissing: gapMaxMissing,
+        sourceIds: gapSourceIds.slice(),
+        enabled: gapEnabled,
+      },
       selectedTargetId,
       planningMode,
       selectedPlanId,
+      completionFilter,
+      accordions: {
+        railFilters: !!document.getElementById("railFilters")?.open,
+        railSources: !!document.getElementById("railSources")?.open,
+        railCatalogs: !!document.getElementById("railCatalogs")?.open,
+      },
+      sources: sourcesEnabled,
     };
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
   } catch { /* localStorage full / disabled — ignore */ }
+}
+
+// Show the search box only while browsing a top-level list (targets or plans).
+// Inside a single target/plan/gear editor there's nothing to search for, so
+// we hide it to reclaim vertical space for the detail content.
+function updateSearchVisibility() {
+  const wrap = document.getElementById("panelSearchWrap");
+  if (!wrap) return;
+  const topLevel = panelMode === "list" || panelMode === "plan-list";
+  wrap.style.display = topLevel ? "" : "none";
 }
 
 // --- Search tokenizer ---
@@ -463,14 +539,15 @@ function targetMatches(t) {
   const has = f => (hrs[f] || 0) >= minHours;
   const hasAny = f => (hrs[f] || 0) > 0;
 
-  // Telescope toggle: if no telescopes selected (before init), allow all.
-  // If a target has no telescope tag, leave it visible regardless.
+  // Telescope toggle: a tagged target is visible only if its telescope is in
+  // the selected set. Empty set = hide every tagged target (so the user can
+  // untick all telescopes to clear the rectangles and just see overlays).
+  // Untagged targets stay visible regardless — they have nothing to filter on.
   const tel = telescopeOf(t);
-  if (tel && selectedTelescopes.size > 0 && !selectedTelescopes.has(tel)) return false;
+  if (tel && !selectedTelescopes.has(tel)) return false;
 
-  if (gapMode) {
-    return hasAny("Ha") && !hasAny("SII") && (hrs.Ha || 0) >= minHours;
-  }
+  if (completionFilter === "finished" && !isTargetFinished(t)) return false;
+  if (completionFilter === "unfinished" && isTargetFinished(t)) return false;
 
   if (filterLogic === "any") {
     return [...selectedFilters].some(f => has(f));
@@ -482,6 +559,116 @@ function targetMatches(t) {
     return hasAny("Ha") && !hasAny("SII");
   }
   return true;
+}
+
+// Resolve a target's finished state. Precedence: manual override > plan-derived
+// (all goals met across every plan attached to this target_id) > default false.
+function isTargetFinished(t) {
+  if (!t) return false;
+  const key = String(t.target_id);
+  const ov = targetOverrides[key];
+  if (ov && typeof ov.finished === "boolean") return ov.finished;
+  const attached = plans.filter(p => String(p.target?.target_id) === key);
+  if (attached.length === 0) return false;
+  return attached.every(planGoalsMet);
+}
+
+function planGoalsMet(plan) {
+  const goals = plan?.filter_goals || {};
+  const filterNames = Object.keys(goals);
+  if (filterNames.length === 0) return false;
+  const target = manifest?.targets?.find(x => String(x.target_id) === String(plan.target?.target_id));
+  const actualHrs = f => target?.filters?.[f]?.total_hours || 0;
+  return filterNames.every(f => {
+    const tgt = parseFloat(goals[f]?.target_hours || 0);
+    return tgt > 0 && actualHrs(f) >= tgt;
+  });
+}
+
+// --- Esc / empty-sky "go up one level" navigation ---
+//
+// Each entry maps a panelMode to a function that performs the up-one-level
+// navigation from that mode. Modes not in the map are top-level (no parent →
+// no-op). Add new modes here when nesting deepens.
+const PANEL_PARENTS = {
+  "detail":    () => renderTargetList(),
+  "plan-edit": () => requestNavigateAwayFromPlanEdit(renderPlanList),
+  "gear-edit": () => renderPlanList(),
+};
+
+function goUpOneLevel() {
+  const handler = PANEL_PARENTS[panelMode];
+  if (handler) handler();
+}
+
+function planIsDirty() {
+  if (!editingPlan) return false;
+  const orig = plans.find(p => p.id === editingPlan.id);
+  if (!orig) return true; // detached — treat as dirty so we don't silently lose work
+  return JSON.stringify(editingPlan) !== JSON.stringify(orig);
+}
+
+// Pre-flight for any "leave plan-edit" navigation. If the user has unsaved
+// edits, prompt; otherwise (or after they choose) call `then()` to actually
+// navigate. Discard mirrors the existing Cancel-button logic — scratch plans
+// without a guid get pulled back out of `plans[]`.
+function requestNavigateAwayFromPlanEdit(then) {
+  if (!planIsDirty()) {
+    const orig = plans.find(p => p.id === editingPlan?.id);
+    if (orig && !orig.guid) plans = plans.filter(p => p !== orig);
+    then();
+    return;
+  }
+  showUnsavedPlanModal({
+    onSave: async () => {
+      const ok = await savePlan();
+      if (ok) then();
+      // On save failure, savePlan() already alerted; stay on the editor so the user can retry.
+    },
+    onDiscard: () => {
+      const orig = plans.find(p => p.id === editingPlan?.id);
+      if (orig && !orig.guid) plans = plans.filter(p => p !== orig);
+      then();
+    },
+    onCancel: () => { /* stay put */ },
+  });
+}
+
+function isModalOpen() {
+  return !!document.querySelector(".dirty-modal-backdrop");
+}
+
+function showUnsavedPlanModal({ onSave, onDiscard, onCancel }) {
+  document.querySelector(".dirty-modal-backdrop")?.remove();
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "dirty-modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="dirty-modal" role="dialog" aria-modal="true" aria-labelledby="dirtyModalTitle">
+      <h4 id="dirtyModalTitle">Unsaved plan changes</h4>
+      <p>You have unsaved edits to this plan. What would you like to do?</p>
+      <div class="dirty-modal-buttons">
+        <button data-action="cancel">Cancel</button>
+        <button data-action="discard">Discard</button>
+        <button class="btn-primary" data-action="save">Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  const handle = async (action) => {
+    close();
+    if (action === "save")    await onSave();
+    else if (action === "discard") onDiscard();
+    else onCancel();
+  };
+  backdrop.addEventListener("click", e => { if (e.target === backdrop) handle("cancel"); });
+  backdrop.querySelectorAll("button").forEach(btn => {
+    btn.addEventListener("click", () => handle(btn.dataset.action));
+  });
+  // Focus the safe default (Cancel) so a stray Enter doesn't auto-save.
+  backdrop.querySelector('button[data-action="cancel"]')?.focus();
 }
 
 function summariseFilters(t) {
@@ -510,6 +697,7 @@ function filterDotsHtml(filters) {
 
 function renderTargetList() {
   panelMode = "list";
+  updateSearchVisibility();
   selectedTargetId = null;
   saveUiState();
   const panel = document.getElementById("panelBody");
@@ -524,9 +712,10 @@ function renderTargetList() {
     const swatch = telescopeColor[tel] || TELESCOPE_FALLBACK;
     const total = totalHoursOf(t).toFixed(1);
     const dots = filterDotsHtml(t.filters || {});
+    const finishedMark = isTargetFinished(t) ? `<span class="finished-badge" title="marked finished">✓</span>` : "";
     return `<li class="target-row" data-target-id="${t.target_id}">
         <span class="tr-swatch" style="background:${esc(swatch)}" title="${esc(tel)}"></span>
-        <span class="tr-name">#${t.target_id} ${name}</span>
+        <span class="tr-name">#${t.target_id} ${name}${finishedMark}</span>
         <span class="tr-dots">${dots}</span>
         <span class="tr-hours">${total}h</span>
       </li>`;
@@ -551,6 +740,7 @@ function renderTargetList() {
 
 function renderTargetPanel(t) {
   panelMode = "detail";
+  updateSearchVisibility();
   selectedTargetId = t.target_id;
   saveUiState();
   const panel = document.getElementById("panelBody");
@@ -576,11 +766,31 @@ function renderTargetPanel(t) {
   const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : "—";
   const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : "—";
 
+  const finished = isTargetFinished(t);
+  const overrideKey = String(t.target_id);
+  const hasOverride = !!targetOverrides[overrideKey];
+  const hasPlans = plans.some(p => String(p.target?.target_id) === overrideKey);
+  const statusText = finished
+    ? (hasOverride ? "Marked finished manually." : "All plan goals met.")
+    : (hasPlans ? "Plan goals not yet met." : "No plan set — treated as unfinished.");
+  const primaryBtn = finished
+    ? `<button id="markUnfinishedBtn">Mark in-progress</button>`
+    : `<button id="markFinishedBtn">Mark finished</button>`;
+  const clearBtn = hasOverride
+    ? `<button id="clearOverrideBtn" title="Remove manual override; fall back to plan-derived status">Clear override</button>`
+    : "";
+
   panel.innerHTML = `
     <div>
       <a class="back-link" id="backToList" href="#">← Back to list</a>
       <h3>Target #${t.target_id}: ${objs}</h3>
       <div>${filterPills}</div>
+
+      <div class="mark-finished-row">
+        <span class="status-text">${finished ? "✓ " : ""}${esc(statusText)}</span>
+        ${primaryBtn}
+        ${clearBtn}
+      </div>
 
       <h4>Position</h4>
       <table>
@@ -608,6 +818,15 @@ function renderTargetPanel(t) {
   // Back-to-list link
   const back = document.getElementById("backToList");
   if (back) back.addEventListener("click", (e) => { e.preventDefault(); renderTargetList(); });
+
+  const reopen = async (flag) => {
+    await setTargetFinished(t.target_id, flag);
+    redrawFootprints();
+    renderTargetPanel(t);
+  };
+  panel.querySelector("#markFinishedBtn")?.addEventListener("click", () => reopen(true));
+  panel.querySelector("#markUnfinishedBtn")?.addEventListener("click", () => reopen(false));
+  panel.querySelector("#clearOverrideBtn")?.addEventListener("click", () => reopen(null));
 
   // If catalog overlays loaded, show nearby entries
   showCatalogMatchesFor(t);
@@ -646,16 +865,181 @@ function angularSep(ra1, dec1, ra2, dec2) {
   return Math.acos(Math.max(-1, Math.min(1, cosA))) * 180 / Math.PI * 60; // arcmin
 }
 
+// Ray-cast point-in-polygon in RA/Dec. Polygons here are small (< a few degrees);
+// flat math is fine. Handles RA wraparound by unwrapping vertices + query point
+// onto a common 360°-shifted frame when the polygon spans the 0/360° seam.
+function _ptInRaDecPoly(ra, dec, corners) {
+  let ras = corners.map(c => c[0]);
+  const decs = corners.map(c => c[1]);
+  if (Math.max(...ras) - Math.min(...ras) > 180) {
+    ras = ras.map(r => r < 180 ? r + 360 : r);
+    if (ra < 180) ra += 360;
+  }
+  let inside = false;
+  for (let i = 0, j = ras.length - 1; i < ras.length; j = i++) {
+    const rai = ras[i], deci = decs[i], raj = ras[j], decj = decs[j];
+    if (((deci > dec) !== (decj > dec)) &&
+        (ra < (raj - rai) * (dec - deci) / (decj - deci) + rai)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Bounding-box area in deg² — only used to rank overlapping polygons consistently
+// so the smallest (tightest framing) wins on click.
+function _polyBBoxArea(corners) {
+  const ras = corners.map(c => c[0]);
+  const decs = corners.map(c => c[1]);
+  return Math.abs(Math.max(...ras) - Math.min(...ras)) * Math.abs(Math.max(...decs) - Math.min(...decs));
+}
+
+// Find all polygons containing the given sky point, sorted smallest-first.
+// In planning mode only plans are hit-testable; in viewing mode only coverage.
+function hitPolygonsAt(ra, dec) {
+  const list = planningMode ? planHitList : coverageHitList;
+  const out = [];
+  for (const h of list) {
+    if (_ptInRaDecPoly(ra, dec, h.corners)) {
+      out.push({ ...h, area: _polyBBoxArea(h.corners) });
+    }
+  }
+  out.sort((a, b) => a.area - b.area);
+  return out;
+}
+
+function _hitId(h) { return h?.target ? `t:${h.target.target_id}` : h?.plan ? `p:${h.plan.id}` : null; }
+
+// Normalize any CSS-ish hex (#rgb, #rgba, #rrggbb, #rrggbbaa) to #rrggbb + the
+// requested alpha byte. Aladin expects a uniform 8-char hex for fillColor alpha;
+// without this, short forms like "#888" produce "#88855" which Canvas rejects
+// silently, so the fill vanishes and only the stroke remains.
+function _hexWithAlpha(hex, alphaByte) {
+  const h = _hex6(hex);
+  const a = Math.max(0, Math.min(255, alphaByte | 0)).toString(16).padStart(2, "0");
+  return "#" + h + a;
+}
+
+function _hex6(hex) {
+  let h = String(hex || "").trim();
+  if (h.startsWith("#")) h = h.slice(1);
+  if (h.length === 3 || h.length === 4) h = h.slice(0, 3).split("").map(c => c + c).join("");
+  if (h.length === 8) h = h.slice(0, 6);
+  if (h.length !== 6) h = "888888";
+  return h;
+}
+
+// Blend toward white to produce a lighter "highlighted" version of a border
+// colour — used for the hover outline so it pops against the base polygon.
+function _brighten(hex, amount) {
+  const h = _hex6(hex);
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const k = Math.max(0, Math.min(1, amount));
+  const nr = Math.round(r + (255 - r) * k);
+  const ng = Math.round(g + (255 - g) * k);
+  const nb = Math.round(b + (255 - b) * k);
+  return "#" + [nr, ng, nb].map(v => v.toString(16).padStart(2, "0")).join("");
+}
+
+function clearHoverHighlight() {
+  hoveredHit = null;
+  if (hoverOverlay) hoverOverlay.removeAll();
+  const mapEl = document.getElementById("aladin-lite-div");
+  if (mapEl) mapEl.style.cursor = "";
+}
+
+function setHoverHit(hit) {
+  if (_hitId(hit) === _hitId(hoveredHit)) return;
+  hoveredHit = hit;
+  const mapEl = document.getElementById("aladin-lite-div");
+  if (mapEl) mapEl.style.cursor = hit ? "pointer" : "";
+  if (hoverOverlay) {
+    hoverOverlay.removeAll();
+    if (hit) {
+      // Use the entity's own border colour and (for mosaics) the full mosaic
+      // bounds — not the individual panel — so hover reads as "this whole rig
+      // is what you're about to select."
+      let color = "#ffffff", outline = hit.corners;
+      if (hit.target) {
+        const tel = telescopeOf(hit.target);
+        color = telescopeColor[tel] || TELESCOPE_FALLBACK;
+      } else if (hit.plan) {
+        color = planBorderColor(hit.plan);
+        outline = planMosaicBoundsCorners(hit.plan) || hit.corners;
+      }
+      // Two layered polygons: a translucent fill at saturated alpha to tint the
+      // interior, then a brighter + thicker outline on top so the "this is what
+      // you'll select" target reads clearly even if Aladin drops the fill on
+      // some graphics backends.
+      hoverOverlay.add(A.polygon(outline, { color, lineWidth: 0.01, fillColor: _hexWithAlpha(color, 0x66) }));
+      hoverOverlay.add(A.polygon(outline, { color: _brighten(color, 0.55), lineWidth: 5, fillColor: _hexWithAlpha(color, 0x33) }));
+    }
+  }
+  const tip = document.getElementById("tooltip");
+  if (tip) {
+    if (hit?.target) {
+      const t = hit.target;
+      tip.textContent = `#${t.target_id} ${t.objects?.[0] || ""} — ${summariseFilters(t)}`;
+    } else if (hit?.plan) {
+      const pl = hit.plan;
+      const panels = (planPanelCorners(pl) || []).length;
+      const goals = Object.keys(pl.filter_goals || {}).join("/");
+      const mosaicBit = panels > 1 ? ` · ${panels}-panel mosaic` : "";
+      tip.textContent = `${pl.target?.name || pl.id}${pl.project_name ? ` · ${pl.project_name}` : ""}${goals ? ` · ${goals}` : ""}${mosaicBit}`;
+    } else {
+      tip.textContent = "";
+    }
+  }
+}
+
+function onMapPolyClick(ra, dec) {
+  const hits = hitPolygonsAt(ra, dec);
+  if (!hits.length) {
+    lastClickStack = null;
+    goUpOneLevel();
+    return;
+  }
+
+  const ids = hits.map(_hitId);
+  const prev = lastClickStack;
+  const sameStack = prev && prev.ids.length === ids.length && prev.ids.every((v, i) => v === ids[i]);
+  const fovDeg = (aladin?.getFov?.()?.[0]) || 10;
+  const threshold = fovDeg * 0.02; // ~2% of view ≈ 15 px at default canvas
+  const cosDec = Math.cos(dec * Math.PI / 180) || 1;
+  const sameSpot = prev
+    && Math.abs((ra - prev.ra) * cosDec) < threshold
+    && Math.abs(dec - prev.dec) < threshold;
+
+  let idx = 0;
+  if (sameStack && sameSpot) idx = (prev.cycleIdx + 1) % hits.length;
+  lastClickStack = { ra, dec, ids, cycleIdx: idx };
+
+  const chosen = hits[idx];
+  if (chosen.target) {
+    renderTargetPanel(chosen.target);
+  } else if (chosen.plan) {
+    if (!planningMode) setPlanningMode(true);
+    renderPlanEditor(chosen.plan);
+  }
+
+  if (hits.length > 1) {
+    const tip = document.getElementById("tooltip");
+    if (tip) tip.textContent = `${idx + 1} of ${hits.length} overlapping here — click again to cycle`;
+  }
+}
+
 let catalogsData = {}; // {green_snrs: [...], smgps_candidates: [...], ...}
 
 function redrawFootprints() {
   if (!overlay || !manifest) return;
   overlay.removeAll();
-  if (centerCat) centerCat.removeAll();
   if (filterBadgeCat) filterBadgeCat.removeAll();
+  coverageHitList = [];
+  clearHoverHighlight();
 
   let shown = 0;
-  const centerSources = [];
   const badgeSources = [];
 
   for (const t of manifest.targets) {
@@ -668,24 +1052,15 @@ function redrawFootprints() {
     const borderColor = telescopeColor[tel] || TELESCOPE_FALLBACK;
     const fillColor = (FILTER_COLORS[deepest] || "#888") + "20";
 
-    // Aladin v3: polygon from [[ra,dec],...] — border = telescope, fill = filter-priority
     const poly = A.polygon(t.corners_icrs, {
       color: borderColor,
       lineWidth: 2.5,
       fillColor,
     });
     poly._target = t;
+    poly._corners = t.corners_icrs;
     overlay.add(poly);
-
-    // Clickable center marker (invisible-ish dot that carries the target id)
-    const src = A.marker(t.center_ra_deg, t.center_dec_deg, {
-      popupTitle: `#${t.target_id} ${t.objects?.[0] || "(no name)"}`,
-      popupDesc: summariseFilters(t),
-      useMarkerDefaultIcon: false,
-      color: borderColor, shape: "circle", sourceSize: 8,
-    });
-    src.data = { target_id: t.target_id };
-    centerSources.push(src);
+    coverageHitList.push({ poly, target: t, corners: t.corners_icrs });
 
     // Filter badge: anchor at corners_icrs[1] (the NW corner — on standard N-up
     // E-left sky renders, NW is the top-right of the FOV on screen). Store the
@@ -710,7 +1085,6 @@ function redrawFootprints() {
     }
     shown++;
   }
-  if (centerCat) centerCat.addSources(centerSources);
   if (filterBadgeCat) filterBadgeCat.addSources(badgeSources);
   const cs = document.getElementById("coverageStats");
   if (cs) {
@@ -721,10 +1095,15 @@ function redrawFootprints() {
 
 function setupCatalogOverlays() {
   const cfg = [
-    { id: "cat_green", name: "green_snrs",       color: "#ff3030", size: 12, marker: "square" },
-    { id: "cat_smgps", name: "smgps_candidates", color: "#ff9900", size: 10, marker: "triangle" },
-    { id: "cat_emu",   name: "emu_candidates",   color: "#ffff33", size: 10, marker: "plus" },
-    { id: "cat_hii",   name: "anderson_hii",     color: "#66cc66", size:  6, marker: "dot" },
+    { id: "cat_green",     name: "green_snrs",       color: "#ff3030", size: 12, marker: "square" },
+    { id: "cat_smgps",     name: "smgps_candidates", color: "#ff9900", size: 10, marker: "triangle" },
+    { id: "cat_emu",       name: "emu_candidates",   color: "#ffff33", size: 10, marker: "plus" },
+    // sourceSize must be >= 8 — Aladin's default-shape prelude errors below that
+    // (see filterBadgeCat note above). "dot" is not a valid Aladin shape; use "circle".
+    { id: "cat_hii",       name: "anderson_hii",     color: "#66cc66", size:  8, marker: "circle" },
+    { id: "cat_messier",   name: "messier",          color: "#5bd9ff", size: 12, marker: "square" },
+    { id: "cat_sharpless", name: "sharpless",        color: "#7be0a3", size:  9, marker: "circle" },
+    { id: "cat_eso_pne",   name: "eso_pne",          color: "#a070ff", size: 10, marker: "triangle" },
   ];
   for (const c of cfg) {
     const cb = document.getElementById(c.id);
@@ -749,10 +1128,294 @@ function drawCatalogOverlay(cfg, enabled) {
   if (!ovr) return;
   ovr.removeAll();
   if (!enabled) return;
-  for (const e of catalogsData[cfg.name]) {
+  // In gap mode, restrict to entries the server told us are inside the gap MOC.
+  // Outside gap mode (or when this catalog had no gap matches), show the full set.
+  const gapNames = gapEnabled ? gapNamesByCatalog[cfg.name] : null;
+  const data = gapNames
+    ? catalogsData[cfg.name].filter(e => gapNames.has(e.name))
+    : catalogsData[cfg.name];
+  for (const e of data) {
     if (e.ra_deg == null) continue;
     const src = A.source(e.ra_deg, e.dec_deg, { name: e.name, catalog: cfg.name, ...e });
     ovr.addSources([src]);
+  }
+}
+
+// Re-fires the change event on every checked catalog checkbox so its overlay
+// re-renders against the current gap-mode filter (or the full data, when off).
+function redrawEnabledCatalogs() {
+  for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
+    const cb = document.getElementById(id);
+    if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
+  }
+}
+
+// Palette for source swatches when a source's metadata.color is empty.
+// Fixed cycle so each source gets a stable color across reloads (the
+// list ordering on /api/sources is stable too — manifest first, then
+// extensions in registration order).
+const SOURCE_PALETTE = ["#7aa2ff", "#ff8a3d", "#65c275", "#c87aff", "#ffc857", "#44d9d3"];
+// Hydrated from localStorage at script-load so any saveUiState() that fires
+// during boot (accordion toggles, image-survey events, etc.) before the
+// async loadSources() has populated this map doesn't write sources: {} and
+// wipe the user's previously-saved per-source toggles.
+let sourcesEnabled = (() => {
+  try { return JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}").sources || {}; }
+  catch { return {}; }
+})();
+
+// Live MOC overlays keyed by source_id. Populated by mocToggleOn / cleared by
+// mocToggleOff.
+const mocLayers = {};
+
+function mocToggleOn(sourceId, color, checkbox) {
+  const url = `/api/moc/${encodeURIComponent(sourceId)}`;
+  // First toggle hits the network; subsequent toggles use the server-side disk cache.
+  // perimeter+fill explicitly disables `edge` (per-HEALPix-cell borders), which the
+  // MOC constructor force-enables when all three render modes are falsy and which
+  // murders FPS at order 11+.
+  const moc = A.MOCFromURL(url, {
+    name: `moc_${sourceId}`,
+    perimeter: true,
+    fill: true,
+    color,
+    fillColor: color,
+    lineWidth: 1,
+    opacity: 0.25,
+  }, undefined, () => {
+    // errorCallback — fetch or wasm parse failed.
+    console.warn(`MOC source ${sourceId} failed to load`);
+    if (checkbox) checkbox.checked = false;
+    sourcesEnabled[sourceId] = false;
+    delete mocLayers[sourceId];
+  });
+  aladin.addMOC(moc);
+  mocLayers[sourceId] = moc;
+}
+
+function mocToggleOff(sourceId) {
+  const moc = mocLayers[sourceId];
+  if (!moc) return;
+  try { aladin.removeOverlay(moc); } catch (err) { console.warn("removeOverlay failed:", err); }
+  delete mocLayers[sourceId];
+}
+
+// --- Gap finder (Phase 4b) ---
+
+// Walk every target's filters dict and produce a sorted, deduped list of
+// filter names that actually appear in this manifest. We don't trust a
+// hardcoded ["Ha","SII","OIII",...] because friend manifests / future surveys
+// may carry filters this client doesn't know about.
+function manifestFilterNames() {
+  const seen = new Set();
+  for (const t of (manifest?.targets || [])) {
+    for (const f of Object.keys(t.filters || {})) seen.add(f);
+  }
+  return [...seen].sort();
+}
+
+function populateGapDropdowns() {
+  const have = document.getElementById("gapHave");
+  const missing = document.getElementById("gapMissing");
+  if (!have || !missing) return;
+  const names = manifestFilterNames();
+  // Empty manifest fallback — keep the selects populated with the persisted
+  // values so the user can still type/submit.
+  if (names.length === 0) names.push(gapHave, gapMissing);
+  const opts = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  have.innerHTML = opts;
+  missing.innerHTML = opts;
+  have.value = names.includes(gapHave) ? gapHave : (names[0] || "Ha");
+  missing.value = names.includes(gapMissing) ? gapMissing : (names[1] || names[0] || "SII");
+  gapHave = have.value;
+  gapMissing = missing.value;
+
+  document.getElementById("gapMinHave").value = String(gapMinHave);
+  document.getElementById("gapMaxMissing").value = String(gapMaxMissing);
+
+  have.addEventListener("change", e => { gapHave = e.target.value; saveUiState(); });
+  missing.addEventListener("change", e => { gapMissing = e.target.value; saveUiState(); });
+  document.getElementById("gapMinHave").addEventListener("change", e => {
+    const v = parseFloat(e.target.value);
+    if (isFinite(v) && v >= 0) { gapMinHave = v; saveUiState(); }
+  });
+  document.getElementById("gapMaxMissing").addEventListener("change", e => {
+    const v = parseFloat(e.target.value);
+    if (isFinite(v) && v >= 0) { gapMaxMissing = v; saveUiState(); }
+  });
+}
+
+function populateGapSources(sources) {
+  const host = document.getElementById("gapSourcesList");
+  if (!host) return;
+  host.innerHTML = "";
+  // First-run default = every source checked. Persisted state wins after that.
+  const persisted = gapSourceIds.length > 0
+    ? new Set(gapSourceIds)
+    : new Set(sources.map(s => s.id));
+  gapSourceIds = sources.filter(s => persisted.has(s.id)).map(s => s.id);
+  for (const s of sources) {
+    const row = document.createElement("label");
+    row.className = "fchip";
+    if (s.attribution) row.title = s.attribution;
+    const checked = persisted.has(s.id) ? "checked" : "";
+    row.innerHTML = `
+      <input type="checkbox" data-gap-source="${esc(s.id)}" ${checked} />
+      ${esc(s.label)}`;
+    host.appendChild(row);
+  }
+  for (const cb of host.querySelectorAll("input[data-gap-source]")) {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.gapSource;
+      if (cb.checked) {
+        if (!gapSourceIds.includes(id)) gapSourceIds.push(id);
+      } else {
+        gapSourceIds = gapSourceIds.filter(x => x !== id);
+      }
+      saveUiState();
+    });
+  }
+}
+
+function clearGapOverlays() {
+  if (gapMocLayer) {
+    try { aladin.removeOverlay(gapMocLayer); } catch (err) { console.warn("gap MOC remove failed:", err); }
+    gapMocLayer = null;
+  }
+  // Drop the gap-name filter and redraw any catalog overlays back to full.
+  gapNamesByCatalog = {};
+  redrawEnabledCatalogs();
+}
+
+async function loadGaps() {
+  const stats = document.getElementById("gapStats");
+  const params = new URLSearchParams({
+    have: gapHave,
+    missing: gapMissing,
+    min_have_hours: String(gapMinHave),
+    max_missing_hours: String(gapMaxMissing),
+  });
+  if (gapSourceIds.length > 0) params.set("sources", gapSourceIds.join(","));
+  let resp;
+  try {
+    resp = await fetch(`/api/gaps?${params.toString()}`);
+  } catch (e) {
+    console.warn("gap fetch failed:", e);
+    if (stats) stats.textContent = "(network error)";
+    return;
+  }
+  if (resp.status === 503) {
+    if (stats) stats.textContent = "(mocpy not installed — gap-finder unavailable)";
+    return;
+  }
+  if (!resp.ok) {
+    let msg = `(error ${resp.status})`;
+    try { const j = await resp.json(); if (j.error) msg = `(${j.error})`; } catch {}
+    if (stats) stats.textContent = msg;
+    console.warn("gap fetch returned", resp.status);
+    return;
+  }
+  const data = await resp.json();
+
+  // Drop the previous overlays before mounting the new ones — Aladin doesn't
+  // de-dupe by name, layered ghosts tank FPS at high MOC orders.
+  clearGapOverlays();
+
+  if (data.moc_url) {
+    // Same perimeter+fill recipe as mocToggleOn — explicitly off `edge` mode
+    // (per-cell borders), which is the FPS killer at order 11+.
+    gapMocLayer = A.MOCFromURL(data.moc_url, {
+      name: "gap_moc",
+      perimeter: true,
+      fill: true,
+      color: "#ffd24d",
+      fillColor: "#ffd24d",
+      lineWidth: 2,
+      opacity: 0.35,
+    });
+    aladin.addMOC(gapMocLayer);
+  }
+
+  // Build a per-catalog name filter from the response. Catalog overlays toggled
+  // on in the Catalogues rail will draw only their gap-matching entries.
+  const cands = data.candidates || [];
+  gapNamesByCatalog = {};
+  for (const c of cands) {
+    if (!c.catalog || !c.name) continue;
+    (gapNamesByCatalog[c.catalog] ||= new Set()).add(c.name);
+  }
+  redrawEnabledCatalogs();
+
+  if (stats) {
+    const pct = (100 * (data.gap_sky_fraction || 0)).toFixed(2);
+    const from = (data.have_sources || []).join(", ") || "(none)";
+    stats.textContent = `sky ${pct}% • ${cands.length} candidates in gap (tick catalogs to view) • from ${from}`;
+  }
+}
+
+async function loadSources() {
+  const host = document.getElementById("sourcesList");
+  if (!host) return;
+  let sources = [];
+  try {
+    const r = await fetch("/api/sources");
+    sources = await r.json();
+  } catch (e) {
+    console.warn("sources unavailable:", e);
+    return;
+  }
+  // Restore previously-saved per-source enabled state, falling back to the
+  // server-supplied enabled_default for sources we haven't seen before.
+  const saved = (loadUiState().sources || {});
+  host.innerHTML = "";
+  // Track resolved color per source so the checkbox handler reuses the same
+  // swatch the user sees in the rail rather than recomputing it.
+  const colorById = {};
+  sources.forEach((s, i) => {
+    const enabled = (s.id in saved) ? !!saved[s.id] : !!s.enabled_default;
+    sourcesEnabled[s.id] = enabled;
+    const color = s.color || SOURCE_PALETTE[i % SOURCE_PALETTE.length];
+    colorById[s.id] = color;
+    const row = document.createElement("label");
+    row.className = "fchip src-row";
+    if (s.attribution) row.title = s.attribution;
+    row.innerHTML = `
+      <input type="checkbox" data-source="${esc(s.id)}" data-kind="${esc(s.kind || "")}" ${enabled ? "checked" : ""} />
+      <span class="tele-swatch" style="background:${esc(color)}"></span>
+      ${esc(s.label)}`;
+    host.appendChild(row);
+  });
+  for (const cb of host.querySelectorAll("input[type=checkbox][data-source]")) {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.source;
+      sourcesEnabled[id] = cb.checked;
+      saveUiState();
+      if (cb.dataset.kind === "moc") {
+        if (cb.checked) mocToggleOn(id, colorById[id], cb);
+        else mocToggleOff(id);
+      }
+      // Non-MOC kinds (manifest, friend) remain a state-bearing no-op here;
+      // their map filtering lands in a later phase.
+    });
+  }
+  // Initial render: paint MOC layers for any source already toggled on.
+  for (const cb of host.querySelectorAll('input[type=checkbox][data-source][data-kind="moc"]')) {
+    if (cb.checked) mocToggleOn(cb.dataset.source, colorById[cb.dataset.source], cb);
+  }
+  // Hand the same source list to the gap-finder rail.
+  populateGapSources(sources);
+  // If the user had the gap overlay on at last save, fire it now that both
+  // dropdowns and source list are wired up. mocpy-missing sessions silently
+  // 503; user re-toggles to retry.
+  const savedGap = loadUiState();
+  if (savedGap?.gap?.enabled) {
+    gapEnabled = true;
+    const btn = document.getElementById("gapMode");
+    if (btn) {
+      btn.textContent = "Hide gaps";
+      btn.style.background = "#663";
+    }
+    loadGaps();
   }
 }
 
@@ -760,15 +1423,35 @@ async function loadCatalogs() {
   try {
     const r = await fetch("/api/catalogs");
     catalogsData = await r.json();
+    updateCatalogStatusHint();
     // if any catalog toggle is already checked, redraw
-    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii"]) {
+    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
       const cb = document.getElementById(id);
       if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
     }
     return catalogsData;
   } catch (e) {
     console.warn("catalogs not available yet:", e);
+    updateCatalogStatusHint();
     return {};
+  }
+}
+
+// Surface "no catalogs loaded" in the rail summary so the user knows toggles
+// are no-ops until scripts/fetch_catalogs.py has been run. Empty payload is
+// the silent-failure path: file missing on disk → /api/catalogs returns {}.
+function updateCatalogStatusHint() {
+  const note = document.querySelector("#railCatalogs .broken-note");
+  if (!note) return;
+  const total = Object.values(catalogsData || {})
+    .reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+  if (total > 0) {
+    note.style.display = "none";
+  } else {
+    note.style.display = "";
+    note.textContent = "(no catalogs loaded — run scripts/fetch_catalogs.py)";
+    note.title = "Catalog overlays need data/catalogs.json. "
+      + "Run `python scripts/fetch_catalogs.py` once (network I/O, ~30s) and reload.";
   }
 }
 
@@ -801,15 +1484,41 @@ function setupFilterUI() {
     saveUiState();
     redrawFootprints();
   });
+  populateGapDropdowns();
   document.getElementById("gapMode").addEventListener("click", () => {
-    gapMode = !gapMode;
-    document.getElementById("gapMode").style.background = gapMode ? "#663" : "";
+    gapEnabled = !gapEnabled;
+    const btn = document.getElementById("gapMode");
+    if (gapEnabled) {
+      btn.textContent = "Hide gaps";
+      btn.style.background = "#663";
+      loadGaps();
+    } else {
+      btn.textContent = "Find gaps";
+      btn.style.background = "";
+      clearGapOverlays();
+      const stats = document.getElementById("gapStats");
+      if (stats) stats.textContent = "";
+    }
     saveUiState();
-    redrawFootprints();
   });
   document.getElementById("exportCsv").addEventListener("click", () => {
     window.location = "/api/export/priority";
   });
+
+  for (const radio of document.querySelectorAll("input[name=completionFilter]")) {
+    radio.addEventListener("change", e => {
+      if (!e.target.checked) return;
+      completionFilter = e.target.value;
+      saveUiState();
+      redrawFootprints();
+      if (panelMode === "list") renderTargetList();
+    });
+  }
+
+  for (const id of ["railFilters", "railSources", "railCatalogs"]) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("toggle", () => saveUiState());
+  }
 
   document.getElementById("projSel").addEventListener("change", e => {
     aladin.setProjection(e.target.value);
@@ -866,13 +1575,46 @@ async function updateObsNow() {
   }
 }
 
+// --- Catalog hover tooltip (objectHovered → near-cursor popover) ---
+// One reusable DOM node, positioned via fixed coords from the latest mousemove.
+// We track cursor in module scope because Aladin's objectHovered event doesn't
+// pass screen coordinates.
+let _catCursor = { x: 0, y: 0 };
+function showCatTooltip(html) {
+  const el = document.getElementById("catTooltip");
+  if (!el) return;
+  el.innerHTML = html;
+  el.hidden = false;
+  positionCatTooltip();
+}
+function hideCatTooltip() {
+  const el = document.getElementById("catTooltip");
+  if (el) el.hidden = true;
+}
+function positionCatTooltip() {
+  const el = document.getElementById("catTooltip");
+  if (!el || el.hidden) return;
+  // Default placement = lower-right of cursor (12px offset). Flip to upper-left
+  // if either edge would clip the viewport.
+  const pad = 12;
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let x = _catCursor.x + pad;
+  let y = _catCursor.y + pad;
+  if (x + w > window.innerWidth)  x = _catCursor.x - pad - w;
+  if (y + h > window.innerHeight) y = _catCursor.y - pad - h;
+  el.style.left = `${Math.max(0, x)}px`;
+  el.style.top  = `${Math.max(0, y)}px`;
+}
+
 function init() {
   A.init.then(async () => {
     aladin = A.aladin("#aladin-lite-div", {
       fov: 180,
       projection: "AIT",
       cooFrame: "ICRSd",
-      survey: "P/DSS2/color",
+      // DSS2/red (grayscale, single-channel) is ~1/3 the bandwidth and decode cost
+      // of DSS2/color. Switch via Aladin's layers control if you want a colour survey.
+      survey: "P/DSS2/red",
       showReticle: false,
       showZoomControl: true,
       showFullscreenControl: true,
@@ -884,9 +1626,6 @@ function init() {
 
     overlay = A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
     aladin.addOverlay(overlay);
-
-    centerCat = A.catalog({ name: "Target centers", sourceSize: 8, shape: "circle", color: "#ffffff" });
-    aladin.addCatalog(centerCat);
 
     // One catalog for filter-coverage badges (custom shape draws a pill of 7 dots).
     // sourceSize must be >= ~8 or Aladin's default shape prelude errors with
@@ -909,33 +1648,122 @@ function init() {
     planCenterCat = A.catalog({ name: "plan_markers", sourceSize: 10, shape: "circle", color: "#ffffff" });
     aladin.addCatalog(planCenterCat);
 
-    // Click on any marker → render panel; works for target centers, plan centers, and catalog overlays
+    // Transient hover highlight — registered LAST so it renders on top of every
+    // other overlay (coverage + plan polygons). Otherwise plan polygons would
+    // occlude the hover fill entirely in planning mode.
+    hoverOverlay = A.graphicOverlay({ color: "#ffffff", lineWidth: 4, name: "hover_highlight" });
+    aladin.addOverlay(hoverOverlay);
+
+    // Aladin marker click — now only fires for catalog overlays (SNRs, HII) and the
+    // plan_rotate drag handle. Target + plan selection is handled by the map-click
+    // handler below so users can click anywhere inside a FOV polygon.
     aladin.on("objectClicked", src => {
       if (!src) return;
-      if (src.data?.kind === "plan_center" && src.data.plan_id) {
-        const pl = plans.find(p => p.id === src.data.plan_id);
-        if (pl) { if (!planningMode) setPlanningMode(true); renderPlanEditor(pl); }
-        return;
-      }
-      if (src.data?.kind === "plan_rotate") return; // handled by drag
-      if (src.data?.target_id != null) {
-        const t = manifest.targets.find(x => x.target_id === src.data.target_id);
-        if (t) renderTargetPanel(t);
-        return;
-      }
-      // catalog marker
+      if (src.data?.kind === "plan_rotate") return; // drag handler owns this
       const tip = document.getElementById("tooltip");
-      tip.textContent = src.data?.name ? `catalog: ${src.data.catalog || ""} ${src.data.name}` : "";
+      if (tip) tip.textContent = src.data?.name ? `catalog: ${src.data.catalog || ""} ${src.data.name}` : "";
     });
     aladin.on("objectHovered", src => {
-      if (!src) return;
-      if (src.data?.target_id != null) {
-        const t = manifest.targets.find(x => x.target_id === src.data.target_id);
-        if (t) document.getElementById("tooltip").textContent =
-          `#${t.target_id} ${t.objects?.[0] || ""} — ${summariseFilters(t)}`;
-      } else if (src.data?.name) {
-        document.getElementById("tooltip").textContent = `${src.data.catalog || ""} ${src.data.name}`;
+      // Falsy = hover-out. Hide both the status-bar text and the floating tooltip.
+      if (!src || !src.data?.name) {
+        hideCatTooltip();
+        return;
       }
+      const d = src.data;
+      // Status-bar mirror (pre-existing behaviour).
+      document.getElementById("tooltip").textContent = `${d.catalog || ""} ${d.name}`;
+      // Floating near-cursor tooltip. catalog overlays carry {name, catalog, ...row}
+      // — pull up to 2 non-null extras (freq, flag_3color, etc.) for context.
+      const extras = [];
+      const skip = new Set(["name", "catalog", "ra_deg", "dec_deg"]);
+      for (const k of Object.keys(d)) {
+        if (skip.has(k)) continue;
+        const v = d[k];
+        if (v == null || v === "") continue;
+        extras.push(`${esc(k)}=${esc(String(v))}`);
+        if (extras.length >= 2) break;
+      }
+      const tag = d.catalog ? `<span class="cat-tag">${esc(d.catalog)}</span>` : "";
+      const ex  = extras.length ? `<span class="cat-extra">${extras.join(" ")}</span>` : "";
+      showCatTooltip(`<strong>${esc(d.name)}</strong>${tag}${ex}`);
+    });
+
+    // Map-click selection: click anywhere inside a FOV polygon to select that target / plan.
+    // Overlapping polygons resolve smallest-first; repeat-clicks cycle through the stack.
+    // Empty-sky clicks navigate up one panel level (see onMapPolyClick → goUpOneLevel).
+    aladin.on("click", o => {
+      if (_pressInfo?.dragged) return; // pan, not a real click
+      if (!o || o.ra == null || o.dec == null) return;
+      if (dragState) return; // a plan-handle drag just ended; ignore the synthetic click
+      onMapPolyClick(o.ra, o.dec);
+    });
+
+    // Reset cycle state on any camera movement — previous stack indices stop making sense.
+    aladin.on("zoomChanged", () => { lastClickStack = null; });
+    aladin.on("positionChanged", () => { lastClickStack = null; });
+
+    // Persist the chosen HiPS survey across reloads. Aladin v3 may or may not emit
+    // "layerChanged" depending on build; a 3s poll is a cheap backstop.
+    try { aladin.on("layerChanged", saveUiState); } catch { /* event not supported */ }
+    let _lastSurveyId = null;
+    setInterval(() => {
+      try {
+        const layer = aladin?.getBaseImageLayer?.();
+        const id = layer?.id || layer?.url;
+        if (id && id !== _lastSurveyId) {
+          if (_lastSurveyId !== null) saveUiState(); // skip the first observation (init)
+          _lastSurveyId = id;
+        }
+      } catch { /* no-op */ }
+    }, 3000);
+
+    // Hover highlight — attach to the Aladin container; convert pixel → world, hit-test.
+    const mapEl = document.getElementById("aladin-lite-div");
+    if (mapEl) {
+      let hoverRaf = 0;
+      mapEl.addEventListener("mousemove", ev => {
+        // Track latest cursor position so objectHovered's tooltip placement
+        // stays glued to the pointer even when Aladin's event lacks coords.
+        _catCursor = { x: ev.clientX, y: ev.clientY };
+        positionCatTooltip();
+        // Promote the press to a "drag" once the pointer has travelled far
+        // enough — this is what suppresses pan-then-release from acting as a click.
+        if (_pressInfo && !_pressInfo.dragged) {
+          const dx = ev.clientX - _pressInfo.x, dy = ev.clientY - _pressInfo.y;
+          if (dx * dx + dy * dy >= 25) _pressInfo.dragged = true; // ≥5px
+        }
+        if (hoverRaf) return;
+        hoverRaf = requestAnimationFrame(() => {
+          hoverRaf = 0;
+          if (!aladin?.pix2world) return;
+          const r = mapEl.getBoundingClientRect();
+          const w = aladin.pix2world(ev.clientX - r.left, ev.clientY - r.top);
+          if (!w) { setHoverHit(null); return; }
+          const hits = hitPolygonsAt(w[0], w[1]);
+          setHoverHit(hits[0] || null);
+        });
+      });
+      mapEl.addEventListener("mousedown", ev => {
+        if (ev.button !== 0) return; // primary button only
+        _pressInfo = { x: ev.clientX, y: ev.clientY, t: performance.now(), dragged: false };
+      });
+      mapEl.addEventListener("mouseleave", () => { setHoverHit(null); hideCatTooltip(); });
+    }
+
+    // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
+    // Skip if focus is in a form control — Esc should keep its native blur/clear
+    // behaviour there. The dirty-edit modal handles its own Esc → cancel.
+    document.addEventListener("keydown", ev => {
+      if (ev.key !== "Escape") return;
+      if (isModalOpen()) {
+        document.querySelector(".dirty-modal-backdrop")?.remove();
+        ev.preventDefault();
+        return;
+      }
+      const ae = document.activeElement;
+      const tag = ae?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae?.isContentEditable) return;
+      goUpOneLevel();
     });
 
     // Load manifest
@@ -956,7 +1784,7 @@ function init() {
     // so the planner sees the user's actual rigs from the start.
     await seedGearFromManifest();
     // Load planner data in parallel with catalogs
-    await Promise.all([loadGear(), loadPlans(), loadTsTemplates()]);
+    await Promise.all([loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides()]);
 
     // Restore previous session state before the first draw so the map
     // reflects saved filters/telescopes/search immediately.
@@ -965,6 +1793,7 @@ function init() {
 
     redrawFootprints();
     loadCatalogs();
+    loadSources();
     updateObsNow();
     setInterval(updateObsNow, 60_000);
 
@@ -1038,6 +1867,30 @@ async function saveGear() {
 async function loadPlans() {
   try { const r = await fetch("/api/plans"); const j = await r.json(); plans = j.plans || []; }
   catch { plans = []; }
+}
+
+async function loadTargetOverrides() {
+  try {
+    const r = await fetch("/api/target-overrides");
+    const j = await r.json();
+    targetOverrides = j.overrides || {};
+  } catch { targetOverrides = {}; }
+}
+
+async function setTargetFinished(targetId, finished) {
+  // finished: true | false | null (null clears the override → revert to plan-derived).
+  const body = { target_id: targetId, finished };
+  try {
+    const r = await fetch("/api/target-overrides", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (j && j.overrides) targetOverrides = j.overrides;
+  } catch (e) {
+    console.warn("target-overrides write failed", e);
+  }
 }
 
 async function loadTsTemplates() {
@@ -1244,6 +2097,7 @@ function newEmptyPlan() {
 
 function renderPlanList() {
   panelMode = "plan-list";
+  updateSearchVisibility();
   editingPlan = null;
   selectedPlanId = null;
   saveUiState();
@@ -1309,6 +2163,7 @@ function renderPlanList() {
 
 function renderPlanEditor(plan) {
   panelMode = "plan-edit";
+  updateSearchVisibility();
   selectedPlanId = plan.id;
   editingPlan = JSON.parse(JSON.stringify(plan));
   saveUiState();
@@ -1586,19 +2441,20 @@ function renderPlanEditor(plan) {
 }
 
 async function savePlan() {
-  if (!editingPlan) return;
+  if (!editingPlan) return false;
   const r = await fetch("/api/plans", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(editingPlan),
   });
-  if (!r.ok) { alert("Save failed: " + r.status); return; }
+  if (!r.ok) { alert("Save failed: " + r.status); return false; }
   const saved = await r.json();
   const idx = plans.findIndex(p => p.id === saved.id);
   if (idx >= 0) plans[idx] = saved; else plans.push(saved);
   editingPlan = saved;
   const btn = document.getElementById("planSave");
   if (btn) { const orig = btn.textContent; btn.textContent = "Saved ✓"; setTimeout(() => { if (btn.textContent === "Saved ✓") btn.textContent = orig; }, 1500); }
+  return true;
 }
 
 async function syncPlans() {
@@ -1665,6 +2521,8 @@ function redrawPlanFootprints() {
   planOverlay.removeAll();
   if (planOverlayDashed) planOverlayDashed.removeAll();
   if (planCenterCat) planCenterCat.removeAll();
+  planHitList = [];
+  clearHoverHighlight();
   if (!planningMode) return;
 
   const srcs = [];
@@ -1672,7 +2530,6 @@ function redrawPlanFootprints() {
     if (pl.target?.center_ra_deg == null) continue;
     const isEditing = editingPlan && editingPlan.id === pl.id;
     const actual = isEditing ? editingPlan : pl;
-    const pri = actual.priority || "normal";
     const color = planBorderColor(actual);
     const hasData = planHasData(actual);
     const panelCorners = planPanelCorners(actual);
@@ -1684,18 +2541,10 @@ function redrawPlanFootprints() {
         fillColor: color + (hasData ? "20" : "10"),
       });
       poly._plan = actual;
+      poly._corners = corners;
       targetOverlay.add(poly);
+      planHitList.push({ poly, plan: actual, corners });
     }
-
-    const centerSrc = A.marker(actual.target.center_ra_deg, actual.target.center_dec_deg, {
-      popupTitle: actual.target.name || actual.id,
-      popupDesc: `${actual.project_name || ""} · ${pri}${hasData ? "" : " · not started"}${panelCorners.length > 1 ? ` · ${panelCorners.length}-panel mosaic` : ""}`,
-      useMarkerDefaultIcon: false,
-      color, shape: "circle",
-      sourceSize: isEditing ? 14 : 10,
-    });
-    centerSrc.data = { plan_id: actual.id, kind: "plan_center" };
-    srcs.push(centerSrc);
 
     if (isEditing) {
       const bounds = planMosaicBoundsCorners(actual);
@@ -1723,9 +2572,6 @@ function setPlanningMode(on) {
   const mp = document.getElementById("modePlanning");
   if (mc) { mc.classList.toggle("active", !on); mc.setAttribute("aria-selected", String(!on)); }
   if (mp) { mp.classList.toggle("active",  on); mp.setAttribute("aria-selected", String( on)); }
-  // Hide the coverage-only filters row while planning; keep telescopes & catalogues available in both modes.
-  const f = document.querySelector(".filters");
-  if (f) f.style.display = on ? "none" : "";
   saveUiState();
   if (on) {
     if (selectedPlanId) {
@@ -1830,6 +2676,7 @@ function _slugId(s) {
 
 function renderGearEditor() {
   panelMode = "gear-edit";
+  updateSearchVisibility();
   saveUiState();
   const panel = document.getElementById("panelBody");
   if (!panel) return;

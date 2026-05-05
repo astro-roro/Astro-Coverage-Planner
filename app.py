@@ -10,46 +10,92 @@ Endpoints:
 - GET /api/manifest              slim manifest (no large path lists)
 - GET /api/target/<id>           full per-target detail
 - GET /api/catalogs              optional overlay catalogs
+- GET /api/sources               list of registered coverage sources
+- GET /api/moc/<source_id>       FITS MOC blob for a survey source (lazy-fetched, cached)
 - GET /api/observability         altaz for all targets at (lat, lon, time)
 - GET /api/export/priority       CSV of gap-mode candidates
+- GET /api/gaps                  multi-source gap-finder (JSON)
+- GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
 
 Env:
 - MANIFEST_PATH   path to archive manifest JSON  (default: ./data/manifest.json)
 - CATALOGS_PATH   path to catalogs JSON          (default: ./data/catalogs.json)
+- ACP_SURVEYS_PATH  path to survey registry JSON (default: ./data/surveys.json)
 - HOST            bind host                      (default: 127.0.0.1)
 - PORT            bind port                      (default: 5555)
+- ACP_EXTENSIONS_DIR  directory of optional extension modules (default: unset)
+- ACP_FRIEND_MANIFESTS  semicolon-separated paths to sanitised friend manifests (default: unset)
 """
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import logging
 import math
 import os
 import re
 import sqlite3
+import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
+
+try:
+    from mocpy import MOC  # noqa: F401
+    _MOCPY_AVAILABLE = True
+except ImportError:
+    _MOCPY_AVAILABLE = False
+    logging.warning(
+        "mocpy is not installed — MOC overlays disabled. "
+        "Install with `pip install mocpy>=0.13` to enable /api/moc/<id>."
+    )
+
+from gaps import candidates_in_moc, compute_gap_moc
 
 REPO_ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+TARGET_OVERRIDES_PATH = Path(os.environ.get(
+    "TARGET_OVERRIDES_PATH", REPO_ROOT / "data" / "target_overrides.json"))
 TS_DB_PATH = os.environ.get(
     "TS_DB_PATH",
     str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
 )
 ZIP_OUTPUT_DIR = Path(os.environ.get("ZIP_OUTPUT_DIR", REPO_ROOT / "data" / "exports"))
+SURVEYS_PATH = Path(os.environ.get("ACP_SURVEYS_PATH", REPO_ROOT / "data" / "surveys.json"))
+MOC_CACHE_DIR = Path(os.environ.get("ACP_MOC_CACHE_DIR", REPO_ROOT / "data" / "moc_cache"))
+
+# Hostname allowlist for MOC fetches. Both entries point at the same CDS
+# infrastructure: alasky.u-strasbg.fr is the legacy hostname kept alive for
+# backward compat. New entries should be reviewed in PR — this is the trust
+# boundary for the only ACP feature that fetches over the network at runtime.
+_MOC_ALLOWED_HOSTS = frozenset({"alasky.cds.unistra.fr", "alasky.u-strasbg.fr"})
+_MOC_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+_MOC_FETCH_TIMEOUT_S = 30
+_MOC_CACHE_TTL_S = 30 * 24 * 3600  # 30 days
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # dev: browsers revalidate every request
 app.jinja_env.auto_reload = True
+
+if not CATALOGS_PATH.exists():
+    print(
+        f"[acp] WARN: catalogs file not found at {CATALOGS_PATH} — "
+        "right-rail catalog overlays (Green SNR / SMGPS / EMU / WISE HII) will be empty. "
+        "Run scripts/fetch_catalogs.py to populate (network I/O, ~30s)."
+    )
 
 _manifest_cache: dict | None = None
 _manifest_cache_mtime: float | None = None
@@ -59,6 +105,8 @@ _gear_cache: dict | None = None
 _gear_cache_mtime: float | None = None
 _plans_cache: dict | None = None
 _plans_cache_mtime: float | None = None
+_target_overrides_cache: dict | None = None
+_target_overrides_cache_mtime: float | None = None
 
 
 def load_manifest() -> dict | None:
@@ -113,6 +161,515 @@ def save_plans(data: dict) -> None:
     PLANS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _plans_cache = data
     _plans_cache_mtime = PLANS_PATH.stat().st_mtime
+
+
+def load_target_overrides() -> dict:
+    global _target_overrides_cache, _target_overrides_cache_mtime
+    if not TARGET_OVERRIDES_PATH.exists():
+        return {"version": 1, "overrides": {}}
+    mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
+    if _target_overrides_cache is None or _target_overrides_cache_mtime != mtime:
+        _target_overrides_cache = json.loads(TARGET_OVERRIDES_PATH.read_text(encoding="utf-8"))
+        _target_overrides_cache_mtime = mtime
+    return _target_overrides_cache
+
+
+def save_target_overrides(data: dict) -> None:
+    global _target_overrides_cache, _target_overrides_cache_mtime
+    TARGET_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TARGET_OVERRIDES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _target_overrides_cache = data
+    _target_overrides_cache_mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
+
+
+class JsonManifestSource:
+    """Coverage source backed by a JSON manifest file on local disk.
+
+    Drives both the user's own archive (path = MANIFEST_PATH) and any
+    sanitised friend manifests configured via ACP_FRIEND_MANIFESTS. The
+    manifest shape is identical for both — the only difference is the
+    surfaced metadata (label, kind, attribution).
+    """
+
+    def __init__(self, *, source_id: str, label: str, color: str,
+                 attribution: str, enabled_default: bool, path: Path | str,
+                 kind: str = "manifest") -> None:
+        self._source_id = source_id
+        self._label = label
+        self._color = color
+        self._attribution = attribution
+        self._enabled_default = enabled_default
+        self._path = Path(path)
+        self._kind = kind
+        self._cache: dict | None = None
+        self._cache_mtime: float | None = None
+        # Phase 4: per-filter MOC cache keyed by (filter_name, manifest mtime).
+        # Tuple-keyed so an mtime change auto-invalidates without bookkeeping.
+        self._moc_cache: dict[tuple[str, float], object] = {}
+
+    def id(self) -> str:
+        return self._source_id
+
+    def metadata(self) -> dict:
+        return {
+            "label": self._label,
+            "color": self._color,
+            "kind": self._kind,
+            "attribution": self._attribution,
+            "enabled_default": self._enabled_default,
+        }
+
+    def _load(self) -> dict | None:
+        if not self._path.exists():
+            return None
+        mtime = self._path.stat().st_mtime
+        if self._cache is None or self._cache_mtime != mtime:
+            self._cache = json.loads(self._path.read_text(encoding="utf-8"))
+            self._cache_mtime = mtime
+        return self._cache
+
+    def coverage(self):
+        manifest = self._load()
+        if not manifest:
+            return
+        for t in manifest.get("targets", []) or []:
+            corners = t.get("corners_icrs") or []
+            vertices = [(float(ra), float(dec)) for ra, dec in corners]
+            filters = {
+                fname: {
+                    "hours": float(d.get("total_hours", 0.0)),
+                    "files": int(d.get("files", 0)),
+                }
+                for fname, d in (t.get("filters") or {}).items()
+            }
+            yield {
+                "kind": "polygon",
+                "vertices": vertices,
+                "filters": filters,
+                "name": ", ".join(t.get("objects") or []),
+                "metadata": {
+                    "target_id": t.get("target_id"),
+                    "telescopes": list(t.get("telescopes") or []),
+                },
+            }
+
+    def coverage_moc(self, filter_name: str):
+        """Union of every target polygon that has >0 hours at `filter_name`.
+
+        Cached per (filter, manifest-mtime). Returns None if mocpy is missing,
+        the manifest is absent, or no target carries this filter.
+        """
+        if not _MOCPY_AVAILABLE:
+            return None
+        manifest = self._load()
+        if not manifest:
+            return None
+        cache_key = (filter_name, self._cache_mtime or 0.0)
+        if cache_key in self._moc_cache:
+            return self._moc_cache[cache_key]
+
+        from astropy.coordinates import SkyCoord  # local: keep app boot cheap
+        import astropy.units as u
+
+        per_target: list = []
+        for t in manifest.get("targets", []) or []:
+            f = (t.get("filters") or {}).get(filter_name)
+            if not f or float(f.get("total_hours", 0.0)) <= 0.0:
+                continue
+            corners = t.get("corners_icrs") or []
+            if len(corners) < 3:
+                continue
+            ras = [float(ra) for ra, _ in corners]
+            decs = [float(dec) for _, dec in corners]
+            sc = SkyCoord(ras, decs, unit=u.deg, frame="icrs")
+            per_target.append(MOC.from_polygon_skycoord(sc, max_depth=10))
+
+        if not per_target:
+            self._moc_cache[cache_key] = None
+            return None
+        # union(another, *rest): single arg is fine for a 2-element list,
+        # variadic for >2. Slice into head + tail to satisfy both.
+        merged = per_target[0] if len(per_target) == 1 \
+            else per_target[0].union(*per_target[1:])
+        self._moc_cache[cache_key] = merged
+        return merged
+
+
+def ManifestCoverageSource() -> JsonManifestSource:
+    """Built-in source backed by the user's own archive manifest."""
+    return JsonManifestSource(
+        source_id="manifest",
+        label="Your archive",
+        color="",
+        attribution="Local archive scan",
+        enabled_default=True,
+        path=MANIFEST_PATH,
+        kind="manifest",
+    )
+
+
+def FriendManifestSource(*, source_id: str, label: str, color: str,
+                         path: Path | str) -> JsonManifestSource:
+    """Sanitised manifest shared by another imager."""
+    return JsonManifestSource(
+        source_id=source_id,
+        label=label,
+        color=color,
+        attribution=f"Shared by {label}",
+        enabled_default=True,
+        path=path,
+        kind="friend",
+    )
+
+
+def _validate_moc_url(moc_url: str) -> None:
+    """HTTPS-only, hostname-allowlisted. Raises ValueError on rejection.
+
+    Run at config-load time (registration) and again before every fetch — the
+    on-fetch check defends against an attacker who can swap in a registered
+    source's URL between boot and first hit.
+    """
+    if not isinstance(moc_url, str) or not moc_url:
+        raise ValueError("moc_url is empty")
+    parsed = urllib.parse.urlparse(moc_url)
+    if parsed.scheme != "https":
+        raise ValueError(f"moc_url must use https:// (got {parsed.scheme!r})")
+    if parsed.hostname not in _MOC_ALLOWED_HOSTS:
+        raise ValueError(
+            f"moc_url host {parsed.hostname!r} not in allowlist "
+            f"({sorted(_MOC_ALLOWED_HOSTS)})"
+        )
+
+
+class _MocFetchError(Exception):
+    """Upstream fetch / validation failed in a way the route surfaces as 502."""
+
+
+def _fetch_moc_bytes(moc_url: str) -> bytes:
+    """Download a MOC over HTTPS with a streamed size cap.
+
+    Refuses Content-Length headers above the cap up front, and aborts mid-read
+    if a server with no/wrong Content-Length tries to feed us more than the
+    cap. The bytes returned are the raw FITS payload — the caller is
+    responsible for handing them to MOC.from_fits for validation.
+    """
+    _validate_moc_url(moc_url)
+    req = urllib.request.Request(moc_url, headers={"User-Agent": "ACP-MOC/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=_MOC_FETCH_TIMEOUT_S) as resp:
+            cl = resp.headers.get("Content-Length")
+            if cl is not None:
+                try:
+                    if int(cl) > _MOC_MAX_BYTES:
+                        raise _MocFetchError(
+                            f"Content-Length {cl} exceeds cap {_MOC_MAX_BYTES}"
+                        )
+                except ValueError:
+                    pass  # malformed header → fall through to streaming check
+            buf = BytesIO()
+            # 64 KiB chunks: small enough to abort early on a runaway body,
+            # large enough that a 200 KB MOC takes ~3 reads.
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                if buf.tell() + len(chunk) > _MOC_MAX_BYTES:
+                    raise _MocFetchError(
+                        f"response body exceeded cap {_MOC_MAX_BYTES}"
+                    )
+                buf.write(chunk)
+            return buf.getvalue()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        raise _MocFetchError(f"fetch failed: {exc}") from exc
+
+
+class MocCoverageSource:
+    """Coverage source backed by a CDS-hosted FITS MOC blob.
+
+    Lazy fetch on first hit to /api/moc/<id>; cached on disk under
+    data/moc_cache/<id>.fits with a 30-day TTL sidecar. The Phase 3 frontend
+    consumes the FITS bytes directly via Aladin Lite and never needs the
+    coverage() iterator — see comment in coverage() for Phase 4 plans.
+    """
+
+    def __init__(self, *, source_id: str, label: str, color: str,
+                 attribution: str, enabled_default: bool, moc_url: str,
+                 filter_name: str | None = None,
+                 cache_dir: Path | None = None) -> None:
+        # Re-validate on construct so a malformed URL slipped past the loader
+        # still fails loudly, not at first /api/moc hit.
+        _validate_moc_url(moc_url)
+        self._source_id = source_id
+        self._label = label
+        self._color = color
+        self._attribution = attribution
+        self._enabled_default = enabled_default
+        self._moc_url = moc_url
+        self._filter_name = filter_name
+        self._cache_dir = Path(cache_dir) if cache_dir else MOC_CACHE_DIR
+        self._lock = threading.Lock()
+        self._parsed_moc = None  # lazy parse of the cached FITS for coverage_moc
+
+    def id(self) -> str:
+        return self._source_id
+
+    def metadata(self) -> dict:
+        return {
+            "label": self._label,
+            "color": self._color,
+            "kind": "moc",
+            "attribution": self._attribution,
+            "enabled_default": self._enabled_default,
+        }
+
+    def coverage(self):
+        # Phase 4's gap-finder will need real region yielding from MOC
+        # union/intersection. For Phase 3 we leave this empty — the frontend
+        # consumes /api/moc/<id> directly, not coverage().
+        return iter(())
+
+    def coverage_moc(self, filter_name: str):
+        """Return the cached MOC if it exists on disk and `filter_name` matches.
+
+        Lazy: never triggers a network fetch. Caller (gap-finder) decides
+        whether to pre-warm the cache via ensure_cached() in advance.
+        """
+        if not _MOCPY_AVAILABLE:
+            return None
+        if filter_name != self._filter_name:
+            return None
+        if self._parsed_moc is not None:
+            return self._parsed_moc
+        fits_path, _ = self._cache_paths()
+        if not fits_path.exists():
+            return None
+        self._parsed_moc = MOC.from_fits(str(fits_path))
+        return self._parsed_moc
+
+    @property
+    def moc_url(self) -> str:
+        return self._moc_url
+
+    def _cache_paths(self) -> tuple[Path, Path]:
+        return (
+            self._cache_dir / f"{self._source_id}.fits",
+            self._cache_dir / f"{self._source_id}.meta.json",
+        )
+
+    def _cache_fresh(self, fits_path: Path, meta_path: Path) -> bool:
+        if not fits_path.exists() or not meta_path.exists():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        # URL drift in surveys.json must invalidate the cached blob.
+        if meta.get("url") != self._moc_url:
+            return False
+        try:
+            fetched_at = datetime.fromisoformat(meta["fetched_at"])
+        except (KeyError, ValueError):
+            return False
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - fetched_at).total_seconds()
+        return age < _MOC_CACHE_TTL_S
+
+    def ensure_cached(self) -> Path:
+        """Return the path to a fresh local FITS MOC, fetching if needed.
+
+        Per-source lock prevents two concurrent first-hit requests from racing
+        the same network fetch. Raises _MocFetchError on upstream / validation
+        failure; the route translates that to 502.
+        """
+        if not _MOCPY_AVAILABLE:
+            # Caller (the route) checks this first; re-checking here keeps the
+            # invariant local — no half-fetched bytes hit disk without mocpy.
+            raise _MocFetchError("mocpy not available")
+        fits_path, meta_path = self._cache_paths()
+        with self._lock:
+            if self._cache_fresh(fits_path, meta_path):
+                return fits_path
+            data = _fetch_moc_bytes(self._moc_url)
+            try:
+                MOC.from_fits(BytesIO(data))
+            except Exception as exc:
+                # Don't write malformed bytes to disk — next hit refetches.
+                raise _MocFetchError(f"invalid MOC FITS: {exc}") from exc
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            fits_path.write_bytes(data)
+            meta_path.write_text(json.dumps({
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "content_sha256": hashlib.sha256(data).hexdigest(),
+                "url": self._moc_url,
+            }, indent=2), encoding="utf-8")
+            return fits_path
+
+
+# Caps applied during friend-manifest validation. Loose enough that any
+# legitimate hobby archive will fit, tight enough that a malformed (or
+# malicious) file can't blow up parse cost or memory.
+_FRIEND_MAX_TARGETS = 10000
+_FRIEND_MAX_VERTICES = 64
+_FRIEND_MAX_POLYGONS = 64
+
+
+def _validate_friend_manifest(data: object, source_label: str) -> None:
+    """Reject any sanitised manifest that fails the safety checks.
+
+    Raises ValueError on the first failure. The caller logs and skips —
+    a bad friend manifest must not block the app from starting.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("top-level value is not an object")
+    # Tripwire: refuse anything not explicitly produced by the sanitiser.
+    # If a user accidentally points ACP_FRIEND_MANIFESTS at their own raw
+    # manifest, their filesystem paths would surface in the public UI.
+    if not data.get("sanitised"):
+        raise ValueError("missing 'sanitised: true' flag — refusing to load "
+                         "(probably an unsanitised manifest)")
+    targets = data.get("targets")
+    if not isinstance(targets, list):
+        raise ValueError("'targets' is not a list")
+    if len(targets) > _FRIEND_MAX_TARGETS:
+        raise ValueError(
+            f"target count {len(targets)} exceeds cap {_FRIEND_MAX_TARGETS}"
+        )
+    for i, t in enumerate(targets):
+        if not isinstance(t, dict):
+            raise ValueError(f"targets[{i}] is not an object")
+        corners = t.get("corners_icrs") or []
+        if not isinstance(corners, list):
+            raise ValueError(f"targets[{i}].corners_icrs is not a list")
+        # corners_icrs in the sanitiser is a single polygon (list of [ra,dec]
+        # pairs). Treat the whole list as one polygon for vertex counting,
+        # but defend against a future shape with multiple polygons too.
+        if corners and isinstance(corners[0], (list, tuple)) and corners[0] \
+                and isinstance(corners[0][0], (list, tuple)):
+            polygons = corners
+        else:
+            polygons = [corners]
+        if len(polygons) > _FRIEND_MAX_POLYGONS:
+            raise ValueError(
+                f"targets[{i}] has {len(polygons)} polygons "
+                f"(cap {_FRIEND_MAX_POLYGONS})"
+            )
+        for j, poly in enumerate(polygons):
+            if not isinstance(poly, list):
+                raise ValueError(
+                    f"targets[{i}].corners_icrs[{j}] is not a list"
+                )
+            if len(poly) > _FRIEND_MAX_VERTICES:
+                raise ValueError(
+                    f"targets[{i}] polygon {j} has {len(poly)} vertices "
+                    f"(cap {_FRIEND_MAX_VERTICES})"
+                )
+    # Final safety net — scan the entire object for path-shaped strings.
+    # Imported lazily so app startup doesn't pay the cost when the env var
+    # is unset.
+    _scripts_dir = str(REPO_ROOT / "scripts")
+    if _scripts_dir not in sys.path:
+        sys.path.insert(0, _scripts_dir)
+    from sanitise_manifest import validate_no_paths  # noqa: WPS433
+    validate_no_paths(data)
+
+
+# Coverage-source registry. Extensions can append their own sources to this
+# list inside their `register(app)` body; the built-in manifest source ships
+# pre-registered so a stock checkout always exposes one entry on /api/sources.
+app.coverage_sources = [ManifestCoverageSource()]
+
+
+# Friend manifests — semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
+# is validated (sanitised flag + caps + path-leak scan) before joining the
+# registry; failures log a warning and skip without crashing the app.
+_friend_paths = os.environ.get("ACP_FRIEND_MANIFESTS", "").strip()
+if _friend_paths:
+    for raw_path in _friend_paths.split(";"):
+        raw_path = raw_path.strip()
+        if not raw_path:
+            continue
+        p = Path(raw_path).expanduser()
+        if not p.is_file():
+            logging.warning(
+                "ACP_FRIEND_MANIFESTS: path not found, skipping: %s", p
+            )
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            _validate_friend_manifest(data, source_label=p.stem)
+        except (OSError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+            logging.warning(
+                "ACP_FRIEND_MANIFESTS: skipping %s — %s", p, exc
+            )
+            continue
+        label = (data.get("friend_label") or p.stem) or "Friend"
+        # Path-traversal-safe: stem already strips dirs; sanitise to alnum/_/-
+        # so the id is URL-safe even for adversarial filenames. Skip the
+        # `friend_` prefix if the filename already starts with one (case- and
+        # whitespace-insensitive) to avoid `friend_friend_dave` ids.
+        stem_lower = p.stem.lower()
+        stem_canonical = stem_lower.replace(" ", "_")
+        raw_id = stem_lower if stem_canonical.startswith("friend_") else f"friend_{stem_lower}"
+        source_id = "".join(
+            c if c.isalnum() or c in "_-" else "_" for c in raw_id
+        )
+        app.coverage_sources.append(FriendManifestSource(
+            source_id=source_id, label=label, color="", path=p,
+        ))
+        logging.info("Loaded friend manifest: %s (%s)", label, p)
+
+
+# Survey MOC sources — declarative registry committed at data/surveys.json (or
+# ACP_SURVEYS_PATH). The file is intentionally tracked: PRs welcome to add
+# more surveys. Per-entry validation failures log a warning and skip; bad
+# entries must not block app boot.
+def _load_surveys_registry() -> list[dict]:
+    if not SURVEYS_PATH.exists():
+        logging.info("Surveys registry not found at %s — no MOC sources", SURVEYS_PATH)
+        return []
+    try:
+        data = json.loads(SURVEYS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning("Surveys registry %s unreadable: %s", SURVEYS_PATH, exc)
+        return []
+    if not isinstance(data, list):
+        logging.warning("Surveys registry %s: top-level value must be a list", SURVEYS_PATH)
+        return []
+    return data
+
+
+for _entry in _load_surveys_registry():
+    _eid = (_entry or {}).get("id", "<unknown>")
+    try:
+        if not isinstance(_entry, dict):
+            raise ValueError("entry is not an object")
+        for _required in ("id", "label", "moc_url", "attribution"):
+            if not _entry.get(_required):
+                raise ValueError(f"missing required field {_required!r}")
+        app.coverage_sources.append(MocCoverageSource(
+            source_id=_entry["id"],
+            label=_entry["label"],
+            color=_entry.get("color", ""),
+            attribution=_entry["attribution"],
+            enabled_default=bool(_entry.get("enabled_default", False)),
+            moc_url=_entry["moc_url"],
+            filter_name=_entry.get("filter"),
+        ))
+        logging.info("Loaded MOC source: %s (%s)", _entry["label"], _entry["id"])
+    except (ValueError, TypeError) as exc:
+        logging.warning("Skipping MOC source %s: %s", _eid, exc)
+
+
+# Optional extensions — load any user-supplied modules from the directory
+# named by ACP_EXTENSIONS_DIR. No-op when the env var is unset or the loader
+# is absent, so a stock checkout runs unchanged. Loaded after the built-in
+# source registers so extensions can read or extend `app.coverage_sources`.
+try:
+    from extensions import load_extensions
+    load_extensions(app)
+except ImportError:
+    pass
 
 
 def _fov_arcmin(telescope: dict | None, camera: dict | None) -> list[float]:
@@ -369,6 +926,55 @@ def api_catalogs():
     return jsonify(load_catalogs())
 
 
+@app.route("/api/sources")
+def api_sources():
+    """List of registered coverage sources for the frontend Sources rail."""
+    out = []
+    for src in app.coverage_sources:
+        meta = src.metadata()
+        out.append({
+            "id": src.id(),
+            "label": meta["label"],
+            "color": meta["color"],
+            "kind": meta["kind"],
+            "attribution": meta["attribution"],
+            "enabled_default": meta["enabled_default"],
+        })
+    return jsonify(out)
+
+
+@app.route("/api/moc/<source_id>")
+def api_moc(source_id: str):
+    """Serve the cached FITS MOC blob for a registered MOC source.
+
+    Lazy-fetches on first hit. Returns 404 for unknown ids or non-MOC sources,
+    503 when mocpy is missing, 502 when the upstream fetch or validation
+    fails. Successful responses are application/octet-stream — Aladin Lite's
+    FITS MOC loader takes the bytes directly.
+    """
+    src = next(
+        (s for s in app.coverage_sources
+         if s.id() == source_id and isinstance(s, MocCoverageSource)),
+        None,
+    )
+    if src is None:
+        return jsonify({"error": "MOC source not found"}), 404
+    if not _MOCPY_AVAILABLE:
+        return jsonify({
+            "error": "mocpy not installed; MOC overlays disabled",
+        }), 503
+    try:
+        fits_path = src.ensure_cached()
+    except _MocFetchError as exc:
+        logging.warning("MOC fetch failed for %s: %s", source_id, exc)
+        return jsonify({"error": f"upstream fetch failed: {exc}"}), 502
+    return Response(
+        fits_path.read_bytes(),
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{source_id}.fits"'},
+    )
+
+
 def _clamped_float(name: str, default: float, lo: float, hi: float) -> float:
     try:
         v = float(request.args.get(name, default))
@@ -416,9 +1022,217 @@ def api_observability():
     return jsonify({"lat": lat, "lon": lon, "time": iso, "targets": out})
 
 
+def _gaps_query_params() -> tuple[dict, tuple[Response, int] | None]:
+    """Parse + validate /api/gaps query params. Returns (params, error_response).
+
+    On success error_response is None. On bad input it's a (response, status)
+    tuple ready to return from the route. Defaults match the documented
+    "Ha covered, SII not yet" recipe.
+    """
+    have = request.args.get("have", "Ha")
+    missing = request.args.get("missing", "SII")
+    if not isinstance(have, str) or not have or not isinstance(missing, str) or not missing:
+        return {}, (jsonify({"error": "have/missing must be non-empty strings"}), 400)
+    sources_raw = request.args.get("sources")
+    if sources_raw is not None:
+        wanted = [s.strip() for s in sources_raw.split(",") if s.strip()]
+    else:
+        wanted = None  # None = all enabled-by-default sources
+    try:
+        min_have = float(request.args.get("min_have_hours", 1.0))
+        max_missing = float(request.args.get("max_missing_hours", 0.5))
+    except (TypeError, ValueError):
+        return {}, (jsonify({"error": "min_have_hours/max_missing_hours must be numeric"}), 400)
+    return {
+        "have": have, "missing": missing,
+        "source_ids": wanted,
+        "min_have_hours": min_have,
+        "max_missing_hours": max_missing,
+    }, None
+
+
+def _source_passes_threshold(src, filter_name: str, min_hours: float) -> bool:
+    """True if any region from src.coverage() has >= min_hours of filter_name.
+
+    Returns True for sources without per-region hours (MOC sources): the
+    threshold is meaningless there, so they always qualify if their declared
+    filter matches — that match is enforced separately by compute_gap_moc.
+    """
+    coverage = getattr(src, "coverage", None)
+    if coverage is None:
+        return True
+    saw_any_region = False
+    for region in coverage():
+        saw_any_region = True
+        f = (region.get("filters") or {}).get(filter_name)
+        if f and float(f.get("hours", 0.0)) >= min_hours:
+            return True
+    # No regions at all → MOC source (or empty manifest). Don't filter it out
+    # here; compute_gap_moc will skip it if it has no coverage at this filter.
+    return not saw_any_region
+
+
+def _select_gap_sources(have: str, missing: str, source_ids: list[str] | None,
+                       min_have: float, max_missing: float) -> tuple[list, list[str], list[tuple[str, str]]]:
+    """Filter app.coverage_sources by id + per-side hour thresholds.
+
+    Returns (sources_to_pass_in, restricted_ids, threshold_skipped). Sources
+    that satisfy *either* side's threshold are passed through; compute_gap_moc
+    sorts out which side they actually contribute to.
+    """
+    candidates = list(app.coverage_sources)
+    if source_ids is not None:
+        wanted = set(source_ids)
+        candidates = [s for s in candidates if s.id() in wanted]
+    else:
+        # Default = enabled-by-default sources only.
+        candidates = [s for s in candidates if s.metadata().get("enabled_default")]
+
+    selected: list = []
+    selected_ids: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for src in candidates:
+        ok_have = _source_passes_threshold(src, have, min_have)
+        ok_missing = _source_passes_threshold(src, missing, max_missing)
+        if ok_have or ok_missing:
+            selected.append(src)
+            selected_ids.append(src.id())
+        else:
+            skipped.append((src.id(),
+                            f"below {min_have}h threshold for {have} and "
+                            f"below {max_missing}h threshold for {missing}"))
+    return selected, selected_ids, skipped
+
+
+@app.route("/api/gaps")
+def api_gaps():
+    """Multi-source gap finder — where `have` is covered but `missing` isn't.
+
+    Returns 503 when mocpy isn't installed (MOC algebra is the whole point of
+    this route; CSV consumers fall back via /api/export/priority instead).
+    """
+    if not _MOCPY_AVAILABLE:
+        return jsonify({"error": "mocpy not installed"}), 503
+    params, err = _gaps_query_params()
+    if err is not None:
+        return err
+
+    sources, selected_ids, threshold_skipped = _select_gap_sources(
+        params["have"], params["missing"], params["source_ids"],
+        params["min_have_hours"], params["max_missing_hours"],
+    )
+    result = compute_gap_moc(
+        sources,
+        have_filter=params["have"],
+        missing_filter=params["missing"],
+        source_ids=selected_ids,
+    )
+    skipped_payload = [{"source_id": sid, "reason": reason}
+                       for sid, reason in (threshold_skipped + result.skipped)]
+
+    if result.gap_moc is None:
+        return jsonify({
+            "have_filter": params["have"],
+            "missing_filter": params["missing"],
+            "have_sources": result.have_sources,
+            "missing_sources": result.missing_sources,
+            "gap_sky_fraction": 0.0,
+            "candidates": [],
+            "skipped": skipped_payload,
+        })
+
+    cands = candidates_in_moc(result.gap_moc, load_catalogs())
+    # moc_url echoes the same query string so a frontend can fetch the FITS
+    # without re-parsing — keep the param order stable for cache-friendliness.
+    qs = urllib.parse.urlencode({
+        "have": params["have"],
+        "missing": params["missing"],
+        "sources": ",".join(selected_ids),
+        "min_have_hours": params["min_have_hours"],
+        "max_missing_hours": params["max_missing_hours"],
+    })
+    return jsonify({
+        "have_filter": params["have"],
+        "missing_filter": params["missing"],
+        "have_sources": result.have_sources,
+        "missing_sources": result.missing_sources,
+        "gap_sky_fraction": result.gap_sky_fraction,
+        "candidates": [
+            {"catalog": c.catalog, "name": c.name,
+             "ra_deg": c.ra_deg, "dec_deg": c.dec_deg}
+            for c in cands
+        ],
+        "skipped": skipped_payload,
+        "moc_url": f"/api/gaps/moc.fits?{qs}",
+    })
+
+
+@app.route("/api/gaps/moc.fits")
+def api_gaps_moc_fits():
+    """Serve the gap MOC as raw FITS bytes."""
+    if not _MOCPY_AVAILABLE:
+        return jsonify({"error": "mocpy not installed"}), 503
+    params, err = _gaps_query_params()
+    if err is not None:
+        return err
+
+    sources, selected_ids, _ = _select_gap_sources(
+        params["have"], params["missing"], params["source_ids"],
+        params["min_have_hours"], params["max_missing_hours"],
+    )
+    result = compute_gap_moc(
+        sources,
+        have_filter=params["have"],
+        missing_filter=params["missing"],
+        source_ids=selected_ids,
+    )
+    if result.gap_moc is None:
+        return jsonify({"error": "no gap region for these parameters"}), 404
+
+    buf = BytesIO()
+    result.gap_moc.serialize(format="fits").writeto(buf)
+    return Response(
+        buf.getvalue(),
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": 'inline; filename="gap.fits"'},
+    )
+
+
+# Catalogs that contributed to the legacy /api/export/priority CSV. Kept here
+# because the gap-finder pulls candidates from the entire load_catalogs() dict
+# but the CSV consumer expects only these three.
+_PRIORITY_CSV_CATALOGS = ("green_snrs", "smgps_candidates", "emu_candidates")
+_PRIORITY_CSV_HEADER = [
+    "catalog", "name", "ra_deg", "dec_deg", "l_deg", "b_deg",
+    "overlap_target_id", "overlap_target_objects",
+    "ha_hours", "sii_hours", "oiii_hours",
+]
+
+
+def _priority_csv_response(rows: list[list]) -> tuple[str, int, dict]:
+    out = StringIO()
+    w = csv.writer(out)
+    w.writerow(_PRIORITY_CSV_HEADER)
+    for row in rows:
+        w.writerow(row)
+    return out.getvalue(), 200, {
+        "Content-Type": "text/csv",
+        "Content-Disposition": "attachment; filename=priority_sii_targets.csv",
+    }
+
+
 @app.route("/api/export/priority")
 def api_export_priority():
-    """CSV of overlay candidates where Ha >= 1h but SII < 0.5h (validation-gap bucket)."""
+    """CSV of overlay candidates where Ha >= 1h but SII < 0.5h (validation-gap bucket).
+
+    With mocpy installed: thin wrapper over compute_gap_moc against the user's
+    own manifest. CSV-shaped per-target overlap fields (galactic l/b, target id,
+    filter hours) are re-derived here — they're export-shape, not gap-math, so
+    they don't belong inside gaps.py.
+
+    Without mocpy: falls back to the original inline implementation so the CSV
+    keeps working on stripped-down installs.
+    """
     cats = load_catalogs()
     m = load_manifest()
     if m is None or not cats:
@@ -430,6 +1244,61 @@ def api_export_priority():
     except Exception:
         return ("astropy missing", 500)
 
+    if _MOCPY_AVAILABLE:
+        manifest_src = next(
+            (s for s in app.coverage_sources if s.id() == "manifest"), None,
+        )
+        if manifest_src is None:
+            return ("manifest source not registered", 404)
+        result = compute_gap_moc(
+            [manifest_src],
+            have_filter="Ha", missing_filter="SII",
+            source_ids=["manifest"],
+        )
+        if result.gap_moc is None:
+            return _priority_csv_response([])
+
+        # Restrict to the legacy CSV's catalog subset before MOC-filtering.
+        scoped = {k: v for k, v in cats.items() if k in _PRIORITY_CSV_CATALOGS}
+        candidates = candidates_in_moc(result.gap_moc, scoped)
+
+        target_ras = [t["center_ra_deg"] for t in m["targets"]]
+        target_decs = [t["center_dec_deg"] for t in m["targets"]]
+        target_coords = (
+            SkyCoord(target_ras * u.deg, target_decs * u.deg) if target_ras else None
+        )
+        cat_lookup = {(name, e.get("name", "")): e
+                      for name, entries in scoped.items() for e in entries}
+
+        rows: list[list] = []
+        for c in candidates:
+            entry = cat_lookup.get((c.catalog, c.name), {})
+            match_tid, match_objs = "", ""
+            ha = sii = oiii = 0.0
+            if target_coords is not None:
+                cand_sc = SkyCoord(c.ra_deg * u.deg, c.dec_deg * u.deg)
+                idx, sep, _ = cand_sc.match_to_catalog_sky(target_coords)
+                if float(sep.arcminute) <= 45:
+                    t = m["targets"][int(idx)]
+                    match_tid = t["target_id"]
+                    match_objs = "|".join(t.get("objects", []))
+                    ha = t["filters"].get("Ha", {}).get("total_hours", 0.0)
+                    sii = t["filters"].get("SII", {}).get("total_hours", 0.0)
+                    oiii = t["filters"].get("OIII", {}).get("total_hours", 0.0)
+            # Re-apply the 1h/0.5h gate: the gap MOC is union-of-Ha minus
+            # union-of-SII at the cell level, but the legacy CSV gates on the
+            # nearest-target's hours. Targets near a candidate but with low Ha
+            # would otherwise sneak in.
+            if ha < 1.0 or sii >= 0.5:
+                continue
+            rows.append([
+                c.catalog, c.name, c.ra_deg, c.dec_deg,
+                entry.get("l_deg", ""), entry.get("b_deg", ""),
+                match_tid, match_objs, ha, sii, oiii,
+            ])
+        return _priority_csv_response(rows)
+
+    # --- mocpy-missing fallback: pre-Phase-4 inline implementation ----------
     target_ras = [t["center_ra_deg"] for t in m["targets"]]
     target_decs = [t["center_dec_deg"] for t in m["targets"]]
     target_coords = (
@@ -438,14 +1307,10 @@ def api_export_priority():
 
     out = StringIO()
     w = csv.writer(out)
-    w.writerow([
-        "catalog", "name", "ra_deg", "dec_deg", "l_deg", "b_deg",
-        "overlap_target_id", "overlap_target_objects",
-        "ha_hours", "sii_hours", "oiii_hours",
-    ])
+    w.writerow(_PRIORITY_CSV_HEADER)
 
     for cat_name, entries in cats.items():
-        if cat_name not in ("green_snrs", "smgps_candidates", "emu_candidates"):
+        if cat_name not in _PRIORITY_CSV_CATALOGS:
             continue
         valid = [e for e in entries if e.get("ra_deg") is not None and e.get("dec_deg") is not None]
         if not valid:
@@ -454,7 +1319,6 @@ def api_export_priority():
             cras = [e["ra_deg"] for e in valid]
             cdecs = [e["dec_deg"] for e in valid]
             cand = SkyCoord(cras * u.deg, cdecs * u.deg)
-            # match_to_catalog_sky returns nearest target for each candidate
             idx, sep, _ = cand.match_to_catalog_sky(target_coords)
             sep_arcmin = sep.arcminute
         else:
@@ -546,6 +1410,36 @@ def api_plan(plan_id: str):
     plans[idx] = payload
     save_plans({"version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
+
+
+@app.route("/api/target-overrides", methods=["GET", "POST"])
+def api_target_overrides():
+    """Per-target state the user sets manually — primarily the finished flag for
+    targets that have no plan but should still be treated as done. Keyed by
+    target_id (string) to survive JSON round-trips cleanly."""
+    data = load_target_overrides()
+    if request.method == "GET":
+        return jsonify({
+            "version": data.get("version", 1),
+            "overrides": data.get("overrides", {}),
+        })
+    payload = request.get_json(silent=True) or {}
+    tid = payload.get("target_id")
+    if tid is None or (isinstance(tid, str) and not tid.strip()):
+        return jsonify({"error": "target_id required"}), 400
+    key = str(tid)
+    overrides = dict(data.get("overrides", {}))
+    # A null/missing "finished" deletes the override so the target falls back to
+    # plan-derived status — this is how the frontend clears a manual mark.
+    if "finished" not in payload or payload["finished"] is None:
+        overrides.pop(key, None)
+    else:
+        overrides[key] = {
+            "finished": bool(payload["finished"]),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    save_target_overrides({"version": data.get("version", 1), "overrides": overrides})
+    return jsonify({"ok": True, "overrides": overrides})
 
 
 @app.route("/api/ts-templates")
