@@ -217,15 +217,43 @@ button:active { background: #262e40; }
 
 .target-row {
   display: grid;
+  /* row 1: swatch · name · filter-dots · hours
+     row 2: (swatch col empty) · meta-strip (now + trend + sparkline)
+     The 4-col grid keeps swatch and the right-edge widgets aligned across
+     rows; row 2's meta cell spans columns 2-4 so it can flex-pack chips. */
   grid-template-columns: 10px 1fr auto auto;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
   align-items: center;
-  gap: 8px;
   padding: 6px 6px;
   border-radius: 4px;
   cursor: pointer;
   border-bottom: 1px dashed #1a2030;
   font-size: 13px;
 }
+.tr-swatch { grid-row: 1; grid-column: 1; align-self: center; }
+.tr-name   { grid-row: 1; grid-column: 2; }
+.tr-dots   { grid-row: 1; grid-column: 3; }
+.tr-hours  { grid-row: 1; grid-column: 4; }
+.tr-meta {
+  grid-row: 2;
+  grid-column: 2 / -1;       /* span name → hours columns */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #78839a;
+}
+/* Push the year-curve sparkline to the right edge of the row so the chips
+   keep their leading position and the empty middle absorbs the slack. */
+.tr-meta .yc-sparkline {
+  margin-left: auto;
+  margin-right: 0;
+}
+/* When time-aware is off the meta strip is empty + collapsed by CSS, so
+   the row collapses back to its single-line natural height. */
+body:not([data-time-aware="on"]) .tr-meta { display: none; }
 .target-row:hover { background: #1a2030; }
 
 .tr-swatch {
@@ -433,6 +461,52 @@ button:active { background: #262e40; }
 .mark-finished-row button {
   font-size: 12px;
   padding: 3px 8px;
+}
+
+/* --- Unsaved-edits modal (fires on Esc / empty-sky deselect from plan-edit) --- */
+
+.dirty-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.dirty-modal {
+  background: #161b25;
+  border: 1px solid #2a3246;
+  border-radius: 6px;
+  padding: 16px 20px 14px;
+  min-width: 320px;
+  max-width: 440px;
+  color: #e0e4ea;
+  font-size: 13px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.dirty-modal h4 {
+  margin: 0 0 8px;
+  color: #ffffff;
+  font-size: 14px;
+}
+.dirty-modal p {
+  margin: 0 0 14px;
+  color: #a2aec2;
+  line-height: 1.4;
+}
+.dirty-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.dirty-modal-buttons button {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.dirty-modal-buttons .btn-primary {
+  background: #2d4a7a;
+  color: #ffffff;
 }
 
 /* --- Planner --- */
@@ -736,3 +810,334 @@ button:active { background: #262e40; }
 .cat-tooltip strong { color: #ffe27a; }
 .cat-tooltip .cat-tag { color: #888; font-size: 10px; margin-left: 6px; }
 .cat-tooltip .cat-extra { color: #a2aec2; font-size: 10px; margin-left: 6px; }
+
+/* ----- Time-aware toggle (Plan A.2) ------------------------------------- */
+/* Aria-pressed drives the visual state — `true` lights it up, `false` is a
+   muted background. Generic enough to apply to other toggles later. */
+.toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #a2aec2;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-btn:hover { background: #212939; color: #e0e4ea; }
+.toggle-btn[aria-pressed="true"] {
+  background: #2a4f7a;
+  border-color: #4a7ec0;
+  color: #f0f5ff;
+}
+.toggle-btn[aria-pressed="true"]:hover { background: #345f92; }
+.toggle-btn .toggle-icon { font-size: 12px; line-height: 1; }
+.toggle-btn .toggle-lbl  { font-weight: 600; letter-spacing: 0.02em; }
+
+/* When time-aware is OFF, hide every UI element that only makes sense with
+   a time/site context. New time-aware widgets should add themselves to this
+   selector list as they land. */
+body:not([data-time-aware="on"]) #obsNow,
+body:not([data-time-aware="on"]) .yc-sparkline,
+body:not([data-time-aware="on"]) .yc-bar,
+body:not([data-time-aware="on"]) .nn-chip,
+body:not([data-time-aware="on"]) .tr-chips,
+body:not([data-time-aware="on"]) .vis-section,
+body:not([data-time-aware="on"]) .sort-control,
+body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
+
+/* ----- Year curve sparklines + best-month badges (Plan A.4) ------------- */
+/* One cell per month, coloured by visibility label. The list-row variant is
+   compact (8x6); the detail-panel variant grows to 16x14 and shows month
+   labels underneath. Cell colours intentionally echo a traffic-light
+   gradient so the eye scans the row left-to-right for "when's it good". */
+.yc-sparkline {
+  display: inline-grid;
+  grid-template-columns: repeat(12, 8px);
+  gap: 1px;
+  vertical-align: middle;
+  margin-right: 6px;
+  /* let the current-month outline render outside its cell without being
+     clipped by neighbouring cells. */
+  padding: 2px;
+}
+.yc-sparkline .yc-cell {
+  width: 8px;
+  height: 10px;
+  border-radius: 1px;
+}
+.yc-bar {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 2px;
+  margin: 6px 0 4px;
+  max-width: 360px;
+}
+.yc-bar .yc-cell {
+  height: 22px;
+  border-radius: 2px;
+  position: relative;
+  cursor: default;
+}
+.yc-bar .yc-mlabel {
+  position: absolute;
+  bottom: -14px;
+  left: 0; right: 0;
+  text-align: center;
+  font-size: 9px;
+  color: #78839a;
+  pointer-events: none;
+}
+.yc-bar { padding-bottom: 16px; }
+/* Visibility-label colour palette. Great pops as teal so it reads as
+   distinctly "the best tier" rather than "slightly brighter green". */
+.yc-cell.vc-not_visible { background: #1f242e; }
+.yc-cell.vc-partial     { background: #4a4a55; }
+.yc-cell.vc-fair        { background: #b9923c; }
+.yc-cell.vc-good        { background: #6fcc52; }
+.yc-cell.vc-great       { background: #46c5d4; }
+/* Current-month indicator. Bright gold ring via box-shadow so it tracks
+   the cell's border-radius and isn't clipped by neighbouring cells. The
+   detail-panel bar adds a soft glow on top for extra emphasis. */
+.yc-cell.vc-current {
+  box-shadow: 0 0 0 2px #ffe27a;
+  position: relative;
+  z-index: 1;
+}
+.yc-bar .yc-cell.vc-current { box-shadow: 0 0 0 2px #ffe27a, 0 0 6px rgba(255, 226, 122, 0.5); }
+
+/* Now / Trend chips on the row's second line. Same colour-codes as the
+   sparkline so the eye reads "green = good" consistently. */
+.nn-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 14px;
+  border: 1px solid #2a3246;
+  background: rgba(120,131,154,0.05);
+  color: #a2aec2;
+}
+.nn-chip .nn-prefix { color: #6c7281; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+.nn-chip.nn-great { color: #46c5d4; border-color: rgba(70, 197, 212, 0.40); background: rgba(70, 197, 212, 0.10); }
+.nn-chip.nn-good  { color: #6fcc52; border-color: rgba(111, 204, 82, 0.35); background: rgba(111, 204, 82, 0.08); }
+.nn-chip.nn-fair  { color: #d6b35c; border-color: rgba(214, 179, 92, 0.35);  background: rgba(214, 179, 92, 0.07); }
+.nn-chip.nn-partial { color: #9aa3b3; border-color: #2a3246; background: rgba(120,131,154,0.05); }
+.nn-chip.nn-not_visible { color: #6c7281; border-color: #2a3246; background: rgba(120,131,154,0.05); }
+/* Trend chip variants — improving (green up), declining (orange down),
+   steady (grey flat), upcoming (yellow/blue, "Peaks in Nm"). */
+.nn-chip.nn-trend-up   { color: #8fc485; border-color: rgba(143, 196, 133, 0.35); background: rgba(143, 196, 133, 0.07); }
+.nn-chip.nn-trend-down { color: #e0876f; border-color: rgba(224, 135, 111, 0.35); background: rgba(224, 135, 111, 0.07); }
+.nn-chip.nn-trend-flat { color: #9aa3b3; border-color: #2a3246; background: rgba(120,131,154,0.05); }
+.nn-chip.nn-trend-wait { color: #d6b35c; border-color: rgba(214, 179, 92, 0.35); background: rgba(214, 179, 92, 0.07); }
+
+/* Visibility section in the target detail panel. */
+.vis-section { margin-top: 8px; }
+/* Each meta row pairs a left-aligned text line with a right-aligned chip,
+   so Peak/Now-altitude framing matches NOW/Trend chips column-style. */
+.vis-section .vis-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+.vis-section .vis-meta {
+  font-size: 11px;
+  color: #78839a;
+}
+.vis-section .vis-now {
+  font-size: 11px;
+  color: #a2aec2;
+}
+
+/* Sort control inside the panel-list header. */
+.sort-control {
+  font-size: 11px;
+  color: #78839a;
+  margin-left: 6px;
+}
+.sort-control select {
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #e0e4ea;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  margin-left: 3px;
+}
+
+/* ----- Topbar icon buttons + sites modal (Plan A.1) ---------------------- */
+.icon-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #a2aec2;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.icon-btn:hover { background: #212939; color: #e0e4ea; }
+
+.acp-modal {
+  background: #0f1319;
+  color: #e0e4ea;
+  border: 1px solid #2a3246;
+  border-radius: 6px;
+  padding: 16px 18px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  min-width: 360px;
+  max-width: 92vw;
+}
+.acp-modal::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.acp-modal h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #e8ecf3;
+}
+.acp-modal form { display: flex; flex-direction: column; gap: 10px; }
+.modal-row { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #a2aec2; }
+.modal-row.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.modal-row.two-col > label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #a2aec2; }
+.modal-row > span,
+.modal-row > label > span {
+  font-size: 11px;
+  color: #78839a;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.modal-row input {
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #e0e4ea;
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-size: 12px;
+  width: 100%;
+}
+.modal-row input:invalid { border-color: #c25b5b; }
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.modal-actions .spacer { flex: 1; }
+.modal-actions button.primary {
+  background: #2a4f7a;
+  border-color: #355d8e;
+  color: #f0f5ff;
+}
+.modal-actions button.primary:hover { background: #345f92; }
+.modal-actions button.danger {
+  background: #4a1d1d;
+  border-color: #6a2a2a;
+  color: #f3c8c8;
+}
+.modal-actions button.danger:hover { background: #5a2424; }
+.modal-error {
+  background: #3a1d1d;
+  border: 1px solid #6a2a2a;
+  color: #f3c8c8;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+/* ----- Inventory rail panel (Plan 4b) ----------------------------------- */
+/* Each tile source = one collapsible block. Header = toggle + label;
+   body = filter chips for priority / missing-bands / categories + a
+   "N of M tiles shown" counter. */
+.inv-source { margin: 4px 0; padding: 6px; border: 1px solid #1a2030; border-radius: 4px; background: #11151c; }
+.inv-source-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.inv-source-head .swatch {
+  display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+.inv-source-head .label { font-weight: 600; color: #e0e4ea; flex: 1; }
+.inv-source-head .count { font-size: 11px; color: #78839a; font-variant-numeric: tabular-nums; }
+.inv-source-body {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+}
+.inv-source[data-open="false"] .inv-source-body { display: none; }
+.inv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.inv-row .inv-row-lbl {
+  color: #78839a;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+  min-width: 56px;
+}
+/* Priority chip — coloured ring per level. The first 4 levels carry a
+   distinct hue; levels 5+ all read as "lower priority" grey. */
+.inv-pri {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px; border-radius: 8px;
+  background: rgba(120,131,154,0.06);
+  border: 1px solid #2a3246;
+  color: #a2aec2;
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.inv-pri input { margin: 0; }
+.inv-pri.pri-1 { color: #ff8a8a; border-color: rgba(255, 138, 138, 0.40); }
+.inv-pri.pri-2 { color: #ffb877; border-color: rgba(255, 184, 119, 0.40); }
+.inv-pri.pri-3 { color: #ffe27a; border-color: rgba(255, 226, 122, 0.40); }
+.inv-pri.pri-4 { color: #9aa3b3; border-color: #2a3246; }
+.inv-pri.pri-other { color: #6c7281; border-color: #2a3246; }
+
+.tile-actions {
+  margin-top: 12px;
+  padding: 10px;
+  background: #11151c;
+  border: 1px solid #1a2030;
+  border-radius: 4px;
+}
+.tile-suggestion {
+  font-size: 11px;
+  color: #a2aec2;
+  margin-bottom: 8px;
+}
+.tile-suggestion code {
+  background: rgba(120,131,154,0.10);
+  border: 1px solid #2a3246;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #e0e4ea;
+}
+#tileCreatePlan.primary {
+  background: #2a4f7a;
+  border-color: #355d8e;
+  color: #f0f5ff;
+  padding: 6px 12px;
+  width: 100%;
+  font-size: 12px;
+}
+#tileCreatePlan.primary:hover { background: #345f92; }

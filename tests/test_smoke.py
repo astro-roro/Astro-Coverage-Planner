@@ -20,6 +20,12 @@ app_module.TARGET_OVERRIDES_PATH = _tmp_overrides
 app_module._target_overrides_cache = None
 app_module._target_overrides_cache_mtime = None
 
+# Same for sites — never write to data/sites.json from the smoke test.
+_tmp_sites = Path(tempfile.mkdtemp()) / "sites.json"
+app_module.SITES_PATH = _tmp_sites
+app_module._sites_cache = None
+app_module._sites_cache_mtime = None
+
 c = app.test_client()
 
 r = c.get("/")
@@ -263,6 +269,219 @@ assert r.status_code == 200 and "7" not in r.get_json()["overrides"]
 
 r = c.post("/api/target-overrides", json={})
 print("POST /api/target-overrides (missing target_id)", r.status_code)
+assert r.status_code == 400
+
+# --- Catalog registry + CategorisedCatalogSource (Plan 3b/3c/3d) ---
+
+# File-loaded entries should appear at /api/catalog-registry.
+r = c.get("/api/catalog-registry")
+print("GET /api/catalog-registry (file only)", r.status_code)
+assert r.status_code == 200
+reg = r.get_json()
+file_ids = {e["id"] for e in reg["catalogues"]}
+assert "green" in file_ids and "messier" in file_ids, file_ids
+
+# Register a synthetic CategorisedCatalogSource and confirm it surfaces
+# in both /api/catalog-registry and /api/catalogs without code changes.
+class _FakeCatalogSource:
+    def id(self): return "demo_pne"
+    def metadata(self): return {
+        "label": "Demo PNe",
+        "color": "#ff66cc",
+        "marker": "circle",
+        "size": 11,
+        "attribution": "Synthetic test catalogue",
+        "enabled_default": False,
+    }
+    def categories(self): return ["PNe", "HII"]
+    def objects(self):
+        return [
+            {"name": "PN_TEST_1", "ra_deg": 12.34, "dec_deg": -45.67, "category": "PNe"},
+            {"name": "HII_TEST_1", "ra_deg": 56.78, "dec_deg": -12.34, "category": "HII"},
+        ]
+
+app.catalog_sources.append(_FakeCatalogSource())
+try:
+    r = c.get("/api/catalog-registry")
+    print("GET /api/catalog-registry (with extension)", r.status_code)
+    assert r.status_code == 200
+    reg2 = r.get_json()
+    demo = next((e for e in reg2["catalogues"] if e["id"] == "demo_pne"), None)
+    assert demo is not None, reg2
+    assert demo["label"] == "Demo PNe"
+    assert demo["categories"] == ["PNe", "HII"]
+    assert demo["data_key"] == "demo_pne"
+
+    r = c.get("/api/catalogs")
+    print("GET /api/catalogs (with extension)", r.status_code)
+    assert r.status_code == 200
+    cats = r.get_json()
+    assert "demo_pne" in cats, list(cats.keys())[:5]
+    assert len(cats["demo_pne"]) == 2
+    assert cats["demo_pne"][0]["category"] == "PNe"
+    print("CategorisedCatalogSource round-trip OK")
+finally:
+    app.catalog_sources.pop()
+
+# --- Tile sources (Plan 4a) ---
+
+# Baseline registry — may already contain user-installed extensions, so
+# count what's there rather than asserting empty.
+r = c.get("/api/tile-sources")
+print("GET /api/tile-sources (baseline)", r.status_code)
+assert r.status_code == 200
+_baseline_tile_sources = len(r.get_json()["sources"])
+
+# Register a synthetic PrioritisedTilesSource and round-trip both endpoints.
+class _FakeTilesSource:
+    def id(self): return "test_synthetic_tiles"  # unique to avoid colliding with any installed extension
+    def metadata(self): return {
+        "label": "Demo tile queue",
+        "color": "#a070ff",
+        "attribution": "Synthetic test source",
+        "enabled_default": True,
+    }
+    def tiles(self):
+        return [
+            {
+                "id": "t1", "ra_deg": 100.0, "dec_deg": -30.0,
+                "footprint": [[99.5,-29.5],[100.5,-29.5],[100.5,-30.5],[99.5,-30.5]],
+                "priority_level": 1, "score": 99.0,
+                "per_band": {"Ha": {"covered": True, "source": "external"},
+                             "SII": {"covered": False},
+                             "OIII": {"covered": False}},
+                "category_counts": {"PNe": 4, "SNR": 1},
+            },
+            {
+                "id": "t2", "ra_deg": 200.0, "dec_deg": -40.0,
+                "footprint": [[199.5,-39.5],[200.5,-39.5],[200.5,-40.5],[199.5,-40.5]],
+                "priority_level": 3, "score": 12.0,
+                "per_band": {"Ha": {"covered": True}, "SII": {"covered": True},
+                             "OIII": {"covered": True}},
+                "category_counts": {"HII": 2},
+            },
+        ]
+
+app.tile_sources.append(_FakeTilesSource())
+try:
+    r = c.get("/api/tile-sources")
+    print("GET /api/tile-sources (with extension)", r.status_code)
+    assert r.status_code == 200
+    summary = r.get_json()["sources"]
+    assert len(summary) == _baseline_tile_sources + 1
+    s = next((x for x in summary if x["id"] == "test_synthetic_tiles"), None)
+    assert s is not None and s["n_tiles"] == 2
+    assert s["max_priority_level"] == 3
+    assert set(s["categories"]) == {"PNe", "SNR", "HII"}
+    assert set(s["bands"]) == {"Ha", "SII", "OIII"}
+
+    r = c.get("/api/tiles/test_synthetic_tiles")
+    print("GET /api/tiles/test_synthetic_tiles", r.status_code)
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["id"] == "test_synthetic_tiles" and len(body["tiles"]) == 2
+    assert body["tiles"][0]["priority_level"] == 1
+
+    # Completion helper sanity (used to drive opacity downstream).
+    assert app_module._tile_completion(body["tiles"][0]) == 1/3
+    assert app_module._tile_completion(body["tiles"][1]) == 1.0
+
+    r = c.get("/api/tiles/does-not-exist")
+    print("GET /api/tiles/does-not-exist", r.status_code)
+    assert r.status_code == 404
+    print("PrioritisedTilesSource round-trip OK")
+finally:
+    app.tile_sources.pop()
+
+# --- Visibility (Plan A.3) ---
+
+# Bin rules (sanity-check the helper directly)
+assert app_module._bin_visibility(-5.0, 0.0, 30.0) == "not_visible"
+assert app_module._bin_visibility(28.0, 5.0, 30.0) == "not_visible"  # peak < min
+assert app_module._bin_visibility(35.0, 0.5, 30.0) == "partial"      # hours < 1
+assert app_module._bin_visibility(40.0, 1.5, 30.0) == "fair"         # hours ≥ 1, peak < 45
+assert app_module._bin_visibility(50.0, 1.5, 30.0) == "fair"         # peak ≥ 45 but hours < 2 (not good)
+assert app_module._bin_visibility(50.0, 2.5, 30.0) == "good"         # peak ≥ 45, hours ≥ 2
+assert app_module._bin_visibility(70.0, 4.0, 30.0) == "great"        # peak ≥ 60, hours ≥ 3
+assert app_module._bin_visibility(70.0, 2.5, 30.0) == "good"         # great rule needs hours ≥ 3
+print("visibility bin rules OK")
+
+# Force-clear the cache so the smoke run actually computes against the demo
+# manifest rather than reading a stale entry from a previous import.
+app_module._visibility_cache.clear()
+r = c.get("/api/visibility?lat=-33.87&lon=151.21&min_alt_deg=30")
+print("GET /api/visibility (lat/lon)", r.status_code)
+assert r.status_code == 200
+vis = r.get_json()
+assert vis["labels"] == ["not_visible", "partial", "fair", "good", "great"]
+assert vis["site"]["lat"] == -33.87
+assert isinstance(vis["targets"], dict) and vis["targets"], vis["targets"]
+first_bins = next(iter(vis["targets"].values()))
+assert len(first_bins) == 12
+for b in first_bins:
+    assert b["label"] in vis["labels"]
+    assert "peak_alt_deg" in b and "hours_above_min" in b and "month" in b
+    assert 1 <= b["month"] <= 12
+
+# site_id resolution — first save a known site, then reference it.
+r = c.post("/api/sites", json={"sites": [
+    {"id": "sydney", "name": "Sydney", "lat": -33.87, "lon": 151.21, "elev_m": 20, "min_alt_deg": 30},
+]})
+assert r.status_code == 200
+r = c.get("/api/visibility?site_id=sydney")
+print("GET /api/visibility (site_id)", r.status_code)
+assert r.status_code == 200
+assert r.get_json()["site"]["id"] == "sydney"
+
+r = c.get("/api/visibility?site_id=does-not-exist")
+print("GET /api/visibility (bad site_id)", r.status_code)
+assert r.status_code == 404
+
+# /api/visibility/point — single arbitrary point
+r = c.get("/api/visibility/point?lat=-33.87&lon=151.21&min_alt_deg=30&ra=210.5&dec=-60.0")
+print("GET /api/visibility/point (lat/lon)", r.status_code)
+assert r.status_code == 200
+pt = r.get_json()
+assert len(pt["months"]) == 12
+assert pt["ra_deg"] == 210.5
+for m in pt["months"]:
+    assert m["label"] in pt["labels"]
+
+r = c.get("/api/visibility/point?lat=-33.87&lon=151.21&min_alt_deg=30")
+print("GET /api/visibility/point (no ra/dec)", r.status_code)
+assert r.status_code == 400
+
+# --- Sites ---
+
+r = c.get("/api/sites")
+print("GET /api/sites (defaults)", r.status_code)
+assert r.status_code == 200
+sites = r.get_json()["sites"]
+assert any(s["id"] == "sydney" for s in sites), sites
+assert all({"id", "name", "lat", "lon"}.issubset(s.keys()) for s in sites)
+
+r = c.post("/api/sites", json={"sites": [
+    {"id": "sydney", "name": "Sydney", "lat": -33.87, "lon": 151.21, "elev_m": 20, "min_alt_deg": 30},
+    {"id": "remote", "name": "Remote rig", "lat": -34.5, "lon": 142.0, "min_alt_deg": 25},
+]})
+print("POST /api/sites", r.status_code)
+assert r.status_code == 200
+saved = r.get_json()["sites"]
+assert len(saved) == 2 and saved[1]["id"] == "remote"
+
+r = c.post("/api/sites", json={"sites": []})
+print("POST /api/sites (empty)", r.status_code)
+assert r.status_code == 400
+
+r = c.post("/api/sites", json={"sites": [{"id": "bad", "name": "x", "lat": 999, "lon": 0}]})
+print("POST /api/sites (bad lat)", r.status_code)
+assert r.status_code == 400
+
+r = c.post("/api/sites", json={"sites": [
+    {"id": "dup", "name": "A", "lat": 0, "lon": 0},
+    {"id": "dup", "name": "B", "lat": 1, "lon": 1},
+]})
+print("POST /api/sites (duplicate id)", r.status_code)
 assert r.status_code == 400
 
 r = c.get("/api/ts-templates")
