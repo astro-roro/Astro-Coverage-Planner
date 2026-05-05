@@ -2308,20 +2308,52 @@ function updateCatalogStatusHint() {
   }
 }
 
-function setupFilterUI() {
-  const searchInput = document.getElementById("searchInput");
-  if (searchInput) {
-    searchInput.addEventListener("input", () => {
-      searchTokens = tokenizeSearch(searchInput.value);
+// Filter chips are populated from the manifest so users only see filters
+// they actually have data for. Hides hardcoded chips like "V" that no
+// FITS file ever uses, and surfaces real-life filters like IDAS/IR.
+function _availableFilters() {
+  const NOISE = new Set(["Unknown", "NoFilter"]);
+  const present = new Set();
+  for (const t of (manifest?.targets || [])) {
+    for (const [f, d] of Object.entries(t.filters || {})) {
+      if ((d?.total_hours || 0) > 0 && !NOISE.has(f)) present.add(f);
+    }
+  }
+  // Canonical narrowband + LRGB first (in that order), then any extras
+  // alphabetically — keeps the visual order stable as the archive grows.
+  const CANON = ["Ha", "SII", "OIII", "L", "R", "G", "B"];
+  const canon = CANON.filter(f => present.has(f));
+  const extras = [...present].filter(f => !CANON.includes(f)).sort();
+  return [...canon, ...extras];
+}
+
+function renderFilterChips() {
+  const host = document.getElementById("filterChips");
+  if (!host) return;
+  // Wipe everything except the leading "Filters:" label.
+  for (const el of [...host.children]) if (!el.classList.contains("label")) el.remove();
+  for (const f of _availableFilters()) {
+    const lbl = document.createElement("label");
+    lbl.className = "fchip";
+    const checked = selectedFilters.has(f) ? "checked" : "";
+    lbl.innerHTML = `<input type="checkbox" data-f="${esc(f)}" ${checked}/> ${esc(f)}`;
+    host.appendChild(lbl);
+    const cb = lbl.querySelector("input");
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedFilters.add(cb.dataset.f);
+      else selectedFilters.delete(cb.dataset.f);
       saveUiState();
       redrawFootprints();
     });
   }
+}
 
-  for (const cb of document.querySelectorAll(".filters input[type=checkbox][data-f]")) {
-    cb.addEventListener("change", () => {
-      if (cb.checked) selectedFilters.add(cb.dataset.f);
-      else selectedFilters.delete(cb.dataset.f);
+function setupFilterUI() {
+  renderFilterChips();
+  const searchInput = document.getElementById("searchInput");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      searchTokens = tokenizeSearch(searchInput.value);
       saveUiState();
       redrawFootprints();
     });
