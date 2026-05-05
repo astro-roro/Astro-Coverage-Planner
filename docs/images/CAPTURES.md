@@ -28,11 +28,19 @@ End-to-end planning demo: Planning tab → + New plan → click sky → pick tel
 
 ## Already captured
 
-### `hero-movie.mp4` ✓
+### Hero video — hosted on GitHub's user-attachments CDN
 
-Hero video, top of README. ~15s screen capture of dragging and zooming around the all-sky map with FOV polygons covering the southern Milky Way. Mellinger optical background. Captured at 3831×1690 as a 398MB GIF, then re-encoded to H.264 MP4 (1600px wide, CRF 27, yuv420p, faststart) at **3.7MB** — under 1% of the original. CRF 27 chosen over CRF 23 (which gave a 7.4MB file) to stay under GitHub's ~5MB threshold for inline video rendering in READMEs. Embedded in the README via `<video autoplay loop muted playsinline>` with the static hero PNG as `poster` for autoplay-blocked viewers. Captured 2026-05-05.
+Top of README. ~15s screen capture of dragging and zooming around the all-sky map with FOV polygons covering the southern Milky Way. Mellinger optical background. Captured at 3831×1690 as a 398MB GIF, then re-encoded to H.264 MP4 (1600px wide, CRF 27, yuv420p, faststart) at **3.7MB**.
 
-Re-encode recipe (if ever needed):
+**Hosting**: rather than committing the MP4 into the repo (which kept hitting GitHub's ~5MB inline video render threshold), the file lives on GitHub's user-attachments CDN at:
+
+    https://github.com/user-attachments/assets/b5051d71-84d9-4fcb-97a4-4a469166d09c
+
+The README's `<video>` tag points at that URL, with the static `hero-coverage-map.png` as the `poster` fallback. This pattern keeps the repo lightweight and lets us use higher-quality video without bumping into GitHub's blob-viewer limits.
+
+**To replace the hero video later**: re-encode locally, then drag the new .mp4 into a fresh GitHub issue body (don't submit the issue), copy the resulting URL, and swap it in the README and in this doc. Delete the old asset URL from a prior issue/comment if you want to free CDN storage (otherwise it persists indefinitely).
+
+Re-encode recipe:
 
 ```bash
 ffmpeg -i source.gif -vf "scale=1600:-2:flags=lanczos" \
@@ -40,7 +48,7 @@ ffmpeg -i source.gif -vf "scale=1600:-2:flags=lanczos" \
        -movflags +faststart hero-movie.mp4
 ```
 
-(For higher quality at the cost of size, drop CRF to 23 — gives ~7MB for this clip but might not render inline on github.com. If hosting via GitHub's video upload mechanism instead, CRF 23 is fine.)
+(With CDN hosting the file size limit goes away, so feel free to drop CRF to 23 or lower for higher quality — or skip the resize entirely if the source is reasonable.)
 
 ### `hero-coverage-map.png` ✓
 
