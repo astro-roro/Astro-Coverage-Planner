@@ -6,19 +6,17 @@
 
 It's your astrophotography catalogue, visualised. ACP reads your entire FITS library and draws every field you've ever shot onto one sky map — coloured by telescope, badged by filter, with integration hours on every target. Useful from your first handful of targets and only gets more valuable as your library grows, especially if you're shooting narrowband or multi-night projects and want to see at a glance which targets are finished, which still owe you an OIII pass, and where your different rigs overlap. Plan your next session, next month, or next whole *year* in the same view — and export it straight to NINA Target Scheduler.
 
-> Built originally against my own Hα/SII/OIII archive to find the targets where Hα data exists but SII doesn't. Generalised so anyone else with the same problem can do the same.
-
 ## Who this is for
 
-You'll get value out of this if you:
+ACP is built around a few specific imaging patterns. You'll get the most out of it if any of these sound like you:
 
-- Have **more than a few hundred captured masters** and want one map showing where they all sit on the sky.
-- Shoot **narrowband** and want to see which targets have Ha but no SII, or any other filter-gap pattern.
-- Use **multiple telescopes** and want each rig's FOVs visually distinguished (color + filter badge per polygon).
-- Plan sessions with **mosaics** and want the panel layout, rotation, and per-filter exposure goals captured in one place — and synced to NINA Target Scheduler so you don't re-enter targets manually.
-- Want a **single source of truth** for "what have I covered, where are the gaps, what's next" without juggling spreadsheets.
+- You shoot **with filters** (narrowband, LRGB, mixed) and want to see which targets are missing which channel.
+- You build up integration **across multiple nights or multiple sessions** and want a clear picture of which projects are actually finished vs. half-done.
+- You use **multiple telescopes** and want each rig's footprints visually distinguished on the same sky map (colour-coded, with filter badges per polygon).
+- You plan sessions with **mosaics** and want the panel layout, rotation, and per-filter exposure goals captured in one place — and synced to NINA Target Scheduler so you don't re-enter targets manually.
+- You want **one place** to answer "what have I shot, where are the gaps, what's next" without juggling spreadsheets or scrolling through folders.
 
-If you have a few dozen images and image one target at a time without TS, this is overkill — the value compounds with archive size and rig count.
+You don't need a huge library for this to start paying off — even a couple of dozen targets is enough to surface projects you'd half-forgotten about. Most people wish they'd started this kind of catalogue years earlier.
 
 ## See it in action
 
