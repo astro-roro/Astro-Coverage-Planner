@@ -14,6 +14,12 @@ app_module.PLANS_PATH = _tmp_plans
 app_module._plans_cache = None
 app_module._plans_cache_mtime = None
 
+# Same redirection for the new target-overrides file.
+_tmp_overrides = Path(tempfile.mkdtemp()) / "target_overrides.json"
+app_module.TARGET_OVERRIDES_PATH = _tmp_overrides
+app_module._target_overrides_cache = None
+app_module._target_overrides_cache_mtime = None
+
 c = app.test_client()
 
 r = c.get("/")
@@ -35,6 +41,72 @@ r = c.get("/api/catalogs")
 print("GET /api/catalogs", r.status_code)
 assert r.status_code == 200
 
+r = c.get("/api/sources")
+print("GET /api/sources", r.status_code)
+assert r.status_code == 200
+sources = r.get_json()
+assert isinstance(sources, list) and sources, "expected at least one registered source"
+first = sources[0]
+assert first["id"] == "manifest"
+assert first["label"] == "Your archive"
+for k in ("label", "color", "kind", "attribution", "enabled_default"):
+    assert k in first, f"missing {k} in source metadata"
+_baseline_source_count = len(sources)  # may include built-in MOC sources from data/surveys.json
+
+# --- Friend manifest source (Option B: hand-construct + append to registry) ---
+# Build a synthetic sanitised manifest, write it to a tempfile, register a
+# JsonManifestSource pointing at it, and confirm it surfaces in /api/sources
+# and yields polygons through coverage(). Pop it after to keep other tests
+# (and the registry) untouched.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from sanitise_manifest import sanitise_dict  # noqa: E402
+
+_friend_raw = {
+    "scan_date": "2026-04-19T00:00:00",
+    "targets": [{
+        "target_id": 99,
+        "objects": ["Synthetic Nebula"],
+        "center_ra_deg": 161.26, "center_dec_deg": -59.68,
+        "center_l_deg": 287.6, "center_b_deg": -0.63,
+        "fov_arcmin": [60, 45], "pix_arcsec": 1.0,
+        "corners_icrs": [[160, -60], [160, -59], [162, -59], [162, -60]],
+        "corners_galactic": [],
+        "telescopes": ["AP110 GTX"],
+        "filters": {"Ha": {"total_hours": 5.0, "files": 20}},
+    }],
+}
+_friend_data = sanitise_dict(_friend_raw, label="Dave")
+_friend_dir = Path(tempfile.mkdtemp())
+_friend_path = _friend_dir / "dave.json"
+_friend_path.write_text(json.dumps(_friend_data), encoding="utf-8")
+
+_friend_src = app_module.FriendManifestSource(
+    source_id="friend_dave", label="Dave", color="", path=_friend_path,
+)
+app.coverage_sources.append(_friend_src)
+try:
+    r = c.get("/api/sources")
+    print("GET /api/sources (with friend)", r.status_code)
+    assert r.status_code == 200
+    src_list = r.get_json()
+    assert len(src_list) == _baseline_source_count + 1, src_list
+    friend = next((s for s in src_list if s["id"] == "friend_dave"), None)
+    assert friend is not None, src_list
+    assert friend["label"] == "Dave"
+    assert friend["kind"] == "friend"
+    assert friend["color"] == ""  # frontend palette assigns
+    assert friend["attribution"] == "Shared by Dave"
+    # Coverage round-trip — polygons should reach the consumer.
+    regions = list(_friend_src.coverage())
+    assert len(regions) == 1, regions
+    assert regions[0]["kind"] == "polygon"
+    assert len(regions[0]["vertices"]) == 4
+    assert regions[0]["filters"]["Ha"]["hours"] == 5.0
+    print("friend manifest source OK")
+finally:
+    app.coverage_sources.pop()
+    _friend_path.unlink(missing_ok=True)
+
 r = c.get("/api/observability?lat=-33.87&lon=151.21")
 print("GET /api/observability (valid)", r.status_code)
 assert r.status_code == 200
@@ -52,8 +124,44 @@ print("GET /api/observability (bad time)", r.status_code)
 assert r.status_code == 400
 
 r = c.get("/api/export/priority")
-print("GET /api/export/priority (no catalogs)", r.status_code)
-assert r.status_code == 404  # no catalogs.json yet
+print("GET /api/export/priority", r.status_code)
+# 404 when data/catalogs.json hasn't been generated yet, 200 once it has.
+# Either is fine; a 500 means a real bug (missing dep, etc).
+assert r.status_code in (200, 404), f"unexpected status {r.status_code}"
+
+# --- Gap finder ----------------------------------------------------------
+r = c.get("/api/gaps")
+print("GET /api/gaps (defaults)", r.status_code)
+assert r.status_code in (200, 503)
+if r.status_code == 200:
+    body = r.get_json()
+    for k in ("have_filter", "missing_filter", "have_sources", "missing_sources",
+              "gap_sky_fraction", "candidates", "skipped"):
+        assert k in body, f"missing {k} in gap response"
+    assert body["have_filter"] == "Ha"
+    assert body["missing_filter"] == "SII"
+
+r = c.get("/api/gaps?have=Ha&missing=SII&sources=manifest&min_have_hours=0")
+print("GET /api/gaps (sources=manifest, min_have=0)", r.status_code)
+assert r.status_code in (200, 503)
+if r.status_code == 200:
+    body = r.get_json()
+    if body["have_sources"]:
+        assert body["gap_sky_fraction"] >= 0
+
+r = c.get("/api/gaps?have=NotARealFilter&missing=SII")
+print("GET /api/gaps (unknown filter)", r.status_code)
+assert r.status_code in (200, 503)
+if r.status_code == 200:
+    body = r.get_json()
+    assert body["gap_sky_fraction"] == 0.0
+    assert body["candidates"] == []
+
+r = c.get("/api/gaps/moc.fits")
+print("GET /api/gaps/moc.fits", r.status_code)
+assert r.status_code in (200, 404, 503), f"unexpected status {r.status_code}"
+if r.status_code == 200:
+    assert r.data[:8] == b"SIMPLE  ", r.data[:16]
 
 # --- Planner endpoints ---
 
@@ -137,6 +245,25 @@ assert r.status_code == 204
 r = c.get(f"/api/plans/{new_plan['id']}")
 print(f"GET /api/plans/{new_plan['id']} (after delete)", r.status_code)
 assert r.status_code == 404
+
+# --- Target overrides ---
+
+r = c.get("/api/target-overrides")
+print("GET /api/target-overrides (empty)", r.status_code)
+assert r.status_code == 200 and r.get_json()["overrides"] == {}
+
+r = c.post("/api/target-overrides", json={"target_id": 7, "finished": True})
+print("POST /api/target-overrides (mark finished)", r.status_code)
+assert r.status_code == 200
+assert r.get_json()["overrides"]["7"]["finished"] is True
+
+r = c.post("/api/target-overrides", json={"target_id": 7, "finished": None})
+print("POST /api/target-overrides (clear)", r.status_code)
+assert r.status_code == 200 and "7" not in r.get_json()["overrides"]
+
+r = c.post("/api/target-overrides", json={})
+print("POST /api/target-overrides (missing target_id)", r.status_code)
+assert r.status_code == 400
 
 r = c.get("/api/ts-templates")
 print("GET /api/ts-templates", r.status_code)
