@@ -46,6 +46,8 @@ let hoverOverlay = null; // transient highlight overlay for the polygon currentl
 let filterBadgeCat = null; // single catalog of "filter badges" (one source per target, custom draw)
 let coverageHitList = []; // [{poly, target, corners}] — mirror of overlay for hit-testing
 let planHitList = [];     // [{poly, plan, corners}] — mirror of plan overlays for hit-testing
+let tileHitList = [];     // [{poly, tile, source_id, corners}] — Inventory tile polygons (Plan 2a)
+let selectedTileKey = null; // "<source_id>/<tile_id>" while in tile-detail mode
 let hoveredHit = null;    // currently-hovered entry from the active hit list (null otherwise)
 let lastClickStack = null; // {ra, dec, ids: [...], cycleIdx} — for repeat-click cycling through overlapping polys
 let catOverlays = {};   // catalog overlays (Phase 3)
@@ -68,7 +70,15 @@ let gapMocLayer = null;    // live A.MOCFromURL overlay for the gap region
 // catalog to just these entries — so users see "Find gaps × catalog X" by
 // simply ticking catalog X in the Catalogues rail.
 let gapNamesByCatalog = {};
-let currentSite = { lat: -33.87, lon: 151.21, height: 20 };
+let currentSite = { lat: -33.87, lon: 151.21, height: 20, min_alt_deg: 30 };
+let sites = [];                // [{id, name, lat, lon, elev_m?, min_alt_deg?}] from /api/sites
+let activeSiteId = null;       // localStorage acp.active_site_id, applied once `sites` is loaded
+let timeAware = false;         // localStorage acp.time_aware, default off
+let _obsIntervalId = null;     // setInterval handle for the rolling obsNow refresh
+let visibilityData = null;     // {site_id, year, targets: {<id>: [12 bins]}} | null
+let currentAlts = {};          // {<target_id>: alt_deg} from latest /api/observability — for sort=tonight
+let sortBy = "hours";          // "hours" | "best_month" | "up_tonight"
+let catalogRegistry = [];      // [{id, data_key, label, color, marker, size, ...}] from /api/catalog-registry
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
@@ -158,36 +168,11 @@ function applyUiStatePreManifest() {
     if (aladin) aladin.setFrame(s.frame);
   }
 
-  if (typeof s.site === "string" && s.site) {
-    const siteSel = document.getElementById("siteSel");
-    if (siteSel) {
-      siteSel.value = s.site;
-      if (s.site === "custom") {
-        document.getElementById("latIn").style.display = "";
-        document.getElementById("lonIn").style.display = "";
-        if (s.customLat) {
-          document.getElementById("latIn").value = s.customLat;
-          currentSite.lat = parseFloat(s.customLat);
-        }
-        if (s.customLon) {
-          document.getElementById("lonIn").value = s.customLon;
-          currentSite.lon = parseFloat(s.customLon);
-        }
-      } else {
-        const opt = siteSel.selectedOptions[0];
-        if (opt && opt.dataset.lat) {
-          currentSite = {
-            lat: parseFloat(opt.dataset.lat),
-            lon: parseFloat(opt.dataset.lon),
-            height: parseFloat(opt.dataset.height || 0),
-          };
-        }
-      }
-    }
-  }
+  // Active site is loaded from localStorage in initSites() once /api/sites
+  // resolves; legacy `s.site` payloads from older builds are ignored.
 
   if (Array.isArray(s.catalogs)) {
-    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
+    for (const id of catalogDomIds()) {
       const cb = document.getElementById(id);
       if (cb) cb.checked = s.catalogs.includes(id);
     }
@@ -242,13 +227,9 @@ function saveUiState() {
       filterLogic,
       minHours,
       telescopes: [...selectedTelescopes],
-      catalogs: ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]
-        .filter(id => document.getElementById(id)?.checked),
+      catalogs: catalogDomIds().filter(id => document.getElementById(id)?.checked),
       projection: document.getElementById("projSel")?.value || "",
       frame: document.getElementById("frameSel")?.value || "",
-      site: document.getElementById("siteSel")?.value || "",
-      customLat: document.getElementById("latIn")?.value || "",
-      customLon: document.getElementById("lonIn")?.value || "",
       imageSurvey,
       gap: {
         have: gapHave,
@@ -695,6 +676,22 @@ function filterDotsHtml(filters) {
   }).join("");
 }
 
+function _bestMonthScore(t) {
+  // Combined score for sort=best_month: rank * 100 + hours_at_best (so two
+  // "great" targets break tie by who has more dark-time at peak).
+  const bins = binsForTarget(t.target_id);
+  if (!bins) return -1;
+  const best = bestBinFor(bins);
+  if (!best) return -1;
+  const rank = _LABEL_RANK[best.label] ?? 0;
+  return rank * 100 + (best.hours_above_min || 0);
+}
+
+function _tonightAlt(t) {
+  const v = currentAlts[t.target_id];
+  return (typeof v === "number") ? v : -999;
+}
+
 function renderTargetList() {
   panelMode = "list";
   updateSearchVisibility();
@@ -704,7 +701,15 @@ function renderTargetList() {
   if (!panel || !manifest) return;
 
   const matches = manifest.targets.filter(targetMatches);
-  matches.sort((a, b) => totalHoursOf(b) - totalHoursOf(a));
+  // Sort modes: hours = legacy default; best_month + up_tonight require
+  // time-aware data and degrade to hours when that data isn't loaded.
+  if (sortBy === "best_month" && visibilityData) {
+    matches.sort((a, b) => _bestMonthScore(b) - _bestMonthScore(a));
+  } else if (sortBy === "up_tonight" && Object.keys(currentAlts).length) {
+    matches.sort((a, b) => _tonightAlt(b) - _tonightAlt(a));
+  } else {
+    matches.sort((a, b) => totalHoursOf(b) - totalHoursOf(a));
+  }
 
   const rows = matches.map(t => {
     const name = esc(t.objects?.[0] || "(no name)");
@@ -713,19 +718,31 @@ function renderTargetList() {
     const total = totalHoursOf(t).toFixed(1);
     const dots = filterDotsHtml(t.filters || {});
     const finishedMark = isTargetFinished(t) ? `<span class="finished-badge" title="marked finished">✓</span>` : "";
+    const yc = yearCurveSparklineHtml(t.target_id);
+    const nowChip = nowChipHtml(t.target_id);
+    const trChip = trendChipHtml(t.target_id);
+    // Two-line layout: row 1 is name/dots/hours, row 2 (only when time-aware
+    // is on) carries Now + Trend chips and the 12-month sparkline.
     return `<li class="target-row" data-target-id="${t.target_id}">
         <span class="tr-swatch" style="background:${esc(swatch)}" title="${esc(tel)}"></span>
         <span class="tr-name">#${t.target_id} ${name}${finishedMark}</span>
         <span class="tr-dots">${dots}</span>
         <span class="tr-hours">${total}h</span>
+        <span class="tr-meta">${nowChip}${trChip}${yc}</span>
       </li>`;
   }).join("");
 
   const empty = `<li class="tr-empty">No targets match current filters.</li>`;
+  const sortCtl = `<span class="sort-control">sort by
+      <select id="sortSel">
+        <option value="hours" ${sortBy==="hours"?"selected":""}>hours</option>
+        <option value="best_month" ${sortBy==="best_month"?"selected":""} data-time-aware>best month</option>
+        <option value="up_tonight" ${sortBy==="up_tonight"?"selected":""} data-time-aware>up tonight</option>
+      </select></span>`;
 
   panel.innerHTML = `
     <div class="panel-list">
-      <h3>Targets <span class="tr-count">${matches.length} of ${manifest.targets.length}</span></h3>
+      <h3>Targets <span class="tr-count">${matches.length} of ${manifest.targets.length}</span>${sortCtl}</h3>
       <ul class="target-list">${rows || empty}</ul>
     </div>`;
 
@@ -735,6 +752,12 @@ function renderTargetList() {
       const t = manifest.targets.find(x => x.target_id === id);
       if (t) renderTargetPanel(t);
     });
+  });
+  const sortSel = panel.querySelector("#sortSel");
+  if (sortSel) sortSel.addEventListener("change", e => {
+    sortBy = e.target.value;
+    localStorage.setItem("acp.sort_by", sortBy);
+    renderTargetList();
   });
 }
 
@@ -780,6 +803,42 @@ function renderTargetPanel(t) {
     ? `<button id="clearOverrideBtn" title="Remove manual override; fall back to plan-derived status">Clear override</button>`
     : "";
 
+  // Visibility section — only renders when time-aware data is available.
+  // The CSS rule on .vis-section keeps it hidden if the user toggles off.
+  const visBins = binsForTarget(t.target_id);
+  let visHtml = "";
+  if (visBins) {
+    const best = bestBinFor(visBins);
+    const bestTxt = best && best.label !== "not_visible"
+      ? `Peak: ${_MONTH_LABELS[best.month-1]} (${_LABEL_PRETTY[best.label]}, ${best.hours_above_min}h above min)`
+      : (best && best.peak_alt_deg != null && best.peak_alt_deg >= 0
+          ? `Never reaches min altitude during dark (year-best peak ${best.peak_alt_deg}°).`
+          : "Below horizon during dark all year.");
+    const nowAlt = currentAlts[t.target_id];
+    const nowLine = (typeof nowAlt === "number")
+      ? `Now: ${nowAlt.toFixed(1)}° altitude`
+      : "";
+    const siteName = sites.find(s => s.id === activeSiteId)?.name || "current site";
+    const detailNow = nowChipHtml(t.target_id);
+    const detailTrend = trendChipHtml(t.target_id);
+    // Below the year-curve bar: two flex rows pairing text on the left with
+    // a chip on the right. Empty left span keeps the trend chip aligned
+    // even before the first observability ping populates `nowLine`.
+    visHtml = `
+      <div class="vis-section">
+        <h4>Visibility — ${esc(siteName)}</h4>
+        ${yearCurveBarHtml(t.target_id)}
+        <div class="vis-meta-row">
+          <span class="vis-meta">${esc(bestTxt)}</span>
+          ${detailNow}
+        </div>
+        <div class="vis-meta-row">
+          <span class="vis-now">${esc(nowLine || "")}</span>
+          ${detailTrend}
+        </div>
+      </div>`;
+  }
+
   panel.innerHTML = `
     <div>
       <a class="back-link" id="backToList" href="#">← Back to list</a>
@@ -791,6 +850,8 @@ function renderTargetPanel(t) {
         ${primaryBtn}
         ${clearBtn}
       </div>
+
+      ${visHtml}
 
       <h4>Position</h4>
       <table>
@@ -895,20 +956,28 @@ function _polyBBoxArea(corners) {
 }
 
 // Find all polygons containing the given sky point, sorted smallest-first.
-// In planning mode only plans are hit-testable; in viewing mode only coverage.
+// In planning mode plans are hit-testable; in viewing mode coverage. Tile
+// polygons (Inventory rail) overlay both modes — if a tile overlaps a
+// coverage/plan polygon, the tile is preferred so the rail shows tile
+// detail. Cycling on repeat-click visits each in turn.
 function hitPolygonsAt(ra, dec) {
-  const list = planningMode ? planHitList : coverageHitList;
-  const out = [];
-  for (const h of list) {
-    if (_ptInRaDecPoly(ra, dec, h.corners)) {
-      out.push({ ...h, area: _polyBBoxArea(h.corners) });
-    }
-  }
-  out.sort((a, b) => a.area - b.area);
-  return out;
+  const tile = tileHitList
+    .filter(h => _ptInRaDecPoly(ra, dec, h.corners))
+    .map(h => ({ ...h, area: _polyBBoxArea(h.corners) }))
+    .sort((a, b) => a.area - b.area);
+  const base = (planningMode ? planHitList : coverageHitList)
+    .filter(h => _ptInRaDecPoly(ra, dec, h.corners))
+    .map(h => ({ ...h, area: _polyBBoxArea(h.corners) }))
+    .sort((a, b) => a.area - b.area);
+  return [...tile, ...base];
 }
 
-function _hitId(h) { return h?.target ? `t:${h.target.target_id}` : h?.plan ? `p:${h.plan.id}` : null; }
+function _hitId(h) {
+  if (h?.tile) return `tl:${h.source_id}/${h.tile.id}`;
+  if (h?.target) return `t:${h.target.target_id}`;
+  if (h?.plan) return `p:${h.plan.id}`;
+  return null;
+}
 
 // Normalize any CSS-ish hex (#rgb, #rgba, #rrggbb, #rrggbbaa) to #rrggbb + the
 // requested alpha byte. Aladin expects a uniform 8-char hex for fillColor alpha;
@@ -1017,7 +1086,9 @@ function onMapPolyClick(ra, dec) {
   lastClickStack = { ra, dec, ids, cycleIdx: idx };
 
   const chosen = hits[idx];
-  if (chosen.target) {
+  if (chosen.tile) {
+    renderTilePanel(chosen.tile, chosen.source_id);
+  } else if (chosen.target) {
     renderTargetPanel(chosen.target);
   } else if (chosen.plan) {
     if (!planningMode) setPlanningMode(true);
@@ -1093,26 +1164,60 @@ function redrawFootprints() {
   if (panelMode === "list") renderTargetList();
 }
 
-function setupCatalogOverlays() {
-  const cfg = [
-    { id: "cat_green",     name: "green_snrs",       color: "#ff3030", size: 12, marker: "square" },
-    { id: "cat_smgps",     name: "smgps_candidates", color: "#ff9900", size: 10, marker: "triangle" },
-    { id: "cat_emu",       name: "emu_candidates",   color: "#ffff33", size: 10, marker: "plus" },
-    // sourceSize must be >= 8 — Aladin's default-shape prelude errors below that
-    // (see filterBadgeCat note above). "dot" is not a valid Aladin shape; use "circle".
-    { id: "cat_hii",       name: "anderson_hii",     color: "#66cc66", size:  8, marker: "circle" },
-    { id: "cat_messier",   name: "messier",          color: "#5bd9ff", size: 12, marker: "square" },
-    { id: "cat_sharpless", name: "sharpless",        color: "#7be0a3", size:  9, marker: "circle" },
-    { id: "cat_eso_pne",   name: "eso_pne",          color: "#a070ff", size: 10, marker: "triangle" },
-  ];
-  for (const c of cfg) {
-    const cb = document.getElementById(c.id);
-    if (!cb) continue;
+// Build a renderer-shaped cfg for one registry entry. The renderer expects
+// `name` (the /api/catalogs key) where the registry stores it as `data_key`.
+function _registryToCfg(entry) {
+  return {
+    id: `cat_${entry.id}`,
+    name: entry.data_key || entry.id,
+    label: entry.label || entry.id,
+    color: entry.color || "#888",
+    marker: entry.marker || "circle",
+    // Aladin's default-shape prelude errors at sourceSize < 8 — clamp here so
+    // a registry typo can't bring the whole catalogue rail down.
+    size: Math.max(8, Number(entry.size) || 8),
+  };
+}
+
+async function setupCatalogOverlays() {
+  let entries = [];
+  try {
+    const r = await fetch("/api/catalog-registry");
+    const d = await r.json();
+    entries = Array.isArray(d?.catalogues) ? d.catalogues : [];
+  } catch (e) {
+    console.warn("catalog registry unavailable:", e);
+  }
+  catalogRegistry = entries;
+
+  // Render chips into the now-empty #catChips container.
+  const host = document.getElementById("catChips");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const entry of entries) {
+    const cfg = _registryToCfg(entry);
+    const label = document.createElement("label");
+    label.className = "fchip";
+    if (entry.attribution) label.title = entry.attribution;
+    label.innerHTML = `<input type="checkbox" id="${esc(cfg.id)}" /> ${esc(cfg.label)}`;
+    host.appendChild(label);
+    const cb = label.querySelector("input");
     cb.addEventListener("change", () => {
-      drawCatalogOverlay(c, cb.checked);
+      drawCatalogOverlay(cfg, cb.checked);
       saveUiState();
     });
   }
+}
+
+// Helper used by saveUiState / applyUiStatePreManifest / redrawEnabledCatalogs
+// to iterate the active registry instead of a hardcoded list.
+function catalogDomIds() {
+  return catalogRegistry.map(e => `cat_${e.id}`);
+}
+
+function _cfgForDomId(domId) {
+  const entry = catalogRegistry.find(e => `cat_${e.id}` === domId);
+  return entry ? _registryToCfg(entry) : null;
 }
 
 function drawCatalogOverlay(cfg, enabled) {
@@ -1144,7 +1249,7 @@ function drawCatalogOverlay(cfg, enabled) {
 // Re-fires the change event on every checked catalog checkbox so its overlay
 // re-renders against the current gap-mode filter (or the full data, when off).
 function redrawEnabledCatalogs() {
-  for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
+  for (const id of catalogDomIds()) {
     const cb = document.getElementById(id);
     if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
   }
@@ -1419,13 +1524,564 @@ async function loadSources() {
   }
 }
 
+// --- Inventory rail (Plan 4b) -------------------------------------------
+// Hidden by default. Activates only when /api/tile-sources returns at
+// least one entry — i.e. when an extension has registered a
+// PrioritisedTilesSource. Per-source state (enabled, filters) lives in
+// localStorage under acp.inv_state so it survives reloads.
+let tileSources = [];        // [{id, label, color, n_tiles, max_priority_level, categories, bands, ...}]
+let tileData = {};           // {<source_id>: [tile, ...]} — fetched lazily on enable
+let invState = {};           // {<source_id>: {enabled, openRail, priorities: Set, missing: Set, categories: Set}}
+
+function _loadInvState() {
+  try {
+    const s = JSON.parse(localStorage.getItem("acp.inv_state") || "{}");
+    // Sets don't survive JSON; restore them per-source.
+    const out = {};
+    for (const [sid, v] of Object.entries(s || {})) {
+      out[sid] = {
+        enabled: !!v.enabled,
+        openRail: v.openRail !== false,
+        priorities: new Set(Array.isArray(v.priorities) ? v.priorities : []),
+        missing:    new Set(Array.isArray(v.missing) ? v.missing : []),
+        categories: new Set(Array.isArray(v.categories) ? v.categories : []),
+      };
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function _saveInvState() {
+  const out = {};
+  for (const [sid, v] of Object.entries(invState)) {
+    out[sid] = {
+      enabled: !!v.enabled,
+      openRail: !!v.openRail,
+      priorities: [...v.priorities],
+      missing:    [...v.missing],
+      categories: [...v.categories],
+    };
+  }
+  localStorage.setItem("acp.inv_state", JSON.stringify(out));
+}
+
+async function initInventory() {
+  const accordion = document.getElementById("railInventory");
+  if (!accordion) return;
+  let summary = [];
+  try {
+    const r = await fetch("/api/tile-sources");
+    const d = await r.json();
+    summary = Array.isArray(d?.sources) ? d.sources : [];
+  } catch (e) {
+    console.warn("tile sources unavailable:", e);
+  }
+  if (!summary.length) {
+    // No registered extension → keep the accordion hidden so a stock
+    // checkout shows no Inventory rail at all.
+    accordion.hidden = true;
+    return;
+  }
+  accordion.hidden = false;
+  tileSources = summary;
+  const saved = _loadInvState();
+  for (const s of tileSources) {
+    const prior = saved[s.id] || {};
+    invState[s.id] = {
+      enabled: "enabled" in prior ? !!prior.enabled : !!s.enabled_default,
+      openRail: prior.openRail !== false,
+      priorities: prior.priorities instanceof Set ? prior.priorities
+        : new Set(Array.from({length: Math.max(1, s.max_priority_level)}, (_, i) => i + 1)),
+      missing:    prior.missing instanceof Set ? prior.missing : new Set(),
+      categories: prior.categories instanceof Set ? prior.categories : new Set(s.categories || []),
+    };
+  }
+  renderInventoryRail();
+  // Lazy-load tiles for whichever sources are enabled at startup.
+  for (const s of tileSources) {
+    if (invState[s.id].enabled) ensureTilesLoaded(s.id);
+  }
+}
+
+function renderInventoryRail() {
+  const host = document.getElementById("inventoryList");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const s of tileSources) {
+    const st = invState[s.id];
+    const block = document.createElement("div");
+    block.className = "inv-source";
+    block.dataset.sourceId = s.id;
+    block.dataset.open = st.openRail ? "true" : "false";
+    const swatch = s.color || "#7aa2ff";
+
+    // Build priority chip set (1..max).
+    const priChips = [];
+    for (let p = 1; p <= Math.max(1, s.max_priority_level); p++) {
+      const cls = p <= 4 ? `pri-${p}` : "pri-other";
+      const checked = st.priorities.has(p) ? "checked" : "";
+      priChips.push(`<label class="inv-pri ${cls}" title="Priority ${p}"><input type="checkbox" data-priority="${p}" ${checked}/> P${p}</label>`);
+    }
+
+    const bandChips = (s.bands || []).map(b => {
+      const checked = st.missing.has(b) ? "checked" : "";
+      return `<label class="fchip" title="Show only tiles missing ${esc(b)}"><input type="checkbox" data-missing="${esc(b)}" ${checked}/> ${esc(b)}</label>`;
+    }).join("");
+
+    const catChips = (s.categories || []).map(c => {
+      const checked = st.categories.has(c) ? "checked" : "";
+      return `<label class="fchip" title="Show only tiles whose ${esc(c)} count > 0"><input type="checkbox" data-cat="${esc(c)}" ${checked}/> ${esc(c)}</label>`;
+    }).join("");
+
+    block.innerHTML = `
+      <div class="inv-source-head">
+        <input type="checkbox" data-enabled ${st.enabled ? "checked" : ""} title="Show this tile source on the map" />
+        <span class="swatch" style="background:${esc(swatch)}"></span>
+        <span class="label">${esc(s.label)}</span>
+        <span class="count" data-count>${st.enabled ? `${s.n_tiles} tiles` : "off"}</span>
+      </div>
+      <div class="inv-source-body">
+        ${priChips.length ? `<div class="inv-row"><span class="inv-row-lbl">Priority</span>${priChips.join("")}</div>` : ""}
+        ${bandChips ? `<div class="inv-row"><span class="inv-row-lbl">Missing</span>${bandChips}</div>` : ""}
+        ${catChips ? `<div class="inv-row"><span class="inv-row-lbl">Class</span>${catChips}</div>` : ""}
+      </div>`;
+    host.appendChild(block);
+
+    // Wire enabled toggle (also collapses the body when off — clicking the
+    // header label toggles open/closed, but only when not clicking the
+    // checkbox itself).
+    const enabledCb = block.querySelector("input[data-enabled]");
+    enabledCb.addEventListener("change", () => {
+      st.enabled = enabledCb.checked;
+      _saveInvState();
+      block.querySelector("[data-count]").textContent = st.enabled ? `${s.n_tiles} tiles` : "off";
+      if (st.enabled) ensureTilesLoaded(s.id);
+      renderTileOverlay(s.id);  // Plan 4c — no-op until that's wired up.
+    });
+    block.querySelector(".inv-source-head .label").addEventListener("click", () => {
+      st.openRail = !st.openRail;
+      block.dataset.open = st.openRail ? "true" : "false";
+      _saveInvState();
+    });
+
+    // Filter-chip handlers.
+    for (const cb of block.querySelectorAll("input[data-priority]")) {
+      cb.addEventListener("change", () => {
+        const p = parseInt(cb.dataset.priority, 10);
+        cb.checked ? st.priorities.add(p) : st.priorities.delete(p);
+        _saveInvState();
+        renderTileOverlay(s.id);
+      });
+    }
+    for (const cb of block.querySelectorAll("input[data-missing]")) {
+      cb.addEventListener("change", () => {
+        const b = cb.dataset.missing;
+        cb.checked ? st.missing.add(b) : st.missing.delete(b);
+        _saveInvState();
+        renderTileOverlay(s.id);
+      });
+    }
+    for (const cb of block.querySelectorAll("input[data-cat]")) {
+      cb.addEventListener("change", () => {
+        const c = cb.dataset.cat;
+        cb.checked ? st.categories.add(c) : st.categories.delete(c);
+        _saveInvState();
+        renderTileOverlay(s.id);
+      });
+    }
+  }
+}
+
+async function ensureTilesLoaded(sourceId) {
+  if (tileData[sourceId]) return tileData[sourceId];
+  try {
+    const r = await fetch(`/api/tiles/${encodeURIComponent(sourceId)}`);
+    const d = await r.json();
+    tileData[sourceId] = Array.isArray(d?.tiles) ? d.tiles : [];
+  } catch (e) {
+    console.warn(`tiles/${sourceId} fetch failed:`, e);
+    tileData[sourceId] = [];
+  }
+  renderTileOverlay(sourceId);
+  return tileData[sourceId];
+}
+
+// --- Horizon overlay (Plan A.6 / step 7) --------------------------------
+// For latitude φ, the maximum altitude declination δ ever reaches at
+// transit is `90 - |φ - δ|`. So:
+//   never-up:   |φ - δ| > 90       → δ outside [φ-90, φ+90]
+//   below-min:  |φ - δ| > 90-minAlt → δ outside [φ-(90-min), φ+(90-min)]
+// Shading the corresponding dec bands gives an instant visual of "what's
+// reachable from this site at this min-alt setting" — the rest of the
+// map stays clear so coverage and tiles still read crisply.
+let _horizonOverlay = null;
+
+function _horizonBands(lat, minAlt) {
+  const neverHigh = lat + 90;
+  const neverLow  = lat - 90;
+  const minHigh   = lat + (90 - minAlt);
+  const minLow    = lat - (90 - minAlt);
+  const out = { never_up: [], below_min: [] };
+  if (neverHigh < 90) out.never_up.push([Math.min(89.99, neverHigh), 89.99]);
+  if (neverLow > -90) out.never_up.push([-89.99, Math.max(-89.99, neverLow)]);
+  // below-min sits between min-alt cutoff and never-up cutoff (or pole if
+  // never-up is empty on that side).
+  if (minHigh < 90 && minHigh < (neverHigh < 90 ? neverHigh : 90)) {
+    out.below_min.push([minHigh, Math.min(89.99, neverHigh < 90 ? neverHigh : 90)]);
+  }
+  if (minLow > -90 && minLow > (neverLow > -90 ? neverLow : -90)) {
+    out.below_min.push([Math.max(-89.99, neverLow > -90 ? neverLow : -90), minLow]);
+  }
+  return out;
+}
+
+// Build a constant-declination "horizontal" small-circle as a polyline of
+// (ra, dec) vertices. 5° RA step is dense enough to read smooth on every
+// supported projection at typical zoom levels.
+function _decContourLine(decDeg) {
+  const pts = [];
+  for (let ra = 0; ra <= 360; ra += 5) pts.push([ra, decDeg]);
+  return pts;
+}
+
+function refreshHorizonOverlay() {
+  if (!aladin) return;
+  if (!_horizonOverlay) {
+    _horizonOverlay = A.graphicOverlay({ color: "#a04040", lineWidth: 2, name: "horizon" });
+    aladin.addOverlay(_horizonOverlay);
+  }
+  _horizonOverlay.removeAll();
+  if (!timeAware) return;
+  const lat = currentSite.lat;
+  const minAlt = currentSite.min_alt_deg ?? 30;
+  // Compute the four declination thresholds. Skip any that fall outside the
+  // celestial sphere (e.g. north-pole observers have no southern threshold).
+  const decsNeverUp  = [lat + 90, lat - 90].filter(d => d > -90 && d < 90);
+  const decsBelowMin = [lat + (90 - minAlt), lat - (90 - minAlt)].filter(d => d > -90 && d < 90);
+
+  // Below-min line: amber, "rises but never high enough".
+  for (const d of decsBelowMin) {
+    _horizonOverlay.add(A.polyline(_decContourLine(d), {
+      color: "#d6a04a", lineWidth: 1.5,
+    }));
+  }
+  // Never-up line: red, "never above horizon at all". Drawn after so it
+  // wins z-order over the below-min line on overlap (e.g. for very low
+  // min-alt where the two thresholds coincide).
+  for (const d of decsNeverUp) {
+    _horizonOverlay.add(A.polyline(_decContourLine(d), {
+      color: "#d65a5a", lineWidth: 2,
+    }));
+  }
+}
+
+// --- Inventory tile rendering on Aladin (Plan 4c) -----------------------
+const _tileOverlays = {};   // {<source_id>: A.graphicOverlay}
+const _PRI_COLOR = {
+  1: "#ff5050",   // urgent red
+  2: "#ff9933",   // orange
+  3: "#ffd24d",   // yellow
+  4: "#7aa2ff",   // muted blue
+};
+const _PRI_COLOR_OTHER = "#5e6679";  // catch-all for priorities ≥ 5
+
+function _tileColor(priorityLevel) {
+  return _PRI_COLOR[priorityLevel] || _PRI_COLOR_OTHER;
+}
+
+// Completion ratio drives fill alpha — 0% complete = bright (~55%), 100% =
+// nearly invisible (~5%), so the map literally "crosses off" tiles as the
+// user fills them in.
+function _tileFillAlphaHex(perBand) {
+  const keys = perBand ? Object.keys(perBand) : [];
+  if (!keys.length) return "55";
+  const covered = keys.filter(k => perBand[k]?.covered).length;
+  const ratio = covered / keys.length;     // 0..1
+  const alpha = Math.round((1 - ratio) * 0.50 * 255 + 0.05 * 255); // 0.05..0.55
+  return alpha.toString(16).padStart(2, "0");
+}
+
+function _tileFootprint(tile) {
+  if (Array.isArray(tile.footprint) && tile.footprint.length >= 3) {
+    return tile.footprint.map(p => [Number(p[0]), Number(p[1])]);
+  }
+  // Derive a square box from fov_arcmin if footprint is missing.
+  const fov = tile.fov_arcmin;
+  if (!Array.isArray(fov) || fov.length !== 2) return null;
+  const ra = Number(tile.ra_deg), dec = Number(tile.dec_deg);
+  if (!Number.isFinite(ra) || !Number.isFinite(dec)) return null;
+  const halfDec = (Number(fov[1]) / 60) / 2;
+  const halfRa  = (Number(fov[0]) / 60) / 2 / Math.max(0.01, Math.cos(dec * Math.PI / 180));
+  return [
+    [ra - halfRa, dec - halfDec],
+    [ra + halfRa, dec - halfDec],
+    [ra + halfRa, dec + halfDec],
+    [ra - halfRa, dec + halfDec],
+  ];
+}
+
+function _tilePassesFilters(tile, st) {
+  // Priority: tile must be in the active set. Treat anything past pri-4 as
+  // "other" to match the chip's pri-other bucket.
+  const p = Number(tile.priority_level) || 0;
+  if (p && !st.priorities.has(p)) return false;
+  // Missing-band: tile must lack EVERY band the user ticked. Empty set = no filter.
+  if (st.missing.size) {
+    const pb = tile.per_band || {};
+    for (const b of st.missing) {
+      if (pb[b]?.covered) return false;
+    }
+  }
+  // Category: tile must have at least one of the ticked categories with count>0.
+  // Empty set = no filter.
+  if (st.categories.size) {
+    const cc = tile.category_counts || {};
+    let hit = false;
+    for (const c of st.categories) {
+      if ((cc[c] || 0) > 0) { hit = true; break; }
+    }
+    if (!hit) return false;
+  }
+  return true;
+}
+
+function _tileTooltip(tile) {
+  const parts = [tile.id ? `Tile ${tile.id}` : null,
+                 `Priority ${tile.priority_level ?? "—"}`];
+  if (tile.score != null) parts.push(`Score ${tile.score}`);
+  const pb = tile.per_band || {};
+  const missing = Object.keys(pb).filter(k => !pb[k]?.covered);
+  if (missing.length) parts.push(`Missing: ${missing.join(", ")}`);
+  const cc = Object.entries(tile.category_counts || {})
+    .filter(([_, n]) => n > 0)
+    .map(([c, n]) => `${c}=${n}`);
+  if (cc.length) parts.push(cc.join(" "));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function renderTileOverlay(sourceId) {
+  if (!aladin) return;
+  const st = invState[sourceId];
+  if (!st) return;
+  let ovr = _tileOverlays[sourceId];
+  // Drop any stale hits for this source — rebuilt below.
+  tileHitList = tileHitList.filter(h => h.source_id !== sourceId);
+  if (!st.enabled) {
+    if (ovr) ovr.removeAll();
+    return;
+  }
+  const tiles = tileData[sourceId];
+  if (!tiles) return;       // still loading; ensureTilesLoaded will recall this
+  if (!ovr) {
+    // lineWidth 0.01 keeps the outline invisible on filled tiles — the
+    // colour reads from the fill alone, otherwise heavy borders dominate
+    // the map at zoomed-out projections.
+    ovr = A.graphicOverlay({ color: "#ffffff", lineWidth: 0.5, name: `inv_${sourceId}` });
+    aladin.addOverlay(ovr);
+    _tileOverlays[sourceId] = ovr;
+  }
+  ovr.removeAll();
+  let drawn = 0;
+  for (const tile of tiles) {
+    if (!_tilePassesFilters(tile, st)) continue;
+    const corners = _tileFootprint(tile);
+    if (!corners) continue;
+    const color = _tileColor(tile.priority_level);
+    const alpha = _tileFillAlphaHex(tile.per_band);
+    const poly = A.polygon(corners, {
+      color,
+      lineWidth: 0.5,
+      fillColor: color + alpha,
+    });
+    if (poly && tile && (tile.id || tile.score != null)) {
+      poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
+    }
+    ovr.add(poly);
+    tileHitList.push({ poly, tile, source_id: sourceId, corners });
+    drawn++;
+  }
+  // Update the counter pill in the rail to reflect the filtered subset.
+  const block = document.querySelector(`.inv-source[data-source-id="${sourceId}"]`);
+  const total = (tileSources.find(x => x.id === sourceId) || {}).n_tiles || tiles.length;
+  if (block) {
+    const cnt = block.querySelector("[data-count]");
+    if (cnt) cnt.textContent = `${drawn} of ${total} tiles`;
+  }
+}
+
+// --- Tile detail panel (Plan 2a) -----------------------------------------
+function renderTilePanel(tile, sourceId) {
+  panelMode = "tile-detail";
+  updateSearchVisibility();
+  selectedTileKey = `${sourceId}/${tile.id}`;
+  selectedTargetId = null;
+  saveUiState();
+  const panel = document.getElementById("panelBody");
+  if (!panel) return;
+
+  const sourceMeta = tileSources.find(s => s.id === sourceId) || {};
+  const sourceLabel = sourceMeta.label || sourceId;
+
+  const fov = Array.isArray(tile.fov_arcmin) && tile.fov_arcmin.length === 2
+    ? `${Number(tile.fov_arcmin[0]).toFixed(1)}' × ${Number(tile.fov_arcmin[1]).toFixed(1)}'`
+    : "—";
+
+  // Per-band coverage table — band, covered marker, source label, hours if present.
+  const pb = tile.per_band || {};
+  const bandRows = Object.entries(pb).map(([band, info]) => {
+    const cov = info?.covered;
+    const mark = cov ? "<span style='color:#6fcc52'>✓</span>" : "<span style='color:#888'>—</span>";
+    const src = info?.source ? esc(info.source) : "<span style='color:#666'>none</span>";
+    const hrs = (info && typeof info.hours === "number") ? `${info.hours.toFixed(1)}h` : "";
+    return `<tr><td>${esc(band)}</td><td>${mark}</td><td class="num">${src}</td><td class="num">${esc(hrs)}</td></tr>`;
+  }).join("");
+
+  const cc = tile.category_counts || {};
+  const catRows = Object.entries(cc)
+    .filter(([_, n]) => n > 0)
+    .map(([c, n]) => `<span class="fchip">${esc(c)}: ${n}</span>`)
+    .join(" ");
+
+  // Visibility section (Plan 2c) wires up next; placeholder div the loader fills in.
+  const visPlaceholder = `<div class="vis-section" id="tileVisSection"></div>`;
+
+  // Suggested-bands hint for the Create-plan button (Plan 2d).
+  const missing = Object.entries(pb).filter(([_, v]) => !v?.covered).map(([b]) => b);
+  const suggestion = missing.length
+    ? `Suggested bands: ${missing.map(b => `<code>${esc(b)}</code>`).join(", ")}`
+    : "All declared bands already covered.";
+
+  panel.innerHTML = `
+    <div>
+      <a class="back-link" id="backToList" href="#">← Back to list</a>
+      <h3>${esc(sourceLabel)} · <span style="color:#a2aec2">${esc(tile.id || "")}</span></h3>
+
+      ${visPlaceholder}
+
+      <h4>Position</h4>
+      <table>
+        <tr><td>RA / Dec</td><td class="num">${Number(tile.ra_deg).toFixed(3)}° / ${Number(tile.dec_deg).toFixed(3)}°</td></tr>
+        <tr><td>FOV</td><td class="num">${fov}</td></tr>
+        <tr><td>Priority</td><td class="num">P${tile.priority_level ?? "—"}</td></tr>
+        ${tile.score != null ? `<tr><td>Score</td><td class="num">${tile.score}</td></tr>` : ""}
+      </table>
+
+      ${bandRows ? `
+      <h4>Per-band coverage</h4>
+      <table>
+        <thead><tr><th>Band</th><th>✓</th><th class="num">Source</th><th class="num">Hours</th></tr></thead>
+        <tbody>${bandRows}</tbody>
+      </table>` : ""}
+
+      ${catRows ? `<h4>Catalog object counts</h4><div>${catRows}</div>` : ""}
+
+      <div class="tile-actions">
+        <div class="tile-suggestion">${suggestion}</div>
+        <button id="tileCreatePlan" class="primary">Create new plan from this tile</button>
+      </div>
+    </div>`;
+
+  document.getElementById("backToList")?.addEventListener("click", e => {
+    e.preventDefault(); renderTargetList();
+  });
+  document.getElementById("tileCreatePlan")?.addEventListener("click", () => {
+    promotePlanFromTile(tile, sourceMeta);
+  });
+  loadTileVisibility(tile);
+}
+
+// Build sparkline + Now/Trend chips against an arbitrary {ra, dec} point by
+// reusing the same renderers that drive the target detail panel — they read
+// `visibilityData` for site metadata, then take the bin list from a
+// `_pointBins` cache keyed by the tile.
+const _pointVisCache = new Map();   // "<lat>,<lon>,<min>,<ra>,<dec>" → bins[]
+
+async function loadTileVisibility(tile) {
+  // Time-aware off → leave the section empty (the CSS rule on .vis-section
+  // hides it anyway, but skip the network round-trip too).
+  if (!timeAware) return;
+  const ra = Number(tile.ra_deg), dec = Number(tile.dec_deg);
+  if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
+  const lat = currentSite.lat, lon = currentSite.lon, minAlt = currentSite.min_alt_deg ?? 30;
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)},${minAlt.toFixed(2)},${ra.toFixed(4)},${dec.toFixed(4)}`;
+  let bins = _pointVisCache.get(key);
+  if (!bins) {
+    try {
+      const url = activeSiteId
+        ? `/api/visibility/point?site_id=${encodeURIComponent(activeSiteId)}&ra=${ra}&dec=${dec}`
+        : `/api/visibility/point?lat=${lat}&lon=${lon}&min_alt_deg=${minAlt}&ra=${ra}&dec=${dec}`;
+      const r = await fetch(url);
+      if (!r.ok) return;
+      const d = await r.json();
+      bins = Array.isArray(d?.months) ? d.months : null;
+      if (!bins) return;
+      _pointVisCache.set(key, bins);
+    } catch (e) {
+      console.warn("tile visibility fetch failed:", e);
+      return;
+    }
+  }
+  // Stitch a synthetic visibilityData entry so the existing helpers
+  // (year-curve, Now chip, Trend chip) work without modification.
+  const synthId = `__tile__${ra.toFixed(4)}_${dec.toFixed(4)}`;
+  if (!visibilityData) visibilityData = { site: { min_alt_deg: minAlt }, targets: {} };
+  visibilityData.targets[synthId] = bins;
+
+  const sec = document.getElementById("tileVisSection");
+  if (!sec) return;
+  // Bail if the user navigated away in the meantime.
+  if (panelMode !== "tile-detail") return;
+  const siteName = sites.find(s => s.id === activeSiteId)?.name || "current site";
+  const nowChip = nowChipHtml(synthId);
+  const trChip = trendChipHtml(synthId);
+  const bar = yearCurveBarHtml(synthId);
+  const best = bestBinFor(bins);
+  const bestTxt = best && best.label !== "not_visible"
+    ? `Peak: ${_MONTH_LABELS[best.month-1]} (${_LABEL_PRETTY[best.label]}, ${best.hours_above_min}h above min)`
+    : (best && best.peak_alt_deg != null && best.peak_alt_deg >= 0
+        ? `Never reaches min altitude during dark (year-best peak ${best.peak_alt_deg}°).`
+        : "Below horizon during dark all year.");
+  sec.innerHTML = `
+    <h4>Visibility — ${esc(siteName)}</h4>
+    ${bar}
+    <div class="vis-meta-row">
+      <span class="vis-meta">${esc(bestTxt)}</span>
+      ${nowChip}
+    </div>
+    <div class="vis-meta-row">
+      <span class="vis-now"></span>
+      ${trChip}
+    </div>`;
+}
+
+// Promotes a tile to a new plan (Plan 2d). Switches into planning mode if
+// not already there, builds an empty plan with the tile's centre + a name
+// derived from the source label + tile id, and opens the editor. FOV is
+// owned by the gear preset (per design decision 2d) — left to the user
+// to pick when they choose telescope/camera in the editor.
+function promotePlanFromTile(tile, sourceMeta) {
+  if (!planningMode) setPlanningMode(true);
+  const p = newEmptyPlan();
+  // newEmptyPlan reads the current Aladin centre — overwrite with the tile's
+  // own centre so the editor opens framed on the right spot regardless of
+  // where the user happened to be panned.
+  p.target.center_ra_deg = Number(tile.ra_deg);
+  p.target.center_dec_deg = Number(tile.dec_deg);
+  p.target.rotation_deg = 0;
+  const sourceLabel = sourceMeta?.label || "";
+  const tileId = tile.id || "";
+  p.target.name = [sourceLabel, tileId].filter(Boolean).join(" · ") || "From tile";
+  plans.push(p);
+  renderPlanEditor(p);
+}
+
 async function loadCatalogs() {
   try {
     const r = await fetch("/api/catalogs");
     catalogsData = await r.json();
     updateCatalogStatusHint();
     // if any catalog toggle is already checked, redraw
-    for (const id of ["cat_green", "cat_smgps", "cat_emu", "cat_hii", "cat_messier", "cat_sharpless", "cat_eso_pne"]) {
+    for (const id of catalogDomIds()) {
       const cb = document.getElementById(id);
       if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
     }
@@ -1531,48 +2187,419 @@ function setupFilterUI() {
 
   const siteSel = document.getElementById("siteSel");
   siteSel.addEventListener("change", () => {
-    const opt = siteSel.selectedOptions[0];
-    if (opt.value === "custom") {
-      document.getElementById("latIn").style.display = "";
-      document.getElementById("lonIn").style.display = "";
-      saveUiState();
+    activeSiteId = siteSel.value;
+    localStorage.setItem("acp.active_site_id", activeSiteId);
+    applyActiveSite();
+    // Clear stale per-target altitudes from the previous site immediately so
+    // the detail panel's "Now: X°" line doesn't briefly display old numbers
+    // while the new fetch is in flight. updateObsNow + loadVisibility below
+    // will repopulate.
+    currentAlts = {};
+    visibilityData = null;
+    rerenderActivePanel();
+    updateObsNow();
+    if (timeAware) loadVisibility();
+    refreshHorizonOverlay();
+  });
+  document.getElementById("siteAddBtn").addEventListener("click", () => openSiteModal(null));
+  document.getElementById("siteEditBtn").addEventListener("click", () => openSiteModal(activeSiteId));
+
+  document.getElementById("siteForm").addEventListener("submit", e => {
+    e.preventDefault();
+    saveSiteFromForm();
+  });
+  document.getElementById("siteFCancel").addEventListener("click", closeSiteModal);
+  document.getElementById("siteFDelete").addEventListener("click", deleteActiveSite);
+}
+
+// --- Sites (Plan A.1) ----------------------------------------------------
+// `sites` is loaded from /api/sites; the user's active site is held in
+// localStorage so different browsers/machines can pick different defaults
+// against the same shared sites.json.
+
+async function initSites() {
+  try {
+    const r = await fetch("/api/sites");
+    const d = await r.json();
+    sites = Array.isArray(d.sites) ? d.sites : [];
+  } catch {
+    sites = [];
+  }
+  if (!sites.length) {
+    // Backend always seeds defaults, so this should never fire — but degrade
+    // gracefully with the historical Sydney coords if it does.
+    sites = [{id: "sydney", name: "Sydney", lat: -33.87, lon: 151.21, elev_m: 20, min_alt_deg: 30}];
+  }
+  activeSiteId = localStorage.getItem("acp.active_site_id");
+  if (!sites.some(s => s.id === activeSiteId)) activeSiteId = sites[0].id;
+  renderSiteOptions();
+  applyActiveSite();
+}
+
+function renderSiteOptions() {
+  const sel = document.getElementById("siteSel");
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const s of sites) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.lat.toFixed(2)}, ${s.lon.toFixed(2)})`;
+    sel.appendChild(opt);
+  }
+  sel.value = activeSiteId;
+}
+
+function applyActiveSite() {
+  const s = sites.find(x => x.id === activeSiteId) || sites[0];
+  if (!s) return;
+  currentSite = {
+    lat: s.lat,
+    lon: s.lon,
+    height: s.elev_m ?? 0,
+    min_alt_deg: s.min_alt_deg ?? 30,
+  };
+}
+
+function openSiteModal(siteId) {
+  const dlg = document.getElementById("siteModal");
+  const editing = sites.find(s => s.id === siteId) || null;
+  document.getElementById("siteModalTitle").textContent = editing ? "Edit site" : "Add site";
+  document.getElementById("siteFName").value   = editing?.name ?? "";
+  document.getElementById("siteFLat").value    = editing?.lat ?? "";
+  document.getElementById("siteFLon").value    = editing?.lon ?? "";
+  document.getElementById("siteFElev").value   = editing?.elev_m ?? "";
+  document.getElementById("siteFMinAlt").value = editing?.min_alt_deg ?? 30;
+  const delBtn = document.getElementById("siteFDelete");
+  // Don't allow deleting the last remaining site — the topbar dropdown
+  // would be unusable and the visibility code assumes at least one site.
+  delBtn.hidden = !editing || sites.length <= 1;
+  delBtn.dataset.siteId = editing?.id ?? "";
+  document.getElementById("siteFormError").hidden = true;
+  dlg.dataset.editingId = editing?.id ?? "";
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
+  document.getElementById("siteFName").focus();
+}
+
+function closeSiteModal() {
+  const dlg = document.getElementById("siteModal");
+  if (typeof dlg.close === "function") dlg.close();
+  else dlg.removeAttribute("open");
+}
+
+function _slugify(s) {
+  return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "site";
+}
+
+async function saveSiteFromForm() {
+  const dlg = document.getElementById("siteModal");
+  const editingId = dlg.dataset.editingId || "";
+  const name = document.getElementById("siteFName").value.trim();
+  const lat = parseFloat(document.getElementById("siteFLat").value);
+  const lon = parseFloat(document.getElementById("siteFLon").value);
+  const elevRaw = document.getElementById("siteFElev").value;
+  const minAltRaw = document.getElementById("siteFMinAlt").value;
+  const errEl = document.getElementById("siteFormError");
+  const showErr = msg => { errEl.textContent = msg; errEl.hidden = false; };
+
+  if (!name) return showErr("Name is required.");
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) return showErr("Latitude must be between -90 and 90.");
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) return showErr("Longitude must be between -180 and 180.");
+  const elev = elevRaw === "" ? null : parseFloat(elevRaw);
+  if (elev !== null && (!Number.isFinite(elev) || elev < -430 || elev > 9000)) {
+    return showErr("Elevation must be between -430 and 9000 m.");
+  }
+  const minAlt = minAltRaw === "" ? null : parseFloat(minAltRaw);
+  if (minAlt !== null && (!Number.isFinite(minAlt) || minAlt < 0 || minAlt > 90)) {
+    return showErr("Min altitude must be between 0 and 90°.");
+  }
+
+  let id = editingId;
+  if (!id) {
+    let base = _slugify(name);
+    id = base;
+    let n = 2;
+    while (sites.some(s => s.id === id)) id = `${base}-${n++}`;
+  }
+  const next = {id, name, lat, lon};
+  if (elev !== null) next.elev_m = elev;
+  if (minAlt !== null) next.min_alt_deg = minAlt;
+
+  const newSites = editingId
+    ? sites.map(s => s.id === editingId ? next : s)
+    : [...sites, next];
+  await persistSites(newSites, id);
+  closeSiteModal();
+}
+
+async function deleteActiveSite() {
+  const dlg = document.getElementById("siteModal");
+  const sid = dlg.dataset.editingId;
+  if (!sid || sites.length <= 1) return;
+  if (!confirm(`Delete site "${sites.find(s => s.id === sid)?.name}"?`)) return;
+  const newSites = sites.filter(s => s.id !== sid);
+  const nextActive = (activeSiteId === sid ? newSites[0].id : activeSiteId);
+  await persistSites(newSites, nextActive);
+  closeSiteModal();
+}
+
+async function persistSites(newSites, nextActiveId) {
+  try {
+    const r = await fetch("/api/sites", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sites: newSites}),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      const errEl = document.getElementById("siteFormError");
+      if (errEl) {
+        errEl.textContent = j.error || `Save failed (${r.status}).`;
+        errEl.hidden = false;
+      }
       return;
     }
-    currentSite = {
-      lat: parseFloat(opt.dataset.lat),
-      lon: parseFloat(opt.dataset.lon),
-      height: parseFloat(opt.dataset.height || 0),
-    };
-    document.getElementById("latIn").style.display = "none";
-    document.getElementById("lonIn").style.display = "none";
-    saveUiState();
+    sites = (await r.json()).sites;
+    activeSiteId = nextActiveId;
+    localStorage.setItem("acp.active_site_id", activeSiteId);
+    renderSiteOptions();
+    applyActiveSite();
+    // Drop stale data from the previous site so the panel doesn't briefly
+    // show old numbers between the rerender and the in-flight fetches.
+    currentAlts = {};
+    visibilityData = null;
+    rerenderActivePanel();
     updateObsNow();
-  });
-  document.getElementById("latIn").addEventListener("change", e => {
-    currentSite.lat = parseFloat(e.target.value);
-    saveUiState();
-    updateObsNow();
-  });
-  document.getElementById("lonIn").addEventListener("change", e => {
-    currentSite.lon = parseFloat(e.target.value);
-    saveUiState();
-    updateObsNow();
-  });
+    if (timeAware) loadVisibility();
+    refreshHorizonOverlay();
+  } catch (e) {
+    const errEl = document.getElementById("siteFormError");
+    if (errEl) {
+      errEl.textContent = `Network error: ${e.message || e}`;
+      errEl.hidden = false;
+    }
+  }
+}
+
+function rerenderActivePanel() {
+  if (panelMode === "list") renderTargetList();
+  else if (panelMode === "detail" && selectedTargetId != null && manifest) {
+    const t = manifest.targets.find(x => x.target_id === selectedTargetId);
+    if (t) renderTargetPanel(t);
+  }
 }
 
 async function updateObsNow() {
+  // Time-aware off = the statusbar string is hidden by CSS anyway, but skip
+  // the network round-trip so the page stays quiet for friends/visitors who
+  // don't care about visibility.
+  if (!timeAware) return;
   try {
     const now = new Date().toISOString();
     const r = await fetch(`/api/observability?lat=${currentSite.lat}&lon=${currentSite.lon}&time=${now}`);
     const d = await r.json();
     if (!d.targets) return;
+    // Cache per-target altitudes for sort=up_tonight + the detail panel's
+    // "now" line. Refreshed on the same 60s cadence as the statusbar.
+    currentAlts = {};
+    for (const x of d.targets) currentAlts[x.target_id] = x.alt_deg;
     const n_above30 = d.targets.filter(x => x.alt_deg >= 30).length;
     const n_above60 = d.targets.filter(x => x.alt_deg >= 60).length;
     document.getElementById("obsNow").textContent =
       `@${currentSite.lat},${currentSite.lon}: ${n_above30} targets >30° alt, ${n_above60} >60° alt (UTC ${now.slice(11,16)})`;
+    // Refresh whichever panel is showing so the new altitudes (and the
+    // "Now: …°" line in the detail panel, and the up-tonight sort) reflect
+    // the latest fetch — particularly important right after a site change.
+    rerenderActivePanel();
   } catch (e) {
     document.getElementById("obsNow").textContent = "(observability offline)";
   }
+}
+
+// --- Visibility data (Plan A.4) ------------------------------------------
+async function loadVisibility() {
+  if (!timeAware) { visibilityData = null; return; }
+  try {
+    const url = activeSiteId
+      ? `/api/visibility?site_id=${encodeURIComponent(activeSiteId)}`
+      : `/api/visibility?lat=${currentSite.lat}&lon=${currentSite.lon}&min_alt_deg=${currentSite.min_alt_deg}`;
+    const r = await fetch(url);
+    if (!r.ok) { visibilityData = null; return; }
+    visibilityData = await r.json();
+  } catch (e) {
+    visibilityData = null;
+  }
+  // Re-render so sparklines + best-month chips appear.
+  rerenderActivePanel();
+}
+
+const _MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const _LABEL_RANK = { not_visible: 0, partial: 1, fair: 2, good: 3, great: 4 };
+const _LABEL_PRETTY = {
+  not_visible: "Not visible",
+  partial: "Partial",
+  fair: "Fair",
+  good: "Good",
+  great: "Great",
+};
+
+// "Not visible" splits into two real states the user cares about: target
+// genuinely never rises (peak < 0°) vs target rises but doesn't clear the
+// site's min-altitude (0° ≤ peak < min). Same bin label internally — only
+// the display copy changes.
+function prettyLabel(label, peak_alt_deg) {
+  if (label !== "not_visible") return _LABEL_PRETTY[label];
+  if (peak_alt_deg == null || peak_alt_deg < 0) return "Below horizon";
+  return `Below min (peaks ${peak_alt_deg}°)`;
+}
+function prettyLabelShort(label, peak_alt_deg) {
+  if (label !== "not_visible") return _LABEL_PRETTY[label];
+  if (peak_alt_deg == null || peak_alt_deg < 0) return "Below horizon";
+  return `Max ${peak_alt_deg}°`;
+}
+
+function binsForTarget(targetId) {
+  return visibilityData?.targets?.[String(targetId)] || null;
+}
+
+function bestBinFor(bins) {
+  if (!bins || !bins.length) return null;
+  let best = bins[0];
+  let bestRank = _LABEL_RANK[best.label] ?? 0;
+  for (const b of bins) {
+    const r = _LABEL_RANK[b.label] ?? 0;
+    if (r > bestRank) { best = b; bestRank = r; }
+  }
+  return best;
+}
+
+function _cellTooltip(b) {
+  // 3-line tooltip — \n renders as a real linebreak in browser title tooltips.
+  const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
+  const peak = b.peak_alt_deg == null ? "—" : `${b.peak_alt_deg}°`;
+  return `${_MONTH_LABELS[b.month-1]}: ${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}\nAbove ${minAlt}°: ${b.hours_above_min}h`;
+}
+
+function yearCurveSparklineHtml(targetId) {
+  const bins = binsForTarget(targetId);
+  if (!bins) return "";
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const cells = bins.map(b => {
+    const cls = b.month === nowMonth ? `yc-cell vc-${b.label} vc-current` : `yc-cell vc-${b.label}`;
+    return `<span class="${cls}" title="${_cellTooltip(b)}"></span>`;
+  }).join("");
+  return `<span class="yc-sparkline" aria-label="visibility by month">${cells}</span>`;
+}
+
+function _binFor(bins, month1) {
+  return bins.find(x => x.month === month1) || null;
+}
+
+function nowChipHtml(targetId) {
+  const bins = binsForTarget(targetId);
+  if (!bins) return "";
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const b = _binFor(bins, nowMonth);
+  if (!b) return "";
+  const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
+  const labelTxt = prettyLabelShort(b.label, b.peak_alt_deg);
+  const peak = b.peak_alt_deg == null ? "—" : `${b.peak_alt_deg}°`;
+  const tip = `Current month — ${_MONTH_LABELS[nowMonth-1]}\n${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}, ${b.hours_above_min}h above ${minAlt}°`;
+  return `<span class="nn-chip nn-${b.label}" title="${tip}"><span class="nn-prefix">Now</span> ${esc(labelTxt)}</span>`;
+}
+
+function trendChipHtml(targetId) {
+  const bins = binsForTarget(targetId);
+  if (!bins) return "";
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const nowBin = _binFor(bins, nowMonth);
+  if (!nowBin) return "";
+  const nowRank = _LABEL_RANK[nowBin.label] ?? 0;
+
+  // 3-month lookahead average vs current rank — simple heuristic for
+  // "is the next quarter better/worse/the same".
+  const nextRanks = [];
+  for (let i = 1; i <= 3; i++) {
+    const m = ((nowMonth - 1 + i) % 12) + 1;
+    const b = _binFor(bins, m);
+    if (b) nextRanks.push(_LABEL_RANK[b.label] ?? 0);
+  }
+  if (!nextRanks.length) return "";
+  const avg = nextRanks.reduce((a, b) => a + b, 0) / nextRanks.length;
+  const diff = avg - nowRank;
+
+  if (diff > 0.5) {
+    return `<span class="nn-chip nn-trend-up" title="3-month forward avg rank is higher than current month."><span class="nn-prefix">Trend</span> ↑ Improving</span>`;
+  }
+  if (diff < -0.5) {
+    return `<span class="nn-chip nn-trend-down" title="3-month forward avg rank is lower than current month."><span class="nn-prefix">Trend</span> ↓ Declining</span>`;
+  }
+  // Steady. If we're currently in a poor state (rank < good=3), surface
+  // when the next decent month arrives instead of the uninformative
+  // "Steady" — that's actually the more actionable signal.
+  if (nowRank < 3) {
+    for (let i = 1; i <= 12; i++) {
+      const m = ((nowMonth - 1 + i) % 12) + 1;
+      const b = _binFor(bins, m);
+      if (b && (_LABEL_RANK[b.label] ?? 0) >= 3) {
+        return `<span class="nn-chip nn-trend-wait" title="First Good-or-better month in the year ahead."><span class="nn-prefix">Trend</span> Peaks in ${i}m</span>`;
+      }
+    }
+    return `<span class="nn-chip nn-trend-flat" title="Stays poor across the year ahead."><span class="nn-prefix">Trend</span> Stays low</span>`;
+  }
+  return `<span class="nn-chip nn-trend-flat" title="3-month forward rank ≈ current."><span class="nn-prefix">Trend</span> → Steady</span>`;
+}
+
+function yearCurveBarHtml(targetId) {
+  const bins = binsForTarget(targetId);
+  if (!bins) return "";
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const cells = bins.map(b => {
+    const cls = b.month === nowMonth ? `yc-cell vc-${b.label} vc-current` : `yc-cell vc-${b.label}`;
+    return `<span class="${cls}" title="${_cellTooltip(b)}"><span class="yc-mlabel">${_MONTH_LABELS[b.month-1][0]}</span></span>`;
+  }).join("");
+  return `<div class="yc-bar">${cells}</div>`;
+}
+
+// --- Time-aware toggle (Plan A.2) ----------------------------------------
+function initTimeAware() {
+  timeAware = localStorage.getItem("acp.time_aware") === "on";
+  const savedSort = localStorage.getItem("acp.sort_by");
+  if (savedSort && ["hours", "best_month", "up_tonight"].includes(savedSort)) {
+    sortBy = savedSort;
+  }
+  applyTimeAwareState(/*fireImmediate=*/true);
+  const btn = document.getElementById("timeAwareToggle");
+  if (btn) btn.addEventListener("click", () => setTimeAware(!timeAware));
+}
+
+function setTimeAware(on) {
+  timeAware = !!on;
+  localStorage.setItem("acp.time_aware", timeAware ? "on" : "off");
+  applyTimeAwareState(/*fireImmediate=*/true);
+}
+
+function applyTimeAwareState(fireImmediate) {
+  document.body.dataset.timeAware = timeAware ? "on" : "off";
+  const btn = document.getElementById("timeAwareToggle");
+  if (btn) btn.setAttribute("aria-pressed", timeAware ? "true" : "false");
+
+  if (_obsIntervalId !== null) {
+    clearInterval(_obsIntervalId);
+    _obsIntervalId = null;
+  }
+  if (timeAware) {
+    if (fireImmediate) updateObsNow();
+    _obsIntervalId = setInterval(updateObsNow, 60_000);
+    loadVisibility();  // populates sparklines + best-month chips
+  } else {
+    const el = document.getElementById("obsNow");
+    if (el) el.textContent = "";
+    visibilityData = null;
+    currentAlts = {};
+    if (panelMode === "list") renderTargetList();
+  }
+  refreshHorizonOverlay();
 }
 
 // --- Catalog hover tooltip (objectHovered → near-cursor popover) ---
@@ -1692,9 +2719,10 @@ function init() {
     // Overlapping polygons resolve smallest-first; repeat-clicks cycle through the stack.
     // Empty-sky clicks navigate up one panel level (see onMapPolyClick → goUpOneLevel).
     aladin.on("click", o => {
+      if (_suppressNextMapClick) { _suppressNextMapClick = false; return; }
       if (_pressInfo?.dragged) return; // pan, not a real click
       if (!o || o.ra == null || o.dec == null) return;
-      if (dragState) return; // a plan-handle drag just ended; ignore the synthetic click
+      if (dragState) return; // belt-and-suspenders — drag still in progress
       onMapPolyClick(o.ra, o.dec);
     });
 
@@ -1777,14 +2805,22 @@ function init() {
     renderTelescopeLegend(sorted);
 
     setupFilterUI();
-    setupCatalogOverlays();
+    // Kick off the catalogue chip render in parallel with the rest; we
+    // await the resulting promise alongside everything else below so
+    // applyUiStatePreManifest can find the chips when restoring saved state.
+    const catalogReady = setupCatalogOverlays();
     setupPlannerUI();
 
     // Auto-import any manifest-discovered telescopes/cameras before first gear load
     // so the planner sees the user's actual rigs from the start.
     await seedGearFromManifest();
-    // Load planner data in parallel with catalogs
-    await Promise.all([loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides()]);
+    // Load planner data in parallel with catalogs (sites included so the
+    // first updateObsNow uses the saved active site rather than the hardcoded
+    // Sydney fallback in `currentSite`).
+    await Promise.all([
+      loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides(),
+      initSites(), catalogReady,
+    ]);
 
     // Restore previous session state before the first draw so the map
     // reflects saved filters/telescopes/search immediately.
@@ -1794,8 +2830,8 @@ function init() {
     redrawFootprints();
     loadCatalogs();
     loadSources();
-    updateObsNow();
-    setInterval(updateObsNow, 60_000);
+    initInventory();
+    initTimeAware();
 
     // If planning mode was remembered from last session, switch now (after
     // manifest + plans loaded so the right panel renders correctly).
@@ -2222,13 +3258,13 @@ function renderPlanEditor(plan) {
         </label>
         <div class="coord-row">
           <label style="flex:1"><span class="lab">RA (deg)</span>
-            <input type="number" step="0.0001" id="f_ra" value="${Number(tg.center_ra_deg).toFixed(4)}">
+            <input type="number" step="0.1" id="f_ra" value="${Number(tg.center_ra_deg).toFixed(3)}">
           </label>
           <span class="hms" id="f_ra_hms">${deg2hms(tg.center_ra_deg)}</span>
         </div>
         <div class="coord-row">
           <label style="flex:1"><span class="lab">Dec (deg)</span>
-            <input type="number" step="0.0001" id="f_dec" value="${Number(tg.center_dec_deg).toFixed(4)}">
+            <input type="number" step="0.1" id="f_dec" value="${Number(tg.center_dec_deg).toFixed(3)}">
           </label>
           <span class="hms" id="f_dec_dms">${deg2dms(tg.center_dec_deg)}</span>
         </div>
@@ -2547,6 +3583,19 @@ function redrawPlanFootprints() {
     }
 
     if (isEditing) {
+      // Centre marker — drag this to move the whole plan (mosaic moves as
+      // a unit, since planMosaicBoundsCorners derives panels from the
+      // centre + dims). Mouse-down handler in onMapMouseDown checks the
+      // hit radius against the live centre coords, not this marker, so
+      // the marker is purely a visual cue.
+      const center = A.marker(actual.target.center_ra_deg, actual.target.center_dec_deg, {
+        popupTitle: "Drag to move",
+        useMarkerDefaultIcon: false,
+        color: "#5bb6ff", shape: "circle", sourceSize: 16,
+      });
+      center.data = { plan_id: actual.id, kind: "plan_center" };
+      srcs.push(center);
+
       const bounds = planMosaicBoundsCorners(actual);
       const [nera, nedec] = bounds[2]; // overall NE corner of the full mosaic
       const handle = A.marker(nera, nedec, {
@@ -2631,8 +3680,8 @@ function onMapMouseMove(evt) {
     if (!world) return;
     editingPlan.target.center_ra_deg = world[0];
     editingPlan.target.center_dec_deg = world[1];
-    const raEl = document.getElementById("f_ra"); if (raEl) raEl.value = world[0].toFixed(4);
-    const decEl = document.getElementById("f_dec"); if (decEl) decEl.value = world[1].toFixed(4);
+    const raEl = document.getElementById("f_ra"); if (raEl) raEl.value = world[0].toFixed(3);
+    const decEl = document.getElementById("f_dec"); if (decEl) decEl.value = world[1].toFixed(3);
     const rahms = document.getElementById("f_ra_hms"); if (rahms) rahms.textContent = deg2hms(world[0]);
     const ddms = document.getElementById("f_dec_dms"); if (ddms) ddms.textContent = deg2dms(world[1]);
   } else if (dragState.mode === "rotate") {
@@ -2660,8 +3709,17 @@ function onMapMouseMove(evt) {
 }
 
 function onMapMouseUp() {
-  if (dragState) dragState = null;
+  if (dragState) {
+    dragState = null;
+    // Aladin fires a synthetic "click" right after mouseup. By the time it
+    // reaches our click handler, dragState is already null — without this
+    // latch, releasing the rotate (or centre) handle on empty sky would
+    // route through onMapPolyClick → goUpOneLevel → "unsaved plan changes"
+    // modal, which is wrong: the user just rotated, didn't navigate away.
+    _suppressNextMapClick = true;
+  }
 }
+let _suppressNextMapClick = false;
 
 function setupPlannerUI() {
   setupModeToggle();
