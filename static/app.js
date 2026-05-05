@@ -3019,7 +3019,17 @@ function init() {
           hoverRaf = 0;
           if (!aladin?.pix2world) return;
           const r = mapEl.getBoundingClientRect();
-          const w = aladin.pix2world(ev.clientX - r.left, ev.clientY - r.top);
+          let w;
+          try {
+            // Aladin Lite occasionally throws an internal TypeError
+            // ("can't access property Symbol.iterator, i is undefined")
+            // when mousemove fires before its WebGL view has finished
+            // initialising. Treat any failure as "no hit"; the next
+            // animation frame will succeed once the view is ready.
+            w = aladin.pix2world(ev.clientX - r.left, ev.clientY - r.top);
+          } catch {
+            return;
+          }
           if (!w) { setHoverHit(null); return; }
           const hits = hitPolygonsAt(w[0], w[1]);
           setHoverHit(hits[0] || null);
