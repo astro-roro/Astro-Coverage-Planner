@@ -2006,6 +2006,32 @@ def api_export_priority():
     }
 
 
+# Filter names flow into innerHTML in renderPlanEditor and a few other
+# places. Frontend escapes them, but defence-in-depth: reject anything
+# outside the legitimate astrophoto filter-name shape on the way in,
+# so a poisoned gear.json can never enter the system in the first place.
+# Real filter names are short alphanumeric tokens (Ha, SII, OIII, L, R,
+# G, B, V, IDAS, U, NII, Hb, etc.) — < and " have no place here.
+_FILTER_NAME_RE = re.compile(r"^[A-Za-z0-9_+\-]{1,32}$")
+
+
+def _validate_gear_payload(payload: dict) -> str | None:
+    cameras = payload.get("cameras") or []
+    if not isinstance(cameras, list):
+        return "cameras must be a list"
+    for i, c in enumerate(cameras):
+        if not isinstance(c, dict):
+            return f"cameras[{i}] must be an object"
+        filters = c.get("filters") or {}
+        if not isinstance(filters, dict):
+            return f"cameras[{i}].filters must be an object"
+        for fname in filters.keys():
+            if not isinstance(fname, str) or not _FILTER_NAME_RE.match(fname):
+                return (f"cameras[{i}].filters has invalid filter name "
+                        f"{fname!r} — must match {_FILTER_NAME_RE.pattern}")
+    return None
+
+
 @app.route("/api/gear", methods=["GET", "POST"])
 def api_gear():
     if request.method == "GET":
@@ -2018,6 +2044,9 @@ def api_gear():
     payload = request.get_json(silent=True) or {}
     if "telescopes" not in payload or "cameras" not in payload:
         return jsonify({"error": "telescopes and cameras arrays required"}), 400
+    err = _validate_gear_payload(payload)
+    if err:
+        return jsonify({"error": err}), 400
     save_gear({
         "version": 2,
         "telescopes": payload.get("telescopes", []),

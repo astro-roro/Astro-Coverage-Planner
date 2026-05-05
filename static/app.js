@@ -3467,11 +3467,11 @@ function renderPlanEditor(plan) {
       ).join("");
     }
     return `<tr>
-      <td><span class="filter-pill fp-${f}" style="background:${color};color:#000">${f}</span></td>
-      <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${f}" value="${th}" placeholder="hrs"></td>
-      <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${f}" value="${sub}"></td>
+      <td><span class="filter-pill fp-${esc(f)}" style="background:${color};color:#000">${esc(f)}</span></td>
+      <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${esc(f)}" value="${th}" placeholder="hrs"></td>
+      <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${esc(f)}" value="${sub}"></td>
       <td><span class="goal-status ${ahClass}">${ah.toFixed(1)}h</span></td>
-      <td>${tsTemplates.available ? `<select class="tmpl-sel" data-f="${f}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">—</span>`}</td>
+      <td>${tsTemplates.available ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">—</span>`}</td>
     </tr>`;
   }).join("");
 
