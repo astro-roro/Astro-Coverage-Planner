@@ -5,11 +5,20 @@
 html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 13px;
   background: #0a0d12;
   color: #e0e4ea;
+}
+/* Single-screen layout: body owns the full viewport and stacks topbar →
+   layout → statusbar in a flex column. .layout absorbs whatever space is
+   left, so the page is always exactly viewport-height (no double-scroll
+   when the actual topbar is taller than the previous hardcoded 44px). */
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .topbar {
@@ -124,8 +133,8 @@ button:active { background: #262e40; }
 
 .layout {
   display: flex;
-  height: calc(100vh - 44px);
-  min-height: 400px;
+  flex: 1;
+  min-height: 0;     /* allow children with overflow:auto to shrink properly */
 }
 
 #aladin-lite-div {
@@ -344,10 +353,7 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
 .fp-IDAS { background: #a0ffd0; }
 
 .statusbar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  flex: 0 0 auto;            /* natural height, never grows */
   padding: 4px 12px;
   background: #0a0d12;
   border-top: 1px solid #1f2937;
@@ -355,8 +361,6 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
   color: #78839a;
   display: flex;
   justify-content: space-between;
-  z-index: 10;
-  pointer-events: none;
 }
 
 .pathlist {
