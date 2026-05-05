@@ -987,13 +987,12 @@ def api_gear_seed():
 
 @app.route("/")
 def index():
-    m = load_manifest()
-    if m is None:
-        return (
-            f"Manifest not found at {MANIFEST_PATH}. "
-            "See README.md for how to build one, or set MANIFEST_PATH.",
-            500,
-        )
+    # Render the page even when no manifest exists yet — a fresh-install
+    # user lands here, the frontend fetches /api/manifest, sees an empty
+    # targets list, and shows the onboarding banner directing them at the
+    # archive setup guide. Erroring out here would just give them a
+    # white-screen 500 with no path forward.
+    m = load_manifest() or {}
     return render_template(
         "index.html",
         total_targets=m.get("total_targets", 0),
@@ -1006,7 +1005,15 @@ def index():
 def api_manifest():
     m = load_manifest()
     if m is None:
-        return jsonify({"error": "manifest not found"}), 404
+        # Empty manifest rather than 404 — the frontend's onboarding
+        # banner triggers on targets.length === 0, so a clean empty
+        # response is exactly what we want here.
+        return jsonify({
+            "scan_date": None,
+            "total_targets": 0,
+            "total_integration_hours": 0,
+            "targets": [],
+        })
     slim_targets = []
     for t in m["targets"]:
         ft = {f: {k: v for k, v in d.items() if k != "paths"} for f, d in t["filters"].items()}
