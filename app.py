@@ -13,6 +13,8 @@ Endpoints:
 - GET /api/catalog-registry      declarative list of catalogues to surface in the rail
 - GET /api/tile-sources          metadata for every registered PrioritisedTilesSource
 - GET /api/tiles/<source_id>     tile list for one source (filtered server-side optionally)
+- GET /api/saved-searches, POST  CRUD for saved Inventory filter bundles
+- DELETE /api/saved-searches/<id>
 - GET /api/sources               list of registered coverage sources
 - GET /api/moc/<source_id>       FITS MOC blob for a survey source (lazy-fetched, cached)
 - GET /api/observability         altaz for all targets at (lat, lon, time)
@@ -73,6 +75,8 @@ CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catal
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
 SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
+SAVED_SEARCHES_PATH = Path(os.environ.get(
+    "SAVED_SEARCHES_PATH", REPO_ROOT / "data" / "saved_searches.json"))
 TARGET_OVERRIDES_PATH = Path(os.environ.get(
     "TARGET_OVERRIDES_PATH", REPO_ROOT / "data" / "target_overrides.json"))
 TS_DB_PATH = os.environ.get(
@@ -118,6 +122,8 @@ _target_overrides_cache: dict | None = None
 _target_overrides_cache_mtime: float | None = None
 _sites_cache: dict | None = None
 _sites_cache_mtime: float | None = None
+_saved_searches_cache: dict | None = None
+_saved_searches_cache_mtime: float | None = None
 # Per-(site, manifest, year) cache of computed visibility bins. Visibility is
 # essentially constant year-to-year (sun barycentric position is fixed
 # relative to RA/Dec) so a one-shot compute per site is fine, and the entry
@@ -225,6 +231,26 @@ def save_sites(data: dict) -> None:
     SITES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _sites_cache = data
     _sites_cache_mtime = SITES_PATH.stat().st_mtime
+
+
+def load_saved_searches() -> dict:
+    global _saved_searches_cache, _saved_searches_cache_mtime
+    if not SAVED_SEARCHES_PATH.exists():
+        return {"version": 1, "searches": []}
+    mtime = SAVED_SEARCHES_PATH.stat().st_mtime
+    if _saved_searches_cache is None or _saved_searches_cache_mtime != mtime:
+        _saved_searches_cache = json.loads(
+            SAVED_SEARCHES_PATH.read_text(encoding="utf-8"))
+        _saved_searches_cache_mtime = mtime
+    return _saved_searches_cache
+
+
+def save_saved_searches(data: dict) -> None:
+    global _saved_searches_cache, _saved_searches_cache_mtime
+    SAVED_SEARCHES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SAVED_SEARCHES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _saved_searches_cache = data
+    _saved_searches_cache_mtime = SAVED_SEARCHES_PATH.stat().st_mtime
 
 
 def load_catalog_registry() -> dict:
@@ -1160,6 +1186,70 @@ def api_tiles(source_id: str):
     return jsonify({"id": source_id, "tiles": tiles_out})
 
 
+# --- Saved Inventory searches (Plan 6) -----------------------------------
+# Each entry: {id, name, source_id, filters: {priorities, missing,
+# categories, hidePlanned}, created_at}. Per-source so the user can have
+# different named searches against different tile sources.
+
+def _validate_saved_search(s: dict) -> str | None:
+    if not isinstance(s, dict):
+        return "search must be an object"
+    if not isinstance(s.get("name"), str) or not s["name"].strip():
+        return "name must be a non-empty string"
+    if not isinstance(s.get("source_id"), str) or not s["source_id"].strip():
+        return "source_id must be a non-empty string"
+    f = s.get("filters") or {}
+    if not isinstance(f, dict):
+        return "filters must be an object"
+    for k in ("priorities", "missing", "categories"):
+        if k in f and not isinstance(f[k], list):
+            return f"filters.{k} must be a list"
+    if "hidePlanned" in f and not isinstance(f["hidePlanned"], bool):
+        return "filters.hidePlanned must be a boolean"
+    return None
+
+
+@app.route("/api/saved-searches", methods=["GET", "POST"])
+def api_saved_searches():
+    if request.method == "GET":
+        return jsonify(load_saved_searches())
+    payload = request.get_json(silent=True) or {}
+    err = _validate_saved_search(payload)
+    if err:
+        return jsonify({"error": err}), 400
+    data = load_saved_searches()
+    searches = list(data.get("searches", []))
+    sid = payload.get("id") or str(uuid.uuid4())
+    f = payload.get("filters") or {}
+    entry = {
+        "id": sid,
+        "name": payload["name"].strip(),
+        "source_id": payload["source_id"].strip(),
+        "filters": {
+            "priorities": list(f.get("priorities") or []),
+            "missing":    list(f.get("missing") or []),
+            "categories": list(f.get("categories") or []),
+            "hidePlanned": bool(f.get("hidePlanned")),
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # upsert by id
+    searches = [s for s in searches if s.get("id") != sid]
+    searches.append(entry)
+    save_saved_searches({"version": 1, "searches": searches})
+    return jsonify(entry), 201
+
+
+@app.route("/api/saved-searches/<search_id>", methods=["DELETE"])
+def api_saved_search_delete(search_id: str):
+    data = load_saved_searches()
+    searches = [s for s in data.get("searches", []) if s.get("id") != search_id]
+    if len(searches) == len(data.get("searches", [])):
+        return jsonify({"error": "not found"}), 404
+    save_saved_searches({"version": 1, "searches": searches})
+    return ("", 204)
+
+
 @app.route("/api/catalog-registry")
 def api_catalog_registry():
     """Merged catalogue registry: extensions + file-loaded defaults.
@@ -2052,6 +2142,34 @@ def api_ts_templates():
 
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
 
+# Target Scheduler enums use [JsonConverter(typeof(StringEnumConverter))]
+# in NINA.Plugin.TargetScheduler.Database.Schema, so JSON values are
+# enum NAMES, not ordinal ints. Must match exactly: "Draft" / "Active" /
+# "Inactive" / "Closed" and "Low" / "Normal" / "High".
+_TS_PRIORITY_NAME = {0: "Low", 1: "Normal", 2: "High"}
+
+
+def _ts_database_version() -> str:
+    """Read PRAGMA user_version from the user's TS sqlite DB.
+
+    TS's ImportProfile compares this against the export's `DatabaseVersion`
+    and refuses imports newer than its own. Reading the live value at sync
+    time guarantees a clean import without the "are you sure?" prompt.
+    """
+    path = Path(os.path.expandvars(TS_DB_PATH))
+    if not path.exists():
+        return "0"
+    try:
+        uri = f"file:{path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        try:
+            ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            conn.close()
+        return str(int(ver))
+    except sqlite3.Error:
+        return "0"
+
 
 def _mosaic_panel_centers(ra_c: float, dec_c: float, fov_w_arcmin: float, fov_h_arcmin: float,
                           rot_deg: float, rows: int, cols: int, overlap_pct: float) -> list[dict]:
@@ -2087,7 +2205,14 @@ def _mosaic_panel_centers(ra_c: float, dec_c: float, fov_w_arcmin: float, fov_h_
 def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
     """Group plans by project_name, apply strictest-wins for constraints, expand
     mosaics into per-panel targets, and emit TS-shape project + exposureTemplate
-    records. Returns (payload, warnings)."""
+    records. Returns (payload, warnings).
+
+    JSON shape matches Newtonsoft.Json [JsonProperty(MemberSerialization.OptIn)]
+    on the TS schema classes (PascalCase property names; StringEnumConverter for
+    State/Priority enums; Epoch as ordinal int 0=J2000). ExposurePlans reference
+    templates by Id (synthesised here); the importer rewrites IDs through its
+    exposureTemplateIdMap so our IDs only need to be stable WITHIN this payload.
+    """
     telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", [])}
     cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", [])}
 
@@ -2099,7 +2224,12 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
     ts_projects: list[dict] = []
     ts_templates: list[dict] = []
     template_seen: dict[tuple[str, str], dict] = {}
+    template_id_seq = [0]  # mutable counter for unique synthetic IDs
     warnings: list[dict] = []
+
+    def _next_template_id() -> int:
+        template_id_seq[0] += 1
+        return template_id_seq[0]
 
     def _warn(kind: str, pname: str, resolved, group: list, suggested_suffix: str, msg: str) -> None:
         warnings.append({
@@ -2143,8 +2273,10 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             cols = max(1, int(mosaic.get("cols") or 1))
             overlap = float(mosaic.get("overlap_pct") or 0)
 
-            # Build exposure plans once per plan (shared across mosaic panels)
-            exp_plans: list[dict] = []
+            # Resolve exposure plans for this plan. Each entry tracks the
+            # (sub_s, desired, acquired, template_id) so all panels of the
+            # mosaic share the same set.
+            exp_plan_specs: list[dict] = []
             for fname, goal in (pl.get("filter_goals") or {}).items():
                 th = float(goal.get("target_hours") or 0)
                 if th <= 0:
@@ -2160,23 +2292,39 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                         f"{fname} ({camera['name']})" if camera else fname
                     )
                     tpl = {
-                        "name": tpl_name,
-                        "filtername": fname,
-                        "defaultexposure": filt_cfg.get("default_sub_s") or sub_s,
-                        "gain": filt_cfg.get("gain", -1),
-                        "offset": filt_cfg.get("offset", -1),
-                        "bin": filt_cfg.get("bin", 1),
+                        # Synthetic ID — TS's importer rewrites these through
+                        # exposureTemplateIdMap. Only needs to be unique within
+                        # this payload so ExposurePlan.ExposureTemplateId can
+                        # reference the right template before remapping.
+                        "Id": _next_template_id(),
+                        "Guid": str(uuid.uuid4()),
+                        "Name": tpl_name,
+                        "FilterName": fname,
+                        "DefaultExposure": float(filt_cfg.get("default_sub_s") or sub_s),
+                        "Gain": int(filt_cfg.get("gain", -1)),
+                        "Offset": int(filt_cfg.get("offset", -1)),
+                        "bin": int(filt_cfg.get("bin", 1)),       # lowercase per TS schema
+                        "ReadoutMode": 0,
+                        "TwilightLevel": 1,                        # Astronomical (TS default)
+                        "MinutesOffset": 0,
+                        "MoonAvoidanceEnabled": False,
+                        "MoonAvoidanceSeparation": 0.0,
+                        "MoonAvoidanceWidth": 0,
+                        "MoonRelaxScale": 0.0,
+                        "MoonRelaxMaxAltitude": 0.0,
+                        "MoonRelaxMinAltitude": 0.0,
+                        "MoonDownEnabled": False,
+                        "DitherEvery": 0,
+                        "MaximumHumidity": 100.0,
                     }
                     template_seen[key] = tpl
                     ts_templates.append(tpl)
                 tpl = template_seen[key]
-                exp_plans.append({
-                    "exposure": sub_s,
+                exp_plan_specs.append({
+                    "sub_s": sub_s,
                     "desired": desired,
                     "acquired": acquired,
-                    "accepted": acquired,
-                    "exposureTemplateName": tpl["name"],
-                    "filtername": fname,
+                    "template_id": tpl["Id"],
                 })
 
             base_name = tg.get("name") or pl.get("id")
@@ -2194,28 +2342,50 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             multi = len(panels) > 1
             for panel in panels:
                 pname_suffix = f" r{panel['row'] + 1}c{panel['col'] + 1}" if multi else ""
+                exp_plans = [{
+                    "Guid": str(uuid.uuid4()),
+                    "Exposure": float(spec["sub_s"]),
+                    "Desired": int(spec["desired"]),
+                    "Acquired": int(spec["acquired"]),
+                    "Accepted": int(spec["acquired"]),
+                    "IsEnabled": True,
+                    "ExposureTemplateId": int(spec["template_id"]),
+                } for spec in exp_plan_specs]
                 ts_targets.append({
-                    "name": f"{base_name}{pname_suffix}",
-                    "active": True,
+                    "Guid": str(uuid.uuid4()),
+                    "Name": f"{base_name}{pname_suffix}",
+                    "Enabled": True,
                     # Target Scheduler stores RA in HOURS, Dec in degrees.
-                    "ra": panel["ra_deg"] / 15.0,
-                    "dec": panel["dec_deg"],
-                    "rotation": rot_deg,
-                    "roi": 100,
-                    "exposurePlans": exp_plans,
+                    "RA": panel["ra_deg"] / 15.0,
+                    "Dec": panel["dec_deg"],
+                    "Epoch": 0,                         # 0 = J2000 (NINA enum)
+                    "Rotation": rot_deg,
+                    "ROI": 100.0,
+                    "ExposurePlans": exp_plans,
+                    "OverrideExposureOrders": [],
                 })
 
         ts_projects.append({
-            "name": pname,
-            "description": "",
-            "state": 1,  # Active
-            "priority": PRIORITY_RANK.get(pri_name, 1),
-            "minimumAltitude": min_alt,
-            "meridianWindow": meridian,
-            "filterSwitchFrequency": 0,
-            "ditherEvery": 0,
-            "enableGrader": False,
-            "targets": ts_targets,
+            "Guid": str(uuid.uuid4()),
+            "Name": pname,
+            "Description": "",
+            "State": "Active",
+            "Priority": _TS_PRIORITY_NAME.get(PRIORITY_RANK.get(pri_name, 1), "Normal"),
+            "CreateDate": datetime.now(timezone.utc).isoformat(),
+            "ActiveDate": None,
+            "InactiveDate": None,
+            "IsMosaic": False,
+            "FlatsHandling": 0,
+            "MinimumTime": 0,
+            "MinimumAltitude": float(min_alt),
+            "MaximumAltitude": 90.0,
+            "UseCustomHorizon": False,
+            "HorizonOffset": 0.0,
+            "MeridianWindow": int(meridian),
+            "FilterSwitchFrequency": 0,
+            "DitherEvery": 0,
+            "EnableGrader": False,
+            "Targets": ts_targets,
         })
 
     return {"projects": ts_projects, "exposureTemplates": ts_templates}, warnings
@@ -2240,15 +2410,22 @@ def api_sync():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     zip_path = ZIP_OUTPUT_DIR / f"acp-sync-{stamp}.zip"
 
+    # Match TS's ExportMetadata schema (PascalCase). DatabaseVersion read
+    # from the user's TS sqlite means the import goes through silently
+    # instead of triggering the "newer/older than current" prompt.
     metadata = {
-        "version": 5,
-        "sourceProfileName": "Astro Coverage Planner",
-        "sourceDate": datetime.now(timezone.utc).isoformat(),
+        "ExportDate": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "TargetSchedulerVersion": "5.0.0",
+        "DatabaseVersion": _ts_database_version(),
+        "ExportedProfileName": "Astro Coverage Planner",
+        "ExportedProfileId": str(uuid.uuid4()),
     }
 
+    # profilePreference.json intentionally omitted — TS skips the import
+    # step when the file is absent, which preserves the user's existing
+    # profile preferences and avoids EF validation on a default shell.
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("metadata.json", json.dumps(metadata, indent=2))
-        zf.writestr("profilePreference.json", json.dumps({}, indent=2))
         zf.writestr("exposureTemplates.json", json.dumps(payload["exposureTemplates"], indent=2))
         zf.writestr("projects.json", json.dumps(payload["projects"], indent=2))
 

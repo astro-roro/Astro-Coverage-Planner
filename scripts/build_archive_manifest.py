@@ -1275,6 +1275,7 @@ def main():
             },
             "master_files": [m["path"] for m in members if m.get("role") != "folder_sub"],
             "telescopes": sorted({m.get("telescope") for m in members if m.get("telescope")}),
+            "cameras": sorted({m.get("camera") for m in members if m.get("camera")}),
             "date_range": date_range,
             "n_masters": sum(1 for m in members if m.get("role") != "folder_sub"),
             "n_sub_folders": sum(1 for m in members if m.get("role") == "folder_sub"),
