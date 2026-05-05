@@ -89,47 +89,37 @@ ACP's coverage map, search, planner, and catalogues all run on Windows, macOS, a
 
 (Future plugins could push to Voyager, SGP, or other planners — the extension hooks are there.)
 
-## Features
+## Other things it does
 
-### Sky map
-- **Aitoff / Mollweide / Orthographic / Gnomonic** projections.
+The headline features are above. These are the secondary bits — the stuff that makes day-to-day use comfortable without needing to be the centrepiece.
+
+### On the map
+- **Four projections** — Aitoff, Mollweide, Orthographic, Gnomonic. Switch with one click; everything redraws live.
 - **Equatorial or Galactic** coordinate frames.
-- FOV polygons color-coded by telescope; a per-FOV badge shows which filters cover that field.
+- **Click any FOV polygon** for the full target detail: per-filter coverage breakdown, integration hours, gear used, master files behind it.
 
-### Filter controls
-- Per-filter toggles (`Ha SII OIII L R G B V`).
-- Logic modes: ANY, ALL, or `Have Ha but NOT SII` (gap-finder).
-- Depth slider: minimum hours/filter (0–10h).
+### Filtering and finding
+- **Per-filter toggles** for Hα, SII, OIII, L, R, G, B, V (and any other filter ACP found in your headers).
+- **Logic modes**: ANY (matches any selected filter), ALL (matches every selected filter), or "have Hα but NOT SII" gap-finder logic.
+- **Depth slider** — hide targets below a minimum hours-per-filter threshold (0–10h). Handy for filtering out the ones you've barely scratched.
+- **Cross-source gap-finder** — pick a "have" filter and a "missing" filter, set hour thresholds, and ACP highlights every region of sky where one is covered but the other isn't, with public-catalogue candidates scattered inside the gap.
 
-### Site + observability
-- Presets for Sydney / Victoria, or enter custom lat/lon.
-- Status bar shows how many targets are above 30° / 60° altitude right now.
+### Site and observability
+- **Site presets** (Sydney, Victoria) or enter custom lat/lon.
+- **Live altitude status bar** showing how many targets are currently above 30° / 60° at your site.
+- **Time-aware view** — see what's observable across the night, not just right now.
 
-### Catalog overlays
-- Green 2019 SNRs (confirmed Galactic SNRs).
-- SMGPS SNR candidates.
-- EMU SNR candidates.
-- WISE HII regions (Anderson 2014).
+### Planning depth
+- **Gear auto-seed** — first time you open Planning mode, ACP scans your manifest and imports every telescope and camera it found, including focal length, aperture, pixel size, sensor size, and the filters each rig has used. Tweak in the gear editor; re-run "Scan coverage" after rebuilding the manifest.
+- **NINA Target Scheduler template mapping** — if NINA is installed locally, the planner reads its scheduler DB and offers your existing exposure templates in a dropdown, so plans use *your* templates rather than auto-generated ones.
+- **Mosaic geometry** — rows × columns × overlap %, with a draggable rotation handle. Default 15% overlap is the sweet spot for gradient blending.
 
-### Search grammar (right rail)
-- Bare words match object names: `eta carinae`.
-- Quoted phrases preserve spaces: `"north america"`.
-- Key:value: `object:M42`, `name:rosette`, `filter:Ha`, `telescope:RedCat`, `tel:edge`, `camera:2600MM`, `cam:294`.
-- Numeric comparators: `hours>5`, `hours<2`, `fov>60`, `fov<10`.
-- Tokens combine with AND.
+### Sharing and external data
+- **Friend manifests** — load sanitised coverage manifests from imaging buddies as toggleable layers, so you can split the sky between you and avoid duplicating Hα hours on the same target.
+- **Public survey coverage overlays** — toggle MOC footprints from CDS-hosted surveys (IPHAS DR2 Hα ships in the box; more easy to add) to see where professional surveys have already covered the sky alongside your own work.
 
 ### Export
-- CSV of overlay candidates where Ha ≥ 1h but SII < 0.5h (validation-gap bucket).
-
-### Planner (Planning mode)
-Switch to the "Planning" tab in the top bar.
-
-- **Gear auto-seed from coverage.** On first load the planner scans your manifest and adds every telescope + camera it finds to `data/gear.json`. Re-run any time via the "Scan coverage" button in the gear editor after rebuilding the manifest.
-- **Plan editor.** Pick a target (name, coordinates, or click on the sky), select telescope + camera, set filter goals (target hours + sub-exposure), priority, min altitude, meridian window.
-- **Mosaics.** Set rows × columns × overlap % and the planner tiles panels around your center RA/Dec. Rotate the whole mosaic by dragging the handle. Default overlap is 15%, which is the sweet spot for gradient blending.
-- **Live footprint previews.** Footprint color matches the selected telescope (same colors as your coverage legend; fuzzy name match handles "RedCat 51 APO" vs "RedCat 51"). Dashed borders for plans with no data yet; solid once you've logged actual hours.
-- **NINA Target Scheduler sync.** "Sync" builds a TS plugin zip with projects.json / targets / exposureTemplates, merging plans by project, applying strictest-wins for conflicting altitude/priority/meridian settings. Templates map to your existing TS templates by name (set per filter in the gear editor) or are generated from camera gain/offset/bin.
-- **TS template mapping.** If NINA Target Scheduler is installed locally, the planner reads its sqlite DB (`%LOCALAPPDATA%/NINA/SchedulerPlugin/schedulerdb.sqlite`) to offer existing templates in a dropdown.
+- **CSV export** of priority candidates (e.g. Hα ≥ 1h, SII < 0.5h) — paste into NINA or whatever you keep your target list in.
 
 ## Manifest schema
 
