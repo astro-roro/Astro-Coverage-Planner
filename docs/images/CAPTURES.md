@@ -30,15 +30,17 @@ End-to-end planning demo: Planning tab → + New plan → click sky → pick tel
 
 ### `hero-movie.mp4` ✓
 
-Hero video, top of README. ~15s screen capture of dragging and zooming around the all-sky map with FOV polygons covering the southern Milky Way. Mellinger optical background. Captured at 3831×1690 as a 398MB GIF, then re-encoded to H.264 MP4 (1600px wide, CRF 23, yuv420p, faststart) at **7.4MB** — sub-percent of the original. Embedded in the README via `<video autoplay loop muted playsinline>` with the static hero PNG as `poster` for autoplay-blocked viewers. Captured 2026-05-05.
+Hero video, top of README. ~15s screen capture of dragging and zooming around the all-sky map with FOV polygons covering the southern Milky Way. Mellinger optical background. Captured at 3831×1690 as a 398MB GIF, then re-encoded to H.264 MP4 (1600px wide, CRF 27, yuv420p, faststart) at **3.7MB** — under 1% of the original. CRF 27 chosen over CRF 23 (which gave a 7.4MB file) to stay under GitHub's ~5MB threshold for inline video rendering in READMEs. Embedded in the README via `<video autoplay loop muted playsinline>` with the static hero PNG as `poster` for autoplay-blocked viewers. Captured 2026-05-05.
 
 Re-encode recipe (if ever needed):
 
 ```bash
 ffmpeg -i source.gif -vf "scale=1600:-2:flags=lanczos" \
-       -c:v libx264 -preset slow -crf 23 -pix_fmt yuv420p \
+       -c:v libx264 -preset slow -crf 27 -pix_fmt yuv420p \
        -movflags +faststart hero-movie.mp4
 ```
+
+(For higher quality at the cost of size, drop CRF to 23 — gives ~7MB for this clip but might not render inline on github.com. If hosting via GitHub's video upload mechanism instead, CRF 23 is fine.)
 
 ### `hero-coverage-map.png` ✓
 

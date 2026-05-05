@@ -353,15 +353,28 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
 .fp-IDAS { background: #a0ffd0; }
 
 .statusbar {
-  flex: 0 0 auto;            /* natural height, never grows */
-  padding: 4px 12px;
+  /* Pin to a fixed height so growing/shrinking content (e.g. long hover
+     tooltips that would otherwise wrap to two lines) never resizes the
+     map area underneath — that re-flow caused a visible Aladin shudder. */
+  flex: 0 0 24px;
+  height: 24px;
+  padding: 0 12px;
   background: #0a0d12;
   border-top: 1px solid #1f2937;
   font-size: 11px;
   color: #78839a;
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  overflow: hidden;
 }
+.statusbar > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.statusbar #tooltip { flex: 1; min-width: 0; margin-right: 12px; }
+.statusbar #obsNow  { flex: 0 0 auto; }
 
 .pathlist {
   font-size: 10px;
