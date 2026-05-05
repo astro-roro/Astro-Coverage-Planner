@@ -96,218 +96,47 @@ The headline features are above. These are the secondary bits — the stuff that
 ### On the map
 - **Four projections** — Aitoff, Mollweide, Orthographic, Gnomonic. Switch with one click; everything redraws live.
 - **Equatorial or Galactic** coordinate frames.
-- **Click any FOV polygon** for the full target detail: per-filter coverage breakdown, integration hours, gear used, master files behind it.
+- **Click any FOV polygon** for the full target detail — per-filter coverage breakdown, integration hours, gear used, master files behind it.
+- **Horizon overlay** — translucent bands marking the never-up declination at your active site (red) and the below-minimum-altitude band (amber).
 
 ### Filtering and finding
-- **Per-filter toggles** for Hα, SII, OIII, L, R, G, B, V (and any other filter ACP found in your headers).
+- **Per-filter toggles** for Hα, SII, OIII, L, R, G, B (and any other filter ACP found in your headers — IDAS / IR / Astrodon variants surface automatically).
 - **Logic modes**: ANY (matches any selected filter), ALL (matches every selected filter), or "have Hα but NOT SII" gap-finder logic.
 - **Depth slider** — hide targets below a minimum hours-per-filter threshold (0–10h). Handy for filtering out the ones you've barely scratched.
 - **Cross-source gap-finder** — pick a "have" filter and a "missing" filter, set hour thresholds, and ACP highlights every region of sky where one is covered but the other isn't, with public-catalogue candidates scattered inside the gap.
+- **Saved searches** — name a combination of filter / priority / category settings and recall it later from a dropdown.
 
 ### Site and observability
-- **Site presets** (Sydney, Victoria) or enter custom lat/lon.
-- **Live altitude status bar** showing how many targets are currently above 30° / 60° at your site.
-- **Time-aware view** — see what's observable across the night, not just right now.
+- **Sites manager** — add, edit, and switch between observing locations (lat / lon / altitude / minimum-altitude threshold). Active site persists across reloads.
+- **Live altitude status bar** showing how many targets are currently above 30° / 60° at your active site.
+- **Time-aware mode** — toggle on to see what's observable across the night, not just right now. Adds:
+  - **12-month visibility sparklines** on every target row (great / good / fair / partial / not visible per month).
+  - **Now / Trend chips** — "Now: Good · ↑ Improving" or "Peaks in 4 months" when current conditions are bad.
+  - **Sort options**: hours, best month, up tonight.
 
 ### Planning depth
 - **Gear auto-seed** — first time you open Planning mode, ACP scans your manifest and imports every telescope and camera it found, including focal length, aperture, pixel size, sensor size, and the filters each rig has used. Tweak in the gear editor; re-run "Scan coverage" after rebuilding the manifest.
 - **NINA Target Scheduler template mapping** — if NINA is installed locally, the planner reads its scheduler DB and offers your existing exposure templates in a dropdown, so plans use *your* templates rather than auto-generated ones.
-- **Mosaic geometry** — rows × columns × overlap %, with a draggable rotation handle. Default 15% overlap is the sweet spot for gradient blending.
+- **Mosaic geometry** — rows × columns × overlap %, with a draggable rotation handle. Default 15% overlap is the sweet spot for gradient blending. Panels labelled by row/column (e.g. `Panel 3 (R1C2)`).
 
 ### Sharing and external data
-- **Friend manifests** — load sanitised coverage manifests from imaging buddies as toggleable layers, so you can split the sky between you and avoid duplicating Hα hours on the same target.
-- **Public survey coverage overlays** — toggle MOC footprints from CDS-hosted surveys (IPHAS DR2 Hα ships in the box; more easy to add) to see where professional surveys have already covered the sky alongside your own work.
+- **Friend manifests** — load sanitised coverage manifests from imaging buddies as toggleable layers, so you can split the sky between you and avoid duplicating Hα hours on the same target. See [the sharing guide](docs/sharing.md).
+- **Public survey coverage overlays** — toggle MOC footprints from CDS-hosted surveys (IPHAS DR2 Hα ships in the box; more easy to add) to see where professional surveys have already covered the sky alongside your own work. See [the public-survey docs](docs/public-surveys.md).
+- **Plugin platform** — extensions can register custom coverage sources, ranked tile inventories, or class-tagged catalogues, and they show up in the rails alongside the built-ins. See [the extensions guide](docs/extensions.md) for the protocols and registries.
 
 ### Export
 - **CSV export** of priority candidates (e.g. Hα ≥ 1h, SII < 0.5h) — paste into NINA or whatever you keep your target list in.
 
-## Manifest schema
+## Want to dig deeper?
 
-Minimal shape:
+ACP is designed to be hackable, with a stable API surface and three plugin protocols. The full developer documentation lives in [`docs/`](docs/):
 
-```jsonc
-{
-  "scan_date": "2026-04-19T10:30:00",
-  "total_targets": 5,
-  "total_integration_hours": 28.9,
-  "targets": [
-    {
-      "target_id": 1,
-      "objects": ["Eta Carinae"],
-      "center_ra_deg": 161.26,
-      "center_dec_deg": -59.68,
-      "center_l_deg": 287.60,
-      "center_b_deg": -0.63,
-      "fov_arcmin": [120.0, 90.0],
-      "pix_arcsec": 1.5,
-      "corners_icrs":     [[ra,dec], [ra,dec], [ra,dec], [ra,dec]],
-      "corners_galactic": [[l,b],    [l,b],    [l,b],    [l,b]   ],
-      "telescopes": ["RedCat 51"],
-      "cameras": ["ZWO ASI2600MM Pro"],
-      "date_range": ["2025-01-01", "2025-12-31"],
-      "filters": {
-        "Ha":  {"total_hours": 3.2, "files": 12},
-        "OIII":{"total_hours": 1.4, "files": 6}
-      },
-      "master_files": ["/path/to/master_H.fit"]
-    }
-  ]
-}
-```
-
-Corner order for `corners_icrs`: `[SW, NW, NE, SE]` (the frontend places the filter badge on the NW corner and rotates it with the FOV).
-
-See `scripts/make_demo_manifest.py` for a runnable example.
-
-## API
-
-| Endpoint                                 | Purpose                                   |
-|------------------------------------------|-------------------------------------------|
-| `GET /`                                  | Frontend HTML                             |
-| `GET /api/manifest`                      | Slim manifest JSON                        |
-| `GET /api/target/<id>`                   | Full target detail                        |
-| `GET /api/catalogs`                      | Overlay catalogs                          |
-| `GET /api/observability?lat=&lon=&time=` | Altaz for every target                    |
-| `GET /api/export/priority`               | CSV of Ha-but-no-SII candidates           |
-| `GET  /api/gear`                         | Current gear (telescopes + cameras)       |
-| `POST /api/gear`                         | Persist gear edits                        |
-| `POST /api/gear/seed`                    | Merge manifest-derived gear into gear.json|
-| `GET  /api/plans`, `POST`, `PUT`, `DELETE` | CRUD for session plans                  |
-| `GET  /api/ts-templates`                 | TS plugin's exposure templates (if installed) |
-| `POST /api/sync`                         | Build NINA Target Scheduler import zip    |
-
-## Extensions
-
-Coverage planning often needs to reach into something ACP doesn't ship — a friend's shared FOV list, a club's target catalog, a small SQLite DB you keep alongside your archive. Rather than fork the app, drop a Python module into a known directory and ACP will load it at startup.
-
-**Where they go.** `ACP_EXTENSIONS_DIR`, defaulting to `%APPDATA%\acp\extensions` on Windows and `~/.config/acp/extensions` elsewhere. Each entry is either a single `.py` file or a package directory.
-
-**The contract.** Each extension defines a top-level `register(app)` callable that receives the Flask app. From there you can register blueprints, add routes, read `app.config`, attach teardown hooks — anything Flask supports. Extensions are loaded once at startup; failures in one are logged and don't block the others or the app itself.
-
-**Example — expose a friend's shared FOV list as CSV.** Save as `friend_fovs.py` in your extensions dir:
-
-```python
-import json, csv, io
-from pathlib import Path
-from flask import Blueprint, Response
-
-bp = Blueprint("friend_fovs", __name__)
-SHARED = Path.home() / "shared" / "friend_fovs.json"
-
-@bp.route("/api/ext/friend-fovs.csv")
-def friend_fovs_csv():
-    rows = json.loads(SHARED.read_text())
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=["name", "ra", "dec", "fov_arcmin"])
-    w.writeheader()
-    w.writerows(rows)
-    return Response(buf.getvalue(), mimetype="text/csv")
-
-def register(app):
-    app.register_blueprint(bp)
-```
-
-Drop the file in, restart, hit `http://127.0.0.1:5555/api/ext/friend-fovs.csv`.
-
-**Trust.** Extensions run in-process as your user with no sandbox, so only load code you've read or written yourself.
-
-**Failures.** Load and registration errors are logged via Python's `logging` under the `acp.extensions` logger — check there if an extension silently doesn't show up.
-
-## Sharing coverage with friends
-
-Planning narrowband sessions is easier when you can see your imaging buddies' coverage gaps next to your own — split the sky, agree who's chasing OIII on a given target, avoid duplicating Ha hours someone else already has stacked. ACP can load any number of *sanitised* friend manifests as additional toggleable layers in the Sources rail.
-
-**What gets stripped vs kept.** The sanitiser rebuilds the manifest from a small whitelist:
-
-- **Stripped:** `master_files` arrays, all on-disk paths, telescope/camera serials and exact model strings, exact dates (truncated to month), per-frame file lists, `scan_roots`, anything else that fingerprints the imager's setup.
-- **Kept:** polygon footprints (`corners_icrs`), per-filter integration hours (rounded to 0.1h), aperture-class telescope info (e.g. `"110mm refractor"`), public catalog target names (`"M 42"`, `"Eta Carinae"`), month of last activity.
-- **Tripwire:** the loader refuses any file missing `"sanitised": true` so you can't accidentally share an unsanitised manifest.
-
-**How to produce one.** Two paths:
-
-```bash
-# Option A: re-run the scanner with --sanitise alongside the regular write
-python scripts/build_archive_manifest.py --sanitise dave_to_share.json --label "Dave"
-
-# Option B: sanitise an existing manifest in place
-python scripts/sanitise_manifest.py data/manifest.json dave_to_share.json --label "Dave"
-```
-
-Inspect the output before sending — it's plain JSON.
-
-**How to consume one.** Point `ACP_FRIEND_MANIFESTS` at a semicolon-separated list of paths before launching:
-
-```bash
-# Linux/macOS
-ACP_FRIEND_MANIFESTS="/path/to/dave.json;/path/to/sara.json" python app.py
-
-# Windows PowerShell
-$env:ACP_FRIEND_MANIFESTS = "C:\shared\dave.json;C:\shared\sara.json"
-python app.py
-```
-
-Each manifest becomes its own toggleable layer in the **Sources** rail with a distinct color from the palette.
-
-**Failure modes.** Rejected manifests log a `WARNING` to Python's `logging` channel and are skipped; other friends still load and the app still starts. Hard caps applied during validation: 10,000 targets, 64 polygons per target, 64 vertices per polygon.
-
-## Public surveys
-
-ACP can pull public-survey footprints (IPHAS, VPHAS+, etc.) from CDS as MOCs and overlay them on the map alongside your own coverage. Useful for spotting where a survey already has Hα coverage so you can prioritise the gaps. Ships with one survey wired up; adding more is a one-line PR to `data/surveys.json`.
-
-**What ships out of the box.** IPHAS DR2 Hα (northern Galactic plane). Toggleable in the **Sources** rail, off by default.
-
-**Adding a survey.** Append an entry to `data/surveys.json`:
-
-```json
-{
-  "id": "vphas_ha",
-  "label": "VPHAS+ Hα",
-  "color": "#5b9bc2",
-  "filter": "Ha",
-  "moc_url": "https://alasky.cds.unistra.fr/...",
-  "attribution": "VPHAS+ DR4 (Drew et al. 2014)",
-  "enabled_default": false
-}
-```
-
-The loader enforces an HTTPS-only hostname allowlist (currently `alasky.cds.unistra.fr` and `alasky.u-strasbg.fr`). Adding other CDS mirrors or other survey hosts means editing the allowlist constant in `app.py` — flag this as the right place to push back in PR review.
-
-**How fetching works.** Lazy on first `/api/moc/<id>` hit. Cached at `data/moc_cache/<id>.fits` with a 30-day TTL and content-hash invalidation. Subsequent toggles re-use the cache.
-
-**Hard limits enforced.** 10MB per MOC, 30s fetch timeout, response must parse as a FITS MOC via `mocpy` before being cached, otherwise `502`.
-
-**Without `mocpy`.** ACP runs fine. Sources still appear in the rail but `/api/moc/<id>` returns `503`. `pip install mocpy` to enable.
-
-**`ACP_SURVEYS_PATH`.** Point at a custom JSON file to override the bundled registry — handy for testing or per-machine survey curation.
-
-## Finding coverage gaps
-
-When planning narrowband sessions you usually want to know where one filter has been imaged but another hasn't yet — so a follow-up session adds new data instead of duplicating coverage. ACP unions every coverage source you've enabled (your manifest, friend manifests, public-survey MOCs), intersects that union with public catalog candidates, and gives you a CSV you can paste into NINA.
-
-The control lives in the **Catalogues** rail:
-
-- **Have** / **Missing** dropdowns — pick the two filters. Defaults to `Ha` and `SII`.
-- Two hour thresholds — `≥ N h` for the *have* side (a region only counts as covered if at least one source has stacked at least this many hours), `< N h` for the *missing* side. Defaults: `1.0` and `0.5`.
-- **Use sources** — checkbox per registered source. All checked by default.
-- **Find gaps** — fetches `/api/gaps`, mounts a yellow MOC over the gap region on the map, scatters catalog candidates that fall inside it, and writes a one-line summary (`sky 0.84% • 1808 candidates • from manifest, iphas_ha`) under the buttons. Click again to hide.
-
-Endpoints:
-
-```
-GET /api/gaps?have=Ha&missing=SII&sources=manifest,iphas_ha&min_have_hours=1&max_missing_hours=0.5
-GET /api/gaps/moc.fits?<same query>
-```
-
-The JSON response carries `gap_sky_fraction`, `candidates`, the resolved `have_sources` / `missing_sources` lists, any sources skipped (with reasons), and a `moc_url` pointing at the FITS MOC for the same query. The FITS endpoint serves raw bytes — useful if you'd rather load the gap into Aladin desktop or `mocpy` directly.
-
-The legacy `/api/export/priority` CSV route stays for back-compat — same shape and headers as before, hardcoded to "Ha but no SII over the manifest source only". The new gap-finder doesn't replace it; pick whichever fits your workflow.
-
-**Without `mocpy`.** `/api/gaps` and `/api/gaps/moc.fits` return `503` (MOC algebra is the whole point of the route). `/api/export/priority` still works — it falls back to the original inline implementation. `pip install mocpy` to enable the gap-finder UI.
-
-## Security notes
-
-- `app.py` binds to `127.0.0.1` by default. Only switch to `0.0.0.0` on a trusted LAN — the server has no authentication and exposes your manifest (including file paths) over HTTP.
-- The server is Flask's dev server. For anything beyond local use, front it with gunicorn/uwsgi behind a reverse proxy.
+- **[Installing on Windows / macOS / Linux](docs/install.md)** — zero-to-hero per-OS walkthroughs.
+- **[Setting up your own archive](docs/setup-archive.md)** — manifest builder, configuration variables, optional pipeline-DB integration, security and deployment notes.
+- **[API and manifest reference](docs/api.md)** — every endpoint, the manifest JSON schema, gap-finder details.
+- **[Extensions](docs/extensions.md)** — write Python plugins that register coverage sources, tile inventories, or catalogues against the protocols in `sources.py`.
+- **[Sharing coverage with friends](docs/sharing.md)** — sanitised friend manifests as additional coverage layers.
+- **[Public survey overlays](docs/public-surveys.md)** — wiring more CDS-hosted surveys into the Sources rail.
 
 ## License
 
