@@ -76,12 +76,13 @@ Once they're there, anywhere with a terminal:
     source .venv/bin/activate            # macOS/Linux
     .venv\Scripts\activate               # Windows PowerShell
     pip install -r requirements.txt
-    python scripts/make_demo_manifest.py
     python app.py
 
-Open <http://127.0.0.1:5555/> in your browser. You'll see the demo coverage map with five well-known southern-sky targets — enough to play with the viewer before pointing it at your own archive.
+Open <http://127.0.0.1:5555/> in your browser. The first thing you'll see is an empty sky map with a banner pointing you at step two: scan your archive.
 
-**Using your own FITS archive?** See [Setting up your own archive](docs/setup-archive.md) — covers the manifest builder, multiple image roots, configuration variables, and the optional pipeline-DB integration for sub-exposure hours.
+**Step two — point ACP at your FITS library.** See [Setting up your own archive](docs/setup-archive.md) — covers the manifest builder, multiple image roots, configuration variables, and the optional pipeline-DB integration for sub-exposure hours. Once it's built, refresh the page and your coverage will populate.
+
+> **Just want to look around first?** Run `python scripts/make_demo_manifest.py` to load five well-known southern-sky targets as sample data, then refresh.
 
 ### A note on NINA Target Scheduler sync
 

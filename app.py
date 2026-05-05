@@ -57,6 +57,16 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request
 
+# Reconfigure stdout/stderr to UTF-8 so non-ASCII characters in log/print
+# output don't crash on Windows where the default console codec (cp1252)
+# can't encode characters like em-dashes or arrows.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
 try:
     from mocpy import MOC  # noqa: F401
     _MOCPY_AVAILABLE = True
@@ -105,7 +115,7 @@ app.jinja_env.auto_reload = True
 
 if not CATALOGS_PATH.exists():
     print(
-        f"[acp] WARN: catalogs file not found at {CATALOGS_PATH} — "
+        f"[acp] WARN: catalogs file not found at {CATALOGS_PATH} -- "
         "right-rail catalog overlays (Green SNR / SMGPS / EMU / WISE HII) will be empty. "
         "Run scripts/fetch_catalogs.py to populate (network I/O, ~30s)."
     )
@@ -135,8 +145,8 @@ _catalog_registry_cache_mtime: float | None = None
 DEFAULT_SITES = {
     "version": 1,
     "sites": [
-        {"id": "sydney",   "name": "Sydney",        "lat": -33.87, "lon": 151.21, "elev_m": 20,  "min_alt_deg": 30},
-        {"id": "victoria", "name": "Victoria obs.", "lat": -37.50, "lon": 145.00, "elev_m": 700, "min_alt_deg": 30},
+        {"id": "mauna_kea",  "name": "Mauna Kea, Hawaii",   "lat":  19.82, "lon": -155.47, "elev_m": 4205, "min_alt_deg": 30},
+        {"id": "paranal",    "name": "Cerro Paranal, Chile", "lat": -24.63, "lon":  -70.40, "elev_m": 2635, "min_alt_deg": 30},
     ],
 }
 
@@ -1352,9 +1362,9 @@ def api_observability():
     except Exception as e:
         return jsonify({"error": f"astropy not available: {e}"}), 500
 
-    lat = _clamped_float("lat", -33.87, -90.0, 90.0)
-    lon = _clamped_float("lon", 151.21, -180.0, 180.0)
-    height = _clamped_float("height", 20.0, -430.0, 9000.0)
+    lat = _clamped_float("lat", 19.82, -90.0, 90.0)
+    lon = _clamped_float("lon", -155.47, -180.0, 180.0)
+    height = _clamped_float("height", 4205.0, -430.0, 9000.0)
     iso = request.args.get("time") or datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
     try:
@@ -1505,8 +1515,8 @@ def _resolve_site_from_request() -> tuple[dict, tuple[Response, int] | None]:
         }, None
     return {
         "id": None,
-        "lat": _clamped_float("lat", -33.87, -90.0, 90.0),
-        "lon": _clamped_float("lon", 151.21, -180.0, 180.0),
+        "lat": _clamped_float("lat", 19.82, -90.0, 90.0),
+        "lon": _clamped_float("lon", -155.47, -180.0, 180.0),
         "elev_m": _clamped_float("elev_m", 0.0, -430.0, 9000.0),
         "min_alt_deg": _clamped_float("min_alt_deg", 30.0, 0.0, 90.0),
     }, None
@@ -2516,5 +2526,5 @@ def api_sync():
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", 5555))
-    print(f"Astro Coverage Planner → http://{host}:{port}")
+    print(f"Astro Coverage Planner -> http://{host}:{port}")
     app.run(host=host, port=port, debug=False)

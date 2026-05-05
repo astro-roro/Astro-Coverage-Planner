@@ -49,6 +49,24 @@
     <div id="aladin-lite-div"></div>
     <div id="catTooltip" class="cat-tooltip" hidden></div>
 
+    <div id="onboardingBanner" class="onboarding-banner" hidden>
+      <div class="onboarding-banner-inner">
+        <h2>Welcome to Astro Coverage Planner</h2>
+        <p>You don't have a manifest yet — your imaging archive will appear here once you build one.</p>
+        <p class="onboarding-step">
+          <strong>Next step:</strong> point ACP at your FITS/XISF library. See the
+          <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">archive setup guide</a>
+          for the manifest builder. Once it's done, refresh this page.
+        </p>
+        <p class="onboarding-demo">
+          Just want to look around? Run
+          <code>python scripts/make_demo_manifest.py</code>
+          to load sample data, then refresh.
+        </p>
+        <button type="button" id="onboardingDismiss" class="onboarding-dismiss" aria-label="Dismiss welcome message">Dismiss</button>
+      </div>
+    </div>
+
     <aside id="sidePanel" class="panel">
       <details id="railFilters" class="rail-accordion filters" open>
         <summary>Filters</summary>
