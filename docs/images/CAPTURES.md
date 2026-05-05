@@ -28,9 +28,21 @@ End-to-end planning demo: Planning tab → + New plan → click sky → pick tel
 
 ## Already captured
 
+### `hero-movie.mp4` ✓
+
+Hero video, top of README. ~15s screen capture of dragging and zooming around the all-sky map with FOV polygons covering the southern Milky Way. Mellinger optical background. Captured at 3831×1690 as a 398MB GIF, then re-encoded to H.264 MP4 (1600px wide, CRF 23, yuv420p, faststart) at **7.4MB** — sub-percent of the original. Embedded in the README via `<video autoplay loop muted playsinline>` with the static hero PNG as `poster` for autoplay-blocked viewers. Captured 2026-05-05.
+
+Re-encode recipe (if ever needed):
+
+```bash
+ffmpeg -i source.gif -vf "scale=1600:-2:flags=lanczos" \
+       -c:v libx264 -preset slow -crf 23 -pix_fmt yuv420p \
+       -movflags +faststart hero-movie.mp4
+```
+
 ### `hero-coverage-map.png` ✓
 
-Hero shot, top of README. Mellinger optical background, Aitoff projection, equatorial, no selected target. Resized to 1600px wide. Captured 2026-05-05.
+Static hero shot — now serves as the **poster fallback** for the hero video (shown to readers whose browser blocks autoplay, and during the brief moment before the MP4 starts streaming). Mellinger optical background, Aitoff projection, equatorial, no selected target. Resized to 1600px wide. Captured 2026-05-05.
 
 ## Optional / future
 
