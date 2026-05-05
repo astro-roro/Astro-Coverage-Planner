@@ -8,15 +8,13 @@ frontend:
       "green_snrs":       [ {name, ra_deg, dec_deg, l_deg, b_deg, type?}, ... ],
       "anderson_hii":     [ {name, ra_deg, dec_deg, l_deg, b_deg, type}, ... ],
       "smgps_candidates": [ ... ],
-      "emu_candidates":   [ ... ],
     }
 
 Sources:
 - Green 2019 SNR catalogue via Vizier ``VII/284`` (294 Galactic SNRs).
 - Anderson 2014 WISE HII catalogue via Vizier ``J/ApJS/212/1`` (8,399 entries).
-- SMGPS / EMU candidates: best-effort Vizier lookup — if not yet published on
-  Vizier, we leave the bucket empty and log a note. Phase 3 can drop a manual
-  CSV into webapp/static/data/ later.
+- SMGPS candidates: best-effort Vizier lookup — if not yet published on Vizier
+  we leave the bucket empty and log a note.
 - Messier objects (110): hardcoded J2000 — small, stable, avoids network dep.
 - Sharpless 2 HII via Vizier ``VII/20`` (313 entries, galactic coords).
 - Strasbourg-ESO PNe via Vizier ``V/84`` table 0 (1,143 entries; covers Abell
@@ -336,29 +334,11 @@ def main() -> None:
             pass
     cats["smgps_candidates"] = smgps
 
-    # EMU Ball et al. SNR candidates — not currently mirrored in VizieR under
-    # any obvious paper-ID we could find. Tried the IDs below; if any future
-    # publication lands on VizieR with a recognisable column shape, add it
-    # to the list and the first match wins.
-    emu = []
-    emu_ids_tried = (
-        "J/MNRAS/518/1273", "J/MNRAS/535/4250", "J/PASA/42/e005",
-        "J/MNRAS/500/2493", "J/PASA/41/e003", "J/MNRAS/524/L43",
-    )
-    for cid in emu_ids_tried:
-        try:
-            found = fetch_optional(cid, "Name")
-            if found:
-                emu = found
-                print(f"  emu_candidates: matched {cid} ({len(found)})", flush=True)
-                break
-        except Exception:
-            pass
-    if not emu:
-        print(f"  emu_candidates: 0 matched (tried {len(emu_ids_tried)} VizieR IDs); "
-              "drop a manual JSON at data/catalogs.json::emu_candidates if you have one",
-              flush=True)
-    cats["emu_candidates"] = emu
+    # EMU Ball et al. SNR candidates were tried here historically but the
+    # catalogue isn't mirrored in VizieR under any paper-ID we could find
+    # (six candidates probed, none matched). If a future publication lands
+    # on VizieR, restore the loop pattern used for SMGPS above and re-add
+    # the registry entry in data/catalog_registry.json.
 
     # Each in its own try so one VizieR hiccup doesn't take out the others.
     try:
