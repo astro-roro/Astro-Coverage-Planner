@@ -10,9 +10,15 @@ Endpoints:
 - GET /api/manifest              slim manifest (no large path lists)
 - GET /api/target/<id>           full per-target detail
 - GET /api/catalogs              optional overlay catalogs
+- GET /api/catalog-registry      declarative list of catalogues to surface in the rail
+- GET /api/tile-sources          metadata for every registered PrioritisedTilesSource
+- GET /api/tiles/<source_id>     tile list for one source (filtered server-side optionally)
 - GET /api/sources               list of registered coverage sources
 - GET /api/moc/<source_id>       FITS MOC blob for a survey source (lazy-fetched, cached)
 - GET /api/observability         altaz for all targets at (lat, lon, time)
+- GET /api/visibility            12-month per-target visibility bins for a site
+- GET /api/visibility/point      same bins for an arbitrary (ra, dec) point
+- GET /api/sites, POST           CRUD for saved observing sites
 - GET /api/export/priority       CSV of gap-mode candidates
 - GET /api/gaps                  multi-source gap-finder (JSON)
 - GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
@@ -66,6 +72,7 @@ MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manif
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
 TARGET_OVERRIDES_PATH = Path(os.environ.get(
     "TARGET_OVERRIDES_PATH", REPO_ROOT / "data" / "target_overrides.json"))
 TS_DB_PATH = os.environ.get(
@@ -74,6 +81,8 @@ TS_DB_PATH = os.environ.get(
 )
 ZIP_OUTPUT_DIR = Path(os.environ.get("ZIP_OUTPUT_DIR", REPO_ROOT / "data" / "exports"))
 SURVEYS_PATH = Path(os.environ.get("ACP_SURVEYS_PATH", REPO_ROOT / "data" / "surveys.json"))
+CATALOG_REGISTRY_PATH = Path(os.environ.get(
+    "ACP_CATALOG_REGISTRY", REPO_ROOT / "data" / "catalog_registry.json"))
 MOC_CACHE_DIR = Path(os.environ.get("ACP_MOC_CACHE_DIR", REPO_ROOT / "data" / "moc_cache"))
 
 # Hostname allowlist for MOC fetches. Both entries point at the same CDS
@@ -107,6 +116,23 @@ _plans_cache: dict | None = None
 _plans_cache_mtime: float | None = None
 _target_overrides_cache: dict | None = None
 _target_overrides_cache_mtime: float | None = None
+_sites_cache: dict | None = None
+_sites_cache_mtime: float | None = None
+# Per-(site, manifest, year) cache of computed visibility bins. Visibility is
+# essentially constant year-to-year (sun barycentric position is fixed
+# relative to RA/Dec) so a one-shot compute per site is fine, and the entry
+# is invalidated implicitly when the manifest mtime ticks over.
+_visibility_cache: dict[tuple, dict] = {}
+_catalog_registry_cache: dict | None = None
+_catalog_registry_cache_mtime: float | None = None
+
+DEFAULT_SITES = {
+    "version": 1,
+    "sites": [
+        {"id": "sydney",   "name": "Sydney",        "lat": -33.87, "lon": 151.21, "elev_m": 20,  "min_alt_deg": 30},
+        {"id": "victoria", "name": "Victoria obs.", "lat": -37.50, "lon": 145.00, "elev_m": 700, "min_alt_deg": 30},
+    ],
+}
 
 
 def load_manifest() -> dict | None:
@@ -180,6 +206,43 @@ def save_target_overrides(data: dict) -> None:
     TARGET_OVERRIDES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _target_overrides_cache = data
     _target_overrides_cache_mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
+
+
+def load_sites() -> dict:
+    global _sites_cache, _sites_cache_mtime
+    if not SITES_PATH.exists():
+        return json.loads(json.dumps(DEFAULT_SITES))
+    mtime = SITES_PATH.stat().st_mtime
+    if _sites_cache is None or _sites_cache_mtime != mtime:
+        _sites_cache = json.loads(SITES_PATH.read_text(encoding="utf-8"))
+        _sites_cache_mtime = mtime
+    return _sites_cache
+
+
+def save_sites(data: dict) -> None:
+    global _sites_cache, _sites_cache_mtime
+    SITES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SITES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _sites_cache = data
+    _sites_cache_mtime = SITES_PATH.stat().st_mtime
+
+
+def load_catalog_registry() -> dict:
+    """Load the declarative catalogue registry.
+
+    Returns the file's contents (cached on mtime) or an empty registry if
+    the file is absent. Out-of-tree code injecting catalogues at runtime
+    (see `app.extra_catalogues`) is merged on top by api_catalog_registry.
+    """
+    global _catalog_registry_cache, _catalog_registry_cache_mtime
+    if not CATALOG_REGISTRY_PATH.exists():
+        return {"version": 1, "catalogues": []}
+    mtime = CATALOG_REGISTRY_PATH.stat().st_mtime
+    if _catalog_registry_cache is None or _catalog_registry_cache_mtime != mtime:
+        _catalog_registry_cache = json.loads(
+            CATALOG_REGISTRY_PATH.read_text(encoding="utf-8"))
+        _catalog_registry_cache_mtime = mtime
+    return _catalog_registry_cache
 
 
 class JsonManifestSource:
@@ -578,6 +641,16 @@ def _validate_friend_manifest(data: object, source_label: str) -> None:
 # list inside their `register(app)` body; the built-in manifest source ships
 # pre-registered so a stock checkout always exposes one entry on /api/sources.
 app.coverage_sources = [ManifestCoverageSource()]
+# Out-of-tree extensions can append catalogue registry entries here at
+# `register(app)` time. Same shape as `data/catalog_registry.json` entries.
+# Defaults to an empty list — extensions add to it, never replace it.
+app.extra_catalogues: list[dict] = []
+# PrioritisedTilesSource registry. Empty by default; extensions append via
+# `app.tile_sources.append(...)` in their register() callback. Each source
+# implements the Protocol declared in sources.py.
+app.tile_sources: list = []
+# CategorisedCatalogSource registry. Same registration pattern as above.
+app.catalog_sources: list = []
 
 
 # Friend manifests — semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -923,7 +996,202 @@ def api_target(target_id: int):
 
 @app.route("/api/catalogs")
 def api_catalogs():
-    return jsonify(load_catalogs())
+    """Marker data for every catalogue surfaced in the rail.
+
+    Two contributors merged at request time:
+      - file-loaded entries from `data/catalogs.json` (populated by
+        scripts/fetch_catalogs.py); keyed by the registry's `data_key`,
+      - `app.catalog_sources` (extension-registered Protocols); keyed by
+        the source's `id()`. Each object is a dict with at least
+        `name`, `ra_deg`, `dec_deg`, plus optional `category` + extras.
+    """
+    out = dict(load_catalogs() or {})
+    for src in (getattr(app, "catalog_sources", []) or []):
+        try:
+            src_id = src.id()
+        except Exception as exc:
+            logging.warning("catalog source missing id(): %s", exc)
+            continue
+        try:
+            objs = list(src.objects() or [])
+        except Exception as exc:
+            logging.warning("catalog source %r objects() raised: %s", src_id, exc)
+            continue
+        # Out-of-tree sources win on key collisions — same precedence as the
+        # registry merge — so an extension can deliberately override a
+        # file-loaded catalogue with a richer per-class build.
+        out[src_id] = objs
+    return jsonify(out)
+
+
+def _entry_from_catalog_source(src) -> dict | None:
+    """Auto-generate a registry entry for a CategorisedCatalogSource."""
+    try:
+        sid = src.id()
+        meta = src.metadata() or {}
+    except Exception as exc:
+        logging.warning("catalog source missing id/metadata: %s", exc)
+        return None
+    if not isinstance(sid, str) or not sid:
+        return None
+    cats: list = []
+    if hasattr(src, "categories"):
+        try:
+            cats = list(src.categories() or [])
+        except Exception as exc:
+            logging.warning("catalog source %r categories() raised: %s", sid, exc)
+    return {
+        "id": sid,
+        "data_key": sid,
+        "label": meta.get("label") or sid,
+        "color": meta.get("color") or "#888",
+        "marker": meta.get("marker") or "circle",
+        "size": int(meta.get("size") or 10),
+        "attribution": meta.get("attribution") or "",
+        "enabled_default": bool(meta.get("enabled_default")),
+        "categories": cats,
+    }
+
+
+# --- Tile sources (Plan 4) -----------------------------------------------
+# A "tile source" is anything implementing sources.PrioritisedTilesSource —
+# a curated, ranked list of sky cells with per-band coverage. In-tree code
+# does not ship one; out-of-tree extensions register via
+# `app.tile_sources.append(...)`. The Inventory rail surfaces whichever
+# are present at request time.
+
+def _tile_completion(tile: dict) -> float:
+    """Fraction of declared bands marked covered. 0.0 if no per-band data."""
+    pb = tile.get("per_band") or {}
+    if not pb:
+        return 0.0
+    n = len(pb)
+    n_covered = sum(1 for v in pb.values()
+                    if isinstance(v, dict) and v.get("covered"))
+    return (n_covered / n) if n else 0.0
+
+
+def _summarise_tile_source(src) -> dict:
+    """Probe a tile source for the metadata the Inventory rail needs.
+
+    Walks the tiles once to derive `n_tiles`, `max_priority_level`, and
+    union sets for `categories` + `bands`. Sources with very large tile
+    lists may want to override these via dedicated methods later, but the
+    walk is fast (a few thousand tiles ≈ 10 ms).
+    """
+    try:
+        sid = src.id()
+        meta = src.metadata() or {}
+    except Exception as exc:
+        logging.warning("tile source missing id/metadata: %s", exc)
+        return {}
+    n = 0
+    max_pri = 0
+    cats: set[str] = set()
+    bands: set[str] = set()
+    try:
+        for tile in src.tiles() or []:
+            n += 1
+            if isinstance(tile.get("priority_level"), int) and tile["priority_level"] > max_pri:
+                max_pri = tile["priority_level"]
+            for k in (tile.get("category_counts") or {}).keys():
+                if isinstance(k, str):
+                    cats.add(k)
+            for k in (tile.get("per_band") or {}).keys():
+                if isinstance(k, str):
+                    bands.add(k)
+    except Exception as exc:
+        logging.warning("tile source %r tiles() raised during summary: %s", sid, exc)
+    return {
+        "id": sid,
+        "label": meta.get("label") or sid,
+        "color": meta.get("color") or "",
+        "attribution": meta.get("attribution") or "",
+        "enabled_default": bool(meta.get("enabled_default")),
+        "n_tiles": n,
+        "max_priority_level": max_pri,
+        "categories": sorted(cats),
+        "bands": sorted(bands),
+    }
+
+
+@app.route("/api/tile-sources")
+def api_tile_sources():
+    """List metadata for every registered PrioritisedTilesSource.
+
+    Frontend renders the Inventory rail only when this returns at least
+    one source. Each entry includes summary stats (n_tiles, max priority,
+    available categories + bands) so the rail can build filter chips
+    without a second request.
+    """
+    out = []
+    for src in (getattr(app, "tile_sources", []) or []):
+        summary = _summarise_tile_source(src)
+        if summary:
+            out.append(summary)
+    return jsonify({"sources": out})
+
+
+@app.route("/api/tiles/<source_id>")
+def api_tiles(source_id: str):
+    """Return all tiles for one source.
+
+    No server-side filtering for v1 — payloads are small enough (~100KB
+    for a few thousand tiles) that the frontend can filter live as the
+    user toggles chips. Add `?priority=1,2&missing=Ha,SII` later if a
+    payload grows past comfort.
+    """
+    src = next(
+        (s for s in (getattr(app, "tile_sources", []) or [])
+         if hasattr(s, "id") and s.id() == source_id),
+        None,
+    )
+    if src is None:
+        return jsonify({"error": f"unknown tile source {source_id!r}"}), 404
+    tiles_out: list[dict] = []
+    try:
+        for tile in src.tiles() or []:
+            if not isinstance(tile, dict):
+                continue
+            tiles_out.append(tile)
+    except Exception as exc:
+        logging.warning("tile source %r tiles() raised: %s", source_id, exc)
+        return jsonify({"error": f"source raised: {exc}"}), 500
+    return jsonify({"id": source_id, "tiles": tiles_out})
+
+
+@app.route("/api/catalog-registry")
+def api_catalog_registry():
+    """Merged catalogue registry: extensions + file-loaded defaults.
+
+    Three contributors, in precedence order:
+      1. `app.catalog_sources` Protocols (extension-registered),
+      2. `app.extra_catalogues` dicts (extension-registered raw entries),
+      3. `data/catalog_registry.json` file entries.
+
+    Frontend uses this to render the Catalogues rail dynamically, so
+    adding a new catalogue is an extension append or a JSON edit rather
+    than a code change.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(entry: dict | None) -> None:
+        if not isinstance(entry, dict):
+            return
+        cid = entry.get("id")
+        if not isinstance(cid, str) or not cid or cid in seen:
+            return
+        seen.add(cid)
+        out.append(entry)
+
+    for src in (getattr(app, "catalog_sources", []) or []):
+        _add(_entry_from_catalog_source(src))
+    for entry in (app.extra_catalogues or []):
+        _add(entry)
+    for entry in load_catalog_registry().get("catalogues", []):
+        _add(entry)
+    return jsonify({"version": 1, "catalogues": out})
 
 
 @app.route("/api/sources")
@@ -1020,6 +1288,306 @@ def api_observability():
         for tg, alt, az in zip(m["targets"], altaz.alt.deg, altaz.az.deg)
     ]
     return jsonify({"lat": lat, "lon": lon, "time": iso, "targets": out})
+
+
+# --- Visibility (Plan A.3) ----------------------------------------------
+# Bin a (peak_alt, hours_above_min) pair into one of five labels. Highest-
+# quality gates run first; "fair" is the catch-all for "≥1h above min but
+# doesn't meet good/great". See planner-design memory for the locked rules.
+_VIS_LABELS = ("not_visible", "partial", "fair", "good", "great")
+
+
+def _bin_visibility(peak_alt_deg: float, hours_above_min: float, min_alt_deg: float) -> str:
+    if peak_alt_deg < min_alt_deg:
+        return "not_visible"
+    if hours_above_min < 1.0:
+        return "partial"
+    if peak_alt_deg >= 60.0 and hours_above_min >= 3.0:
+        return "great"
+    if peak_alt_deg >= 45.0 and hours_above_min >= 2.0:
+        return "good"
+    return "fair"
+
+
+def compute_year_visibility(
+    targets: list[dict],
+    *, lat: float, lon: float, elev_m: float, min_alt_deg: float,
+    year: int, sample_step_min: int = 15,
+) -> dict[int, list[dict]]:
+    """Return {target_id: [12 bins]} of visibility per month for the given site.
+
+    For each month we sample altitudes across a 24h window centred on the
+    15th at noon UTC, mask to astronomical-darkness times (sun alt < -18°),
+    and reduce per-target to peak alt + hours-above-min. The (peak, hours,
+    min) tuple feeds _bin_visibility for the label.
+
+    Vectorised: one AltAz transform per month for the (N×T) (target, time)
+    grid, then per-target reductions in numpy. ~1-3s for N≈70 targets.
+    """
+    from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_sun
+    from astropy.time import Time
+    import astropy.units as u
+    import numpy as np
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    out: dict[int, list[dict]] = {int(t["target_id"]): [] for t in targets}
+    if not targets:
+        return out
+
+    loc = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=elev_m * u.m)
+    ras = np.array([float(t["center_ra_deg"]) for t in targets])
+    decs = np.array([float(t["center_dec_deg"]) for t in targets])
+    ids = [int(t["target_id"]) for t in targets]
+    n_targets = len(ids)
+    samples_per_day = (24 * 60) // sample_step_min  # 96 at 15-min steps
+
+    for month in range(1, 13):
+        anchor = _dt(year, month, 15, 12, 0, 0, tzinfo=_tz.utc).replace(tzinfo=None)
+        times_dt = [anchor + _td(minutes=sample_step_min * i)
+                    for i in range(samples_per_day + 1)]
+        t_grid = Time(times_dt)
+        n_t = len(t_grid)
+
+        # Astronomical darkness mask via sun altitude.
+        sun_altaz = get_sun(t_grid).transform_to(
+            AltAz(obstime=t_grid, location=loc))
+        is_dark = sun_altaz.alt.deg < -18.0  # shape (T,)
+
+        if not bool(is_dark.any()):
+            for tid in ids:
+                out[tid].append({
+                    "month": month, "label": "not_visible",
+                    "peak_alt_deg": None, "hours_above_min": 0.0,
+                })
+            continue
+
+        # One big AltAz transformation: target i at time j.
+        ras_full = np.repeat(ras, n_t)
+        decs_full = np.repeat(decs, n_t)
+        times_full = Time(np.tile(t_grid.jd, n_targets), format="jd")
+        sc = SkyCoord(ras_full * u.deg, decs_full * u.deg)
+        alt_grid = sc.transform_to(
+            AltAz(obstime=times_full, location=loc)).alt.deg
+        alt_grid = alt_grid.reshape(n_targets, n_t)
+
+        for i, tid in enumerate(ids):
+            alts_dark = alt_grid[i, is_dark]
+            if alts_dark.size == 0:
+                out[tid].append({
+                    "month": month, "label": "not_visible",
+                    "peak_alt_deg": None, "hours_above_min": 0.0,
+                })
+                continue
+            peak = float(np.max(alts_dark))
+            hours = float(np.sum(alts_dark >= min_alt_deg)
+                          * sample_step_min / 60.0)
+            label = _bin_visibility(peak, hours, min_alt_deg)
+            out[tid].append({
+                "month": month, "label": label,
+                "peak_alt_deg": round(peak, 2),
+                "hours_above_min": round(hours, 2),
+            })
+
+    return out
+
+
+def _resolve_site_from_request() -> tuple[dict, tuple[Response, int] | None]:
+    """Resolve the site for a /api/visibility call.
+
+    Either `site_id=<id>` (looks up sites.json) or explicit lat/lon/elev_m/
+    min_alt_deg query params. Defaults match the existing /api/observability
+    fallback so behaviour stays predictable.
+    """
+    sid = request.args.get("site_id")
+    if sid:
+        sdata = next(
+            (s for s in load_sites().get("sites", []) if s.get("id") == sid),
+            None,
+        )
+        if not sdata:
+            return {}, (jsonify({"error": f"unknown site_id {sid!r}"}), 404)
+        return {
+            "id": sid,
+            "lat": float(sdata["lat"]),
+            "lon": float(sdata["lon"]),
+            "elev_m": float(sdata.get("elev_m") or 0.0),
+            "min_alt_deg": float(sdata.get("min_alt_deg") or 30.0),
+        }, None
+    return {
+        "id": None,
+        "lat": _clamped_float("lat", -33.87, -90.0, 90.0),
+        "lon": _clamped_float("lon", 151.21, -180.0, 180.0),
+        "elev_m": _clamped_float("elev_m", 0.0, -430.0, 9000.0),
+        "min_alt_deg": _clamped_float("min_alt_deg", 30.0, 0.0, 90.0),
+    }, None
+
+
+@app.route("/api/visibility/point")
+def api_visibility_point():
+    """Visibility bins for one arbitrary (ra_deg, dec_deg) point.
+
+    Same compute as /api/visibility but the "target list" is a single
+    synthesised point, so callers (e.g. the Inventory tile-detail panel)
+    can show year-curves for cells that aren't in the manifest.
+    """
+    try:
+        import astropy  # noqa: F401  - presence check only
+    except Exception as e:
+        return jsonify({"error": f"astropy not available: {e}"}), 500
+    site, err = _resolve_site_from_request()
+    if err is not None:
+        return err
+    try:
+        ra = float(request.args.get("ra"))
+        dec = float(request.args.get("dec"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "ra and dec required (decimal degrees)"}), 400
+    if not (-360.0 <= ra <= 360.0) or not (-90.0 <= dec <= 90.0):
+        return jsonify({"error": "ra/dec out of range"}), 400
+    try:
+        year = int(request.args.get("year") or datetime.now(timezone.utc).year)
+    except ValueError:
+        return jsonify({"error": "year must be an integer"}), 400
+    if not (1900 <= year <= 2200):
+        return jsonify({"error": "year out of range"}), 400
+
+    # Cache by (site, ra, dec, year). Manifest mtime is irrelevant here since
+    # the point is supplied directly, not looked up in the manifest.
+    cache_key = (
+        round(site["lat"], 4), round(site["lon"], 4),
+        round(site["min_alt_deg"], 2),
+        round(ra, 4), round(dec, 4), year,
+    )
+    bins = _visibility_cache.get(cache_key)
+    if bins is None:
+        bins = compute_year_visibility(
+            [{"target_id": 0, "center_ra_deg": ra, "center_dec_deg": dec}],
+            lat=site["lat"], lon=site["lon"], elev_m=site["elev_m"],
+            min_alt_deg=site["min_alt_deg"], year=year,
+        )
+        _visibility_cache[cache_key] = bins
+    return jsonify({
+        "site": site,
+        "year": year,
+        "labels": list(_VIS_LABELS),
+        "ra_deg": ra,
+        "dec_deg": dec,
+        "months": bins.get(0, []),
+    })
+
+
+@app.route("/api/visibility")
+def api_visibility():
+    try:
+        import astropy  # noqa: F401  - presence check only
+    except Exception as e:
+        return jsonify({"error": f"astropy not available: {e}"}), 500
+
+    site, err = _resolve_site_from_request()
+    if err is not None:
+        return err
+
+    m = load_manifest()
+    if m is None:
+        return jsonify({"error": "manifest not found"}), 404
+
+    try:
+        year = int(request.args.get("year") or datetime.now(timezone.utc).year)
+    except ValueError:
+        return jsonify({"error": "year must be an integer"}), 400
+    if not (1900 <= year <= 2200):
+        return jsonify({"error": "year out of range"}), 400
+
+    # Cache only the bins (the expensive part). The site dict comes from
+    # the live request so site_id-based and lat/lon-based calls with the
+    # same coords don't pollute each other's metadata.
+    cache_key = (
+        round(site["lat"], 4), round(site["lon"], 4),
+        round(site["min_alt_deg"], 2),
+        _manifest_cache_mtime or 0.0, year,
+    )
+    bins = _visibility_cache.get(cache_key)
+    if bins is None:
+        targets = m.get("targets") or []
+        bins = compute_year_visibility(
+            targets,
+            lat=site["lat"], lon=site["lon"], elev_m=site["elev_m"],
+            min_alt_deg=site["min_alt_deg"], year=year,
+        )
+        _visibility_cache[cache_key] = bins
+    return jsonify({
+        "site": site,
+        "year": year,
+        "labels": list(_VIS_LABELS),
+        "targets": bins,
+    })
+
+
+def _validate_site(s: dict) -> str | None:
+    if not isinstance(s, dict):
+        return "site must be an object"
+    sid = s.get("id")
+    if not isinstance(sid, str) or not sid.strip():
+        return "id must be a non-empty string"
+    if not isinstance(s.get("name"), str) or not s["name"].strip():
+        return f"site {sid!r}: name must be a non-empty string"
+    try:
+        lat = float(s.get("lat"))
+        lon = float(s.get("lon"))
+    except (TypeError, ValueError):
+        return f"site {sid!r}: lat and lon must be numbers"
+    if not (-90.0 <= lat <= 90.0):
+        return f"site {sid!r}: lat out of range"
+    if not (-180.0 <= lon <= 180.0):
+        return f"site {sid!r}: lon out of range"
+    if "elev_m" in s and s["elev_m"] is not None:
+        try:
+            elev = float(s["elev_m"])
+        except (TypeError, ValueError):
+            return f"site {sid!r}: elev_m must be a number"
+        if not (-430.0 <= elev <= 9000.0):
+            return f"site {sid!r}: elev_m out of range"
+    if "min_alt_deg" in s and s["min_alt_deg"] is not None:
+        try:
+            ma = float(s["min_alt_deg"])
+        except (TypeError, ValueError):
+            return f"site {sid!r}: min_alt_deg must be a number"
+        if not (0.0 <= ma <= 90.0):
+            return f"site {sid!r}: min_alt_deg out of range"
+    return None
+
+
+@app.route("/api/sites", methods=["GET", "POST"])
+def api_sites():
+    if request.method == "GET":
+        return jsonify(load_sites())
+    payload = request.get_json(silent=True) or {}
+    sites = payload.get("sites")
+    if not isinstance(sites, list) or not sites:
+        return jsonify({"error": "sites array required and must be non-empty"}), 400
+    seen_ids: set[str] = set()
+    cleaned: list[dict] = []
+    for s in sites:
+        err = _validate_site(s)
+        if err:
+            return jsonify({"error": err}), 400
+        sid = s["id"].strip()
+        if sid in seen_ids:
+            return jsonify({"error": f"duplicate site id {sid!r}"}), 400
+        seen_ids.add(sid)
+        out = {
+            "id": sid,
+            "name": s["name"].strip(),
+            "lat": float(s["lat"]),
+            "lon": float(s["lon"]),
+        }
+        if s.get("elev_m") is not None:
+            out["elev_m"] = float(s["elev_m"])
+        if s.get("min_alt_deg") is not None:
+            out["min_alt_deg"] = float(s["min_alt_deg"])
+        cleaned.append(out)
+    save_sites({"version": 1, "sites": cleaned})
+    return jsonify({"ok": True, "sites": cleaned})
 
 
 def _gaps_query_params() -> tuple[dict, tuple[Response, int] | None]:

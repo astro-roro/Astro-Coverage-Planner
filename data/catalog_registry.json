@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "catalogues": [
+    {
+      "id": "green",
+      "data_key": "green_snrs",
+      "label": "Green SNRs",
+      "color": "#ff3030",
+      "marker": "square",
+      "size": 12,
+      "attribution": "Green 2019 catalogue of confirmed Galactic SNRs",
+      "enabled_default": false
+    },
+    {
+      "id": "smgps",
+      "data_key": "smgps_candidates",
+      "label": "SMGPS cand.",
+      "color": "#ff9900",
+      "marker": "triangle",
+      "size": 10,
+      "attribution": "SARAO MeerKAT Galactic Plane Survey SNR candidates",
+      "enabled_default": false
+    },
+    {
+      "id": "emu",
+      "data_key": "emu_candidates",
+      "label": "EMU cand.",
+      "color": "#ffff33",
+      "marker": "plus",
+      "size": 10,
+      "attribution": "EMU survey SNR candidates",
+      "enabled_default": false
+    },
+    {
+      "id": "hii",
+      "data_key": "anderson_hii",
+      "label": "WISE HII",
+      "color": "#66cc66",
+      "marker": "circle",
+      "size": 8,
+      "attribution": "Anderson 2014 WISE HII region catalogue",
+      "enabled_default": false
+    },
+    {
+      "id": "messier",
+      "data_key": "messier",
+      "label": "Messier",
+      "color": "#5bd9ff",
+      "marker": "square",
+      "size": 12,
+      "attribution": "Messier catalogue (110 entries)",
+      "enabled_default": false
+    },
+    {
+      "id": "sharpless",
+      "data_key": "sharpless",
+      "label": "Sharpless HII",
+      "color": "#7be0a3",
+      "marker": "circle",
+      "size": 9,
+      "attribution": "Sharpless 2 catalogue of HII regions (VizieR VII/20)",
+      "enabled_default": false
+    },
+    {
+      "id": "eso_pne",
+      "data_key": "eso_pne",
+      "label": "ESO PNe",
+      "color": "#a070ff",
+      "marker": "triangle",
+      "size": 10,
+      "attribution": "Strasbourg-ESO catalogue of Galactic PNe (VizieR V/84)",
+      "enabled_default": false
+    }
+  ]
+}
