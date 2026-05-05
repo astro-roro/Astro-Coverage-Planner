@@ -22,16 +22,6 @@
       "enabled_default": false
     },
     {
-      "id": "emu",
-      "data_key": "emu_candidates",
-      "label": "EMU cand.",
-      "color": "#ffff33",
-      "marker": "plus",
-      "size": 10,
-      "attribution": "EMU survey SNR candidates",
-      "enabled_default": false
-    },
-    {
       "id": "hii",
       "data_key": "anderson_hii",
       "label": "WISE HII",

@@ -78,7 +78,7 @@ Point `PIPELINE_DB` at it before running the manifest builder and the per-target
 
 ## Optional: download catalogue overlays
 
-To enable the Green SNR, WISE HII, SMGPS, EMU, Messier, Sharpless, and ESO PNe overlays in the right rail:
+To enable the Green SNR, WISE HII, SMGPS, Messier, Sharpless, and ESO PNe overlays in the right rail:
 
     python scripts/fetch_catalogs.py
 
