@@ -2268,6 +2268,10 @@ function promotePlanFromTile(tile, sourceMeta) {
   const sourceLabel = sourceMeta?.label || "";
   const tileId = tile.id || "";
   p.target.name = [sourceLabel, tileId].filter(Boolean).join(" · ") || "From tile";
+  // Pre-fill project_name from the source label so the TS sync groups
+  // tile-derived plans under a meaningful project node instead of
+  // "Unassigned". User can override before saving.
+  if (sourceLabel && !p.project_name) p.project_name = sourceLabel;
   plans.push(p);
   renderPlanEditor(p);
 }

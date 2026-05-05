@@ -590,7 +590,10 @@ with _zf.ZipFile(body["zip_path"]) as zf:
     # sync-plan-a (1 panel) + sync-plan-b (2×2 = 4 panels) = 5 TS targets
     assert len(proj["Targets"]) == 5, [t["Name"] for t in proj["Targets"]]
     panel_names = [t["Name"] for t in proj["Targets"] if t["Name"].startswith("sync-plan-b")]
-    assert set(panel_names) == {"sync-plan-b r1c1", "sync-plan-b r1c2", "sync-plan-b r2c1", "sync-plan-b r2c2"}, panel_names
+    assert set(panel_names) == {
+        "sync-plan-b Panel 1 (R1C1)", "sync-plan-b Panel 2 (R1C2)",
+        "sync-plan-b Panel 3 (R2C1)", "sync-plan-b Panel 4 (R2C2)",
+    }, panel_names
     # Target Scheduler stores RA in HOURS
     assert abs(proj["Targets"][0]["RA"] - 161.26 / 15.0) < 1e-3
     assert proj["Targets"][0]["Epoch"] == 0   # J2000
