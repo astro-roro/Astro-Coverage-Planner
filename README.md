@@ -2,7 +2,7 @@
 
 **See what you've already imaged. Plan what's next. Hand it to NINA.**
 
-![Coverage map hero](docs/images/hero-coverage-map.png)
+https://github.com/user-attachments/assets/b5051d71-84d9-4fcb-97a4-4a469166d09c
 
 It's your astrophotography catalogue, visualised. ACP reads your entire FITS library and draws every field you've ever shot onto one sky map — coloured by telescope, badged by filter, with integration hours on every target. Useful from your first handful of targets and only gets more valuable as your library grows, especially if you're shooting narrowband or multi-night projects and want to see at a glance which targets are finished, which still owe you an OIII pass, and where your different rigs overlap. Plan your next session, next month, or next whole *year* in the same view — and export it straight to NINA Target Scheduler.
 
@@ -64,109 +64,30 @@ Toggle the Green 2019 SNR catalogue, SMGPS / EMU SNR candidates, WISE HII region
 
 Switch to **Planning mode** in the topbar. Click the sky to drop a target centre, pick telescope + camera (FOV box auto-derives from your gear), set per-filter target hours and sub-exposure. Doing a mosaic? Set rows × columns × overlap %, drag the rotation handle to align the panel grid. Solid borders mean data already logged; dashed borders mean not yet started. When the plan's ready, ACP can also sync it to NINA Target Scheduler so you're not re-typing targets.
 
-## Quickstart (demo data)
+## Get it running
 
-```bash
-pip install -r requirements.txt
-python scripts/make_demo_manifest.py       # writes data/manifest.json (demo)
-python app.py                              # http://127.0.0.1:5555
-```
+You need **Python 3.10+** and **git** installed. If you don't have them yet, follow the [zero-to-hero install guide](docs/install.md) first — separate Windows, macOS, and Linux walkthroughs included.
 
-Open `http://127.0.0.1:5555/` in your browser. The demo has five well-known southern-sky targets so you can see what the viewer does.
+Once they're there, anywhere with a terminal:
 
-## Full setup (your own FITS archive)
+    git clone https://github.com/astro-roro/Astro-Coverage-Planner.git
+    cd Astro-Coverage-Planner
+    python -m venv .venv
+    source .venv/bin/activate            # macOS/Linux
+    .venv\Scripts\activate               # Windows PowerShell
+    pip install -r requirements.txt
+    python scripts/make_demo_manifest.py
+    python app.py
 
-1. **Install dependencies.**
-   ```bash
-   pip install -r requirements.txt
-   ```
+Open <http://127.0.0.1:5555/> in your browser. You'll see the demo coverage map with five well-known southern-sky targets — enough to play with the viewer before pointing it at your own archive.
 
-2. **Build the manifest** from your FITS/XISF archive. Set `FITS_ROOTS` (one or more image roots, semicolon-separated) before running:
-   ```bash
-   FITS_ROOTS="D:/Astro/Images;E:/Archive" python scripts/build_archive_manifest.py
-   ```
-   On Windows PowerShell:
-   ```powershell
-   $env:FITS_ROOTS="D:/Astro/Images;E:/Archive"
-   python scripts/build_archive_manifest.py
-   ```
-   This walks the folder tree, opens every master FITS/XISF to read its WCS + gear headers (TELESCOP, INSTRUME, FOCALLEN, XPIXSZ, APTDIA, GAIN, OFFSET, XBINNING), clusters results into targets by sky position, and writes `data/manifest.json`. On a ~100k-file archive it takes ~5 minutes.
+**Using your own FITS archive?** See [Setting up your own archive](docs/setup-archive.md) — covers the manifest builder, multiple image roots, configuration variables, and the optional pipeline-DB integration for sub-exposure hours.
 
-3. **Launch the webapp.**
-   ```bash
-   python app.py
-   ```
-   The app hot-reloads on manifest mtime, so you can rebuild without restarting.
+### A note on NINA Target Scheduler sync
 
-4. **Open Planning mode → gear auto-seeds.** Switch to the "Planning" tab in the top bar. On first load, the planner scans your manifest and auto-imports every telescope + camera it finds (names, focal length, aperture, pixel size, sensor size, observed filters) into `data/gear.json`. Open the gear editor (pencil/"Edit gear" button in the plan editor) to review, fill in anything the headers didn't carry (e.g. `gain`/`offset` if your FITS didn't record them), and hit "Scan coverage" to re-merge later after rebuilding the manifest. The planner uses fuzzy name matching so "RedCat 51 APO" in your gear matches "RedCat 51" from a FITS header.
+ACP's coverage map, search, planner, and catalogues all run on Windows, macOS, and Linux. The **NINA Target Scheduler sync** feature is currently Windows-only — because NINA itself only runs on Windows. If you image from Mac or Linux but have a Windows box driving NINA, that works too: run ACP on whichever machine you like, and run the sync on the Windows side.
 
-5. **Plan a session.** Click "+ New plan", pick a target (by name or by clicking the sky), select telescope + camera, set filter goals and mosaic geometry if needed. Footprints update live on the map — solid borders for plans with data logged, dashed for not-yet-started. Border color matches the telescope you selected.
-
-6. **Sync to NINA Target Scheduler** (optional). Click "Sync" to export a TS plugin zip (metadata.json, profilePreference.json, exposureTemplates.json, projects.json) that imports directly into NINA. Mosaics expand to per-panel TS targets. See the Planner section below.
-
-### Multiple image roots / output path / pipeline DB
-
-The manifest builder takes its paths from env vars:
-
-| Env var         | Default                            | Purpose                                                 |
-|-----------------|------------------------------------|---------------------------------------------------------|
-| `FITS_ROOTS`    | hardcoded list at top of script    | Semicolon-separated list of image roots                 |
-| `MANIFEST_PATH` | `./data/manifest.json`             | Where to write (and where the webapp reads from)        |
-| `FULL_MASTERS`  | `./state/full_masters` (if exists) | Extra root of stacked masters                           |
-| `PIPELINE_DB`   | `./state/job_queue.db` (if exists) | Optional sqlite DB with `frames` table for sub-hours    |
-
-```bash
-FITS_ROOTS="D:/Astro/Images;E:/Archive" \
-MANIFEST_PATH=./data/custom_manifest.json \
-PIPELINE_DB=./my_pipeline.db \
-    python scripts/build_archive_manifest.py
-
-MANIFEST_PATH=./data/custom_manifest.json python app.py
-```
-
-The scanner expects one FITS/XISF file per master (stacked frame) with standard WCS keywords (CRVAL1/CRVAL2/CD1_1 etc. or CDELT1/CDELT2). Files classified as "sub" (unstacked individual exposures) are counted for hours but not plotted — only masters with WCS become FOV polygons.
-
-### Optional: sub-integration hours from a pipeline DB
-
-If you keep a SQLite DB tracking every captured sub-exposure with a `frames` table shaped like:
-
-```sql
-CREATE TABLE frames (
-    object_name  TEXT,
-    filter_name  TEXT,
-    exptime      REAL,      -- seconds
-    captured_at  TEXT,      -- ISO date
-    path         TEXT
-);
-```
-
-point `PIPELINE_DB` at it and the manifest will include per-target sub-hours (useful when you have far more subs captured than you've stacked). Without it, hours come solely from master headers (NCOMBINE × EXPTIME).
-
-## Configuration (env vars)
-
-| Var               | Default                                                     | Purpose                                              |
-|-------------------|-------------------------------------------------------------|------------------------------------------------------|
-| `MANIFEST_PATH`   | `./data/manifest.json`                                      | Path to manifest JSON (read by app; written by builder) |
-| `CATALOGS_PATH`   | `./data/catalogs.json`                                      | Path to overlay catalogs                             |
-| `GEAR_PATH`       | `./data/gear.json`                                          | Telescopes + cameras for the planner                 |
-| `PLANS_PATH`      | `./data/plans.json`                                         | Saved session plans                                  |
-| `TS_DB_PATH`      | `%LOCALAPPDATA%/NINA/SchedulerPlugin/schedulerdb.sqlite`    | NINA Target Scheduler DB (optional)                  |
-| `ZIP_OUTPUT_DIR`  | `./data/exports`                                            | Where TS-sync zips are written                       |
-| `HOST`            | `127.0.0.1`                                                 | Bind host (use `0.0.0.0` only on trusted networks)   |
-| `PORT`            | `5555`                                                      | Bind port                                            |
-| `ACP_EXTENSIONS_DIR` | `%APPDATA%/acp/extensions` (Win) / `~/.config/acp/extensions` | Directory of extension modules — see [Extensions](#extensions) |
-| `ACP_FRIEND_MANIFESTS` | unset | Semicolon-separated paths to sanitised friend manifests — see [Sharing](#sharing-coverage-with-friends) |
-| `ACP_SURVEYS_PATH` | `./data/surveys.json` | Path to the survey registry — see [Public surveys](#public-surveys) |
-
-## Optional: catalog overlays
-
-To enable the Green SNR / WISE HII / SMGPS / EMU overlays:
-
-```bash
-python scripts/fetch_catalogs.py           # writes data/catalogs.json
-```
-
-Requires `astroquery` (already in `requirements.txt`). Data is pulled from VizieR; first run takes ~30s and is cached.
+(Future plugins could push to Voyager, SGP, or other planners — the extension hooks are there.)
 
 ## Features
 
@@ -232,6 +153,7 @@ Minimal shape:
       "corners_icrs":     [[ra,dec], [ra,dec], [ra,dec], [ra,dec]],
       "corners_galactic": [[l,b],    [l,b],    [l,b],    [l,b]   ],
       "telescopes": ["RedCat 51"],
+      "cameras": ["ZWO ASI2600MM Pro"],
       "date_range": ["2025-01-01", "2025-12-31"],
       "filters": {
         "Ha":  {"total_hours": 3.2, "files": 12},

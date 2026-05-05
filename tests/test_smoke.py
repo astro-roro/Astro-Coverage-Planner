@@ -26,6 +26,12 @@ app_module.SITES_PATH = _tmp_sites
 app_module._sites_cache = None
 app_module._sites_cache_mtime = None
 
+# Same for saved searches.
+_tmp_saved = Path(tempfile.mkdtemp()) / "saved_searches.json"
+app_module.SAVED_SEARCHES_PATH = _tmp_saved
+app_module._saved_searches_cache = None
+app_module._saved_searches_cache_mtime = None
+
 c = app.test_client()
 
 r = c.get("/")
@@ -484,6 +490,38 @@ r = c.post("/api/sites", json={"sites": [
 print("POST /api/sites (duplicate id)", r.status_code)
 assert r.status_code == 400
 
+# --- Saved Inventory searches (Plan 6) ---
+r = c.get("/api/saved-searches")
+print("GET /api/saved-searches (empty)", r.status_code)
+assert r.status_code == 200 and r.get_json()["searches"] == []
+
+r = c.post("/api/saved-searches", json={
+    "name": "PNe needing OIII",
+    "source_id": "demo_tiles",
+    "filters": {"priorities": [1, 2], "missing": ["OIII"], "categories": ["PNe"], "hidePlanned": True},
+})
+print("POST /api/saved-searches", r.status_code)
+assert r.status_code == 201
+saved = r.get_json()
+assert saved["id"] and saved["name"] == "PNe needing OIII"
+assert saved["filters"]["hidePlanned"] is True
+saved_id = saved["id"]
+
+r = c.get("/api/saved-searches")
+assert len(r.get_json()["searches"]) == 1
+
+r = c.post("/api/saved-searches", json={"source_id": "x", "filters": {}})
+print("POST /api/saved-searches (no name)", r.status_code)
+assert r.status_code == 400
+
+r = c.delete(f"/api/saved-searches/{saved_id}")
+print("DELETE /api/saved-searches/<id>", r.status_code)
+assert r.status_code == 204
+
+r = c.delete(f"/api/saved-searches/{saved_id}")
+print("DELETE /api/saved-searches/<id> (already gone)", r.status_code)
+assert r.status_code == 404
+
 r = c.get("/api/ts-templates")
 print("GET /api/ts-templates", r.status_code)
 assert r.status_code == 200
@@ -536,19 +574,34 @@ assert any(w["kind"] == "min_altitude" for w in body["warnings"]), body["warning
 import zipfile as _zf
 with _zf.ZipFile(body["zip_path"]) as zf:
     names = set(zf.namelist())
-    assert names == {"metadata.json", "profilePreference.json", "exposureTemplates.json", "projects.json"}, names
+    # profilePreference.json deliberately omitted — TS skips that import
+    # step when the file is absent so user's existing prefs aren't clobbered.
+    assert names == {"metadata.json", "exposureTemplates.json", "projects.json"}, names
+    metadata = json.loads(zf.read("metadata.json"))
+    for k in ("ExportDate", "TargetSchedulerVersion", "DatabaseVersion", "ExportedProfileName", "ExportedProfileId"):
+        assert k in metadata, (k, metadata)
     projects = json.loads(zf.read("projects.json"))
     assert len(projects) == 1
     proj = projects[0]
-    assert proj["name"] == "Smoke Sync"
-    assert proj["minimumAltitude"] == 35  # strictest of 25/35
+    assert proj["Name"] == "Smoke Sync"
+    assert proj["State"] == "Active"
+    assert proj["Priority"] in ("Low", "Normal", "High")
+    assert proj["MinimumAltitude"] == 35  # strictest of 25/35
     # sync-plan-a (1 panel) + sync-plan-b (2×2 = 4 panels) = 5 TS targets
-    assert len(proj["targets"]) == 5, [t["name"] for t in proj["targets"]]
-    panel_names = [t["name"] for t in proj["targets"] if t["name"].startswith("sync-plan-b")]
+    assert len(proj["Targets"]) == 5, [t["Name"] for t in proj["Targets"]]
+    panel_names = [t["Name"] for t in proj["Targets"] if t["Name"].startswith("sync-plan-b")]
     assert set(panel_names) == {"sync-plan-b r1c1", "sync-plan-b r1c2", "sync-plan-b r2c1", "sync-plan-b r2c2"}, panel_names
     # Target Scheduler stores RA in HOURS
-    assert abs(proj["targets"][0]["ra"] - 161.26 / 15.0) < 1e-3
+    assert abs(proj["Targets"][0]["RA"] - 161.26 / 15.0) < 1e-3
+    assert proj["Targets"][0]["Epoch"] == 0   # J2000
+    assert proj["Targets"][0]["Enabled"] is True
     # desired = ceil(4 * 3600 / 300) = 48
-    assert proj["targets"][0]["exposurePlans"][0]["desired"] == 48
+    ep0 = proj["Targets"][0]["ExposurePlans"][0]
+    assert ep0["Desired"] == 48
+    assert "ExposureTemplateId" in ep0 and isinstance(ep0["ExposureTemplateId"], int)
+    templates = json.loads(zf.read("exposureTemplates.json"))
+    assert templates and templates[0]["FilterName"]
+    template_ids = {t["Id"] for t in templates}
+    assert ep0["ExposureTemplateId"] in template_ids
 
 print("ALL OK")
