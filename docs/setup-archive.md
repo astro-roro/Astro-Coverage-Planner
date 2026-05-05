@@ -101,3 +101,12 @@ After a new imaging session, just re-run the manifest builder:
 The webapp watches the manifest file and reloads automatically when its mtime changes. You don't need to restart `app.py` — just rebuild and refresh your browser.
 
 If you've added new gear (a new scope or camera), open Planning mode in the app and hit "Scan coverage" in the gear editor — the planner re-merges manifest-derived gear into your `data/gear.json` without overwriting your manual edits.
+
+## Security and deployment notes
+
+ACP is intended to run on your own machine, behind your own firewall, against your own data. Two things to be aware of before exposing it to anything beyond `localhost`:
+
+- **Default bind is `127.0.0.1`.** Only switch to `HOST=0.0.0.0` on a trusted LAN. ACP has no authentication and the `/api/manifest` and `/api/target/<id>` endpoints expose your archive's full file paths over HTTP — anyone who can reach the port can enumerate where your imaging data lives on disk.
+- **It's Flask's dev server.** Fine for local single-user use; not built to handle public internet traffic. For anything beyond your own network, front it with `gunicorn` or `uwsgi` behind a reverse proxy (nginx, caddy) that adds TLS and authentication. Don't expose the dev server directly.
+
+If you need genuinely shared access for a small group, the [friend manifests](sharing.md) feature is the intended path — each person runs their own copy of ACP locally and consumes sanitised exports from the others, rather than pointing multiple browsers at one shared instance.

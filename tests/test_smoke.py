@@ -204,6 +204,15 @@ assert r.status_code == 200 and r.get_json()["ok"] is True
 r = c.get("/api/gear")
 assert r.get_json()["cameras"][0]["filters"]["Ha"]["ts_template_name"] == "Ha 300s"
 
+# Reject filter names with HTML metacharacters — defends against the
+# stored-XSS path discovered in the pre-launch security review.
+bad_cameras = json.loads(json.dumps(updated_cameras))
+bad_cameras[0]["filters"]['" onmouseover="x'] = {"target_hours": 1, "sub_exposure_s": 300}
+r = c.post("/api/gear", json={"telescopes": gear["telescopes"], "cameras": bad_cameras})
+print("POST /api/gear (malicious filter name)", r.status_code)
+assert r.status_code == 400
+assert "filter name" in r.get_json().get("error", "")
+
 r = c.post("/api/gear/seed")
 print("POST /api/gear/seed", r.status_code)
 assert r.status_code == 200
