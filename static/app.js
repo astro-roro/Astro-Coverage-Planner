@@ -70,7 +70,7 @@ let gapMocLayer = null;    // live A.MOCFromURL overlay for the gap region
 // catalog to just these entries — so users see "Find gaps × catalog X" by
 // simply ticking catalog X in the Catalogues rail.
 let gapNamesByCatalog = {};
-let currentSite = { lat: -33.87, lon: 151.21, height: 20, min_alt_deg: 30 };
+let currentSite = { lat: 19.82, lon: -155.47, height: 4205, min_alt_deg: 30 };
 let sites = [];                // [{id, name, lat, lon, elev_m?, min_alt_deg?}] from /api/sites
 let activeSiteId = null;       // localStorage acp.active_site_id, applied once `sites` is loaded
 let timeAware = false;         // localStorage acp.time_aware, default off
@@ -99,6 +99,27 @@ let planOverlay = null;        // Aladin overlay for plan footprints (solid — 
 let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed — not-started plans)
 let planCenterCat = null;      // Aladin catalog for plan center + rotation handle markers
 let dragState = null;          // { mode: "center"|"rotate", planId, start: {x,y}, origin: {...} }
+
+// --- Onboarding banner (shown when the manifest is empty) ---
+// The user has just installed but hasn't pointed ACP at their FITS archive
+// yet — show a clear "next step" overlay until they build a manifest. The
+// dismiss button hides it for the current session only; we don't persist
+// the dismissal because seeing the prompt on every load until a manifest
+// exists is a useful nag rather than annoying noise.
+function setupOnboardingBanner(manifest) {
+  const banner = document.getElementById("onboardingBanner");
+  if (!banner) return;
+  const targetCount = (manifest && manifest.targets || []).length;
+  if (targetCount > 0) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  const dismiss = document.getElementById("onboardingDismiss");
+  if (dismiss) {
+    dismiss.addEventListener("click", () => { banner.hidden = true; }, { once: true });
+  }
+}
 
 // --- localStorage persistence ---
 // Bump the version suffix if the shape of the saved state ever changes
@@ -2460,8 +2481,8 @@ async function initSites() {
   }
   if (!sites.length) {
     // Backend always seeds defaults, so this should never fire — but degrade
-    // gracefully with the historical Sydney coords if it does.
-    sites = [{id: "sydney", name: "Sydney", lat: -33.87, lon: 151.21, elev_m: 20, min_alt_deg: 30}];
+    // gracefully with a Mauna Kea fallback if it does.
+    sites = [{id: "mauna_kea", name: "Mauna Kea, Hawaii", lat: 19.82, lon: -155.47, elev_m: 4205, min_alt_deg: 30}];
   }
   activeSiteId = localStorage.getItem("acp.active_site_id");
   if (!sites.some(s => s.id === activeSiteId)) activeSiteId = sites[0].id;
@@ -3030,6 +3051,11 @@ function init() {
     // Load manifest
     const r = await fetch("/api/manifest");
     manifest = await r.json();
+
+    // Show the onboarding banner if the manifest is empty (fresh install).
+    // The user can dismiss it; we don't pin the dismissal across reloads
+    // because seeing it every time is a useful nag until a manifest exists.
+    setupOnboardingBanner(manifest);
 
     // Assign telescope colors and build toggle UI
     const { map, sorted } = assignTelescopeColors(manifest.targets);

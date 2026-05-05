@@ -91,9 +91,9 @@ The viewer can compute year-long observability for any saved site or arbitrary s
 
 ```json
 {
-  "active_id": "sydney",
+  "active_id": "mauna_kea",
   "sites": [
-    {"id": "sydney", "label": "Sydney", "lat_deg": -33.87, "lon_deg": 151.21, "altitude_m": 50, "min_alt_deg": 30}
+    {"id": "mauna_kea", "name": "Mauna Kea, Hawaii", "lat": 19.82, "lon": -155.47, "elev_m": 4205, "min_alt_deg": 30}
   ]
 }
 ```

@@ -7,7 +7,9 @@ If you already have **Python 3.10 or newer** and **git** installed, you can skip
 - [Windows](#windows)
 - [macOS](#macos)
 - [Linux](#linux)
-- [What happens after the demo loads](#what-happens-after-the-demo-loads)
+- [What happens after ACP starts](#what-happens-after-acp-starts)
+- [Optional: load demo data first](#optional-load-demo-data-first)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -43,10 +45,9 @@ Pick a folder where ACP should live (e.g. `C:\Users\YourName\Documents\Code\`), 
     python -m venv .venv
     .venv\Scripts\activate
     pip install -r requirements.txt
-    python scripts\make_demo_manifest.py
     python app.py
 
-Open <http://127.0.0.1:5555/> in your browser. You should see a sky map with five demo targets plotted on it. Skip to [What happens after the demo loads](#what-happens-after-the-demo-loads).
+Open <http://127.0.0.1:5555/> in your browser. You'll see an empty sky map with a banner pointing you at the next step. See [What happens after ACP starts](#what-happens-after-acp-starts).
 
 ---
 
@@ -85,10 +86,9 @@ To verify:
     python3 -m venv .venv
     source .venv/bin/activate
     pip install -r requirements.txt
-    python scripts/make_demo_manifest.py
     python app.py
 
-Open <http://127.0.0.1:5555/> in your browser. You should see a sky map with five demo targets plotted on it.
+Open <http://127.0.0.1:5555/> in your browser.
 
 ---
 
@@ -124,23 +124,27 @@ To verify (you want Python 3.10 or newer):
     python3 -m venv .venv
     source .venv/bin/activate
     pip install -r requirements.txt
-    python scripts/make_demo_manifest.py
     python app.py
 
 Open <http://127.0.0.1:5555/> in your browser.
 
 ---
 
-## What happens after the demo loads
+## What happens after ACP starts
 
-You'll see five well-known southern-sky targets plotted on a sky map. This is **demo data** — it's there so you can poke around the viewer before pointing it at your own files. Try:
+A fresh install opens to an **empty sky map** with a banner explaining the next step: build a manifest by pointing the scanner at your FITS/XISF archive. ACP doesn't ship with anyone else's imaging data — what you see is what you've shot.
 
-- Click any of the coloured FOV polygons to see filter coverage and integration hours in the right rail.
-- Toggle the catalogue checkboxes in the right rail (Green SNR, WISE HII, etc.) to overlay public datasets on the map.
-- Use the survey-background dropdown at the top to flip between optical, Hα, infrared, etc.
-- Switch to **Planning mode** in the topbar and click the sky to drop a target — try a 2×2 mosaic with the rotation handle.
+When you're ready to scan, see **[Setting up your own archive](setup-archive.md)**. It covers the manifest builder, environment variables, and the optional pipeline-DB integration for sub-exposure hours.
 
-When you're ready to scan your own FITS archive, see [Setting up your own archive](setup-archive.md). It covers the manifest builder, environment variables, and the optional pipeline-DB integration for sub-exposure hours.
+Once your manifest is built, refresh the browser tab — your archive will appear on the sky map.
+
+## Optional: load demo data first
+
+If you'd like to poke around the viewer before doing the work to scan your archive, you can load five well-known southern-sky targets as a sample:
+
+    python scripts/make_demo_manifest.py
+
+(Use `python3` instead of `python` on macOS/Linux.) Refresh the browser tab and the sample data will appear. When you're ready to use your own files, just re-run the real manifest builder — it'll overwrite the demo.
 
 ## Troubleshooting
 

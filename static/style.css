@@ -1205,3 +1205,75 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
   cursor: pointer;
 }
 .link-btn:hover { color: #e0e4ea; border-color: #3a4458; }
+
+/* --- Onboarding banner (shown when manifest is empty) --- */
+.onboarding-banner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  background: rgba(10, 14, 22, 0.78);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+.onboarding-banner[hidden] { display: none; }
+.onboarding-banner-inner {
+  max-width: 560px;
+  padding: 28px 32px 32px;
+  background: #14192a;
+  border: 1px solid #2a3246;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  color: #e0e4ea;
+  position: relative;
+}
+.onboarding-banner-inner h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 600;
+  color: #f0f3f8;
+}
+.onboarding-banner-inner p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #b6bdcd;
+}
+.onboarding-banner-inner p:last-of-type { margin-bottom: 16px; }
+.onboarding-banner-inner a {
+  color: #6aa6ff;
+  text-decoration: underline;
+}
+.onboarding-banner-inner a:hover { color: #88baff; }
+.onboarding-banner-inner code {
+  background: #0d111c;
+  border: 1px solid #2a3246;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #c8d1e0;
+}
+.onboarding-step strong {
+  color: #f0f3f8;
+}
+.onboarding-demo {
+  font-size: 12px !important;
+  color: #8c95a8 !important;
+  border-top: 1px solid #2a3246;
+  padding-top: 12px;
+}
+.onboarding-dismiss {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: transparent;
+  border: 1px solid #2a3246;
+  color: #8c95a8;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.onboarding-dismiss:hover { color: #e0e4ea; border-color: #3a4458; }
