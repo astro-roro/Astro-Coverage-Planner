@@ -2369,7 +2369,11 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             panels = _mosaic_panel_centers(ra_deg, dec_deg, fov_w, fov_h, rot_deg, rows, cols, overlap)
             multi = len(panels) > 1
             for panel in panels:
-                pname_suffix = f" r{panel['row'] + 1}c{panel['col'] + 1}" if multi else ""
+                if multi:
+                    panel_idx = panel["row"] * cols + panel["col"] + 1
+                    pname_suffix = f" Panel {panel_idx} (R{panel['row']+1}C{panel['col']+1})"
+                else:
+                    pname_suffix = ""
                 tgt_id = _next_target_id()
                 exp_plans = [{
                     "Id": _next_exposure_plan_id(),
