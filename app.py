@@ -674,9 +674,14 @@ def _validate_friend_manifest(data: object, source_label: str) -> None:
 
 
 # Coverage-source registry. Extensions can append their own sources to this
-# list inside their `register(app)` body; the built-in manifest source ships
-# pre-registered so a stock checkout always exposes one entry on /api/sources.
-app.coverage_sources = [ManifestCoverageSource()]
+# list inside their `register(app)` body; the built-in manifest source is
+# only pre-registered when MANIFEST_PATH actually exists on disk so a user
+# running ACP off pure extension-supplied sources (e.g. a private
+# survey-tile extension with no FITS archive of their own) doesn't see an
+# empty "Your archive" entry in the Sources rail.
+app.coverage_sources = []
+if MANIFEST_PATH.exists():
+    app.coverage_sources.append(ManifestCoverageSource())
 # Out-of-tree extensions can append catalogue registry entries here at
 # `register(app)` time. Same shape as `data/catalog_registry.json` entries.
 # Defaults to an empty list — extensions add to it, never replace it.
