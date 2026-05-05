@@ -116,7 +116,7 @@ app.jinja_env.auto_reload = True
 if not CATALOGS_PATH.exists():
     print(
         f"[acp] WARN: catalogs file not found at {CATALOGS_PATH} -- "
-        "right-rail catalog overlays (Green SNR / SMGPS / EMU / WISE HII) will be empty. "
+        "right-rail catalog overlays (Green SNR / SMGPS / WISE HII / Messier / etc.) will be empty. "
         "Run scripts/fetch_catalogs.py to populate (network I/O, ~30s)."
     )
 
@@ -1881,7 +1881,7 @@ def api_gaps_moc_fits():
 # Catalogs that contributed to the legacy /api/export/priority CSV. Kept here
 # because the gap-finder pulls candidates from the entire load_catalogs() dict
 # but the CSV consumer expects only these three.
-_PRIORITY_CSV_CATALOGS = ("green_snrs", "smgps_candidates", "emu_candidates")
+_PRIORITY_CSV_CATALOGS = ("green_snrs", "smgps_candidates")
 _PRIORITY_CSV_HEADER = [
     "catalog", "name", "ra_deg", "dec_deg", "l_deg", "b_deg",
     "overlap_target_id", "overlap_target_objects",

@@ -56,7 +56,7 @@ Use it for things like `filter:Ha -filter:SII tel:redcat` ("RedCat-shot Hα targ
 
 ![Catalogue overlays](docs/images/feature-catalogues.gif)
 
-Toggle the Green 2019 SNR catalogue, SMGPS / EMU SNR candidates, WISE HII regions, the Messier and Sharpless lists, and ESO's planetary nebulae. Each one lights up its objects as markers across the sky. Combined with the survey-background swap above, you can pick a catalogue (say, confirmed SNRs), switch to the Hα survey, and scan for objects with bright emission you haven't shot yet — that's your shortlist for the next dark night.
+Toggle the Green 2019 SNR catalogue, SMGPS SNR candidates, WISE HII regions, the Messier and Sharpless lists, and ESO's planetary nebulae. Each one lights up its objects as markers across the sky. Combined with the survey-background swap above, you can pick a catalogue (say, confirmed SNRs), switch to the Hα survey, and scan for objects with bright emission you haven't shot yet — that's your shortlist for the next dark night.
 
 ### Plan your next session in the same map
 
