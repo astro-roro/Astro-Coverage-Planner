@@ -20,54 +20,49 @@ You don't need a huge library for this to start paying off — even a couple of 
 
 ## See it in action
 
-### Scan an archive, browse the coverage
+Four moments that show what this is actually like to use.
 
-![Scan-to-app loop](docs/images/loop-scan-to-app.gif)
+### Your coverage on every sky survey
 
-Run the scanner on your image roots; the manifest builds in ~5 minutes for a 100k-file archive. Open the app, click any FOV polygon to see its filter coverage, observed hours, and gear used.
+![Survey swap](docs/images/survey-swap.gif)
+
+Same FOV polygons, same telescope colours — flip the background between optical, narrowband Hα, infrared, and radio surveys with one click. Hunting bright Hα regions you haven't shot? Switch to the Hα survey and scan for big patches with no polygons on them. Curious how a region looks in radio? One dropdown and you're there. ACP exposes Aladin Lite's full survey catalogue, so you've got dozens of professional astronomy datasets behind your map at all times.
 
 ### Smart search across your archive
 
-![Smart search](docs/images/feature-search.png)
+![Smart search](docs/images/smart-search.gif)
 
-The right-rail search supports a small grammar:
+The right-rail search supports a small grammar that combines with AND. Bare words match object names; everything else is `key:value`.
+
+<details>
+<summary>All search tokens</summary>
 
 | Token | Effect |
 |---|---|
 | `eta carinae` | substring match across object names |
 | `"north america"` | quoted phrases preserve spaces |
 | `object:M42` / `name:rosette` | restrict to object/target name |
-| `filter:Ha` | only targets with Ha data |
+| `filter:Ha` | only targets with Hα data |
 | `telescope:RedCat` / `tel:edge` | by telescope (fuzzy) |
 | `camera:2600MM` / `cam:294` | by camera |
 | `hours>5` / `hours<2` | total integration hours |
 | `fov>60` / `fov<10` | FOV size in arcmin |
 
-Tokens combine with AND. Bare words match object names. Use it to find e.g. `filter:Ha -filter:SII tel:redcat` for "RedCat-shot Ha targets without SII".
+</details>
 
-### Plan a session, lay out a mosaic
+Use it for things like `filter:Ha -filter:SII tel:redcat` ("RedCat-shot Hα targets without SII") or `hours>5 fov<60` ("targets I've put serious time into with a tight rig"). The filtered list updates live as you type.
 
-![Planning mode](docs/images/loop-planning-mode.gif)
+### Catalogue overlays for finding new targets
 
-Switch to **Planning mode** in the topbar. Click sky to drop a target center, pick telescope + camera (FOV box auto-derives from gear), set per-filter target hours and sub-exposure. Mosaic? Set rows × columns × overlap %, drag the rotation handle to align the panel grid. Solid borders mean data logged; dashed mean not yet started.
+![Catalogue overlays](docs/images/feature-catalogues.gif)
 
-### Catalog overlays for gap-finding
+Toggle the Green 2019 SNR catalogue, SMGPS / EMU SNR candidates, WISE HII regions, the Messier and Sharpless lists, and ESO's planetary nebulae. Each one lights up its objects as markers across the sky. Combined with the survey-background swap above, you can pick a catalogue (say, confirmed SNRs), switch to the Hα survey, and scan for objects with bright emission you haven't shot yet — that's your shortlist for the next dark night.
 
-![Catalog overlays](docs/images/feature-catalogs.png)
+### Plan your next session in the same map
 
-Toggle Green 2019 SNRs, SMGPS / EMU SNR candidates, or WISE HII regions. Combined with the filter-gap search, you can quickly spot e.g. confirmed SNRs you've shot in Ha but never in OIII.
+![Planning mode](docs/images/planning-mode.gif)
 
-### Gear editor with auto-seed
-
-![Gear editor](docs/images/feature-gear-editor.png)
-
-First time you open Planning mode, the planner scans your manifest and auto-imports every telescope and camera it finds — with focal length, aperture, pixel size, sensor size, and observed filters carried over from FITS headers. Tweak in the gear editor, fill in anything the headers didn't capture (e.g. gain/offset on older files), re-run "Scan coverage" after rebuilding the manifest.
-
-### Sync to NINA Target Scheduler
-
-![NINA TS sync](docs/images/feature-ts-sync.png)
-
-Click **Sync** and the planner builds a Target Scheduler plugin import zip — `metadata.json`, `profilePreference.json`, `exposureTemplates.json`, `projects.json`. Mosaics expand to per-panel TS targets. If TS is installed locally, it offers existing exposure templates from `schedulerdb.sqlite` in a dropdown so you can map filters to your real TS templates rather than auto-generated ones.
+Switch to **Planning mode** in the topbar. Click the sky to drop a target centre, pick telescope + camera (FOV box auto-derives from your gear), set per-filter target hours and sub-exposure. Doing a mosaic? Set rows × columns × overlap %, drag the rotation handle to align the panel grid. Solid borders mean data already logged; dashed borders mean not yet started. When the plan's ready, ACP can also sync it to NINA Target Scheduler so you're not re-typing targets.
 
 ## Quickstart (demo data)
 
