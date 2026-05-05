@@ -2216,20 +2216,43 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
     telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", [])}
     cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", [])}
 
+    # Group plans into TS Projects. When the user sets `project_name` we
+    # honour that as the grouping key. When it's blank, each plan becomes
+    # its own Project named after the plan's target — TS docs explicitly
+    # call out that "many projects will have only a single target", so
+    # giving every untagged plan its own Project is idiomatic and avoids
+    # the previous "Unassigned" catch-all dump.
     projects_by_name: dict[str, list] = {}
     for pl in plans_list:
-        pname = (pl.get("project_name") or "").strip() or "Unassigned"
+        explicit = (pl.get("project_name") or "").strip()
+        if explicit:
+            pname = explicit
+        else:
+            tg = pl.get("target") or {}
+            pname = (tg.get("name") or "").strip() or pl.get("id") or "Untitled"
         projects_by_name.setdefault(pname, []).append(pl)
 
     ts_projects: list[dict] = []
     ts_templates: list[dict] = []
     template_seen: dict[tuple[str, str], dict] = {}
-    template_id_seq = [0]  # mutable counter for unique synthetic IDs
+    # Per-entity ID counters. TS's importer keys its remapping dictionaries
+    # (projectsIdMap / targetsIdMap / exposurePlansIdMap / exposureTemplateIdMap)
+    # by the exported Id. If two entries of the same kind share an Id (e.g.
+    # two ExposurePlans both default to 0), Dictionary.Add throws "An item
+    # with the same key has already been added. Key: 0". So every entity
+    # we emit needs a unique Id within its kind, even though the importer
+    # immediately rewrites them.
+    project_id_seq, target_id_seq = [0], [0]
+    exposure_plan_id_seq, template_id_seq = [0], [0]
     warnings: list[dict] = []
 
-    def _next_template_id() -> int:
-        template_id_seq[0] += 1
-        return template_id_seq[0]
+    def _next_id(seq: list[int]) -> int:
+        seq[0] += 1
+        return seq[0]
+    def _next_template_id() -> int: return _next_id(template_id_seq)
+    def _next_project_id() -> int: return _next_id(project_id_seq)
+    def _next_target_id() -> int: return _next_id(target_id_seq)
+    def _next_exposure_plan_id() -> int: return _next_id(exposure_plan_id_seq)
 
     def _warn(kind: str, pname: str, resolved, group: list, suggested_suffix: str, msg: str) -> None:
         warnings.append({
@@ -2242,6 +2265,11 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
         })
 
     for pname, group in projects_by_name.items():
+        # Reserve the project id up front so each Target can carry it as
+        # ProjectId — TS's importer remaps target.ProjectId via
+        # projectsIdMap.GetValueOrDefault(); leaving it at 0 produces an
+        # orphan target that TS surfaces under an "Unassigned" node.
+        proj_id = _next_project_id()
         min_alt = max(float(p.get("min_altitude_deg") or 0) for p in group)
         merid_vals = [float(p.get("meridian_window_min") or 0) for p in group]
         nonzero = [v for v in merid_vals if v > 0]
@@ -2342,8 +2370,12 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             multi = len(panels) > 1
             for panel in panels:
                 pname_suffix = f" r{panel['row'] + 1}c{panel['col'] + 1}" if multi else ""
+                tgt_id = _next_target_id()
                 exp_plans = [{
+                    "Id": _next_exposure_plan_id(),
                     "Guid": str(uuid.uuid4()),
+                    "TargetId": tgt_id,    # EF can auto-link via nesting too,
+                                            # but setting explicitly is safer.
                     "Exposure": float(spec["sub_s"]),
                     "Desired": int(spec["desired"]),
                     "Acquired": int(spec["acquired"]),
@@ -2352,6 +2384,8 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                     "ExposureTemplateId": int(spec["template_id"]),
                 } for spec in exp_plan_specs]
                 ts_targets.append({
+                    "Id": tgt_id,
+                    "ProjectId": proj_id,    # link to parent project
                     "Guid": str(uuid.uuid4()),
                     "Name": f"{base_name}{pname_suffix}",
                     "Enabled": True,
@@ -2366,6 +2400,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                 })
 
         ts_projects.append({
+            "Id": proj_id,
             "Guid": str(uuid.uuid4()),
             "Name": pname,
             "Description": "",
