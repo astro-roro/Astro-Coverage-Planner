@@ -2,11 +2,11 @@
 
 **See what you've already imaged. Plan what's next. Hand it to NINA.**
 
-A web-based coverage viewer **and** session planner for astrophotographers. Point it at a folder of FITS/XISF masters; it builds a manifest of every field of view you've ever shot, renders them on an Aladin Lite sky map (colored by telescope, badged by filter, depth-sliced by hours), and lets you plan future sessions with mosaic support — exporting straight to NINA's Target Scheduler plugin.
-
 ![Coverage map hero](docs/images/hero-coverage-map.png)
 
-> Built originally against my Ha/SII/OIII archive to find targets where Ha data exists but SII doesn't. Spun out so others can do the same.
+It's your astrophotography catalogue, visualised. ACP reads your entire FITS library and draws every field you've ever shot onto one sky map — coloured by telescope, badged by filter, with integration hours on every target. Useful from your first handful of targets and only gets more valuable as your library grows, especially if you're shooting narrowband or multi-night projects and want to see at a glance which targets are finished, which still owe you an OIII pass, and where your different rigs overlap. Plan your next session, next month, or next whole *year* in the same view — and export it straight to NINA Target Scheduler.
+
+> Built originally against my own Hα/SII/OIII archive to find the targets where Hα data exists but SII doesn't. Generalised so anyone else with the same problem can do the same.
 
 ## Who this is for
 
