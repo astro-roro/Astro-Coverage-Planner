@@ -1545,6 +1545,7 @@ function _loadInvState() {
         priorities: new Set(Array.isArray(v.priorities) ? v.priorities : []),
         missing:    new Set(Array.isArray(v.missing) ? v.missing : []),
         categories: new Set(Array.isArray(v.categories) ? v.categories : []),
+        hidePlanned: !!v.hidePlanned,
       };
     }
     return out;
@@ -1560,9 +1561,64 @@ function _saveInvState() {
       priorities: [...v.priorities],
       missing:    [...v.missing],
       categories: [...v.categories],
+      hidePlanned: !!v.hidePlanned,
     };
   }
   localStorage.setItem("acp.inv_state", JSON.stringify(out));
+}
+
+// --- Saved Inventory searches (Plan 6) ----------------------------------
+let savedSearches = [];   // [{id, name, source_id, filters, created_at}]
+
+async function loadSavedSearches() {
+  try {
+    const r = await fetch("/api/saved-searches");
+    const d = await r.json();
+    savedSearches = Array.isArray(d?.searches) ? d.searches : [];
+  } catch (e) {
+    console.warn("saved searches unavailable:", e);
+    savedSearches = [];
+  }
+}
+
+async function persistSavedSearch(entry) {
+  const r = await fetch("/api/saved-searches", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(entry),
+  });
+  if (!r.ok) {
+    alert(`Save failed (${r.status})`);
+    return null;
+  }
+  const saved = await r.json();
+  savedSearches = savedSearches.filter(s => s.id !== saved.id);
+  savedSearches.push(saved);
+  return saved;
+}
+
+async function deleteSavedSearch(searchId) {
+  const r = await fetch(`/api/saved-searches/${encodeURIComponent(searchId)}`, { method: "DELETE" });
+  if (r.status === 204) {
+    savedSearches = savedSearches.filter(s => s.id !== searchId);
+    return true;
+  }
+  return false;
+}
+
+function applySavedSearch(sourceId, search) {
+  const st = invState[sourceId];
+  if (!st) return;
+  const f = search.filters || {};
+  st.priorities = new Set(Array.isArray(f.priorities) ? f.priorities : []);
+  st.missing    = new Set(Array.isArray(f.missing) ? f.missing : []);
+  st.categories = new Set(Array.isArray(f.categories) ? f.categories : []);
+  st.hidePlanned = !!f.hidePlanned;
+  _saveInvState();
+  // Re-render the rail block for this source so the chips reflect the
+  // restored state, then redraw tiles.
+  renderInventoryRail();
+  renderTileOverlay(sourceId);
 }
 
 async function initInventory() {
@@ -1584,6 +1640,7 @@ async function initInventory() {
   }
   accordion.hidden = false;
   tileSources = summary;
+  await loadSavedSearches();
   const saved = _loadInvState();
   for (const s of tileSources) {
     const prior = saved[s.id] || {};
@@ -1594,6 +1651,7 @@ async function initInventory() {
         : new Set(Array.from({length: Math.max(1, s.max_priority_level)}, (_, i) => i + 1)),
       missing:    prior.missing instanceof Set ? prior.missing : new Set(),
       categories: prior.categories instanceof Set ? prior.categories : new Set(s.categories || []),
+      hidePlanned: !!prior.hidePlanned,
     };
   }
   renderInventoryRail();
@@ -1633,6 +1691,19 @@ function renderInventoryRail() {
       return `<label class="fchip" title="Show only tiles whose ${esc(c)} count > 0"><input type="checkbox" data-cat="${esc(c)}" ${checked}/> ${esc(c)}</label>`;
     }).join("");
 
+    const mySaved = savedSearches.filter(ss => ss.source_id === s.id);
+    const savedOpts = ['<option value="">Saved searches…</option>']
+      .concat(mySaved.map(ss => `<option value="${esc(ss.id)}">${esc(ss.name)}</option>`))
+      .join("");
+    const savedRow = `
+        <div class="inv-row inv-saved-row">
+          <span class="inv-row-lbl">Search</span>
+          <select class="inv-saved-select" data-saved-select>${savedOpts}</select>
+          <button class="link-btn" data-saved-load disabled title="Apply the selected saved search">Load</button>
+          <button class="link-btn" data-saved-delete disabled title="Delete the selected saved search">Delete</button>
+          <button class="link-btn" data-saved-save title="Save current filters as a new search">Save current…</button>
+        </div>`;
+
     block.innerHTML = `
       <div class="inv-source-head">
         <input type="checkbox" data-enabled ${st.enabled ? "checked" : ""} title="Show this tile source on the map" />
@@ -1641,9 +1712,16 @@ function renderInventoryRail() {
         <span class="count" data-count>${st.enabled ? `${s.n_tiles} tiles` : "off"}</span>
       </div>
       <div class="inv-source-body">
+        ${savedRow}
         ${priChips.length ? `<div class="inv-row"><span class="inv-row-lbl">Priority</span>${priChips.join("")}</div>` : ""}
         ${bandChips ? `<div class="inv-row"><span class="inv-row-lbl">Missing</span>${bandChips}</div>` : ""}
         ${catChips ? `<div class="inv-row"><span class="inv-row-lbl">Class</span>${catChips}</div>` : ""}
+        <div class="inv-row">
+          <span class="inv-row-lbl">Status</span>
+          <label class="fchip" title="Drop tiles whose centre is already inside one of your plans">
+            <input type="checkbox" data-hide-planned ${st.hidePlanned ? "checked" : ""}/> Hide planned
+          </label>
+        </div>
       </div>`;
     host.appendChild(block);
 
@@ -1689,6 +1767,50 @@ function renderInventoryRail() {
         renderTileOverlay(s.id);
       });
     }
+    const hidePlannedCb = block.querySelector("input[data-hide-planned]");
+    if (hidePlannedCb) hidePlannedCb.addEventListener("change", () => {
+      st.hidePlanned = hidePlannedCb.checked;
+      _saveInvState();
+      renderTileOverlay(s.id);
+    });
+
+    // Saved-searches row wiring.
+    const savedSel    = block.querySelector("[data-saved-select]");
+    const savedLoad   = block.querySelector("[data-saved-load]");
+    const savedDelete = block.querySelector("[data-saved-delete]");
+    const savedSave   = block.querySelector("[data-saved-save]");
+    if (savedSel) savedSel.addEventListener("change", () => {
+      const has = !!savedSel.value;
+      savedLoad.disabled = !has;
+      savedDelete.disabled = !has;
+    });
+    if (savedLoad) savedLoad.addEventListener("click", () => {
+      const search = savedSearches.find(ss => ss.id === savedSel.value);
+      if (search) applySavedSearch(s.id, search);
+    });
+    if (savedDelete) savedDelete.addEventListener("click", async () => {
+      const search = savedSearches.find(ss => ss.id === savedSel.value);
+      if (!search) return;
+      if (!confirm(`Delete saved search "${search.name}"?`)) return;
+      const ok = await deleteSavedSearch(search.id);
+      if (ok) renderInventoryRail();
+    });
+    if (savedSave) savedSave.addEventListener("click", async () => {
+      const name = prompt("Save current filters as:", "");
+      if (!name || !name.trim()) return;
+      const entry = {
+        name: name.trim(),
+        source_id: s.id,
+        filters: {
+          priorities: [...st.priorities],
+          missing:    [...st.missing],
+          categories: [...st.categories],
+          hidePlanned: !!st.hidePlanned,
+        },
+      };
+      const saved = await persistSavedSearch(entry);
+      if (saved) renderInventoryRail();
+    });
   }
 }
 
@@ -1789,6 +1911,39 @@ function _tileColor(priorityLevel) {
   return _PRI_COLOR[priorityLevel] || _PRI_COLOR_OTHER;
 }
 
+// Plan↔tile cross-ref (Plan 5). Every tile checks against every plan's
+// mosaic bounds; if the tile centre falls inside, the tile inherits the
+// plan's state. ~40 tiles × ~10 plans = 400 polygon point-tests, sub-ms.
+function _planAllGoalsMet(plan) {
+  const goals = plan?.filter_goals || {};
+  const entries = Object.entries(goals);
+  if (!entries.length) return false;     // no goals → can't be "done"
+  for (const [, g] of entries) {
+    const target = Number(g?.target_hours) || 0;
+    if (target <= 0) continue;
+    if ((Number(g?.actual_hours) || 0) < target) return false;
+  }
+  return true;
+}
+
+function tilePlanInfo(tile) {
+  const ra = Number(tile.ra_deg), dec = Number(tile.dec_deg);
+  if (!Number.isFinite(ra) || !Number.isFinite(dec)) return { plan: null, state: "none" };
+  for (const pl of plans) {
+    if (pl?.target?.center_ra_deg == null) continue;
+    let corners;
+    try { corners = planMosaicBoundsCorners(pl); } catch { continue; }
+    if (!corners || corners.length < 3) continue;
+    if (!_ptInRaDecPoly(ra, dec, corners)) continue;
+    let state;
+    if (_planAllGoalsMet(pl)) state = "done";
+    else if (planHasData(pl)) state = "in_progress";
+    else state = "queued";
+    return { plan: pl, state };
+  }
+  return { plan: null, state: "none" };
+}
+
 // Completion ratio drives fill alpha — 0% complete = bright (~55%), 100% =
 // nearly invisible (~5%), so the map literally "crosses off" tiles as the
 // user fills them in.
@@ -1842,6 +1997,13 @@ function _tilePassesFilters(tile, st) {
     }
     if (!hit) return false;
   }
+  // Hide planned: when on, drop tiles whose centre falls inside any plan's
+  // mosaic bounds (regardless of plan state). The Inventory then surfaces
+  // only the tiles you haven't queued yet.
+  if (st.hidePlanned) {
+    const info = tilePlanInfo(tile);
+    if (info.state !== "none") return false;
+  }
   return true;
 }
 
@@ -1887,17 +2049,30 @@ function renderTileOverlay(sourceId) {
     const corners = _tileFootprint(tile);
     if (!corners) continue;
     const color = _tileColor(tile.priority_level);
-    const alpha = _tileFillAlphaHex(tile.per_band);
+    let alphaHex = _tileFillAlphaHex(tile.per_band);
+    // Plan↔tile cross-ref: planned tiles fade back so the eye is drawn
+    // to what's NOT yet queued. Done plans fade further. Stroke colour
+    // also shifts subtly so the planned state is readable on hover.
+    const planInfo = tilePlanInfo(tile);
+    let strokeColor = color;
+    let strokeWidth = 0.5;
+    if (planInfo.state !== "none") {
+      const dim = planInfo.state === "done" ? 0.20 : planInfo.state === "in_progress" ? 0.40 : 0.55;
+      const num = parseInt(alphaHex, 16);
+      alphaHex = Math.max(8, Math.round(num * dim)).toString(16).padStart(2, "0");
+      strokeColor = "#ffffff";
+      strokeWidth = 1.2;
+    }
     const poly = A.polygon(corners, {
-      color,
-      lineWidth: 0.5,
-      fillColor: color + alpha,
+      color: strokeColor,
+      lineWidth: strokeWidth,
+      fillColor: color + alphaHex,
     });
     if (poly && tile && (tile.id || tile.score != null)) {
       poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
     }
     ovr.add(poly);
-    tileHitList.push({ poly, tile, source_id: sourceId, corners });
+    tileHitList.push({ poly, tile, source_id: sourceId, corners, plan_state: planInfo.state, plan: planInfo.plan });
     drawn++;
   }
   // Update the counter pill in the rail to reflect the filtered subset.
@@ -1951,6 +2126,20 @@ function renderTilePanel(tile, sourceId) {
     ? `Suggested bands: ${missing.map(b => `<code>${esc(b)}</code>`).join(", ")}`
     : "All declared bands already covered.";
 
+  // Plan↔tile cross-ref status (Plan 5).
+  const planInfo = tilePlanInfo(tile);
+  const stateLabel = {
+    queued: "Queued in your planner",
+    in_progress: "In progress in your planner",
+    done: "Marked done in your planner",
+  }[planInfo.state];
+  const planRow = planInfo.plan
+    ? `<div class="tile-plan-row" data-plan-id="${esc(planInfo.plan.id)}">
+         <span class="tile-plan-state tps-${planInfo.state}">${esc(stateLabel)}</span>
+         <button id="tileOpenPlan" class="link-btn">Open plan →</button>
+       </div>`
+    : "";
+
   panel.innerHTML = `
     <div>
       <a class="back-link" id="backToList" href="#">← Back to list</a>
@@ -1975,6 +2164,8 @@ function renderTilePanel(tile, sourceId) {
 
       ${catRows ? `<h4>Catalog object counts</h4><div>${catRows}</div>` : ""}
 
+      ${planRow}
+
       <div class="tile-actions">
         <div class="tile-suggestion">${suggestion}</div>
         <button id="tileCreatePlan" class="primary">Create new plan from this tile</button>
@@ -1986,6 +2177,12 @@ function renderTilePanel(tile, sourceId) {
   });
   document.getElementById("tileCreatePlan")?.addEventListener("click", () => {
     promotePlanFromTile(tile, sourceMeta);
+  });
+  document.getElementById("tileOpenPlan")?.addEventListener("click", () => {
+    if (planInfo.plan) {
+      if (!planningMode) setPlanningMode(true);
+      renderPlanEditor(planInfo.plan);
+    }
   });
   loadTileVisibility(tile);
 }
@@ -2111,20 +2308,52 @@ function updateCatalogStatusHint() {
   }
 }
 
-function setupFilterUI() {
-  const searchInput = document.getElementById("searchInput");
-  if (searchInput) {
-    searchInput.addEventListener("input", () => {
-      searchTokens = tokenizeSearch(searchInput.value);
+// Filter chips are populated from the manifest so users only see filters
+// they actually have data for. Hides hardcoded chips like "V" that no
+// FITS file ever uses, and surfaces real-life filters like IDAS/IR.
+function _availableFilters() {
+  const NOISE = new Set(["Unknown", "NoFilter"]);
+  const present = new Set();
+  for (const t of (manifest?.targets || [])) {
+    for (const [f, d] of Object.entries(t.filters || {})) {
+      if ((d?.total_hours || 0) > 0 && !NOISE.has(f)) present.add(f);
+    }
+  }
+  // Canonical narrowband + LRGB first (in that order), then any extras
+  // alphabetically — keeps the visual order stable as the archive grows.
+  const CANON = ["Ha", "SII", "OIII", "L", "R", "G", "B"];
+  const canon = CANON.filter(f => present.has(f));
+  const extras = [...present].filter(f => !CANON.includes(f)).sort();
+  return [...canon, ...extras];
+}
+
+function renderFilterChips() {
+  const host = document.getElementById("filterChips");
+  if (!host) return;
+  // Wipe everything except the leading "Filters:" label.
+  for (const el of [...host.children]) if (!el.classList.contains("label")) el.remove();
+  for (const f of _availableFilters()) {
+    const lbl = document.createElement("label");
+    lbl.className = "fchip";
+    const checked = selectedFilters.has(f) ? "checked" : "";
+    lbl.innerHTML = `<input type="checkbox" data-f="${esc(f)}" ${checked}/> ${esc(f)}`;
+    host.appendChild(lbl);
+    const cb = lbl.querySelector("input");
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedFilters.add(cb.dataset.f);
+      else selectedFilters.delete(cb.dataset.f);
       saveUiState();
       redrawFootprints();
     });
   }
+}
 
-  for (const cb of document.querySelectorAll(".filters input[type=checkbox][data-f]")) {
-    cb.addEventListener("change", () => {
-      if (cb.checked) selectedFilters.add(cb.dataset.f);
-      else selectedFilters.delete(cb.dataset.f);
+function setupFilterUI() {
+  renderFilterChips();
+  const searchInput = document.getElementById("searchInput");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      searchTokens = tokenizeSearch(searchInput.value);
       saveUiState();
       redrawFootprints();
     });
@@ -3461,6 +3690,7 @@ function renderPlanEditor(plan) {
     if (!editingPlan.guid) {
       plans = plans.filter(p => p.id !== editingPlan.id);
       renderPlanList();
+      refreshAllInventoryOverlays();
       return;
     }
     if (!confirm("Delete this plan?")) return;
@@ -3468,6 +3698,7 @@ function renderPlanEditor(plan) {
     if (r.status === 204) {
       plans = plans.filter(p => p.id !== editingPlan.id);
       renderPlanList();
+      refreshAllInventoryOverlays();
     } else {
       alert("Delete failed: " + r.status);
     }
@@ -3490,7 +3721,16 @@ async function savePlan() {
   editingPlan = saved;
   const btn = document.getElementById("planSave");
   if (btn) { const orig = btn.textContent; btn.textContent = "Saved ✓"; setTimeout(() => { if (btn.textContent === "Saved ✓") btn.textContent = orig; }, 1500); }
+  // Plan list changed — refresh inventory tile rendering so the
+  // planned/done fade and "Hide planned" filter pick up the new state.
+  refreshAllInventoryOverlays();
   return true;
+}
+
+function refreshAllInventoryOverlays() {
+  for (const sid of Object.keys(invState || {})) {
+    if (invState[sid]?.enabled) renderTileOverlay(sid);
+  }
 }
 
 async function syncPlans() {

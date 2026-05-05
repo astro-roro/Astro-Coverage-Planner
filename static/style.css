@@ -353,15 +353,28 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
 .fp-IDAS { background: #a0ffd0; }
 
 .statusbar {
-  flex: 0 0 auto;            /* natural height, never grows */
-  padding: 4px 12px;
+  /* Pin to a fixed height so growing/shrinking content (e.g. long hover
+     tooltips that would otherwise wrap to two lines) never resizes the
+     map area underneath — that re-flow caused a visible Aladin shudder. */
+  flex: 0 0 24px;
+  height: 24px;
+  padding: 0 12px;
   background: #0a0d12;
   border-top: 1px solid #1f2937;
   font-size: 11px;
   color: #78839a;
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  overflow: hidden;
 }
+.statusbar > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.statusbar #tooltip { flex: 1; min-width: 0; margin-right: 12px; }
+.statusbar #obsNow  { flex: 0 0 auto; }
 
 .pathlist {
   font-size: 10px;
@@ -1116,6 +1129,22 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
 .inv-pri.pri-4 { color: #9aa3b3; border-color: #2a3246; }
 .inv-pri.pri-other { color: #6c7281; border-color: #2a3246; }
 
+.inv-saved-row .inv-saved-select {
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #e0e4ea;
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  flex: 1;
+  min-width: 100px;
+  max-width: 180px;
+}
+.inv-saved-row .link-btn[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .tile-actions {
   margin-top: 12px;
   padding: 10px;
@@ -1145,3 +1174,34 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
   font-size: 12px;
 }
 #tileCreatePlan.primary:hover { background: #345f92; }
+
+/* Plan ↔ tile cross-ref status row in the tile detail panel. */
+.tile-plan-row {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #11151c;
+  border: 1px solid #2a3246;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.tile-plan-state {
+  flex: 1;
+  color: #e0e4ea;
+  font-weight: 600;
+}
+.tile-plan-state.tps-queued      { color: #d6a04a; }
+.tile-plan-state.tps-in_progress { color: #5bb6ff; }
+.tile-plan-state.tps-done        { color: #6fcc52; }
+.link-btn {
+  background: transparent;
+  border: 1px solid #2a3246;
+  color: #a2aec2;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.link-btn:hover { color: #e0e4ea; border-color: #3a4458; }
