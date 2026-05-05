@@ -266,9 +266,13 @@ def fetch_sharpless() -> list[dict]:
 
 def fetch_eso_pne() -> list[dict]:
     """Strasbourg-ESO PNe main catalogue (V/84 table 0). Includes Abell PNe as
-    a subset — entries like "A 66" appear in the Name column. Uses _RA.icrs /
-    _DE.icrs which Vizier auto-precesses from the B1950 originals."""
+    a subset — entries like "A 66" appear in the Name column. _RA.icrs and
+    _DE.icrs come back as sexagesimal STRINGS (e.g. "18 13 18.03",
+    "-32 19 43.0"), not floats — VizieR auto-precesses from the B1950
+    originals but emits HMS/DMS, not decimal degrees."""
     from astroquery.vizier import Vizier
+    from astropy.coordinates import Angle
+    import astropy.units as u
     v = Vizier(columns=["*"], row_limit=-1, timeout=120)
     print("  fetching Strasbourg-ESO PNe V/84 ...", flush=True)
     res = v.get_catalogs("V/84")
@@ -279,16 +283,21 @@ def fetch_eso_pne() -> list[dict]:
         print("  V/84: missing _RA.icrs / _DE.icrs columns; skipping", flush=True)
         return []
     out = []
+    parse_failures = 0
     for row in t:
         try:
             name = str(row["Name"]).strip() or f"PNG {row['PNG']}"
-            ra = float(row["_RA.icrs"]); dec = float(row["_DE.icrs"])
+            ra = Angle(str(row["_RA.icrs"]).strip(), unit=u.hour).degree
+            dec = Angle(str(row["_DE.icrs"]).strip(), unit=u.deg).degree
             entry = {"name": name, "ra_deg": ra, "dec_deg": dec, "type": "PN"}
             if "PNG" in t.colnames:
                 entry["png"] = str(row["PNG"]).strip()
             out.append(with_gal(entry))
         except Exception:
+            parse_failures += 1
             continue
+    if parse_failures:
+        print(f"  V/84: {parse_failures} rows failed to parse (out of {len(t)})", flush=True)
     return out
 
 
@@ -327,9 +336,16 @@ def main() -> None:
             pass
     cats["smgps_candidates"] = smgps
 
-    # EMU Ball et al. 2025 — the paper has a MNRAS ID. Try plausible IDs.
+    # EMU Ball et al. SNR candidates — not currently mirrored in VizieR under
+    # any obvious paper-ID we could find. Tried the IDs below; if any future
+    # publication lands on VizieR with a recognisable column shape, add it
+    # to the list and the first match wins.
     emu = []
-    for cid in ("J/MNRAS/518/1273", "J/MNRAS/535/4250", "J/PASA/42/e005", "J/MNRAS/500/2493"):
+    emu_ids_tried = (
+        "J/MNRAS/518/1273", "J/MNRAS/535/4250", "J/PASA/42/e005",
+        "J/MNRAS/500/2493", "J/PASA/41/e003", "J/MNRAS/524/L43",
+    )
+    for cid in emu_ids_tried:
         try:
             found = fetch_optional(cid, "Name")
             if found:
@@ -338,6 +354,10 @@ def main() -> None:
                 break
         except Exception:
             pass
+    if not emu:
+        print(f"  emu_candidates: 0 matched (tried {len(emu_ids_tried)} VizieR IDs); "
+              "drop a manual JSON at data/catalogs.json::emu_candidates if you have one",
+              flush=True)
     cats["emu_candidates"] = emu
 
     # Each in its own try so one VizieR hiccup doesn't take out the others.
