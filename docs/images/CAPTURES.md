@@ -6,49 +6,25 @@ The README references images in this directory. Capture each one with the sugges
 
 All images: dark UI, no developer-tools panes visible, no personal file paths in shot if possible (the manifest leaks paths in `/api/manifest`, so close devtools and zoom into the map area).
 
-## The "See it in action" reel — 4 captures
+## The "See it in action" reel — 4 captures ✓ done
 
-These four are the headline visuals the README leads with. Two stills, two GIFs.
+All four are GIFs, captured at native 2501×1500 then optimised down to ~1MB each via ffmpeg palette+rescale (1000px wide, 256-colour palette, Bayer dither). Total weight ~4.4 MB across all four.
 
-### 1. `feature-search.png` (still)
+### 1. `survey-swap.gif` ✓
 
-Smart search bar in action. Right rail with:
-- Search box visible at top.
-- Active query: `filter:Ha hours>2 tel:redcat` (or another combo that returns 5–15 targets).
-- Filtered target list below showing only matching targets.
-- Optional: one target highlighted/selected.
+Background survey switching — your FOV polygons over a region of sky, background cycling through optical → Hα → infrared → radio. Polygons stay locked in place while the sky transforms. Captured 2026-05-05.
 
-### 2. `loop-planning-mode.gif` (~25s)
+### 2. `smart-search.gif` ✓
 
-Planning demo. Sequence:
-1. Click "Planning" in the topbar.
-2. Click "+ New plan".
-3. Click on the sky to drop a target center.
-4. Pick telescope + camera from dropdown — FOV box appears.
-5. Set rows × cols × overlap to make a 2×2 mosaic.
-6. Drag the rotation handle to spin the mosaic.
-7. Set per-filter target hours.
-8. Save / close the plan editor — mosaic remains on the map with dashed borders.
+Right-rail search bar with a query being typed (e.g. `filter:Ha hours>2 tel:redcat`) and the target list filtering live as the keys land. Captured 2026-05-05.
 
-### 3. `feature-catalogs.png` (still)
+### 3. `feature-catalogues.gif` ✓
 
-Catalogue overlays. Show:
-- The Catalogues accordion expanded in the right rail.
-- Two or three catalog checkboxes ticked (e.g. Green SNR + WISE HII + Sharpless).
-- Map showing the overlay markers spread across the galactic plane.
-- Choose a region with some of your FOVs visible too, so viewers see catalogue markers next to your coverage.
+Catalogues rail with overlays being toggled — markers light up across the galactic plane as each catalogue is enabled. Captured 2026-05-05.
 
-### 4. `feature-survey-swap.gif` (~15s)
+### 4. `planning-mode.gif` ✓
 
-Background survey switching — the killer "professional astronomy data on tap" feature. Sequence:
-1. Pick a region of sky with several of your FOVs clearly visible (Milky Way southern region works great).
-2. Start on **optical** (Mellinger or DSS Color).
-3. Switch to **Hα** (Finkbeiner or IPHAS DR2 Hα). Hold ~2-3s.
-4. Switch to **infrared** (WISE 12µm or 2MASS-K). Hold ~2-3s.
-5. Switch to **radio** if available (SUMSS / NVSS). Hold ~2-3s.
-6. Optional: land back on optical.
-
-The point: your FOV polygons stay locked in place across every background while the sky character transforms. Don't move the view between switches — keep the same RA/Dec center and zoom so the contrast is purely the survey, not the framing.
+End-to-end planning demo: Planning tab → + New plan → click sky → pick telescope+camera → 2×2 mosaic → drag rotation handle → set Ha hours → save (mosaic stays on map with dashed borders). Captured 2026-05-05.
 
 ## Already captured
 
