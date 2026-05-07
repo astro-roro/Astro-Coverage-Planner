@@ -773,8 +773,9 @@ function renderTargetList() {
       const id = parseInt(row.dataset.targetId, 10);
       const t = manifest.targets.find(x => x.target_id === id);
       if (t) {
-        renderTargetPanel(t);
+        // Pan first so even a render throw doesn't swallow the pan.
         panMapTo(t.center_ra_deg, t.center_dec_deg);
+        renderTargetPanel(t);
       }
     });
   });
@@ -953,14 +954,11 @@ function angularSep(ra1, dec1, ra2, dec2) {
 
 // Smooth-pan the map to (ra, dec) unless we're already there. Used by the
 // rail row clicks so opening a detail/editor view also orients the sky map.
-// No-op when current centre is within `threshold_arcmin` of the target — this
-// prevents a jarring re-pan when the user simply re-opens the same panel.
+// No-op when current centre is within `threshold_arcmin` of the target so
+// re-clicking the same row doesn't trigger a redundant pan.
 function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
-  if (!aladin) { console.warn("panMapTo: aladin not ready"); return; }
-  if (!Number.isFinite(ra) || !Number.isFinite(dec)) {
-    console.warn("panMapTo: invalid coords", ra, dec);
-    return;
-  }
+  if (!aladin) return;
+  if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
   try {
     const cur = aladin.getRaDec();
     if (cur && cur.length === 2 &&
@@ -972,8 +970,6 @@ function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
     aladin.animateToRaDec(ra, dec, duration_s);
   } else if (typeof aladin.gotoRaDec === "function") {
     aladin.gotoRaDec(ra, dec);
-  } else {
-    console.warn("panMapTo: no goto method on aladin instance");
   }
 }
 
@@ -3748,8 +3744,9 @@ function renderPlanList() {
     row.addEventListener("click", () => {
       const pl = plans.find(p => p.id === row.dataset.planId);
       if (pl) {
-        renderPlanEditor(pl);
+        // Pan first so even a render throw doesn't swallow the pan.
         panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+        renderPlanEditor(pl);
       }
     });
   });
