@@ -955,9 +955,12 @@ function angularSep(ra1, dec1, ra2, dec2) {
 // rail row clicks so opening a detail/editor view also orients the sky map.
 // No-op when current centre is within `threshold_arcmin` of the target — this
 // prevents a jarring re-pan when the user simply re-opens the same panel.
-function panMapTo(ra, dec, { duration_s = 0.5, threshold_arcmin = 6 } = {}) {
-  if (!aladin) return;
-  if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
+function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
+  if (!aladin) { console.warn("panMapTo: aladin not ready"); return; }
+  if (!Number.isFinite(ra) || !Number.isFinite(dec)) {
+    console.warn("panMapTo: invalid coords", ra, dec);
+    return;
+  }
   try {
     const cur = aladin.getRaDec();
     if (cur && cur.length === 2 &&
@@ -969,6 +972,8 @@ function panMapTo(ra, dec, { duration_s = 0.5, threshold_arcmin = 6 } = {}) {
     aladin.animateToRaDec(ra, dec, duration_s);
   } else if (typeof aladin.gotoRaDec === "function") {
     aladin.gotoRaDec(ra, dec);
+  } else {
+    console.warn("panMapTo: no goto method on aladin instance");
   }
 }
 
