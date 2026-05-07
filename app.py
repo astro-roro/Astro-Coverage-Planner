@@ -20,6 +20,7 @@ Endpoints:
 - GET /api/observability         altaz for all targets at (lat, lon, time)
 - GET /api/visibility            12-month per-target visibility bins for a site
 - GET /api/visibility/point      same bins for an arbitrary (ra, dec) point
+- POST /api/visibility/panels    aggregated bins for a list of mosaic panels
 - GET /api/sites, POST           CRUD for saved observing sites
 - GET /api/export/priority       CSV of gap-mode candidates
 - GET /api/gaps                  multi-source gap-finder (JSON)
@@ -1585,6 +1586,104 @@ def api_visibility_point():
         "ra_deg": ra,
         "dec_deg": dec,
         "months": bins.get(0, []),
+    })
+
+
+@app.route("/api/visibility/panels", methods=["POST"])
+def api_visibility_panels():
+    """Aggregated visibility for a list of mosaic panel (ra, dec) centres.
+
+    Used by the planner to summarise a mosaic's per-month "fraction of
+    panels visible". POST body::
+
+        { "panels": [{"ra_deg": ..., "dec_deg": ...}, ...],
+          "year":     optional int,
+          "site_id":  optional str  (else lat/lon/min_alt_deg from query) }
+
+    Returns per-panel month-bins identical to /api/visibility/point, plus
+    a ``months`` aggregate of {panels_visible, total_panels} per month.
+    Single-panel calls degenerate to the same bins as /api/visibility/point.
+    """
+    try:
+        import astropy  # noqa: F401  - presence check only
+    except Exception as e:
+        return jsonify({"error": f"astropy not available: {e}"}), 500
+    site, err = _resolve_site_from_request()
+    if err is not None:
+        return err
+    body = request.get_json(silent=True) or {}
+    panels_in = body.get("panels") if isinstance(body, dict) else None
+    if not isinstance(panels_in, list) or not panels_in:
+        return jsonify({"error": "panels: non-empty list required"}), 400
+    if len(panels_in) > 400:
+        return jsonify({"error": "panels: max 400 per request"}), 400
+    try:
+        year = int(body.get("year") or datetime.now(timezone.utc).year)
+    except (TypeError, ValueError):
+        return jsonify({"error": "year must be an integer"}), 400
+    if not (1900 <= year <= 2200):
+        return jsonify({"error": "year out of range"}), 400
+
+    parsed: list[tuple[float, float]] = []
+    for i, p in enumerate(panels_in):
+        if not isinstance(p, dict):
+            return jsonify({"error": f"panel {i}: must be object"}), 400
+        try:
+            ra = float(p["ra_deg"])
+            dec = float(p["dec_deg"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"error": f"panel {i}: ra_deg/dec_deg required"}), 400
+        if not (-360.0 <= ra <= 360.0) or not (-90.0 <= dec <= 90.0):
+            return jsonify({"error": f"panel {i}: ra/dec out of range"}), 400
+        parsed.append((round(ra, 4), round(dec, 4)))
+
+    site_key = (
+        round(site["lat"], 4), round(site["lon"], 4),
+        round(site["min_alt_deg"], 2),
+    )
+    per_panel_bins: list[list[dict] | None] = [None] * len(parsed)
+    misses: list[tuple[int, float, float]] = []
+    for idx, (ra, dec) in enumerate(parsed):
+        cached = _visibility_cache.get(site_key + (ra, dec, year))
+        if cached is None:
+            misses.append((idx, ra, dec))
+        else:
+            per_panel_bins[idx] = cached.get(0, [])
+
+    if misses:
+        targets = [{"target_id": i, "center_ra_deg": ra, "center_dec_deg": dec}
+                   for i, (_, ra, dec) in enumerate(misses)]
+        bins_dict = compute_year_visibility(
+            targets,
+            lat=site["lat"], lon=site["lon"], elev_m=site["elev_m"],
+            min_alt_deg=site["min_alt_deg"], year=year,
+        )
+        for i, (idx, ra, dec) in enumerate(misses):
+            single_bins = bins_dict.get(i, [])
+            _visibility_cache[site_key + (ra, dec, year)] = {0: single_bins}
+            per_panel_bins[idx] = single_bins
+
+    total = len(parsed)
+    months: list[dict] = []
+    for m in range(1, 13):
+        visible = 0
+        for bins in per_panel_bins:
+            b = next((x for x in (bins or []) if x.get("month") == m), None)
+            if b and b.get("label") != "not_visible":
+                visible += 1
+        months.append({"month": m, "panels_visible": visible, "total_panels": total})
+
+    return jsonify({
+        "site": site,
+        "year": year,
+        "labels": list(_VIS_LABELS),
+        "panel_count": total,
+        "months": months,
+        "per_panel": [
+            {"ra_deg": parsed[i][0], "dec_deg": parsed[i][1],
+             "months": per_panel_bins[i] or []}
+            for i in range(total)
+        ],
     })
 
 
