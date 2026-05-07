@@ -145,6 +145,13 @@ button:active { background: #262e40; }
 
 .panel {
   flex: 0 0 380px;   /* wider too, since font is bigger */
+  /* Pin both min and max so the rail width is invariant across panel modes
+     (target list / detail / plan list / plan edit). Without these, flex's
+     implicit `min-width: auto` lets a wide child (e.g. a long input or an
+     unbreakable coord string in the plan editor) expand the panel and shift
+     the sky map sideways when the user navigates between modes. */
+  min-width: 380px;
+  max-width: 380px;
   background: #0f1319;
   border-left: 1px solid #1f2937;
   display: flex;
@@ -153,6 +160,10 @@ button:active { background: #262e40; }
   font-size: 15.5px; /* ~20% larger than body (13 → 15.5) */
   line-height: 1.4;
 }
+/* Anything inside the panel that overflows horizontally should clip rather
+   than stretch the rail. Belt-and-braces with the .panel max-width above. */
+#panelBody { min-width: 0; }
+#panelBody fieldset { min-width: 0; }
 
 .panel-search {
   flex: 0 0 auto;
