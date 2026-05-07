@@ -7,5 +7,14 @@
     "moc_url": "https://alasky.cds.unistra.fr/IPHAS/DR2/halpha/Moc.fits",
     "attribution": "INT/IPHAS DR2 (Drew et al. 2014)",
     "enabled_default": false
+  },
+  {
+    "id": "vphas_ha",
+    "label": "VPHAS+ Hα",
+    "color": "#d97a4d",
+    "filter": "Ha",
+    "moc_url": "https://alasky.cds.unistra.fr/VPHAS/CDS_P_VPHAS_DR4_Halpha/Moc.fits",
+    "attribution": "VST/VPHAS+ DR4 (Drew et al. 2014)",
+    "enabled_default": false
   }
 ]
