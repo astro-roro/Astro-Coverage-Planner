@@ -78,6 +78,7 @@ let _obsIntervalId = null;     // setInterval handle for the rolling obsNow refr
 let visibilityData = null;     // {site_id, year, targets: {<id>: [12 bins]}} | null
 let currentAlts = {};          // {<target_id>: alt_deg} from latest /api/observability — for sort=tonight
 let sortBy = "hours";          // "hours" | "best_month" | "up_tonight"
+let planSortBy = "priority";   // "priority" | "name" | "panels_up_now" | "peak_panels_month"
 let catalogRegistry = [];      // [{id, data_key, label, color, marker, size, ...}] from /api/catalog-registry
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
@@ -771,7 +772,10 @@ function renderTargetList() {
     row.addEventListener("click", () => {
       const id = parseInt(row.dataset.targetId, 10);
       const t = manifest.targets.find(x => x.target_id === id);
-      if (t) renderTargetPanel(t);
+      if (t) {
+        renderTargetPanel(t);
+        panMapTo(t.center_ra_deg, t.center_dec_deg);
+      }
     });
   });
   const sortSel = panel.querySelector("#sortSel");
@@ -945,6 +949,27 @@ function angularSep(ra1, dec1, ra2, dec2) {
   const dr = toRad(ra1 - ra2);
   const cosA = Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(dr);
   return Math.acos(Math.max(-1, Math.min(1, cosA))) * 180 / Math.PI * 60; // arcmin
+}
+
+// Smooth-pan the map to (ra, dec) unless we're already there. Used by the
+// rail row clicks so opening a detail/editor view also orients the sky map.
+// No-op when current centre is within `threshold_arcmin` of the target — this
+// prevents a jarring re-pan when the user simply re-opens the same panel.
+function panMapTo(ra, dec, { duration_s = 0.5, threshold_arcmin = 6 } = {}) {
+  if (!aladin) return;
+  if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
+  try {
+    const cur = aladin.getRaDec();
+    if (cur && cur.length === 2 &&
+        angularSep(cur[0], cur[1], ra, dec) < threshold_arcmin) {
+      return;
+    }
+  } catch (e) { /* fall through to pan */ }
+  if (typeof aladin.animateToRaDec === "function") {
+    aladin.animateToRaDec(ra, dec, duration_s);
+  } else if (typeof aladin.gotoRaDec === "function") {
+    aladin.gotoRaDec(ra, dec);
+  }
 }
 
 // Ray-cast point-in-polygon in RA/Dec. Polygons here are small (< a few degrees);
@@ -2272,6 +2297,213 @@ async function loadTileVisibility(tile) {
     </div>`;
 }
 
+// Plan visibility — aggregated per-month {panels_visible, total_panels} for
+// a mosaic, plus per-panel bins for the heatmap. Cached by plan id +
+// geometry hash so editing the centre / mosaic shape / gear FOV invalidates
+// correctly. Pending fetches are tracked so the UI can show a faded/spinner
+// state on rows whose data hasn't arrived yet.
+const _planVisCache = new Map();    // "<id>|<geomHash>" → endpoint payload
+const _planVisPending = new Set();  // keys currently being fetched
+
+function planGeomHash(plan) {
+  const tg = plan.target || {};
+  const m = planMosaic(plan);
+  const [fw, fh] = planFovArcmin(plan);
+  const lat = currentSite?.lat ?? 0;
+  const lon = currentSite?.lon ?? 0;
+  const minAlt = currentSite?.min_alt_deg ?? 30;
+  return [
+    (tg.center_ra_deg || 0).toFixed(4),
+    (tg.center_dec_deg || 0).toFixed(4),
+    (tg.rotation_deg || 0).toFixed(1),
+    `${m.rows}x${m.cols}@${m.overlap_pct}`,
+    `${fw.toFixed(1)}x${fh.toFixed(1)}`,
+    `${lat.toFixed(4)},${lon.toFixed(4)},${minAlt}`,
+  ].join("|");
+}
+
+function planVisCacheKey(plan) {
+  return `${plan.id}|${planGeomHash(plan)}`;
+}
+
+async function loadPlanVisibility(plan) {
+  if (!timeAware) return null;
+  if (plan?.target?.center_ra_deg == null || plan?.target?.center_dec_deg == null) return null;
+  const key = planVisCacheKey(plan);
+  const cached = _planVisCache.get(key);
+  if (cached) return cached;
+  if (_planVisPending.has(key)) return null;  // another caller in flight
+  _planVisPending.add(key);
+  try {
+    const panels = mosaicPanelCenters(plan).map(p => ({ ra_deg: p.ra_deg, dec_deg: p.dec_deg }));
+    if (!panels.length) return null;
+    const qs = activeSiteId
+      ? `?site_id=${encodeURIComponent(activeSiteId)}`
+      : `?lat=${currentSite.lat}&lon=${currentSite.lon}&min_alt_deg=${currentSite.min_alt_deg}`;
+    const r = await fetch(`/api/visibility/panels${qs}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ panels }),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    _planVisCache.set(key, d);
+    return d;
+  } catch (e) {
+    console.warn("plan visibility fetch failed:", e);
+    return null;
+  } finally {
+    _planVisPending.delete(key);
+  }
+}
+
+// Background-fetch any uncached plans, updating the active panel in place
+// as each resolves. Safe to call on every panel render — already-cached
+// plans short-circuit instantly and pending ones don't double-fetch.
+async function loadAllPlanVisibility() {
+  if (!timeAware || !plans?.length) return;
+  await Promise.all(plans.map(async pl => {
+    const before = _planVisCache.has(planVisCacheKey(pl));
+    await loadPlanVisibility(pl);
+    if (!before) {
+      if (panelMode === "plan-list") updatePlanRowVis(pl);
+      else if (panelMode === "plan-edit" && editingPlan?.id === pl.id) updatePlanEditorVis();
+    }
+  }));
+}
+
+function planVisCellHtml(plan, { compact = true } = {}) {
+  const m = planMosaic(plan);
+  const isMosaic = (m.rows * m.cols) > 1;
+  const data = _planVisCache.get(planVisCacheKey(plan));
+  if (!data) {
+    // Render 12 empty cells so the sparkline keeps its grid width while
+    // loading — without them the inline-grid collapses to 0 and the row
+    // looks like nothing's there.
+    const cls = compact ? "yc-sparkline yc-loading" : "yc-bar yc-loading";
+    const placeholder = `<span class="yc-cell vc-not_visible"></span>`.repeat(12);
+    return `<span class="${cls}" aria-busy="true">${placeholder}</span>`;
+  }
+  return isMosaic ? planVisFracHtml(data, compact) : planVisLabelHtml(data, compact);
+}
+
+function planVisFracHtml(data, compact) {
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const cells = (data.months || []).map(m => {
+    const total = m.total_panels || 0;
+    const pct = total > 0 ? Math.round((m.panels_visible / total) * 100) : 0;
+    const cur = m.month === nowMonth ? "vc-current" : "";
+    const tip = `${_MONTH_LABELS[m.month-1]}: ${m.panels_visible}/${total} panels visible (${pct}%)`;
+    return `<span class="yc-cell yc-frac ${cur}" style="--frac:${pct}%" title="${esc(tip)}"></span>`;
+  }).join("");
+  const cls = compact ? "yc-sparkline" : "yc-bar";
+  return `<span class="${cls}" aria-label="visibility by month">${cells}</span>`;
+}
+
+function planVisLabelHtml(data, compact) {
+  // Single-panel plan: render the same label-bucket sparkline as the target
+  // list so it carries "great vs fair vs partial" detail.
+  const bins = (data.per_panel?.[0]?.months) || [];
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const cells = bins.map(b => {
+    const cls = b.month === nowMonth ? `yc-cell vc-${b.label} vc-current` : `yc-cell vc-${b.label}`;
+    return `<span class="${cls}" title="${esc(_cellTooltip(b))}"></span>`;
+  }).join("");
+  const wrap = compact ? "yc-sparkline" : "yc-bar";
+  return `<span class="${wrap}" aria-label="visibility by month">${cells}</span>`;
+}
+
+function updatePlanRowVis(plan) {
+  const cell = document.querySelector(`.plan-row[data-plan-id="${plan.id}"] .plan-vis`);
+  if (cell) cell.innerHTML = planVisCellHtml(plan, { compact: true });
+}
+
+function planVisMetaText(data) {
+  if (!data) return "Loading…";
+  let best = null, bestFrac = -1;
+  for (const m of data.months || []) {
+    const frac = m.total_panels > 0 ? m.panels_visible / m.total_panels : 0;
+    if (frac > bestFrac) { bestFrac = frac; best = m; }
+  }
+  if (!best) return "";
+  if (data.panel_count === 1) {
+    const bin = (data.per_panel?.[0]?.months) || [];
+    const ranked = bin.slice().sort((a, b) =>
+      (_LABEL_RANK[b.label] || 0) - (_LABEL_RANK[a.label] || 0));
+    const top = ranked[0];
+    if (!top || top.label === "not_visible") return "Below min altitude all year.";
+    return `Peak: ${_MONTH_LABELS[top.month-1]} (${_LABEL_PRETTY[top.label]}, ${top.hours_above_min}h above min)`;
+  }
+  if (best.panels_visible === 0) return "No panel above min altitude any month.";
+  const pct = Math.round((best.panels_visible / best.total_panels) * 100);
+  return `Peak: ${_MONTH_LABELS[best.month-1]} — ${best.panels_visible}/${best.total_panels} panels (${pct}%)`;
+}
+
+function planVisHeatmapHtml(data) {
+  if (!data || !data.per_panel || data.per_panel.length <= 1) return "";
+  const nowMonth = new Date().getUTCMonth() + 1;
+  // Sort by dec descending then ra so a strip mosaic reads top→bottom by row.
+  const indexed = data.per_panel.map((p, i) => ({ p, i }));
+  indexed.sort((a, b) => (b.p.dec_deg - a.p.dec_deg) || (a.p.ra_deg - b.p.ra_deg));
+  const rows = indexed.map(({ p, i }) => {
+    const cells = (p.months || []).map(b => {
+      const cls = b.month === nowMonth ? `yc-cell vc-${b.label} vc-current` : `yc-cell vc-${b.label}`;
+      return `<span class="${cls}" title="${esc(_cellTooltip(b))}"></span>`;
+    }).join("");
+    const label = `${p.ra_deg.toFixed(2)}, ${p.dec_deg.toFixed(2)}`;
+    return `<div class="vis-heatmap-row" title="Panel ${i+1}: ${esc(label)}"><span class="vis-heatmap-label">${i+1}</span>${cells}</div>`;
+  }).join("");
+  return rows;
+}
+
+function updatePlanEditorVis() {
+  if (panelMode !== "plan-edit" || !editingPlan) return;
+  const fs = document.getElementById("planVisFieldset");
+  if (!fs) return;
+  const data = _planVisCache.get(planVisCacheKey(editingPlan));
+  const agg = fs.querySelector(".plan-vis-aggregate");
+  if (agg) agg.innerHTML = planVisCellHtml(editingPlan, { compact: false });
+  const meta = fs.querySelector("#planVisMeta");
+  if (meta) meta.textContent = planVisMetaText(data);
+  const heat = fs.querySelector("#planVisHeatmap");
+  if (heat) heat.innerHTML = planVisHeatmapHtml(data);
+}
+
+let _planVisDebounceTimer = null;
+function schedulePlanVisRefresh() {
+  clearTimeout(_planVisDebounceTimer);
+  _planVisDebounceTimer = setTimeout(async () => {
+    if (!timeAware || !editingPlan || panelMode !== "plan-edit") return;
+    updatePlanEditorVis();          // show loading state immediately
+    await loadPlanVisibility(editingPlan);
+    updatePlanEditorVis();
+  }, 300);
+}
+
+// Sort metrics derived from the cached visibility payload. Plans without
+// data yet sort to the end (Infinity sentinel) so they don't disrupt the
+// stable order — they shuffle into place once their fetch resolves and
+// loadAllPlanVisibility re-renders.
+function planPanelsUpNow(plan) {
+  const data = _planVisCache.get(planVisCacheKey(plan));
+  if (!data) return -1;
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const m = (data.months || []).find(x => x.month === nowMonth);
+  if (!m) return -1;
+  return (m.total_panels > 0) ? (m.panels_visible / m.total_panels) : 0;
+}
+
+function planPeakPanelsMonth(plan) {
+  const data = _planVisCache.get(planVisCacheKey(plan));
+  if (!data) return -1;
+  let best = -1;
+  for (const m of data.months || []) {
+    const frac = (m.total_panels > 0) ? (m.panels_visible / m.total_panels) : 0;
+    if (frac > best) best = frac;
+  }
+  return best;
+}
+
 // Promotes a tile to a new plan (Plan 2d). Switches into planning mode if
 // not already there, builds an empty plan with the tile's centre + a name
 // derived from the source label + tile id, and opens the editor. FOV is
@@ -2822,6 +3054,10 @@ function initTimeAware() {
   if (savedSort && ["hours", "best_month", "up_tonight"].includes(savedSort)) {
     sortBy = savedSort;
   }
+  const savedPlanSort = localStorage.getItem("acp.plan_sort_by");
+  if (savedPlanSort && ["priority", "name", "panels_up_now", "peak_panels_month"].includes(savedPlanSort)) {
+    planSortBy = savedPlanSort;
+  }
   applyTimeAwareState(/*fireImmediate=*/true);
   const btn = document.getElementById("timeAwareToggle");
   if (btn) btn.addEventListener("click", () => setTimeAware(!timeAware));
@@ -2846,12 +3082,26 @@ function applyTimeAwareState(fireImmediate) {
     if (fireImmediate) updateObsNow();
     _obsIntervalId = setInterval(updateObsNow, 60_000);
     loadVisibility();  // populates sparklines + best-month chips
+    // Plan-side fans out separately — manifest visibility is keyed by
+    // target_id, plan visibility by panel centres, so they don't share a
+    // cache or fetch.
+    if (panelMode === "plan-list") {
+      renderPlanList();
+    } else if (panelMode === "plan-edit" && editingPlan) {
+      renderPlanEditor(editingPlan);
+    } else {
+      // Pre-warm the plan cache in the background even if the user is on
+      // the target list — they may switch panels and we want it ready.
+      loadAllPlanVisibility();
+    }
   } else {
     const el = document.getElementById("obsNow");
     if (el) el.textContent = "";
     visibilityData = null;
     currentAlts = {};
     if (panelMode === "list") renderTargetList();
+    else if (panelMode === "plan-list") renderPlanList();
+    else if (panelMode === "plan-edit" && editingPlan) renderPlanEditor(editingPlan);
   }
   refreshHorizonOverlay();
 }
@@ -3381,7 +3631,8 @@ function newEmptyPlan() {
   let ra = 180, dec = 0;
   try { const c = aladin.getRaDec(); if (c && c.length === 2) { ra = c[0]; dec = c[1]; } } catch {}
   const tel = gear.telescopes?.[0];
-  const cam = gear.cameras?.[0];
+  const cam = (tel?.default_camera_id && gear.cameras?.find(c => c.id === tel.default_camera_id))
+    || gear.cameras?.[0];
   return {
     id: `plan-${Date.now().toString(36)}`,
     project_name: "",
@@ -3400,6 +3651,27 @@ function newEmptyPlan() {
   };
 }
 
+const _PRIORITY_RANK = { high: 3, normal: 2, low: 1 };
+
+function sortedPlansForList() {
+  const arr = plans.slice();
+  if (planSortBy === "name") {
+    arr.sort((a, b) => (a.target?.name || a.id).localeCompare(b.target?.name || b.id));
+  } else if (planSortBy === "panels_up_now" && timeAware) {
+    arr.sort((a, b) => planPanelsUpNow(b) - planPanelsUpNow(a));
+  } else if (planSortBy === "peak_panels_month" && timeAware) {
+    arr.sort((a, b) => planPeakPanelsMonth(b) - planPeakPanelsMonth(a));
+  } else {
+    // Default "priority": high → normal → low, then name.
+    arr.sort((a, b) => {
+      const dp = (_PRIORITY_RANK[b.priority] || 2) - (_PRIORITY_RANK[a.priority] || 2);
+      if (dp !== 0) return dp;
+      return (a.target?.name || a.id).localeCompare(b.target?.name || b.id);
+    });
+  }
+  return arr;
+}
+
 function renderPlanList() {
   panelMode = "plan-list";
   updateSearchVisibility();
@@ -3409,7 +3681,8 @@ function renderPlanList() {
   const panel = document.getElementById("panelBody");
   if (!panel) return;
 
-  const rows = plans.map(pl => {
+  const sorted = sortedPlansForList();
+  const rows = sorted.map(pl => {
     const name = esc(pl.target?.name || pl.id);
     const proj = esc(pl.project_name || "(no project)");
     const pri = pl.priority || "normal";
@@ -3427,16 +3700,25 @@ function renderPlanList() {
     }).join("");
     let remaining = 0;
     for (const g of Object.values(goals)) remaining += Math.max(0, (g.target_hours || 0) - (g.actual_hours || 0));
+    const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
     return `<li class="plan-row" data-plan-id="${esc(pl.id)}">
         <span class="plan-pri plan-pri-${pri}">${pri}</span>
         <span class="plan-name">${name}</span>
         <span class="plan-project">${proj}</span>
         <span class="plan-goals">${dots}</span>
         <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
+        ${visCell}
       </li>`;
   }).join("");
 
   const empty = `<li class="tr-empty">No plans yet. Click "+ New plan" to start.</li>`;
+  const sortCtl = `<span class="sort-control">sort by
+      <select id="planSortSel">
+        <option value="priority" ${planSortBy==="priority"?"selected":""}>priority</option>
+        <option value="name" ${planSortBy==="name"?"selected":""}>name</option>
+        <option value="panels_up_now" ${planSortBy==="panels_up_now"?"selected":""} data-time-aware>panels up now</option>
+        <option value="peak_panels_month" ${planSortBy==="peak_panels_month"?"selected":""} data-time-aware>peak season</option>
+      </select></span>`;
 
   panel.innerHTML = `
     <div class="planner-toolbar">
@@ -3445,7 +3727,7 @@ function renderPlanList() {
       <button id="planGear">Edit gear</button>
     </div>
     <div class="panel-list">
-      <h3>Plans <span class="tr-count">${plans.length}</span></h3>
+      <h3>Plans <span class="tr-count">${plans.length}</span>${sortCtl}</h3>
       <ul class="target-list">${rows || empty}</ul>
     </div>
     <div id="syncResult"></div>`;
@@ -3460,10 +3742,20 @@ function renderPlanList() {
   panel.querySelectorAll(".plan-row").forEach(row => {
     row.addEventListener("click", () => {
       const pl = plans.find(p => p.id === row.dataset.planId);
-      if (pl) renderPlanEditor(pl);
+      if (pl) {
+        renderPlanEditor(pl);
+        panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+      }
     });
   });
+  const planSortSel = panel.querySelector("#planSortSel");
+  if (planSortSel) planSortSel.addEventListener("change", e => {
+    planSortBy = e.target.value;
+    localStorage.setItem("acp.plan_sort_by", planSortBy);
+    renderPlanList();
+  });
   redrawPlanFootprints();
+  if (timeAware) loadAllPlanVisibility();
 }
 
 function renderPlanEditor(plan) {
@@ -3573,6 +3865,13 @@ function renderPlanEditor(plan) {
         <div style="font-size:11px;color:#78839a" id="mosaicSummary"></div>
       </fieldset>
 
+      <fieldset id="planVisFieldset" class="vis-section">
+        <legend>Visibility</legend>
+        <div class="vis-aggregate"><span class="plan-vis-aggregate">${planVisCellHtml(editingPlan, { compact: false })}</span></div>
+        <div class="vis-meta-row"><span id="planVisMeta" class="vis-meta"></span></div>
+        <div id="planVisHeatmap" class="vis-heatmap"></div>
+      </fieldset>
+
       <fieldset>
         <legend>Filter goals</legend>
         <table class="goals-table">
@@ -3613,15 +3912,15 @@ function renderPlanEditor(plan) {
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
   panel.querySelector("#f_ra")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value);
-    if (isFinite(v)) { editingPlan.target.center_ra_deg = v; document.getElementById("f_ra_hms").textContent = deg2hms(v); redrawPlanFootprints(); }
+    if (isFinite(v)) { editingPlan.target.center_ra_deg = v; document.getElementById("f_ra_hms").textContent = deg2hms(v); redrawPlanFootprints(); schedulePlanVisRefresh(); }
   });
   panel.querySelector("#f_dec")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value);
-    if (isFinite(v)) { editingPlan.target.center_dec_deg = v; document.getElementById("f_dec_dms").textContent = deg2dms(v); redrawPlanFootprints(); }
+    if (isFinite(v)) { editingPlan.target.center_dec_deg = v; document.getElementById("f_dec_dms").textContent = deg2dms(v); redrawPlanFootprints(); schedulePlanVisRefresh(); }
   });
   panel.querySelector("#f_rot")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value);
-    if (isFinite(v)) { editingPlan.target.rotation_deg = v; redrawPlanFootprints(); }
+    if (isFinite(v)) { editingPlan.target.rotation_deg = v; redrawPlanFootprints(); schedulePlanVisRefresh(); }
   });
   panel.querySelector("#f_telescope")?.addEventListener("change", e => {
     editingPlan.telescope_id = e.target.value;
@@ -3647,17 +3946,17 @@ function renderPlanEditor(plan) {
   panel.querySelector("#f_mrows")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
     editingPlan.target.mosaic.rows = Math.max(1, parseInt(e.target.value) || 1);
-    updateMosaicSummary(); redrawPlanFootprints();
+    updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
   });
   panel.querySelector("#f_mcols")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
     editingPlan.target.mosaic.cols = Math.max(1, parseInt(e.target.value) || 1);
-    updateMosaicSummary(); redrawPlanFootprints();
+    updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
   });
   panel.querySelector("#f_moverlap")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
     editingPlan.target.mosaic.overlap_pct = Math.max(0, Math.min(90, parseFloat(e.target.value) || 0));
-    updateMosaicSummary(); redrawPlanFootprints();
+    updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
   });
   panel.querySelectorAll(".goal-target-hours").forEach(el => el.addEventListener("input", e => {
     const f = e.target.dataset.f;
@@ -3745,6 +4044,11 @@ function renderPlanEditor(plan) {
   });
 
   redrawPlanFootprints();
+  if (timeAware) {
+    // Initial fetch + render. The fieldset already shows the loading state
+    // from its first render; this resolves it.
+    loadPlanVisibility(editingPlan).then(() => updatePlanEditorVis());
+  }
 }
 
 async function savePlan() {
