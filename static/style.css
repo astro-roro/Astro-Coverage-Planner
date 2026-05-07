@@ -571,8 +571,14 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
 
 .plan-row {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  gap: 8px;
+  /* row 1: pri · name · project · goals · remaining
+     row 2: (pri col empty) · vis-strip (the panels-fraction sparkline)
+     5-col / 2-row mirror of .target-row so the sparkline lines up across
+     rows and time-aware off collapses row 2 cleanly. */
+  grid-template-columns: auto 1fr auto auto auto;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
   align-items: center;
   padding: 7px 6px;
   border-radius: 4px;
@@ -580,6 +586,21 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
   border-bottom: 1px dashed #1a2030;
   font-size: 13px;
 }
+.plan-pri       { grid-row: 1; grid-column: 1; }
+.plan-name      { grid-row: 1; grid-column: 2; }
+.plan-project   { grid-row: 1; grid-column: 3; }
+.plan-goals     { grid-row: 1; grid-column: 4; }
+.plan-remaining { grid-row: 1; grid-column: 5; }
+.plan-vis {
+  grid-row: 2;
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: #78839a;
+}
+.plan-vis .yc-sparkline { margin-left: auto; margin-right: 0; }
+body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .plan-row:hover { background: #1a2030; }
 
 .plan-pri {
@@ -925,6 +946,65 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
   z-index: 1;
 }
 .yc-bar .yc-cell.vc-current { box-shadow: 0 0 0 2px #ffe27a, 0 0 6px rgba(255, 226, 122, 0.5); }
+
+/* Fractional fill — used for mosaic plans where each cell shows the
+   fraction of panels visible that month. Vertical fill from below so the
+   eye reads "how full is this month". --frac is set inline per cell. */
+.yc-cell.yc-frac {
+  background: linear-gradient(to top, #46c5d4 var(--frac, 0%), #1f242e var(--frac, 0%));
+}
+
+/* Pending state — shown while a plan visibility fetch is in flight. The
+   sparkline grid stays the same width so the row doesn't reflow when data
+   arrives, just fades. */
+.yc-sparkline.yc-loading,
+.yc-bar.yc-loading {
+  opacity: 0.35;
+  position: relative;
+}
+.yc-sparkline.yc-loading::after,
+.yc-bar.yc-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg, transparent 0 4px, rgba(120, 131, 154, 0.25) 4px 8px);
+  border-radius: 2px;
+  animation: yc-loading-shift 1.2s linear infinite;
+}
+@keyframes yc-loading-shift {
+  from { background-position: 0 0; }
+  to   { background-position: 8px 0; }
+}
+
+/* Per-panel heatmap (mosaic plan editor) — rows = panels, cols = months,
+   each cell uses the same vc-* palette as the aggregate bar. */
+.vis-heatmap {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.vis-heatmap-row {
+  display: grid;
+  grid-template-columns: 24px repeat(12, 1fr);
+  gap: 1px;
+  align-items: center;
+}
+.vis-heatmap-row .yc-cell {
+  height: 10px;
+  border-radius: 1px;
+}
+.vis-heatmap-label {
+  font-size: 10px;
+  color: #78839a;
+  text-align: right;
+  padding-right: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.vis-aggregate { margin-top: 2px; }
 
 /* Now / Trend chips on the row's second line. Same colour-codes as the
    sparkline so the eye reads "green = good" consistently. */
