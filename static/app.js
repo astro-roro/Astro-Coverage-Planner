@@ -3699,8 +3699,11 @@ function renderPlanList() {
       const cls = ah >= th ? "done" : (ah > 0 ? "partial" : "todo");
       return `<span class="plan-goal-dot ${cls}" style="background:${color}" title="${f}: ${ah.toFixed(1)}/${th}h"></span>`;
     }).join("");
+    const { rows, cols } = planMosaic(pl);
+    const panelCount = Math.max(1, rows * cols);
     let remaining = 0;
     for (const g of Object.values(goals)) remaining += Math.max(0, (g.target_hours || 0) - (g.actual_hours || 0));
+    remaining *= panelCount;
     const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
     return `<li class="plan-row" data-plan-id="${esc(pl.id)}">
         <span class="plan-pri plan-pri-${pri}">${pri}</span>
