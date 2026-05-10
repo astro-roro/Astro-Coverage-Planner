@@ -74,6 +74,24 @@ Architectural reset that turned ACP into a plugin host so users (and the author 
 
 ---
 
+## Brutix deployment cleanup (parked 2026-05-09)
+
+The brutix container at `acp.brutix.rohanhinton.com` was switched from a 2-min cron that did `git pull && docker compose up -d --build` locally to GHA → GHCR → Watchtower. Pipeline: push to `main` → `.github/workflows/publish.yml` builds → `ghcr.io/astro-roro/astro-coverage-planner:latest` → Watchtower (label-scoped, 60s poll) recreates the `acp` container. Wait until two or three pushes have landed via this path and visibly rotated the container (check `docker logs acp-watchtower` for `Updated=1`) before doing the cleanup below.
+
+- **Bin the local-build remnants on brutix** once Watchtower has picked up at least one push:
+   - `/mnt/user/appdata/acp/repo/` — old git checkout; no longer pulled from
+   - `/mnt/user/appdata/acp/scripts/update.sh` and its `update.log` — old auto-update script; replaced by Watchtower
+   - The `acp-update` entry in User Scripts (already disabled, safe to delete the script + schedule.json entry)
+- **Bin the safety-net backups on brutix** once cleanup above is done:
+   - `/mnt/user/appdata/acp/docker-compose.yml.bak.*` (pre-GHCR compose)
+   - `/boot/config/plugins/user.scripts/customSchedule.cron.bak`
+   - `/boot/config/plugins/user.scripts/schedule.json.bak`
+   - `/etc/cron.d/root.bak` (this one regenerates anyway, lowest priority)
+- **If GHCR package is ever flipped to private** (currently public, inheriting the repo's visibility), Watchtower will start failing with auth errors. Fix: `docker login ghcr.io -u astro-roro -p <PAT>` on brutix as the user the Watchtower container runs as (writes `~/.docker/config.json`, which Watchtower reads automatically). PAT scope: `read:packages` is enough.
+- **Watchtower notification channel** is currently disabled (`WATCHTOWER_NOTIFICATIONS_LEVEL: info` but no channel configured). If you want a ping when an update lands or fails, add e.g. `WATCHTOWER_NOTIFICATION_URL: ntfy://...` pointing at the existing `cal-sync-ntfy` container. Skip until you've decided you actually want the noise.
+
+---
+
 ## Notes from the kick-off plan (2026-04-19)
 
 Rollout order agreed: **Feature 1 → Feature 2 → Feature 3**. Feature 3 needs Feature 2's search grammar to express "show only incomplete plans".
