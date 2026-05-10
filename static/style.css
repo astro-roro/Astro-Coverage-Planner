@@ -1220,6 +1220,21 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
 .inv-pri.pri-4 { color: #9aa3b3; border-color: #2a3246; }
 .inv-pri.pri-other { color: #6c7281; border-color: #2a3246; }
 
+/* Extension-declared facet chips: a coloured square swatch sits left
+   of the label so the rail doubles as a legend for the facet's colour
+   coding (matches whatever the source's color_facet paints onto tiles). */
+.facet-chip { gap: 4px; }
+.facet-swatch {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+.tile-facet-badges {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin: 6px 0 10px;
+}
+
 .inv-saved-row .inv-saved-select {
   background: #1a2030;
   border: 1px solid #2a3246;

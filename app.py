@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 
 # Reconfigure stdout/stderr to UTF-8 so non-ASCII characters in log/print
 # output don't crash on Windows where the default console codec (cp1252)
@@ -1161,7 +1161,43 @@ def _summarise_tile_source(src) -> dict:
         "max_priority_level": max_pri,
         "categories": sorted(cats),
         "bands": sorted(bands),
+        "facets": _coerce_facets(meta.get("facets")),
+        "color_facet": meta.get("color_facet") or "",
     }
+
+
+def _coerce_facets(raw) -> list[dict]:
+    """Pass-through validator for extension-declared facets.
+
+    Drops malformed entries silently so a typo in one facet doesn't break
+    the whole rail. Each kept facet has id+label+field+values, where
+    each value has value+label+color.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for f in raw:
+        if not isinstance(f, dict):
+            continue
+        fid = f.get("id"); lbl = f.get("label"); field = f.get("field")
+        vals = f.get("values")
+        if not (isinstance(fid, str) and isinstance(lbl, str)
+                and isinstance(field, str) and isinstance(vals, list)):
+            continue
+        kept_vals = []
+        for v in vals:
+            if not isinstance(v, dict):
+                continue
+            if "value" not in v or not isinstance(v.get("label"), str):
+                continue
+            kept_vals.append({
+                "value": v["value"],
+                "label": v["label"],
+                "color": v.get("color") or "",
+            })
+        if kept_vals:
+            out.append({"id": fid, "label": lbl, "field": field, "values": kept_vals})
+    return out
 
 
 @app.route("/api/tile-sources")
@@ -2629,9 +2665,29 @@ def api_sync():
         "project_count": len(payload["projects"]),
         "template_count": len(payload["exposureTemplates"]),
         "zip_path": str(zip_path),
+        "zip_filename": zip_path.name,
+        "download_url": f"/api/sync/download/{zip_path.name}",
         "warnings": warnings,
         "conflicts": warnings,  # alias — the UI inspects this to offer renames
     })
+
+
+# Filename whitelist matches the timestamped name produced by /api/sync.
+# send_from_directory already blocks path traversal; this is defense in depth
+# so a stray request can't probe arbitrary names in ZIP_OUTPUT_DIR.
+_SYNC_ZIP_NAME_RE = re.compile(r"^acp-sync-\d{8}T\d{6}Z\.zip$")
+
+
+@app.route("/api/sync/download/<path:filename>")
+def api_sync_download(filename: str):
+    if not _SYNC_ZIP_NAME_RE.match(filename):
+        return jsonify({"error": "invalid filename"}), 400
+    return send_from_directory(
+        ZIP_OUTPUT_DIR,
+        filename,
+        as_attachment=True,
+        mimetype="application/zip",
+    )
 
 
 if __name__ == "__main__":
