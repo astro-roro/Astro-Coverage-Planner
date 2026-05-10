@@ -1586,12 +1586,17 @@ function _loadInvState() {
     // Sets don't survive JSON; restore them per-source.
     const out = {};
     for (const [sid, v] of Object.entries(s || {})) {
+      const facetSelections = {};
+      for (const [fid, arr] of Object.entries(v.facetSelections || {})) {
+        facetSelections[fid] = new Set(Array.isArray(arr) ? arr.map(String) : []);
+      }
       out[sid] = {
         enabled: !!v.enabled,
         openRail: v.openRail !== false,
         priorities: new Set(Array.isArray(v.priorities) ? v.priorities : []),
         missing:    new Set(Array.isArray(v.missing) ? v.missing : []),
         categories: new Set(Array.isArray(v.categories) ? v.categories : []),
+        facetSelections,
         hidePlanned: !!v.hidePlanned,
       };
     }
@@ -1602,12 +1607,17 @@ function _loadInvState() {
 function _saveInvState() {
   const out = {};
   for (const [sid, v] of Object.entries(invState)) {
+    const facetSelections = {};
+    for (const [fid, set] of Object.entries(v.facetSelections || {})) {
+      facetSelections[fid] = [...set];
+    }
     out[sid] = {
       enabled: !!v.enabled,
       openRail: !!v.openRail,
       priorities: [...v.priorities],
       missing:    [...v.missing],
       categories: [...v.categories],
+      facetSelections,
       hidePlanned: !!v.hidePlanned,
     };
   }
@@ -1691,6 +1701,17 @@ async function initInventory() {
   const saved = _loadInvState();
   for (const s of tileSources) {
     const prior = saved[s.id] || {};
+    // Default each facet to all-values-selected so a fresh source filters
+    // nothing out until the user starts unticking. Reuse persisted Sets
+    // when they exist, otherwise build a full-coverage Set from the facet
+    // declaration.
+    const facetSelections = {};
+    for (const f of (s.facets || [])) {
+      const persisted = prior.facetSelections && prior.facetSelections[f.id];
+      facetSelections[f.id] = persisted instanceof Set
+        ? persisted
+        : new Set((f.values || []).map(v => String(v.value)));
+    }
     invState[s.id] = {
       enabled: "enabled" in prior ? !!prior.enabled : !!s.enabled_default,
       openRail: prior.openRail !== false,
@@ -1698,6 +1719,9 @@ async function initInventory() {
         : new Set(Array.from({length: Math.max(1, s.max_priority_level)}, (_, i) => i + 1)),
       missing:    prior.missing instanceof Set ? prior.missing : new Set(),
       categories: prior.categories instanceof Set ? prior.categories : new Set(s.categories || []),
+      facetSelections,
+      facetDefs: s.facets || [],
+      colorFacet: s.color_facet || "",
       hidePlanned: !!prior.hidePlanned,
     };
   }
@@ -1738,6 +1762,22 @@ function renderInventoryRail() {
       return `<label class="fchip" title="Show only tiles whose ${esc(c)} count > 0"><input type="checkbox" data-cat="${esc(c)}" ${checked}/> ${esc(c)}</label>`;
     }).join("");
 
+    // Extension-declared facets: one chip row per facet, labels + colors
+    // come from the source. Default state is all-values-checked so
+    // unchecking is the act of filtering.
+    const facetRows = (s.facets || []).map(f => {
+      const sel = st.facetSelections[f.id] || new Set();
+      const chips = (f.values || []).map(v => {
+        const valStr = String(v.value);
+        const checked = sel.has(valStr) ? "checked" : "";
+        const swatch = v.color
+          ? `<span class="facet-swatch" style="background:${esc(v.color)}"></span>`
+          : "";
+        return `<label class="fchip facet-chip" title="${esc(v.label)}"><input type="checkbox" data-facet="${esc(f.id)}" data-facet-value="${esc(valStr)}" ${checked}/>${swatch}${esc(v.label)}</label>`;
+      }).join("");
+      return `<div class="inv-row"><span class="inv-row-lbl">${esc(f.label)}</span>${chips}</div>`;
+    }).join("");
+
     const mySaved = savedSearches.filter(ss => ss.source_id === s.id);
     const savedOpts = ['<option value="">Saved searches…</option>']
       .concat(mySaved.map(ss => `<option value="${esc(ss.id)}">${esc(ss.name)}</option>`))
@@ -1763,6 +1803,7 @@ function renderInventoryRail() {
         ${priChips.length ? `<div class="inv-row"><span class="inv-row-lbl">Priority</span>${priChips.join("")}</div>` : ""}
         ${bandChips ? `<div class="inv-row"><span class="inv-row-lbl">Missing</span>${bandChips}</div>` : ""}
         ${catChips ? `<div class="inv-row"><span class="inv-row-lbl">Class</span>${catChips}</div>` : ""}
+        ${facetRows}
         <div class="inv-row">
           <span class="inv-row-lbl">Status</span>
           <label class="fchip" title="Drop tiles whose centre is already inside one of your plans">
@@ -1810,6 +1851,16 @@ function renderInventoryRail() {
       cb.addEventListener("change", () => {
         const c = cb.dataset.cat;
         cb.checked ? st.categories.add(c) : st.categories.delete(c);
+        _saveInvState();
+        renderTileOverlay(s.id);
+      });
+    }
+    for (const cb of block.querySelectorAll("input[data-facet]")) {
+      cb.addEventListener("change", () => {
+        const fid = cb.dataset.facet;
+        const val = cb.dataset.facetValue;
+        if (!st.facetSelections[fid]) st.facetSelections[fid] = new Set();
+        cb.checked ? st.facetSelections[fid].add(val) : st.facetSelections[fid].delete(val);
         _saveInvState();
         renderTileOverlay(s.id);
       });
@@ -1958,6 +2009,24 @@ function _tileColor(priorityLevel) {
   return _PRI_COLOR[priorityLevel] || _PRI_COLOR_OTHER;
 }
 
+// When the source declares a `color_facet`, paint each tile by its facet
+// value's color instead of the priority palette. Falls back to the
+// priority palette for tiles that don't declare a value for the facet.
+function _tileColorFor(tile, st) {
+  const fid = st && st.colorFacet;
+  if (fid) {
+    const def = (st.facetDefs || []).find(f => f.id === fid);
+    if (def) {
+      const v = tile.metadata?.[def.field];
+      if (v != null) {
+        const valDef = (def.values || []).find(x => String(x.value) === String(v));
+        if (valDef && valDef.color) return valDef.color;
+      }
+    }
+  }
+  return _tileColor(tile.priority_level);
+}
+
 // Plan↔tile cross-ref (Plan 5). Every tile checks against every plan's
 // mosaic bounds; if the tile centre falls inside, the tile inherits the
 // plan's state. ~40 tiles × ~10 plans = 400 polygon point-tests, sub-ms.
@@ -2044,6 +2113,16 @@ function _tilePassesFilters(tile, st) {
     }
     if (!hit) return false;
   }
+  // Extension-declared facets: for each facet the source declared, the tile's
+  // value (read from tile.metadata[field]) must be in the active selection.
+  // Tiles with no value for the facet pass (the facet doesn't apply).
+  for (const f of (st.facetDefs || [])) {
+    const sel = st.facetSelections?.[f.id];
+    if (!sel) continue;
+    const v = tile.metadata?.[f.field];
+    if (v == null) continue;
+    if (!sel.has(String(v))) return false;
+  }
   // Hide planned: when on, drop tiles whose centre falls inside any plan's
   // mosaic bounds (regardless of plan state). The Inventory then surfaces
   // only the tiles you haven't queued yet.
@@ -2095,24 +2174,15 @@ function renderTileOverlay(sourceId) {
     if (!_tilePassesFilters(tile, st)) continue;
     const corners = _tileFootprint(tile);
     if (!corners) continue;
-    const color = _tileColor(tile.priority_level);
-    let alphaHex = _tileFillAlphaHex(tile.per_band);
-    // Plan↔tile cross-ref: planned tiles fade back so the eye is drawn
-    // to what's NOT yet queued. Done plans fade further. Stroke colour
-    // also shifts subtly so the planned state is readable on hover.
+    const color = _tileColorFor(tile, st);
+    const alphaHex = _tileFillAlphaHex(tile.per_band);
+    // planInfo still computed for the Hide-planned filter and downstream
+    // click handling; no longer drives styling — planned tiles read with
+    // their normal status colour so within-plan priority stays legible.
     const planInfo = tilePlanInfo(tile);
-    let strokeColor = color;
-    let strokeWidth = 0.5;
-    if (planInfo.state !== "none") {
-      const dim = planInfo.state === "done" ? 0.20 : planInfo.state === "in_progress" ? 0.40 : 0.55;
-      const num = parseInt(alphaHex, 16);
-      alphaHex = Math.max(8, Math.round(num * dim)).toString(16).padStart(2, "0");
-      strokeColor = "#ffffff";
-      strokeWidth = 1.2;
-    }
     const poly = A.polygon(corners, {
-      color: strokeColor,
-      lineWidth: strokeWidth,
+      color: color,
+      lineWidth: 0.5,
       fillColor: color + alphaHex,
     });
     if (poly && tile && (tile.id || tile.score != null)) {
@@ -2164,6 +2234,21 @@ function renderTilePanel(tile, sourceId) {
     .map(([c, n]) => `<span class="fchip">${esc(c)}: ${n}</span>`)
     .join(" ");
 
+  // Extension-declared facet badges: one chip per facet that has a value
+  // for this tile. Coloured swatch + facet label + value label, drawn from
+  // the source's facet declaration.
+  const st = invState[sourceId];
+  const facetBadges = (st?.facetDefs || []).map(f => {
+    const v = tile.metadata?.[f.field];
+    if (v == null) return "";
+    const valDef = (f.values || []).find(x => String(x.value) === String(v));
+    if (!valDef) return "";
+    const swatch = valDef.color
+      ? `<span class="facet-swatch" style="background:${esc(valDef.color)}"></span>`
+      : "";
+    return `<span class="fchip facet-chip">${swatch}${esc(f.label)}: ${esc(valDef.label)}</span>`;
+  }).filter(Boolean).join(" ");
+
   // Visibility section (Plan 2c) wires up next; placeholder div the loader fills in.
   const visPlaceholder = `<div class="vis-section" id="tileVisSection"></div>`;
 
@@ -2201,6 +2286,8 @@ function renderTilePanel(tile, sourceId) {
         <tr><td>Priority</td><td class="num">P${tile.priority_level ?? "—"}</td></tr>
         ${tile.score != null ? `<tr><td>Score</td><td class="num">${tile.score}</td></tr>` : ""}
       </table>
+
+      ${facetBadges ? `<div class="tile-facet-badges">${facetBadges}</div>` : ""}
 
       ${bandRows ? `
       <h4>Per-band coverage</h4>
@@ -4104,9 +4191,17 @@ async function syncPlans() {
     holder.innerHTML = `<div class="sync-warn"><h4>Sync failed</h4><div>${esc(body.error || r.statusText)}</div></div>`;
     return;
   }
+  if (body.download_url) {
+    const a = document.createElement("a");
+    a.href = body.download_url;
+    a.download = body.zip_filename || "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
   const success = `<div class="sync-warn" style="border-color:#3a7a3a;background:#1e2a1e;margin-top:8px">
     <h4 style="color:#b0ffb0">✓ Exported ${body.plan_count || 0} plan(s), ${body.project_count || 0} project(s), ${body.template_count || 0} template(s)</h4>
-    <div style="font-size:11px">Zip: ${esc(body.zip_path || "")}</div>
+    <div style="font-size:11px">Downloaded: ${esc(body.zip_filename || body.zip_path || "")}${body.download_url ? ` · <a href="${esc(body.download_url)}" download="${esc(body.zip_filename || "")}">re-download</a>` : ""}</div>
     <div style="font-size:11px;margin-top:4px">In NINA → Target Scheduler → Manage Profiles → <strong>Import Profile</strong> → pick the zip.</div>
   </div>`;
   const warnings = body.warnings || [];
