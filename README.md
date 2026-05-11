@@ -123,7 +123,7 @@ The headline features are above. These are the secondary bits — the stuff that
 ### Sharing and external data
 - **Friend manifests** — load sanitised coverage manifests from imaging buddies as toggleable layers, so you can split the sky between you and avoid duplicating Hα hours on the same target. See [the sharing guide](docs/sharing.md).
 - **Public survey coverage overlays** — toggle MOC footprints from CDS-hosted surveys (IPHAS DR2 Hα ships in the box; more easy to add) to see where professional surveys have already covered the sky alongside your own work. See [the public-survey docs](docs/public-surveys.md).
-- **Plugin platform** — extensions can register custom coverage sources, ranked tile inventories, or class-tagged catalogues, and they show up in the rails alongside the built-ins. See [the extensions guide](docs/extensions.md) for the protocols and registries.
+- **Plugin platform** — extensions can register custom coverage sources, ranked tile inventories, class-tagged catalogues, or UI actions (buttons + toggles in the planning rail, including swapping a core button for an extension-supplied one) and they show up alongside the built-ins. See [the extensions guide](docs/extensions.md) for the protocols and the manifest API.
 
 ### Export
 - **CSV export** of priority candidates (e.g. Hα ≥ 1h, SII < 0.5h) — paste into NINA or whatever you keep your target list in.
