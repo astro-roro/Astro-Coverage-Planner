@@ -139,6 +139,20 @@ ACP is designed to be hackable, with a stable API surface and three plugin proto
 - **[Sharing coverage with friends](docs/sharing.md)** — sanitised friend manifests as additional coverage layers.
 - **[Public survey overlays](docs/public-surveys.md)** — wiring more CDS-hosted surveys into the Sources rail.
 
+## Built with AI assistance
+
+ACP was built with help from AI as a coding collaborator, it was used deliberately to ship faster and bring my vision to life.
+
+Every change was driven by an actual astrophotographer using the tool on a real archive, reviewed line-by-line, exercised in the browser, and tested against a live FITS library + a live NINA Target Scheduler DB before landing. Real care and engineering effort went into making sure this isn't vibe-coded slop:
+
+- **UI polish and consistency:** Filter ordering, colour vocabulary, keyboard affordances, accordion state, projection behaviour, and rail layout were all iterated on in the actual browser, not just generated.
+- **Performance:** Regressions were profiled and fixed as they surfaced, not left for "later". Hot paths (manifest load, polygon redraw, MOC overlays) got specific attention.
+- **Security review:** Public-facing endpoints, file handling, and query parameters were audited for the OWASP-style failure modes (path traversal, injection, unbounded responses).
+- **Architecture decisions:** Protocol boundaries (coverage sources, tile inventories, catalogues, extensions, UI actions) were designed deliberately for future extensibility, with a documented plugin API and manifest contract so others can build against it.
+- **No speculative code:** Features that didn't earn their keep got deleted. No half-finished scaffolding, no "AI added this just in case" branches.
+
+If you find a sharp edge, that's on me, not the model. PRs and issues welcome. :)
+
 ## License
 
 MIT — see `LICENSE`.
