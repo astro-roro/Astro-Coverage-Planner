@@ -489,14 +489,18 @@ function filterBadgeShape(src, ctx /*, viewParams */) {
   ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
   ctx.stroke();
 
-  // Filter dots
+  // Filter dots. Local +X runs along the top edge from the NW anchor (screen
+  // top-right in N-up E-left) toward NE (screen top-left), so local +X is
+  // screen-leftward. Draw the array in reverse local-x order so L lands at
+  // the far (screen-left) end and SII near the anchor (screen-right) — gives
+  // natural LRGBHOS reading order on the standard view.
   const filters = (src.data && src.data.filters) || {};
   for (let i = 0; i < n; i++) {
     const f = FILTER_DOT_ORDER[i];
     const has = (filters[f]?.total_hours || 0) > 0;
     ctx.globalAlpha = has ? 1.0 : 0.2;
     ctx.fillStyle = FILTER_COLORS[f];
-    const cx = inset + PAD_X + DOT_R + i * (DOT_R * 2 + DOT_GAP);
+    const cx = inset + PAD_X + DOT_R + (n - 1 - i) * (DOT_R * 2 + DOT_GAP);
     const cy = inset + boxH / 2;
     ctx.beginPath();
     ctx.arc(cx, cy, DOT_R, 0, Math.PI * 2);
@@ -676,9 +680,10 @@ function showUnsavedPlanModal({ onSave, onDiscard, onCancel }) {
 }
 
 function summariseFilters(t) {
-  const pairs = Object.entries(t.filters)
-    .filter(([f, d]) => (d.total_hours || 0) > 0)
-    .sort((a, b) => (b[1].total_hours || 0) - (a[1].total_hours || 0));
+  const filters = t.filters || {};
+  const pairs = FILTER_DOT_ORDER
+    .filter(f => (filters[f]?.total_hours || 0) > 0)
+    .map(f => [f, filters[f]]);
   return pairs.map(([f, d]) => `${f}=${(d.total_hours || 0).toFixed(1)}h`).join(" · ");
 }
 
@@ -794,8 +799,12 @@ function renderTargetPanel(t) {
   selectedTargetId = t.target_id;
   saveUiState();
   const panel = document.getElementById("panelBody");
-  const filtersSorted = Object.entries(t.filters)
-    .sort((a, b) => (b[1].total_hours || 0) - (a[1].total_hours || 0));
+  // LRGBHOS order everywhere — header pills, coverage rows. Extras (non-canonical
+  // filters present in the manifest) are dropped for now per the same rule
+  // we apply to the sky-map filter chips.
+  const filtersSorted = FILTER_DOT_ORDER
+    .filter(f => t.filters?.[f])
+    .map(f => [f, t.filters[f]]);
 
   const filterPills = filtersSorted
     .filter(([f, d]) => (d.total_hours || 0) > 0)
@@ -3726,12 +3735,10 @@ function _availableFilters() {
       if ((d?.total_hours || 0) > 0 && !NOISE.has(f)) present.add(f);
     }
   }
-  // Canonical narrowband + LRGB first (in that order), then any extras
-  // alphabetically — keeps the visual order stable as the archive grows.
-  const CANON = ["Ha", "SII", "OIII", "L", "R", "G", "B"];
-  const canon = CANON.filter(f => present.has(f));
-  const extras = [...present].filter(f => !CANON.includes(f)).sort();
-  return [...canon, ...extras];
+  // LRGBHOS order, matching the planning + coverage target lists.
+  // Extras (IDAS/IR/etc.) are intentionally hidden for now.
+  const CANON = ["L", "R", "G", "B", "Ha", "OIII", "SII"];
+  return CANON.filter(f => present.has(f));
 }
 
 function renderFilterChips() {
@@ -5005,7 +5012,10 @@ function renderPlanEditor(plan) {
   const telescope = planTelescope(editingPlan);
   const camera = planCamera(editingPlan);
   const [fw, fh] = planFovArcmin(editingPlan);
-  const filters = camera?.filters ? Object.keys(camera.filters) : ["Ha", "OIII", "SII", "L", "R", "G", "B"];
+  // LRGBHOS order — keep only the canonical 7 the camera has configured;
+  // any extras are hidden for now (same rule as the sky-map chip rail).
+  const camFilters = camera?.filters ? Object.keys(camera.filters) : FILTER_DOT_ORDER;
+  const filters = FILTER_DOT_ORDER.filter(f => camFilters.includes(f));
   const mos = planMosaic(editingPlan);
 
   const telOpts = (gear.telescopes || []).map(t =>
