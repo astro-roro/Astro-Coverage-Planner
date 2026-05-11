@@ -271,6 +271,7 @@ function saveUiState() {
         railCatalogs: !!document.getElementById("railCatalogs")?.open,
       },
       sources: sourcesEnabled,
+      extToggles: extToggleState,
     };
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
   } catch { /* localStorage full / disabled — ignore */ }
@@ -1316,6 +1317,15 @@ let sourcesEnabled = (() => {
   catch { return {}; }
 })();
 
+// Same script-load hydration for extension toggle state (keyed
+// `${extension}.${action_id}`), used by loadExtensions() to restore which
+// auto-runners (e.g. nina_ts_sync's "Live progress from NINA") were on at
+// last reload — so the user doesn't have to re-tick after every refresh.
+let extToggleState = (() => {
+  try { return JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}").extToggles || {}; }
+  catch { return {}; }
+})();
+
 // Live MOC overlays keyed by source_id. Populated by mocToggleOn / cleared by
 // mocToggleOff.
 const mocLayers = {};
@@ -1568,6 +1578,1058 @@ async function loadSources() {
       btn.style.background = "#663";
     }
     loadGaps();
+  }
+}
+
+// --- Extensions rail ----------------------------------------------------
+//
+// Generic renderer for extension-registered manifest entries. Three roles:
+//
+//   1. Buttons with ``replaces: "<core-id>"`` swap the corresponding core
+//      button in place (handler + label come from the extension). The
+//      REPLACEABLE_BUTTONS map below is core ACP's published contract — it
+//      maps stable manifest ids to in-DOM selectors that the renderer mutates.
+//
+//   2. Buttons without ``replaces`` are rendered into the Extensions rail
+//      panel. Same goes for toggles. The rail panel itself stays hidden
+//      (per the index.html `<details hidden>`) until at least one manifest
+//      entry needs to render there.
+//
+//   3. For actions with ``needs: ["profile_id"]``, the first click opens
+//      a profile-picker step in the modal that calls the extension's
+//      ``profiles_endpoint`` and ``config_endpoint``. Subsequent clicks
+//      skip straight to the preview step.
+//
+// All cross-extension state is reset each call to loadExtensions() so
+// re-running the function (e.g. after an extension install) refreshes the
+// UI cleanly.
+
+const REPLACEABLE_BUTTONS = {
+  // Core button id → DOM selector, fallback label, and default handler.
+  // The fallback label/handler apply only when no extension supplies a
+  // replacement. Default handlers are referenced lazily via arrow wrappers
+  // so the underlying function need only exist at click time.
+  "sync-to-nina": {
+    selector: "#planSync",
+    baseLabel: "Manual Sync to NINA",
+    defaultHandler: () => syncPlans(),
+  },
+};
+
+let extensionsManifest = []; // populated by loadExtensions()
+const liveProgressTimers = new Map(); // action-id → setInterval handle
+const liveProgressState = new Map();  // action-id → {failures, lastIso}
+
+// Wire a single replaceable button to either its extension replacement or the
+// core default. Idempotent — clones the existing node first to drop any prior
+// listeners so calling this repeatedly leaves the button with exactly one
+// click handler. Safe to call before extensionsManifest is populated (empty
+// manifest = falls through to the core default).
+function wireReplaceableButton(coreId) {
+  const meta = REPLACEABLE_BUTTONS[coreId];
+  if (!meta) return;
+  const btn = document.querySelector(meta.selector);
+  if (!btn) return;
+  const fresh = btn.cloneNode(true);
+  btn.parentNode.replaceChild(fresh, btn);
+  for (const ext of extensionsManifest) {
+    for (const action of (ext.actions || [])) {
+      if (action.replaces === coreId) {
+        fresh.textContent = action.label;
+        fresh.dataset.extAction = action.id;
+        fresh.addEventListener("click", () => runExtensionAction(ext, action));
+        return;
+      }
+    }
+  }
+  fresh.textContent = meta.baseLabel;
+  fresh.addEventListener("click", meta.defaultHandler);
+}
+
+async function loadExtensions() {
+  const panel = document.getElementById("railExtensions");
+  const host = document.getElementById("extensionsList");
+  if (!panel || !host) return;
+
+  let entries = [];
+  try {
+    const r = await fetch("/api/extensions/manifest");
+    entries = await r.json();
+  } catch (e) {
+    console.warn("extensions manifest unavailable:", e);
+  }
+  if (!Array.isArray(entries)) entries = [];
+  extensionsManifest = entries;
+
+  // (1) Re-wire every replaceable button against the freshly-loaded manifest.
+  //     Handles both "extension just installed" and "manifest loaded after
+  //     planner toolbar already rendered" cases.
+  for (const coreId of Object.keys(REPLACEABLE_BUTTONS)) {
+    wireReplaceableButton(coreId);
+  }
+
+  host.innerHTML = "";
+  let railHasContent = false;
+
+  for (const ext of entries) {
+    for (const action of (ext.actions || [])) {
+      if (action.replaces && REPLACEABLE_BUTTONS[action.replaces]) continue; // handled above
+      // (2) Rail-panel path: button or toggle in the Extensions accordion.
+      railHasContent = true;
+      const row = document.createElement("div");
+      row.className = "ext-row";
+      if (action.kind === "toggle") {
+        const stateKey = `${ext.extension}.${action.id}`;
+        const initialOn = !!extToggleState[stateKey];
+        row.innerHTML = `
+          <label class="fchip">
+            <input type="checkbox" data-ext-toggle="${esc(stateKey)}" ${initialOn ? "checked" : ""} />
+            ${esc(action.label)}
+          </label>
+          <div class="ext-status" data-ext-status="${esc(stateKey)}">${initialOn ? "Starting…" : "Off"}</div>
+        `;
+        host.appendChild(row);
+        const cb = row.querySelector(`input[data-ext-toggle]`);
+        cb.addEventListener("change", () => {
+          extToggleState[stateKey] = cb.checked;
+          saveUiState();
+          if (cb.checked) startLiveAction(ext, action);
+          else stopLiveAction(action.id);
+        });
+        if (initialOn) startLiveAction(ext, action);
+      } else {
+        const btn = document.createElement("button");
+        btn.textContent = action.label;
+        btn.addEventListener("click", () => runExtensionAction(ext, action));
+        row.appendChild(btn);
+        host.appendChild(row);
+      }
+    }
+  }
+  // Show the rail accordion only if there's at least one button/toggle in
+  // it. Swapped core buttons live in their original slot (e.g. the planner
+  // toolbar) — no need to advertise them here.
+  panel.hidden = !railHasContent;
+}
+
+// --- Modal flow for extension button actions ----------------------------
+
+async function runExtensionAction(ext, action) {
+  const dlg = document.getElementById("extActionModal");
+  if (!dlg) return;
+  const titleEl = document.getElementById("extActionTitle");
+  if (titleEl) titleEl.textContent = action.label;
+
+  // Resolve config needs first. Currently only profile_id.
+  let profileId = null;
+  if ((action.needs || []).includes("profile_id")) {
+    const cfgR = await fetch(ext.config_endpoint);
+    const cfg = await cfgR.json().catch(() => ({}));
+    profileId = cfg.profile_id || null;
+    if (!profileId) {
+      const picked = await promptProfilePicker(ext, dlg);
+      if (!picked) { dlg.close(); return; }
+      profileId = picked;
+    }
+  }
+
+  if (action.pull_diff_endpoint && action.preview_endpoint) {
+    // Bidirectional: show push + pull in one modal, user picks per-conflict.
+    await runBidirectionalSync(ext, action, profileId, dlg);
+  } else if (action.preview_endpoint) {
+    await runPreviewThenApply(ext, action, profileId, dlg);
+  } else {
+    await runApplyImmediate(ext, action, profileId, dlg);
+  }
+}
+
+function showStep(dlg, stepId) {
+  for (const step of dlg.querySelectorAll(".ext-modal-step")) {
+    step.hidden = step.id !== stepId;
+  }
+  if (!dlg.open) dlg.showModal();
+}
+
+async function promptProfilePicker(ext, dlg) {
+  const list = document.getElementById("extActionPickerList");
+  const continueBtn = dlg.querySelector('[data-act="picker-confirm"]');
+  if (!list || !continueBtn) return null;
+  list.innerHTML = "Loading profiles…";
+  continueBtn.disabled = true;
+  showStep(dlg, "extActionPicker");
+
+  let profiles = [];
+  try {
+    const r = await fetch(ext.profiles_endpoint);
+    const body = await r.json();
+    profiles = body.profiles || [];
+  } catch (e) {
+    list.innerHTML = `<div class="ext-error">Could not load profiles: ${esc(String(e))}</div>`;
+    return new Promise(resolve => bindCancel(dlg, resolve));
+  }
+  if (!profiles.length) {
+    list.innerHTML = `<div class="ext-error">No profiles found in the TS DB.</div>`;
+    return new Promise(resolve => bindCancel(dlg, resolve));
+  }
+  list.innerHTML = profiles.map((p, i) => `
+    <label class="ext-profile-row">
+      <input type="radio" name="extProfilePick" value="${esc(p.profile_id)}" ${i === 0 ? "checked" : ""} />
+      <div>
+        <div class="ext-profile-pid">${esc(p.profile_id)}</div>
+        <div class="ext-profile-meta">${p.project_count} project${p.project_count === 1 ? "" : "s"}${p.sample_projects.length ? " · " + p.sample_projects.map(esc).join(", ") : ""}</div>
+      </div>
+    </label>
+  `).join("");
+  continueBtn.disabled = false;
+
+  return new Promise(resolve => {
+    bindCancel(dlg, resolve);
+    continueBtn.onclick = async () => {
+      const chosen = list.querySelector('input[name="extProfilePick"]:checked');
+      if (!chosen) return;
+      try {
+        await fetch(ext.config_endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile_id: chosen.value }),
+        });
+      } catch (e) {
+        list.innerHTML += `<div class="ext-error">Save failed: ${esc(String(e))}</div>`;
+        return;
+      }
+      resolve(chosen.value);
+    };
+  });
+}
+
+function bindCancel(dlg, resolve) {
+  for (const btn of dlg.querySelectorAll('[data-act="cancel"]')) {
+    btn.onclick = () => { dlg.close(); resolve(null); };
+  }
+}
+
+async function runPreviewThenApply(ext, action, profileId, dlg) {
+  const body = document.getElementById("extActionPreviewBody");
+  const applyBtn = dlg.querySelector('[data-act="apply"]');
+  if (!body || !applyBtn) return;
+  body.textContent = "Loading preview…";
+  applyBtn.disabled = true;
+  showStep(dlg, "extActionPreview");
+
+  const payload = { profile_id: profileId };
+  let preview;
+  try {
+    const r = await fetchWithRetry(action.preview_endpoint, payload);
+    preview = await r.json();
+  } catch (e) {
+    body.innerHTML = `<div class="ext-error">Preview failed: ${esc(String(e))}</div>`;
+    return;
+  }
+  body.innerHTML = renderDiffReport(preview);
+  applyBtn.disabled = false;
+
+  bindCancel(dlg, () => {});
+  applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    body.innerHTML = renderDiffReport(preview) +
+      `<div class="ext-progress">Applying… (TS may be busy, will retry)</div>`;
+    let result;
+    try {
+      const r = await fetchWithRetry(action.endpoint, payload, {
+        onRetry: (n, max) => {
+          const prog = body.querySelector(".ext-progress");
+          if (prog) prog.textContent = `Applying… retrying (${n}/${max})`;
+        },
+      });
+      result = await r.json();
+    } catch (e) {
+      showResult(dlg, `<div class="ext-error">Sync failed: ${esc(String(e))}</div>`);
+      return;
+    }
+    // After-apply view: show the same plan-grouped diff (now applied), with
+    // a green success header and the DB backup path.
+    showResult(dlg, `
+      <div class="ext-ok">✓ Sync complete</div>
+      ${renderDiffReport(preview, { applied: true })}
+      ${result.backup_path ? `<div class="ext-meta">DB backup: <code>${esc(result.backup_path)}</code></div>` : ""}
+    `);
+  };
+}
+
+// Bidirectional Sync with NINA flow.
+//
+// Calls /preview (push side) and /import/diff (pull side) in parallel,
+// renders both directions in one modal with arrows + per-conflict pickers,
+// then on Apply runs /sync followed by /import/resolve. The user owns the
+// resolution for every conflict — non-conflicting pull changes apply
+// automatically; ts_only_new gets per-project import checkboxes.
+async function runBidirectionalSync(ext, action, profileId, dlg) {
+  const body = document.getElementById("extActionPreviewBody");
+  const applyBtn = dlg.querySelector('[data-act="apply"]');
+  if (!body || !applyBtn) return;
+  body.textContent = "Loading preview…";
+  applyBtn.disabled = true;
+  showStep(dlg, "extActionPreview");
+
+  const payload = { profile_id: profileId };
+  // Per-conflict user decisions, keyed by plan_id. Three values:
+  // "take_acp", "take_ts", or "skip" (default). Bound via change handlers
+  // on the radio inputs in the rendered modal.
+  const decisions = new Map();
+  // Per-project ts_only_new import opt-ins, keyed by project_name.
+  const newImports = new Set();
+
+  let pushPreview, pullDiff;
+  try {
+    [pushPreview, pullDiff] = await Promise.all([
+      fetchWithRetry(action.preview_endpoint, payload).then(r => r.json()),
+      fetchWithRetry(action.pull_diff_endpoint, payload).then(r => r.json()),
+    ]);
+  } catch (e) {
+    body.innerHTML = `<div class="ext-error">Preview failed: ${esc(String(e))}</div>`;
+    return;
+  }
+
+  const rerender = () => {
+    body.innerHTML = renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports);
+    wireBidiInteractions(body, decisions, newImports, () => {
+      // Cheap re-render keeps the apply button summary in sync with picks.
+      applyBtn.textContent = applyButtonLabel(pushPreview, pullDiff, decisions, newImports);
+    });
+    applyBtn.textContent = applyButtonLabel(pushPreview, pullDiff, decisions, newImports);
+  };
+  rerender();
+  applyBtn.disabled = false;
+
+  bindCancel(dlg, () => {});
+  applyBtn.onclick = async () => {
+    applyBtn.disabled = true;
+    body.insertAdjacentHTML(
+      "beforeend",
+      `<div class="ext-progress" id="extBidiProgress">Applying… (TS may be busy, will retry)</div>`,
+    );
+    const setProgress = (msg) => {
+      const el = body.querySelector("#extBidiProgress");
+      if (el) el.textContent = msg;
+    };
+
+    // PULL first (TS → ACP). Resolve writes plans.json to reflect the user's
+    // decisions: auto_pull defaults absorb TS-side edits, take_acp keeps ACP
+    // (which the upcoming push will then overwrite back to TS), take_ts on
+    // conflicts replaces ACP with TS, ts_only_new bootstraps brand-new plans.
+    // Doing pull BEFORE push is what makes "Take ACP on an incoming change"
+    // actually work — push then sends the resolved ACP state to TS.
+    let pullResult;
+    try {
+      setProgress("Pulling NINA edits into ACP…");
+      const resolveBody = {
+        profile_id: profileId,
+        decisions: Object.fromEntries(decisions),
+        import_ts_only_new: Array.from(newImports),
+      };
+      const r = await fetchWithRetry(action.pull_apply_endpoint, resolveBody, {
+        onRetry: (n, max) => setProgress(`Pulling… retrying (${n}/${max})`),
+      });
+      pullResult = await r.json();
+    } catch (e) {
+      showResult(dlg, `<div class="ext-error">Pull failed: ${esc(String(e))}</div>`);
+      return;
+    }
+
+    // PUSH second (ACP → TS) with the now-resolved ACP state.
+    let pushResult;
+    try {
+      setProgress("Pushing resolved ACP plans to TS…");
+      const r = await fetchWithRetry(action.endpoint, payload, {
+        onRetry: (n, max) => setProgress(`Pushing… retrying (${n}/${max})`),
+      });
+      pushResult = await r.json();
+    } catch (e) {
+      // Pull succeeded; push failed. Surface both — pull already changed
+      // plans.json, push didn't reach TS. User can retry from the rail.
+      showResult(dlg, `
+        <div class="ext-meta">Pull applied; push failed below.</div>
+        <div class="ext-error">Push failed: ${esc(String(e))}</div>
+      `);
+      return;
+    }
+
+    // Refresh local plans so the rail picks up any pull-applied changes.
+    try {
+      await loadPlans();
+      if (panelMode === "plan-list") renderPlanList();
+      else if (panelMode === "plan-edit" && editingPlan) updatePlanEditorActuals();
+    } catch (refreshErr) {
+      console.warn("plan reload after Sync with NINA failed:", refreshErr);
+    }
+
+    showResult(dlg, `
+      <div class="ext-ok">✓ Sync complete</div>
+      ${renderBidiResultSummary(pushResult, pullResult)}
+      ${pushResult.backup_path ? `<div class="ext-meta">DB backup: <code>${esc(pushResult.backup_path)}</code></div>` : ""}
+    `);
+  };
+}
+
+// Compute a human-readable summary for the Apply button so the user can see
+// at a glance what they're about to do, including how many conflicts are
+// still unresolved (skipped). Updated on every decision-state change via
+// wireBidiInteractions's onChange callback.
+function applyButtonLabel(pushPreview, pullDiff, decisions, newImports) {
+  // Mirror the Outgoing-section filter so the button count matches what the
+  // user actually sees: changes claimed by Pull are excluded from the Push
+  // tally.
+  const claimedByPull = new Set();
+  for (const d of (pullDiff.auto_pull || [])) {
+    for (const path of (d.auto_pull || [])) claimedByPull.add(`${d.plan_id}|${path}`);
+  }
+  for (const d of (pullDiff.conflicts || [])) {
+    for (const path of (d.conflict || [])) claimedByPull.add(`${d.plan_id}|${path}`);
+  }
+  const pushChangeCount = (pushPreview.plan_diffs || [])
+    .filter(p => p.kind === "update" || p.kind === "insert")
+    .map(p => filterOutgoingByPull(p, claimedByPull))
+    .filter(Boolean)
+    .length;
+  // Per-item: auto-pull defaults to take_ts (= pull). User can flip to
+  // take_acp (= keep LOCAL, push back). Tally by current choice.
+  const autoPull = pullDiff.auto_pull || [];
+  let pullCount = 0, keepAcpCount = 0;
+  for (const ap of autoPull) {
+    if (decisions.get(ap.plan_id) === "take_acp") keepAcpCount++;
+    else pullCount++;
+  }
+  const conflicts = pullDiff.conflicts || [];
+  const resolved = conflicts.filter(c => {
+    const d = decisions.get(c.plan_id);
+    return d === "take_acp" || d === "take_ts";
+  }).length;
+  const skipped = conflicts.length - resolved;
+  const imports = newImports.size;
+  const bits = [];
+  if (pushChangeCount) bits.push(`push ${pushChangeCount}`);
+  if (pullCount) bits.push(`pull ${pullCount}`);
+  if (keepAcpCount) bits.push(`keep ${keepAcpCount}`);
+  if (resolved) bits.push(`resolve ${resolved}`);
+  if (imports) bits.push(`import ${imports}`);
+  if (skipped) bits.push(`skip ${skipped}`);
+  return bits.length ? `Apply (${bits.join(" · ")})` : "Apply";
+}
+
+function renderBidiResultSummary(pushResult, pullResult) {
+  const pr = pushResult.report || {};
+  const ap = pullResult.applied || {};
+  const lines = [];
+  // Push side.
+  const pushed = ["project", "target", "exposureplan", "exposuretemplate"]
+    .reduce((acc, t) => acc + ((pr[t] && pr[t].inserted) || 0) + ((pr[t] && pr[t].updated) || 0), 0);
+  if (pushed > 0) lines.push(`Pushed ${pushed} row${pushed === 1 ? "" : "s"} to TS`);
+  // Pull side.
+  const pulled = (ap.auto_pull || []).length;
+  const tookAcp = (ap.take_acp || []).length;
+  const tookTs = (ap.take_ts || []).length;
+  const imported = (ap.imported_new || []).length;
+  const skippedPull = (ap.skipped || []).length;
+  if (pulled) lines.push(`Auto-pulled ${pulled} plan${pulled === 1 ? "" : "s"} from TS`);
+  if (tookAcp) lines.push(`Kept ACP for ${tookAcp} conflicted plan${tookAcp === 1 ? "" : "s"}`);
+  if (tookTs) lines.push(`Took TS for ${tookTs} conflicted plan${tookTs === 1 ? "" : "s"}`);
+  if (imported) lines.push(`Imported ${imported} new plan${imported === 1 ? "" : "s"} from TS`);
+  if (skippedPull) lines.push(`Skipped ${skippedPull} conflict${skippedPull === 1 ? "" : "s"} (no decision)`);
+  if (!lines.length) lines.push("Everything was already in sync.");
+  return `<div class="ext-meta">${lines.map(l => `• ${esc(l)}`).join("<br>")}</div>`;
+}
+
+// Render the combined bidirectional diff. Sections (each only rendered if
+// non-empty): Outgoing, Incoming-auto, Conflicts (with picker), TS-only-new
+// (with import checkboxes), Notices.
+function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
+  const sections = [];
+  // Build a (plan_id, field_path) set claimed by the pull side. Any push
+  // entry whose path matches is dropped from Outgoing — pull's section
+  // (auto_pull or conflict) is the load-bearing display for that field
+  // since the user's decision there decides what actually happens.
+  const claimedByPull = new Set();
+  const claimAll = (diffList) => {
+    for (const d of (diffList || [])) {
+      const pid = d.plan_id;
+      for (const path of (d.auto_pull || [])) claimedByPull.add(`${pid}|${path}`);
+      for (const path of (d.conflict || [])) claimedByPull.add(`${pid}|${path}`);
+    }
+  };
+  claimAll(pullDiff.auto_pull);
+  claimAll(pullDiff.conflicts);
+
+  // OUTGOING — filter changes claimed by pull. After filtering, drop plans
+  // whose remaining change list is empty.
+  const outgoingRaw = (pushPreview.plan_diffs || []).filter(p => p.kind === "update" || p.kind === "insert");
+  const outgoing = outgoingRaw.map(p => filterOutgoingByPull(p, claimedByPull)).filter(Boolean);
+  if (outgoing.length) {
+    sections.push(`
+      <div class="ext-bidi-section ext-bidi-out">
+        <div class="ext-bidi-head">Outgoing · ACP → NINA <span class="ext-bidi-count">${outgoing.length}</span></div>
+        <div class="ext-diff-scroll" style="max-height:200px">${renderOutgoingGroups(outgoing)}</div>
+      </div>
+    `);
+  }
+  // INCOMING auto-pull — TS-only changes. Each gets its own Take NINA /
+  // Keep ACP radio so the user can override the default per item.
+  const autoPull = pullDiff.auto_pull || [];
+  if (autoPull.length) {
+    sections.push(`
+      <div class="ext-bidi-section ext-bidi-in">
+        <div class="ext-bidi-head">Incoming · NINA → ACP <span class="ext-bidi-count">${autoPull.length}</span> <span class="ext-bidi-sub">defaults to take NINA</span></div>
+        <div class="ext-diff-scroll" style="max-height:240px">${renderIncomingAutoPull(autoPull, decisions)}</div>
+      </div>
+    `);
+  }
+  // CONFLICTS — per-plan pickers.
+  const conflicts = pullDiff.conflicts || [];
+  if (conflicts.length) {
+    sections.push(`
+      <div class="ext-bidi-section ext-bidi-conflict">
+        <div class="ext-bidi-head">Conflicts <span class="ext-bidi-count">${conflicts.length}</span> <span class="ext-bidi-sub">pick a side per plan</span></div>
+        <div class="ext-diff-scroll" style="max-height:220px">${renderConflictCards(conflicts, decisions)}</div>
+      </div>
+    `);
+  }
+  // TS-only-new — new projects in TS the user can import.
+  const tsNew = pullDiff.ts_only_new || [];
+  if (tsNew.length) {
+    sections.push(`
+      <div class="ext-bidi-section ext-bidi-new">
+        <div class="ext-bidi-head">New in NINA <span class="ext-bidi-count">${tsNew.length}</span> <span class="ext-bidi-sub">tick to import</span></div>
+        <div class="ext-diff-scroll" style="max-height:160px">${renderTsOnlyNew(tsNew, newImports)}</div>
+      </div>
+    `);
+  }
+  // NOTICES — non-blocking warnings (e.g. TS row deleted out from under us).
+  const notices = pullDiff.notices || [];
+  if (notices.length) {
+    sections.push(`
+      <div class="ext-bidi-section">
+        <div class="ext-bidi-head">Notes</div>
+        <ul class="ext-bidi-notes">${notices.map(n => `<li>${esc(n.message || n.kind || JSON.stringify(n))}</li>`).join("")}</ul>
+      </div>
+    `);
+  }
+  if (!sections.length) {
+    return `<div class="ext-meta">Nothing to sync — ACP and TS are already aligned.</div>`;
+  }
+  return sections.join("");
+}
+
+// Drop change entries whose path is also represented on the pull side for
+// this plan. Returns a shallow-copied plan_diff with filtered change lists,
+// or null when nothing's left to show.
+function filterOutgoingByPull(planDiff, claimedByPull) {
+  const pid = planDiff.plan_id;
+  const keep = (c) => !claimedByPull.has(`${pid}|${c.path}`);
+  const projectChanges = (planDiff.project_changes || []).filter(keep);
+  const targetChanges = (planDiff.target_changes || []).filter(keep);
+  const filterChanges = {};
+  for (const [fname, changes] of Object.entries(planDiff.filter_changes || {})) {
+    const kept = changes.filter(keep);
+    if (kept.length) filterChanges[fname] = kept;
+  }
+  if (!projectChanges.length && !targetChanges.length && !Object.keys(filterChanges).length) {
+    return null;
+  }
+  return {
+    ...planDiff,
+    project_changes: projectChanges,
+    target_changes: targetChanges,
+    filter_changes: filterChanges,
+  };
+}
+
+function renderOutgoingGroups(outgoing) {
+  // Same grouping as renderDiffReport's existing logic — dedup project-level
+  // changes across plans sharing a project_name.
+  const byProject = new Map();
+  for (const d of outgoing) {
+    if (!byProject.has(d.project_name)) byProject.set(d.project_name, []);
+    byProject.get(d.project_name).push(d);
+  }
+  return Array.from(byProject.entries()).map(([proj, plans]) => {
+    const shared = plans[0].project_changes || [];
+    const sharedHtml = shared.length
+      ? `<div class="ext-diff-shared">${shared.map(c => renderChangeDirectional(c, "out")).join("")}
+          ${plans.length > 1 ? `<div class="ext-diff-meta">applies to ${plans.length} plans</div>` : ""}
+        </div>`
+      : "";
+    const planRows = plans.map(d => {
+      const tg = (d.target_changes || []).map(c => renderChangeDirectional(c, "out")).join("");
+      const flt = Object.entries(d.filter_changes || {})
+        .map(([fname, changes]) => changes.map(c =>
+          renderChangeDirectional({ ...c, label: `${fname} ${c.label}` }, "out")
+        ).join(""))
+        .join("");
+      const inner = tg + flt;
+      if (!inner) return "";
+      return `<div class="ext-diff-plan"><div class="ext-diff-target">${esc(d.target_name)}</div>${inner}</div>`;
+    }).join("");
+    return `<div class="ext-diff-group"><div class="ext-diff-proj">${esc(proj)}</div>${sharedHtml}${planRows}</div>`;
+  }).join("");
+}
+
+function renderIncomingAutoPull(autoPullDiffs, decisions) {
+  return autoPullDiffs.map(d => {
+    const pid = d.plan_id;
+    const fields = (d.auto_pull || []).map(path => ({
+      label: humanFieldLabel(path),
+      from: d.local && d.local[path],
+      to: d.remote && d.remote[path],
+    }));
+    if (!fields.length) return "";
+    const rows = fields.map(f => renderChangeDirectional(f, "in")).join("");
+    // Default to "take_ts" (the recommended action — TS clearly changed,
+    // ACP didn't). User can flip to "take_acp" to skip the pull and let
+    // the push step overwrite TS with their LOCAL value instead.
+    const decision = decisions.get(pid) || "take_ts";
+    return `
+      <div class="ext-conflict-card ext-conflict-card-in" data-plan-id="${esc(pid)}">
+        <div class="ext-diff-target">${esc(friendlyPlanName(pid))}</div>
+        ${rows}
+        <div class="ext-conflict-buttons" role="radiogroup">
+          <label class="${decision === "take_acp" ? "selected" : ""}">
+            <input type="radio" name="conflict-${esc(pid)}" value="take_acp" ${decision === "take_acp" ? "checked" : ""}> Keep ACP
+          </label>
+          <label class="${decision === "take_ts" ? "selected" : ""}">
+            <input type="radio" name="conflict-${esc(pid)}" value="take_ts" ${decision === "take_ts" ? "checked" : ""}> Take NINA (default)
+          </label>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderConflictCards(conflicts, decisions) {
+  return conflicts.map(d => {
+    const pid = d.plan_id;
+    const decision = decisions.get(pid) || "skip";
+    const fieldRows = (d.conflict || []).map(path => `
+      <div class="ext-conflict-field">
+        <span class="ext-diff-label">${esc(humanFieldLabel(path))}</span>
+        <span class="ext-conflict-acp">ACP: ${esc(formatValue(d.local && d.local[path]))}</span>
+        <span class="ext-conflict-ts">TS: ${esc(formatValue(d.remote && d.remote[path]))}</span>
+      </div>
+    `).join("");
+    return `
+      <div class="ext-conflict-card" data-plan-id="${esc(pid)}">
+        <div class="ext-diff-target">${esc(friendlyPlanName(pid))}</div>
+        ${fieldRows}
+        <div class="ext-conflict-buttons" role="radiogroup">
+          <label class="${decision === "take_acp" ? "selected" : ""}">
+            <input type="radio" name="conflict-${esc(pid)}" value="take_acp" ${decision === "take_acp" ? "checked" : ""}> Take ACP
+          </label>
+          <label class="${decision === "take_ts" ? "selected" : ""}">
+            <input type="radio" name="conflict-${esc(pid)}" value="take_ts" ${decision === "take_ts" ? "checked" : ""}> Take NINA
+          </label>
+          <label class="${decision === "skip" ? "selected" : ""}">
+            <input type="radio" name="conflict-${esc(pid)}" value="skip" ${decision === "skip" ? "checked" : ""}> Skip
+          </label>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+// Look up an ACP plan's friendly "Project / Target" name from its id. Used
+// in the bidi modal so the user sees "Fesen SNR / G7.7-3.7" instead of the
+// internal "plan-mouufrs7" handle.
+function friendlyPlanName(planId) {
+  if (typeof plans === "undefined" || !Array.isArray(plans)) return planId;
+  const p = plans.find(x => x.id === planId);
+  if (!p) return planId;
+  const proj = p.project_name || "(no project)";
+  const tgt = (p.target && p.target.name) || planId;
+  return `${proj} / ${tgt}`;
+}
+
+function renderTsOnlyNew(tsNew, newImports) {
+  return tsNew.map(p => {
+    const key = p.project_name;
+    const checked = newImports.has(key);
+    return `
+      <label class="ext-tsnew-row">
+        <input type="checkbox" data-ts-new="${esc(key)}" ${checked ? "checked" : ""}>
+        <div>
+          <div>${esc(p.project_name)} / ${esc(p.target_name)}</div>
+          <div class="ext-diff-meta">${(p.filters || []).join(", ")} · mosaic ${p.mosaic ? `${p.mosaic.rows}×${p.mosaic.cols}` : "1×1"}</div>
+        </div>
+      </label>
+    `;
+  }).join("");
+}
+
+function wireBidiInteractions(root, decisions, newImports, onChange) {
+  // Per-conflict radio buttons.
+  for (const radio of root.querySelectorAll('input[type="radio"][name^="conflict-"]')) {
+    radio.addEventListener("change", () => {
+      const planId = radio.name.slice("conflict-".length);
+      decisions.set(planId, radio.value);
+      // Re-style the parent labels so the picked one stays highlighted
+      // without re-rendering the whole modal.
+      const card = radio.closest(".ext-conflict-card");
+      if (card) {
+        for (const lbl of card.querySelectorAll(".ext-conflict-buttons label")) {
+          lbl.classList.toggle("selected", lbl.querySelector("input").checked);
+        }
+      }
+      if (onChange) onChange();
+    });
+  }
+  // ts_only_new checkboxes.
+  for (const cb of root.querySelectorAll('input[type="checkbox"][data-ts-new]')) {
+    cb.addEventListener("change", () => {
+      const key = cb.dataset.tsNew;
+      if (cb.checked) newImports.add(key);
+      else newImports.delete(key);
+      if (onChange) onChange();
+    });
+  }
+}
+
+// Render a single from→to (or from←to) line with an arrow showing direction.
+// `dir` is "out" (ACP→TS, push) or "in" (TS→ACP, pull). Visually:
+//   out: label: from → to     (yellow → green)
+//   in:  label: to   ← from   (green ← yellow), so user reads it as
+//                              "what we'll change it TO, sourced from TS"
+function renderChangeDirectional(c, dir) {
+  const u = c.unit ? esc(c.unit) : "";
+  const fromV = c.from === null || c.from === undefined ? "—" : `${esc(formatValue(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? "—" : `${esc(formatValue(c.to))}${u}`;
+  if (dir === "in") {
+    return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-to">${toV}</span> <span class="ext-diff-arrow ext-diff-arrow-in">←</span> <span class="ext-diff-from">${fromV}</span></div>`;
+  }
+  return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-from">${fromV}</span> <span class="ext-diff-arrow ext-diff-arrow-out">→</span> <span class="ext-diff-to">${toV}</span></div>`;
+}
+
+// Map a dotted field path (from /import/diff) to a human label that matches
+// the wording on the outgoing side of the modal.
+function humanFieldLabel(path) {
+  const map = {
+    "priority": "priority",
+    "min_altitude_deg": "min altitude",
+    "meridian_window_min": "meridian window",
+    "target.center_ra_deg": "RA",
+    "target.center_dec_deg": "Dec",
+    "target.rotation_deg": "rotation",
+    "target.mosaic.rows": "mosaic rows",
+    "target.mosaic.cols": "mosaic cols",
+    "target.mosaic.overlap_pct": "mosaic overlap",
+  };
+  if (map[path]) return map[path];
+  // filter_goals.Ha.target_hours → "Ha target hours"
+  if (path.startsWith("filter_goals.")) {
+    const parts = path.split(".");
+    const fname = parts[1] || "";
+    const sub = parts.slice(2).join(".").replace(/_/g, " ");
+    return `${fname} ${sub}`;
+  }
+  return path;
+}
+
+function formatValue(v) {
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "number") {
+    return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  }
+  return String(v);
+}
+
+async function runApplyImmediate(ext, action, profileId, dlg) {
+  const body = document.getElementById("extActionResultBody");
+  if (!body) return;
+  body.innerHTML = `<div class="ext-progress">Running…</div>`;
+  showStep(dlg, "extActionResult");
+  try {
+    const r = await fetchWithRetry(action.endpoint, { profile_id: profileId });
+    const result = await r.json();
+    body.innerHTML = `<div class="ext-ok">✓ Done</div>${renderSyncReport(result.report || result)}`;
+  } catch (e) {
+    body.innerHTML = `<div class="ext-error">Failed: ${esc(String(e))}</div>`;
+  }
+}
+
+function showResult(dlg, html) {
+  const body = document.getElementById("extActionResultBody");
+  if (body) body.innerHTML = html;
+  showStep(dlg, "extActionResult");
+  for (const btn of dlg.querySelectorAll('[data-act="close"]')) {
+    btn.onclick = () => dlg.close();
+  }
+}
+
+// Render a plan-grouped diff from a /preview response. Falls back to the
+// flat SyncReport table when plan_diffs is missing (older extension).
+function renderDiffReport(preview, opts = {}) {
+  const diffs = Array.isArray(preview && preview.plan_diffs) ? preview.plan_diffs : null;
+  if (!diffs) return renderSyncReport(preview && preview.report);
+
+  // Bucket each plan by its kind so the summary line and the collapsibles
+  // know what they're working with.
+  const inserts = diffs.filter(d => d.kind === "insert");
+  const updates = diffs.filter(d => d.kind === "update");
+  const unchanged = diffs.filter(d => d.kind === "unchanged");
+
+  // Group `updates` by project_name so a shared project-level change shows
+  // once under the project heading instead of repeating under every plan.
+  const updatesByProject = new Map();
+  for (const d of updates) {
+    if (!updatesByProject.has(d.project_name)) updatesByProject.set(d.project_name, []);
+    updatesByProject.get(d.project_name).push(d);
+  }
+
+  const total = diffs.length;
+  const verb = opts.applied ? "applied to" : "queued for";
+  const summary = updates.length + inserts.length === 0
+    ? `<div class="ext-meta">All ${total} plan${total === 1 ? "" : "s"} already match TS — nothing ${opts.applied ? "applied" : "to sync"}.</div>`
+    : `<div class="ext-meta">${updates.length + inserts.length} of ${total} plan${total === 1 ? "" : "s"} ${verb} TS · ${unchanged.length} already in sync</div>`;
+
+  let changedBlock = "";
+  if (updates.length || inserts.length) {
+    const groups = [];
+    // New projects first (inserts) so the user notices what's being created.
+    if (inserts.length) {
+      groups.push(`
+        <div class="ext-diff-group ext-diff-insert">
+          <div class="ext-diff-proj">New: ${inserts.map(d => esc(d.project_name + " / " + d.target_name)).join(", ")}</div>
+        </div>
+      `);
+    }
+    for (const [proj, plans] of updatesByProject) {
+      // Project-level changes are identical across all sibling plans (the
+      // payload built them via strictest-wins). Take the first plan's
+      // project_changes as canonical; note the share count.
+      const shared = plans[0].project_changes || [];
+      const sharedHtml = shared.length
+        ? `<div class="ext-diff-shared">${shared.map(c => renderChange(c)).join("")}
+            ${plans.length > 1 ? `<div class="ext-diff-meta">applies to ${plans.length} plans in this project</div>` : ""}
+          </div>`
+        : "";
+      const planRows = plans.map(d => {
+        const tgtChanges = (d.target_changes || []).map(c => renderChange(c)).join("");
+        const filterChangesEntries = Object.entries(d.filter_changes || {});
+        const filterChangesHtml = filterChangesEntries.map(([fname, changes]) =>
+          changes.map(c => renderChange({...c, label: `${fname} ${c.label}`})).join("")
+        ).join("");
+        const inner = tgtChanges + filterChangesHtml;
+        if (!inner) return "";
+        return `
+          <div class="ext-diff-plan">
+            <div class="ext-diff-target">${esc(d.target_name)}</div>
+            ${inner}
+          </div>
+        `;
+      }).join("");
+      groups.push(`
+        <div class="ext-diff-group">
+          <div class="ext-diff-proj">${esc(proj)}</div>
+          ${sharedHtml}
+          ${planRows}
+        </div>
+      `);
+    }
+    changedBlock = `<div class="ext-diff-scroll">${groups.join("")}</div>`;
+  }
+
+  let unchangedBlock = "";
+  if (unchanged.length) {
+    unchangedBlock = `
+      <details class="ext-diff-unchanged">
+        <summary>${unchanged.length} plan${unchanged.length === 1 ? "" : "s"} unchanged</summary>
+        <div class="ext-diff-unchanged-list">
+          ${unchanged.map(d => `<div>${esc(d.project_name)} / ${esc(d.target_name)}</div>`).join("")}
+        </div>
+      </details>
+    `;
+  }
+
+  return summary + changedBlock + unchangedBlock;
+}
+
+function renderChange(c) {
+  const u = c.unit ? esc(c.unit) : "";
+  const fromV = c.from === null || c.from === undefined ? "—" : `${esc(String(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? "—" : `${esc(String(c.to))}${u}`;
+  return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-from">${fromV}</span> <span class="ext-diff-arrow">→</span> <span class="ext-diff-to">${toV}</span></div>`;
+}
+
+function renderSyncReport(report) {
+  if (!report || typeof report !== "object") return `<div class="ext-meta">No details returned.</div>`;
+  // The extension's SyncReport shape has per-entity {inserted, updated, claimed}.
+  const tables = ["project", "target", "exposureplan", "exposuretemplate"];
+  const rows = tables
+    .filter(t => report[t])
+    .map(t => `<tr><td>${t}</td><td>${report[t].inserted ?? 0}</td><td>${report[t].updated ?? 0}</td><td>${report[t].claimed ?? 0}</td></tr>`)
+    .join("");
+  if (!rows) return `<pre class="ext-pre">${esc(JSON.stringify(report, null, 2))}</pre>`;
+  return `
+    <table class="ext-report">
+      <thead><tr><th>Entity</th><th>Inserted</th><th>Updated</th><th>Claimed</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${(report.notes || []).length ? `<div class="ext-meta">Notes:<ul>${report.notes.map(n => `<li>${esc(n.message || JSON.stringify(n))}</li>`).join("")}</ul></div>` : ""}
+  `;
+}
+
+// fetch with exponential backoff on 5xx or "database is locked" errors.
+// 3 attempts: 2s / 4s / 8s. onRetry({n, max}) is called between attempts.
+async function fetchWithRetry(url, payload, { onRetry } = {}) {
+  const max = 3;
+  let lastErr;
+  for (let n = 1; n <= max; n++) {
+    let r;
+    try {
+      r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      lastErr = e;
+      if (n < max) {
+        if (onRetry) onRetry(n + 1, max);
+        await new Promise(res => setTimeout(res, 2000 * Math.pow(2, n - 1)));
+        continue;
+      }
+      throw e;
+    }
+    if (r.ok) return r;
+    // Peek for "database is locked" or 5xx to decide retry.
+    const cloned = r.clone();
+    let bodyText = "";
+    try { bodyText = await cloned.text(); } catch {}
+    const isLockBusy = r.status === 503 || r.status >= 500 || /database is locked/i.test(bodyText);
+    if (!isLockBusy || n === max) {
+      lastErr = new Error(`HTTP ${r.status}: ${bodyText.slice(0, 200)}`);
+      throw lastErr;
+    }
+    if (onRetry) onRetry(n + 1, max);
+    await new Promise(res => setTimeout(res, 2000 * Math.pow(2, n - 1)));
+  }
+  throw lastErr || new Error("fetchWithRetry: exhausted");
+}
+
+// --- Live progress toggle (auto-runner for sync-acquired) -----------------
+
+async function startLiveAction(ext, action) {
+  stopLiveAction(action.id); // belt + braces
+  const statusKey = `${ext.extension}.${action.id}`;
+  liveProgressState.set(action.id, { failures: 0, lastIso: null });
+  setLiveStatus(statusKey, "Refreshing…", "running");
+  const max = action.max_consecutive_failures || 3;
+
+  const tick = async () => {
+    const cfgR = await fetch(ext.config_endpoint);
+    const cfg = await cfgR.json().catch(() => ({}));
+    const profileId = cfg.profile_id;
+    if (!profileId) {
+      setLiveStatus(statusKey, "No profile configured", "error");
+      stopLiveAction(action.id);
+      return;
+    }
+    try {
+      const r = await fetch(action.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_id: profileId }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const body = await r.json().catch(() => ({}));
+      const st = liveProgressState.get(action.id) || { failures: 0 };
+      st.failures = 0;
+      st.lastIso = new Date().toISOString();
+      liveProgressState.set(action.id, st);
+      const updated = body.updated_filter_goals ?? body.updated ?? 0;
+      setLiveStatus(statusKey, `Last refresh just now · ${updated} goal${updated === 1 ? "" : "s"} updated`, "running");
+      // Server rewrote plans.json with the new actual_hours. Reload the
+      // in-memory `plans` array and repaint the rail if we're on it — without
+      // this the user has to F5 to see the bumped "h left".
+      if (updated > 0) {
+        try {
+          await loadPlans();
+          if (typeof panelMode !== "undefined" && panelMode === "plan-list") {
+            renderPlanList();
+          } else if (typeof panelMode !== "undefined" && panelMode === "plan-edit" && editingPlan) {
+            // Surgical: patch actual_hours displays in-place rather than
+            // re-rendering the whole editor (which would clobber any
+            // in-progress typing in target_hours / sub_exposure fields).
+            updatePlanEditorActuals();
+          }
+        } catch (reloadErr) {
+          console.warn("plan reload after sync-acquired failed:", reloadErr);
+        }
+      }
+    } catch (e) {
+      const st = liveProgressState.get(action.id) || { failures: 0 };
+      st.failures = (st.failures || 0) + 1;
+      liveProgressState.set(action.id, st);
+      if (st.failures >= max) {
+        setLiveStatus(statusKey, `Failed ${st.failures}× in a row: ${esc(String(e))}`, "error", { showRetry: true, ext, action });
+        stopLiveAction(action.id);
+      } else {
+        setLiveStatus(statusKey, `Retry ${st.failures}/${max}: ${esc(String(e))}`, "warn");
+      }
+    }
+  };
+  await tick(); // run once immediately
+  const handle = setInterval(tick, (action.interval_s || 60) * 1000);
+  liveProgressTimers.set(action.id, handle);
+}
+
+function stopLiveAction(actionId) {
+  const h = liveProgressTimers.get(actionId);
+  if (h) {
+    clearInterval(h);
+    liveProgressTimers.delete(actionId);
+  }
+}
+
+// Surgically refresh `actual_hours` displays inside the plan-edit panel,
+// for the case where the user has the editor open while live-progress polling
+// updates their plan. Pulls fresh values from `plans[]` (already reloaded by
+// the caller), merges them into editingPlan in-place to preserve any other
+// unsaved edits, then rewrites the per-filter status spans without doing a
+// full renderPlanEditor() (which would tear down + recreate every input and
+// lose cursor position / typing-in-progress).
+function updatePlanEditorActuals() {
+  if (panelMode !== "plan-edit" || !editingPlan) return;
+  const fresh = plans.find(p => p.id === editingPlan.id);
+  if (!fresh || !fresh.filter_goals) return;
+  for (const [fname, freshGoal] of Object.entries(fresh.filter_goals)) {
+    if (typeof freshGoal.actual_hours !== "number") continue;
+    if (editingPlan.filter_goals && editingPlan.filter_goals[fname]) {
+      editingPlan.filter_goals[fname].actual_hours = freshGoal.actual_hours;
+    }
+    const span = document.querySelector(
+      `.goal-status[data-actual-filter="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(fname) : fname}"]`
+    );
+    if (!span) continue;
+    const th = (editingPlan.filter_goals && editingPlan.filter_goals[fname]?.target_hours) || 0;
+    const ah = freshGoal.actual_hours || 0;
+    const cls = (th > 0 && ah >= th) ? "done" : (ah > 0 ? "partial" : "todo");
+    span.textContent = `${ah.toFixed(1)}h`;
+    span.className = `goal-status ${cls}`;
+    span.dataset.actualFilter = fname;
+  }
+}
+
+function setLiveStatus(stateKey, text, kind, opts = {}) {
+  const el = document.querySelector(`[data-ext-status="${stateKey.replaceAll('"', '\\"')}"]`);
+  if (!el) return;
+  el.className = `ext-status ext-status-${kind}`;
+  if (opts.showRetry && opts.ext && opts.action) {
+    el.innerHTML = `${text} <button data-ext-retry="${esc(stateKey)}">Retry</button>`;
+    const btn = el.querySelector("[data-ext-retry]");
+    if (btn) btn.onclick = () => {
+      // Also re-check the checkbox since stopLiveAction left it on but the
+      // interval cleared. Easier: just re-run startLiveAction.
+      startLiveAction(opts.ext, opts.action);
+    };
+  } else {
+    el.textContent = text;
   }
 }
 
@@ -3438,6 +4500,7 @@ function init() {
     loadCatalogs();
     loadSources();
     initInventory();
+    loadExtensions();
     initTimeAware();
 
     // If planning mode was remembered from last session, switch now (after
@@ -3792,13 +4855,16 @@ function renderPlanList() {
     for (const g of Object.values(goals)) remaining += Math.max(0, (g.target_hours || 0) - (g.actual_hours || 0));
     remaining *= panelCount;
     const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
+    const priLabel = pri.charAt(0).toUpperCase() + pri.slice(1);
     return `<li class="plan-row" data-plan-id="${esc(pl.id)}">
-        <span class="plan-pri plan-pri-${pri}">${pri}</span>
+        <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
         <span class="plan-name">${name}</span>
-        <span class="plan-project">${proj}</span>
-        <span class="plan-goals">${dots}</span>
-        <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
         ${visCell}
+        <div class="plan-row-line2">
+          <span class="plan-project">${proj}</span>
+          <span class="plan-goals">${dots}</span>
+          <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
+        </div>
       </li>`;
   }).join("");
 
@@ -3828,7 +4894,11 @@ function renderPlanList() {
     plans.push(p);
     renderPlanEditor(p);
   });
-  panel.querySelector("#planSync").addEventListener("click", syncPlans);
+  // Wire planSync through the replaceable-button helper so an installed
+  // extension can swap it (e.g. nina_ts_sync → "Auto Sync to NINA"). Falls
+  // back to the original syncPlans() zip-export handler when no extension
+  // claims this slot.
+  wireReplaceableButton("sync-to-nina");
   panel.querySelector("#planGear").addEventListener("click", () => renderGearEditor());
   panel.querySelectorAll(".plan-row").forEach(row => {
     row.addEventListener("click", () => {
@@ -3890,7 +4960,7 @@ function renderPlanEditor(plan) {
       <td><span class="filter-pill fp-${esc(f)}" style="background:${color};color:#000">${esc(f)}</span></td>
       <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${esc(f)}" value="${th}" placeholder="hrs"></td>
       <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${esc(f)}" value="${sub}"></td>
-      <td><span class="goal-status ${ahClass}">${ah.toFixed(1)}h</span></td>
+      <td><span class="goal-status ${ahClass}" data-actual-filter="${esc(f)}">${ah.toFixed(1)}h</span></td>
       <td>${tsTemplates.available ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">—</span>`}</td>
     </tr>`;
   }).join("");

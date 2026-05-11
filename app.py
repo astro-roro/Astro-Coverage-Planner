@@ -693,6 +693,12 @@ app.extra_catalogues: list[dict] = []
 app.tile_sources: list = []
 # CategorisedCatalogSource registry. Same registration pattern as above.
 app.catalog_sources: list = []
+# Extension UI manifest registry. Extensions append entries describing the
+# buttons / toggles they want surfaced in core's UI; the frontend fetches the
+# combined list via /api/extensions/manifest and renders an "Extensions" rail
+# panel. Entries may declare ``replaces: "<core-button-id>"`` to swap a core
+# button in place (handler/label come from the extension). See docs/extensions.md.
+app.extensions_manifest: list[dict] = []
 
 
 # Friend manifests — semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -1341,6 +1347,31 @@ def api_catalog_registry():
     for entry in load_catalog_registry().get("catalogues", []):
         _add(entry)
     return jsonify({"version": 1, "catalogues": out})
+
+
+@app.route("/api/extensions/manifest")
+def api_extensions_manifest():
+    """Manifest of extension-registered UI actions for the frontend.
+
+    Each entry is a free-form dict supplied by an extension at register()
+    time. Documented fields (used by the frontend renderer):
+
+      ``id``         Stable id, unique within an extension (e.g. "push").
+      ``kind``       "button" | "toggle".
+      ``label``      User-visible label.
+      ``endpoint``   HTTP endpoint to call (extension-defined route).
+      ``method``     "GET" | "POST".
+      ``needs``      Optional list of required config keys, e.g.
+                      ``["profile_id"]``. Frontend prompts before the call.
+      ``replaces``   Optional core button id to swap (see REPLACEABLE_BUTTONS
+                      registry in static/app.js). When set, the core button
+                      is hidden and the extension's button takes its slot.
+      ``preview_endpoint``  Optional. When present on a "button" action, the
+                      frontend calls this first and shows the response in a
+                      modal with [Apply]/[Cancel] before hitting ``endpoint``.
+      ``interval_s``  Required on "toggle" actions. Poll interval in seconds.
+    """
+    return jsonify(list(app.extensions_manifest))
 
 
 @app.route("/api/sources")
