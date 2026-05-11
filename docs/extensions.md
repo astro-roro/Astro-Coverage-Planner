@@ -230,6 +230,7 @@ A few patterns that fit the model well:
 - **Club / community catalogues** — render a target list maintained outside ACP as a chip-filtered overlay.
 - **Workflow integrations** — push session plans to a planning service ACP doesn't natively support (e.g. Voyager, SGP) by reading from `/api/plans` and writing whatever format the target tool expects.
 - **One-off CSV exports** — anything where you want to grab data through ACP's API and reshape it for another tool.
+- **UI workflows** — register manifest actions to surface custom buttons or auto-pollers in the planning rail, or to swap a core button for an extension-supplied one (e.g. replacing the zip-export sync with a direct-DB-write sync, with a preview-and-confirm modal). See [UI manifest](#ui-manifest) above.
 
 If your extension might be useful to others, consider opening a PR to ship it as a built-in feature rather than keeping it private.
 
