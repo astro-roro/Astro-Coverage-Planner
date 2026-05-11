@@ -4920,6 +4920,80 @@ function renderPlanList() {
   if (timeAware) loadAllPlanVisibility();
 }
 
+// Build the list of TS-template <option> tags for a filter row.
+//
+// Returns the inner HTML for a <select>, OR null when no template UI should
+// render at all (e.g. /api/ts-templates wasn't available — caller falls
+// back to an em-dash).
+//
+// Filtering steps:
+//   1. By filter name (case-insensitive).
+//   2. Then by selected camera, using a normalised-name "contains" check so
+//      a template called "Ha (ZWO ASI6200MM Pro)" matches a gear camera
+//      named "ZWO ASI6200MM Pro". If the camera-narrow returns empty, we
+//      fall back to filter-only — better to show something than nothing.
+//
+// Option labels: when multiple templates remain, we show only the *varying*
+// fields (gain / sub-exposure / offset / bin) instead of the full template
+// name, so the user sees the meaningful axis of choice (e.g. "100s" / "300s"
+// when only exposure differs, or "gain 0" / "gain 100" when only gain
+// differs). When a single template remains we just show its name.
+//
+// Single-match behaviour: the lone option is rendered as `selected` so the
+// auto-persist hook in renderPlanEditor picks it up — user doesn't have to
+// open the dropdown to confirm.
+function buildTsTemplateOptions(filterName, cameraObj, filtCfg) {
+  if (!tsTemplates || !tsTemplates.available) return null;
+  let matching = (tsTemplates.templates || []).filter(
+    t => (t.filter || "").toLowerCase() === filterName.toLowerCase(),
+  );
+  if (matching.length === 0) {
+    return `<option value="">(no ${esc(filterName)} template)</option>`;
+  }
+  if (cameraObj && cameraObj.name && matching.length > 1) {
+    const camNorm = _normalizeForMatch(cameraObj.name);
+    const narrowed = matching.filter(t => _normalizeForMatch(t.name).includes(camNorm));
+    if (narrowed.length) matching = narrowed;
+  }
+  const diffs = _differingTemplateFields(matching);
+  // Allow clearing an existing pick when the user wants to fall back to ACP's
+  // own derivation. Only show "(none)" when something is currently stored —
+  // for fresh plans we don't want the empty choice cluttering the dropdown.
+  const opts = [];
+  if (filtCfg && filtCfg.ts_template_id) {
+    opts.push(`<option value="">(none)</option>`);
+  }
+  opts.push(...matching.map((t, i) => {
+    const label = diffs.length ? _templateOptionLabel(t, diffs) : t.name;
+    const stored = filtCfg && String(filtCfg.ts_template_id || "") === String(t.id);
+    // Auto-default the lone option when nothing's stored yet so the
+    // post-render auto-persist hook fires for it.
+    const autoDefault = matching.length === 1 && !(filtCfg && filtCfg.ts_template_id);
+    const selected = stored || autoDefault ? "selected" : "";
+    return `<option value="${esc(t.id)}" ${selected}>${esc(label)}</option>`;
+  }));
+  return opts.join("");
+}
+
+function _normalizeForMatch(s) {
+  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function _differingTemplateFields(templates) {
+  // Order matters — exposure first is what users notice; gain/offset/bin
+  // tail off in significance. We list the differing ones in that order so
+  // the option label reads naturally.
+  const fields = ["default_exposure_s", "gain", "offset", "bin"];
+  return fields.filter(f => new Set(templates.map(t => t[f])).size > 1);
+}
+
+function _templateOptionLabel(template, diffs) {
+  return diffs.map(f => {
+    if (f === "default_exposure_s") return `${template[f]}s`;
+    return `${f.replace(/_/g, " ")} ${template[f]}`;
+  }).join(" · ");
+}
+
 function renderPlanEditor(plan) {
   panelMode = "plan-edit";
   updateSearchVisibility();
@@ -4949,19 +5023,13 @@ function renderPlanEditor(plan) {
     const sub = g.sub_exposure_s ?? filtCfg.default_sub_s ?? 300;
     const ah = g.actual_hours || 0;
     const ahClass = (g.target_hours > 0 && ah >= g.target_hours) ? "done" : (ah > 0 ? "partial" : "todo");
-    let tsOpts = `<option value="">(none)</option>`;
-    if (tsTemplates.available) {
-      const matching = tsTemplates.templates.filter(t => (t.filter || "").toLowerCase() === f.toLowerCase());
-      tsOpts += matching.map(t =>
-        `<option value="${esc(t.id)}" ${String(t.id) === String(filtCfg.ts_template_id) ? "selected" : ""}>${esc(t.name)} (exp=${t.default_exposure_s}s)</option>`
-      ).join("");
-    }
+    const tsOpts = buildTsTemplateOptions(f, camera, filtCfg);
     return `<tr>
       <td><span class="filter-pill fp-${esc(f)}" style="background:${color};color:#000">${esc(f)}</span></td>
       <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${esc(f)}" value="${th}" placeholder="hrs"></td>
       <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${esc(f)}" value="${sub}"></td>
       <td><span class="goal-status ${ahClass}" data-actual-filter="${esc(f)}">${ah.toFixed(1)}h</span></td>
-      <td>${tsTemplates.available ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">—</span>`}</td>
+      <td>${tsOpts !== null ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">—</span>`}</td>
     </tr>`;
   }).join("");
 
@@ -5147,6 +5215,18 @@ function renderPlanEditor(plan) {
     // Persist to data/gear.json so the mapping survives a reload
     await saveGear();
   }));
+  // Auto-persist single-match template defaults: when buildTsTemplateOptions
+  // pre-selects the only candidate, fire a synthetic change so the handler
+  // above writes it to gear.json without the user opening the dropdown.
+  // Skips selects where the pre-selected value already matches storage.
+  panel.querySelectorAll(".tmpl-sel").forEach(el => {
+    const f = el.dataset.f;
+    const cam = planCamera(editingPlan);
+    const stored = String(cam?.filters?.[f]?.ts_template_id || "");
+    if (el.value && el.value !== stored) {
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
   panel.querySelector("#f_minalt")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value); if (isFinite(v)) editingPlan.min_altitude_deg = v;
@@ -5413,7 +5493,22 @@ function onMapMouseDown(evt) {
   const bounds = planMosaicBoundsCorners(editingPlan);
   const nePix = aladin.world2pix(bounds[2][0], bounds[2][1]);
   if (nePix && isFinite(nePix[0]) && Math.hypot(nePix[0] - px, nePix[1] - py) < 14) {
-    dragState = { mode: "rotate", planId: editingPlan.id };
+    // Capture the angular offset between cursor and handle's current PA so
+    // the first mouse-move doesn't snap the handle to the cursor (the
+    // "1px move = big rotation jump" bug). Subsequent moves rotate
+    // relative to where the user actually grabbed the handle.
+    const cPix = aladin.world2pix(editingPlan.target.center_ra_deg, editingPlan.target.center_dec_deg);
+    let grabOffsetDeg = 0;
+    if (cPix && isFinite(cPix[0])) {
+      const clickPaDeg = Math.atan2(-(px - cPix[0]), -(py - cPix[1])) * 180 / Math.PI;
+      const cornerOffsetDeg = _planCornerOffsetDeg(editingPlan);
+      const currentRot = editingPlan.target.rotation_deg || 0;
+      // Normalize to [-180, 180] so the rotation math doesn't accumulate a
+      // 360° jump when the grab crosses the wrap point.
+      grabOffsetDeg = clickPaDeg - (currentRot + cornerOffsetDeg);
+      grabOffsetDeg = ((grabOffsetDeg + 180) % 360 + 360) % 360 - 180;
+    }
+    dragState = { mode: "rotate", planId: editingPlan.id, grabOffsetDeg };
     evt.preventDefault(); evt.stopPropagation();
     return;
   }
@@ -5422,6 +5517,18 @@ function onMapMouseDown(evt) {
     dragState = { mode: "center", planId: editingPlan.id };
     evt.preventDefault(); evt.stopPropagation();
   }
+}
+
+// Shared between mousedown's offset capture and mousemove's rotation update —
+// the NE-corner angular offset in the unrotated frame, derived from the
+// current mosaic geometry.
+function _planCornerOffsetDeg(plan) {
+  const [fw, fh] = planFovArcmin(plan);
+  const mos = planMosaic(plan);
+  const overlap = Math.max(0, Math.min(0.99, mos.overlap_pct / 100));
+  const totalW = fw * ((mos.cols - 1) * (1 - overlap) + 1);
+  const totalH = fh * ((mos.rows - 1) * (1 - overlap) + 1);
+  return Math.atan2(totalW / 2, totalH / 2) * 180 / Math.PI;
 }
 
 function onMapMouseMove(evt) {
@@ -5446,14 +5553,11 @@ function onMapMouseMove(evt) {
     // Screen: +x right, +y down. North is up (−y), East is left (−x) on typical sky renders.
     // PA = atan2(east, north) = atan2(−dx, −dy); then subtract the NE corner's intrinsic offset.
     const paDeg = Math.atan2(-dx, -dy) * 180 / Math.PI;
-    // Handle sits at the overall mosaic NE corner, so base the offset on total dims.
-    const [fw, fh] = planFovArcmin(editingPlan);
-    const mos = planMosaic(editingPlan);
-    const overlap = Math.max(0, Math.min(0.99, mos.overlap_pct / 100));
-    const totalW = fw * ((mos.cols - 1) * (1 - overlap) + 1);
-    const totalH = fh * ((mos.rows - 1) * (1 - overlap) + 1);
-    const cornerOffsetDeg = Math.atan2(totalW / 2, totalH / 2) * 180 / Math.PI;
-    let newRot = paDeg - cornerOffsetDeg;
+    const cornerOffsetDeg = _planCornerOffsetDeg(editingPlan);
+    // Subtract the grab offset captured at mousedown so the handle tracks
+    // the cursor including the user's initial click offset — no first-move
+    // jump.
+    let newRot = paDeg - cornerOffsetDeg - (dragState.grabOffsetDeg || 0);
     newRot = Math.round(((newRot % 360) + 360) % 360);
     editingPlan.target.rotation_deg = newRot;
     const rotEl = document.getElementById("f_rot"); if (rotEl) rotEl.value = newRot;
