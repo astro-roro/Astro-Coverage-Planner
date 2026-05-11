@@ -25,6 +25,16 @@ Architectural reset that turned ACP into a plugin host so users (and the author 
 - **More catalogues** (`a0fb3fc`). Messier (110 hardcoded), Sharpless 2 HII (313, VizieR VII/20), Strasbourg-ESO PNe (1143, VizieR V/84 — Abell PNe present as a subset). All slot into the gap-finder filter for free via the existing `gapNamesByCatalog` machinery.
 - **Telescope filter polish** (`7d95ce1`). Empty telescope selection now hides every tagged target (was: showed everything).
 
+### Extension UI manifest + nina_ts_sync UI integration (May 2026, branch `planner`)
+
+Generic action-registration mechanism so extensions can surface buttons + toggles in the planning rail (and swap a core button in place) without touching frontend code. First consumer is the (private) `acp-nina-ts-sync` extension which replaces the core zip-export "Sync to NINA" button with a bidirectional "Sync with NINA" modal and adds a "Live progress from NINA" auto-poll toggle. Shipped same day.
+
+- **Core ACP** — `app.extensions_manifest` registry, `/api/extensions/manifest` endpoint, `REPLACEABLE_BUTTONS` swap mechanism, Extensions rail accordion, modal driver with profile-picker + preview-then-apply + bidirectional flows, plan-grouped from→to diff renderer with per-item radios, surgical actual_hours patcher for the open detail panel, retry-with-backoff on `database is locked`, two-line plan-row layout (priority dot blue/green/grey, target name dominant on row 1, project + filter dots + time-aware sparkline on row 2).
+- **acp-nina-ts-sync** (private repo) — manifest registration in `__init__.py`, `config.py` for persisted `profile_id`, `/config` + `/profiles` endpoints, three-way bidi modal driver. Fixed two in-session bugs during testing: (a) `_overlap_pct_from_grid` now uses camera-frame stride instead of raw sky-frame so rotated mosaics round-trip cleanly; (b) `ts_base_snapshot` captures the plan's mosaic dims so the diff has a real BASE for mosaic.* fields instead of falling back to "no opinion".
+- **Docs** — `docs/extensions.md` gets a UI manifest section; `acp-nina-ts-sync/README.md` rewritten around the UI flow; `FINDINGS-2026-05-11.md` strikes the two fixed bugs and updates the follow-up order.
+
+Live-verified: push/pull with NINA-open-idle; bidi modal with both directions populated; live-progress 60s poll updating the rail + open detail panel without a refresh. Not yet verified: graceful retry during an actual imaging sequence (parked).
+
 ---
 
 ## In progress
@@ -47,7 +57,36 @@ Architectural reset that turned ACP into a plugin host so users (and the author 
    - Let the user override location (stored in localStorage already via `/api/observability`) for travel / remote-site planning.
    - Per-target "best time of year" badge: months during which the target clears the plan's `min_altitude_deg` for more than N hours of astronomical darkness.
    - Stretch: overlay the current night's altitude curve for a selected target on the side panel.
-4. **Bug — page is slightly taller than the viewport (parked 2026-04-21):** the layout is very close to fitting in one screen but overflows by a few pixels, so the page gains a vertical scrollbar when nothing should need to scroll. Likely culprit after the topbar restructure: `.layout` is sized to `calc(100vh - 44px)` in `static/style.css`, which assumes a 44px topbar — but with padding/borders the actual topbar is taller, or `body`/`html` has residual margin pushing total height past 100vh. Fix: measure the real topbar height (e.g. with `getBoundingClientRect`) and set the layout height from that, or switch the layout to `flex: 1` inside a `display: flex; flex-direction: column; height: 100vh` body so it just absorbs whatever space the topbar leaves.
+5. **Project-level fields for power-user plan groups (parked 2026-05-11):** today a plan carries `project_name` as free text, and project-level fields like `min_altitude_deg`, `meridian_window_min`, and `priority` live on each plan individually. On `/api/ext/nina-ts-sync/sync` the strictest-wins rule collapses N per-plan values into the single TS Project value (max min-alt, narrowest meridian, highest priority) — correct for safety but surprising when most plans agree and a couple of outliers tighten the whole project. Fine for users with one target per plan; gets hard when a single `project_name` has 5–6 mosaic groups (e.g. galactic-plane survey covering Galactic Bulge 1 + Plane 1/3/4/5 + SMC + LMC all under "PNe Survey"). Exploration ideas:
+   - Optional first-class **Project** entity in ACP (sharable across plans) with its own `min_altitude_deg` / `meridian_window_min` / `priority`. Plans without a Project keep the current behaviour (free-text `project_name` + per-plan fields) so single-target users don't feel forced into TS's project-first ceremony.
+   - Pre-sync warning UI: when `/sync` is about to collapse mixed per-plan values into one TS project value, surface it as a one-time confirmable dialog ("PNe Survey has 30°/40° min-alts across 8 plans; TS will use 40°. Continue?").
+   - Inline rename hint in the same warning, matching the strictest-wins design memo (planner-design.md): offer to rename outliers into a derived project (e.g. "PNe Survey (high)") in one click.
+   This is **UX work**, not extension/sync work — the sync semantics are settled (strictest-wins, locked 2026-04-20). The extension can stay as-is; surface helpers (like the sync warning) can live either side.
+
+6. **Bug — page is slightly taller than the viewport (parked 2026-04-21):** the layout is very close to fitting in one screen but overflows by a few pixels, so the page gains a vertical scrollbar when nothing should need to scroll. Likely culprit after the topbar restructure: `.layout` is sized to `calc(100vh - 44px)` in `static/style.css`, which assumes a 44px topbar — but with padding/borders the actual topbar is taller, or `body`/`html` has residual margin pushing total height past 100vh. Fix: measure the real topbar height (e.g. with `getBoundingClientRect`) and set the layout height from that, or switch the layout to `flex: 1` inside a `display: flex; flex-direction: column; height: 100vh` body so it just absorbs whatever space the topbar leaves.
+
+---
+
+## Parked work to pick up next session
+
+### Night-out validation of the TS-sync extension (parked 2026-05-11)
+
+The push/pull/diff flows are validated against an idle NINA + TS plugin. What's *not* yet validated: the graceful retry on `database is locked` while an imaging sequence is actually running. The retry path exists (3 attempts, 2s/4s/8s exponential backoff) but only fires against contention from idle NINA. Needs a real night out — clear sky + a target you'd image anyway — to confirm it holds up under genuine concurrent writes.
+
+- Open NINA. Start a sequence on any project (Fesen SNR is the closest-to-zenith candidate from the current ACP plan list at southern latitudes).
+- While imaging, hit `Sync with NINA` in ACP and apply something small (e.g. bump a target_hours by 0.5h). Expect: modal status briefly shows "Pulling… retrying (1/3)" or similar, then succeeds.
+- Also try `Live progress from NINA` toggle on. Confirm the 60s poll picks up the rising `acquired` count and the rail's "h left" decreases per-filter.
+
+If anything trips the retry to exhaustion, capture the modal's error and the timing relative to TS plugin's own writes — would point at needing to widen the SQLite `busy_timeout` (currently 10s).
+
+### TS-sync extension: open findings (parked 2026-05-11)
+
+Two parked items in `acp-nina-ts-sync/FINDINGS-2026-05-11.md` worth working through eventually:
+
+- **Per-plan `min_altitude_deg` false positives** (#3). When N ACP plans share a `project_name` with mixed min-alts, strictest-wins collapses them to one TS project value. On re-import, every non-strictest plan shows as a fake "ACP-only change" — eroding diff trust. Likely fix: capture per-plan min_alt in `ts_base_snapshot.plan` (new field) and diff against that.
+- **Strictest-wins UX surprise** (#6). User pushed mixed min_alts (40 + 30), got 40 in NINA, expected 30. Not a bug — but `/sync` should return a note flagging when the collapse happened, and the preview modal should surface it as a one-time warning. Workaround today: split outliers into a derived project (`project_name="PNe Survey (high)"`).
+
+Both have fix shapes in FINDINGS; not done because they need a tiny bit more design (per-plan snapshot adds another layer; surprise-note format needs to thread through the existing notes channel).
 
 ---
 
@@ -67,10 +106,10 @@ Architectural reset that turned ACP into a plugin host so users (and the author 
 - **`mocpy 0.20` `MOC.difference` bug workaround.** `gaps.py` works around a buggy `m1.difference(m2)` returning empty for fully-disjoint operands by computing `have.intersection(missing.complement())`. Track upstream; revert the workaround when fixed in mocpy.
 - **Friend-manifest hours fingerprintability.** Sanitiser rounds `total_hours` to 0.1h. Even rounded, hours per filter are still a reasonable fingerprint of imaging cadence. Probably acceptable for the share-among-friends model, but worth flagging if anyone wants tighter privacy (e.g. quantise to half-hour buckets, or omit hours entirely and just share the polygon footprint).
 - **MOC source `friend_friend_X` cosmetic.** Already fixed in `e80442a` — the `friend_` prefix is no longer doubled when a friend filename starts with `friend_`. Listed here for traceability only.
-- **TS exposure-template duplication on re-sync (parked 2026-05-05).** TS's Import Profile flow always creates new `ExposureTemplate` rows and rewrites `ExposurePlan.ExposureTemplateId` via its own remap dictionary — there is no name/GUID dedup. Re-syncing N times yields N copies of every template. Two paths to fix, neither implemented:
-   - **Path B — direct SQLite write** (the original "deferred" path). Open `schedulerdb.sqlite` in write mode, look up existing templates by `(profileId, name)` (or by stamped GUID once we start setting one consistently), reuse their `Id`s, insert/update Project + Target + ExposurePlan rows directly. Bypasses Import Profile entirely. Risks: schema drift across TS versions (mitigate via `PRAGMA user_version` gating against a tested-versions allowlist; refuse to write outside that window). Concurrency: TS docs say live writes are supported but recommend "with NINA closed" — surface that as the default behaviour with an override. Stamp every ACP-managed row with a recognisable marker (`description LIKE '[acp]%'` or a sidecar mapping table in our own data dir) so future re-syncs and cleanup are unambiguous.
+- **TS exposure-template duplication on re-sync (parked 2026-05-05; Path B prototyped 2026-05-09).** TS's Import Profile flow always creates new `ExposureTemplate` rows and rewrites `ExposurePlan.ExposureTemplateId` via its own remap dictionary — there is no name/GUID dedup. Re-syncing N times yields N copies of every template. Two paths to fix:
+   - **Path B — direct SQLite write (experimental prototype, lives outside this repo).** Prototyped as a standalone ACP extension at `/mnt/photon_sphere/D Drive Backup/Work/GitHub/acp-nina-ts-sync/` (sibling of this repo, **untracked / no git remote / no commits** — agent kept it separate while it's experimental). Package `nina_ts_sync/` registers `/api/ext/nina-ts-sync/*` routes (status, preview, sync, import/preview, import/apply, sync-acquired, import/diff, import/resolve), GUID-based upsert with claim-before-insert, `PRAGMA user_version` allowlist (currently `{23}` only — TS plugin 5.9.0+, Feb 2026+), and a fixture builder that rebuilds schedulerdb from the plugin's vendored migration SQL (`tcpalmer/nina.plugin.targetscheduler@2ec0c4d`). 46 offline tests, all passing. Not yet validated against a live `schedulerdb.sqlite` — see `TESTING.md` in that folder for the Windows real-world test plan that still needs to be run. `DESIGN-v0.2.md` drafts a three-way merge (BASE/ACP/TS) with `ts_refs` ID stamping and per-plan conflict resolution; not yet implemented. To turn it on you'd drop `nina_ts_sync/` into `ACP_EXTENSIONS_DIR`; nothing in core ACP references it yet.
    - **Upstream feature request to `tcpalmer/nina.plugin.targetscheduler`.** Ask for one of: (a) Import Profile dedupes ExposureTemplates by `(profileId, name)` — skip insert if match exists, point `ExposurePlan.ExposureTemplateId` at the existing row; (b) Import Profile honours pre-set `ExposureTemplateId` values that resolve to existing rows in TS, instead of always remapping through the export's id-map. Either would let us emit a templates-empty zip on resync. Worth filing once we know which interpretation we'd actually consume on our side.
-   Cosmetic mitigation already shippable: stamp template names with an `[ACP]` suffix so the user can bulk-delete dupes in TS by name search before re-syncing.
+   Cosmetic mitigation already shippable in core: stamp template names with an `[ACP]` suffix so the user can bulk-delete dupes in TS by name search before re-syncing.
 
 ---
 

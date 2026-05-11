@@ -582,14 +582,16 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
 
 .plan-row {
   display: grid;
-  /* row 1: pri · name · project · goals · remaining
-     row 2: (pri col empty) · vis-strip (the panels-fraction sparkline)
-     5-col / 2-row mirror of .target-row so the sparkline lines up across
-     rows and time-aware off collapses row 2 cleanly. */
-  grid-template-columns: auto 1fr auto auto auto;
+  /* Two-line layout:
+     row 1: [pri-dot] [target name (flex)] [N.Nh left]
+     row 2: [────── .plan-row-line2 spans cols 2-3 ──────]
+     plan-row-line2 packs project + filter dots on the left and right-anchors
+     the time-aware visibility chips under the "h left" column so the eye can
+     scan all the "right edge" info as one column. */
+  grid-template-columns: auto 1fr auto;
   grid-template-rows: auto auto;
   column-gap: 8px;
-  row-gap: 2px;
+  row-gap: 3px;
   align-items: center;
   padding: 7px 6px;
   border-radius: 4px;
@@ -597,38 +599,39 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
   border-bottom: 1px dashed #1a2030;
   font-size: 13px;
 }
-.plan-pri       { grid-row: 1; grid-column: 1; }
+.plan-pri-dot   { grid-row: 1; grid-column: 1; }
 .plan-name      { grid-row: 1; grid-column: 2; }
-.plan-project   { grid-row: 1; grid-column: 3; }
-.plan-goals     { grid-row: 1; grid-column: 4; }
-.plan-remaining { grid-row: 1; grid-column: 5; }
-.plan-vis {
+.plan-vis       { grid-row: 1; grid-column: 3; display: flex; align-items: center; }
+.plan-vis .yc-sparkline { margin-right: 0; }
+.plan-row-line2 {
   grid-row: 2;
   grid-column: 2 / -1;
   display: flex;
   align-items: center;
+  gap: 8px;
   font-size: 11px;
   color: #78839a;
 }
-.plan-vis .yc-sparkline { margin-left: auto; margin-right: 0; }
+.plan-row-line2 .plan-remaining { margin-left: auto; }
 body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .plan-row:hover { background: #1a2030; }
 
-.plan-pri {
+/* Priority dot — blue/green/grey per user's pick. Hover tooltip via the
+   `title` attribute set in the template. */
+.plan-pri-dot {
   display: inline-block;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
-.plan-pri-high   { background: #c53030; color: #fff; }
-.plan-pri-normal { background: #4a5568; color: #e0e4ea; }
-.plan-pri-low    { background: #2d3748; color: #a2aec2; }
+.plan-pri-dot.plan-pri-high   { background: #3a7ad6; }
+.plan-pri-dot.plan-pri-normal { background: #3a9658; }
+.plan-pri-dot.plan-pri-low    { background: #5a657a; }
 
 .plan-name {
   color: #e8ecf3;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -636,7 +639,6 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .plan-project {
   color: #78839a;
   font-size: 11px;
-  margin-left: 4px;
 }
 .plan-goals {
   display: inline-flex;
@@ -895,8 +897,10 @@ body:not([data-time-aware="on"]) .yc-bar,
 body:not([data-time-aware="on"]) .nn-chip,
 body:not([data-time-aware="on"]) .tr-chips,
 body:not([data-time-aware="on"]) .vis-section,
-body:not([data-time-aware="on"]) .sort-control,
 body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
+/* Keep .sort-control itself visible even with time-aware off — priority/name
+   sorts still apply. The time-aware-only options inside the <select> are
+   hidden by the option[data-time-aware] rule above. */
 
 /* ----- Year curve sparklines + best-month badges (Plan A.4) ------------- */
 /* One cell per month, coloured by visibility label. The list-row variant is
@@ -1165,6 +1169,180 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
   border-radius: 3px;
   font-size: 11px;
 }
+
+/* ----- Extensions rail + ext action modal ------------------------------ */
+/* Buttons and toggles registered by out-of-tree extensions. The rail panel
+   itself is hidden until at least one manifest entry shows up. */
+.ext-row { margin: 4px 0; display: flex; flex-direction: column; gap: 4px; }
+.ext-row button {
+  padding: 4px 10px; font-size: 12px; cursor: pointer;
+  background: #1d2532; border: 1px solid #2a3346; color: #d8e0ec; border-radius: 3px;
+}
+.ext-row button:hover { background: #243044; }
+.ext-status {
+  font-size: 10px; color: #78839a; padding-left: 4px; min-height: 14px;
+  display: flex; align-items: center; gap: 6px;
+}
+.ext-status-running { color: #88c088; }
+.ext-status-warn    { color: #c9a86a; }
+.ext-status-error   { color: #d68585; }
+.ext-status button {
+  padding: 1px 6px; font-size: 10px; background: #3a2222; border-color: #5a3030;
+}
+
+/* Modal used for extension action flows (picker → preview → result). */
+.ext-modal { min-width: 460px; max-width: 600px; }
+.ext-modal-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #e0e4ea; }
+.ext-modal-step { display: flex; flex-direction: column; gap: 10px; }
+/* `display: flex` overrides the browser default for [hidden]; restore it
+   explicitly so showStep()'s `step.hidden = true` actually hides the panel. */
+.ext-modal-step[hidden] { display: none; }
+.ext-hint {
+  background: #1a2230; border: 1px solid #2a3a52; color: #a8c0e0;
+  padding: 6px 10px; border-radius: 3px; font-size: 11px;
+}
+.ext-warn {
+  background: #2a2418; border: 1px solid #4a3a1a; color: #d8c088;
+  padding: 6px 10px; border-radius: 3px; font-size: 11px;
+}
+.ext-error {
+  background: #3a1d1d; border: 1px solid #6a2a2a; color: #f3c8c8;
+  padding: 6px 10px; border-radius: 3px; font-size: 11px;
+}
+.ext-ok {
+  background: #1e2a1e; border: 1px solid #3a7a3a; color: #b0ffb0;
+  padding: 6px 10px; border-radius: 3px; font-size: 12px; font-weight: 600;
+}
+.ext-progress { font-size: 11px; color: #78839a; font-style: italic; }
+.ext-meta { font-size: 11px; color: #a2aec2; }
+.ext-meta code { font-size: 10px; color: #c0c0c0; background: #11151c; padding: 1px 4px; border-radius: 2px; }
+.ext-pre {
+  font-size: 10px; background: #0a0d12; padding: 8px; border-radius: 3px;
+  max-height: 240px; overflow: auto; color: #d8e0ec;
+}
+.ext-report { width: 100%; border-collapse: collapse; font-size: 11px; }
+.ext-report th, .ext-report td {
+  padding: 4px 8px; border-bottom: 1px solid #1a2030; text-align: left;
+}
+.ext-report th { color: #78839a; font-weight: 500; }
+.ext-report td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Per-plan diff inside the preview modal. Scrollable so a sync touching many
+   plans doesn't blow the modal off-screen; visual hierarchy is project →
+   plan → change line. */
+.ext-diff-scroll {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid #1a2030;
+  border-radius: 3px;
+  background: #0d1118;
+  padding: 4px;
+}
+.ext-diff-group { padding: 6px 8px; border-bottom: 1px solid #141a24; }
+.ext-diff-group:last-child { border-bottom: none; }
+.ext-diff-group.ext-diff-insert { background: #1a2a1a; border-color: #2a3a2a; }
+.ext-diff-proj {
+  font-weight: 600; font-size: 12px; color: #d8e0ec; margin-bottom: 4px;
+}
+.ext-diff-shared {
+  padding: 4px 8px; margin: 2px 0 6px 0; background: #11151c;
+  border-left: 2px solid #2a4f7a; border-radius: 2px;
+}
+.ext-diff-meta { font-size: 10px; color: #78839a; margin-top: 3px; font-style: italic; }
+.ext-diff-plan {
+  padding: 4px 8px; margin: 2px 0; background: #11151c;
+  border-left: 2px solid #2a3346; border-radius: 2px;
+}
+.ext-diff-target { font-size: 11px; color: #a2aec2; margin-bottom: 3px; }
+.ext-diff-change {
+  font-size: 11px; padding: 2px 0; display: flex; gap: 6px;
+  align-items: baseline; flex-wrap: wrap;
+}
+.ext-diff-label { color: #78839a; min-width: 110px; }
+.ext-diff-from { color: #c9a86a; font-variant-numeric: tabular-nums; }
+.ext-diff-to   { color: #88c088; font-variant-numeric: tabular-nums; font-weight: 600; }
+.ext-diff-arrow { color: #5a657a; }
+.ext-diff-unchanged {
+  margin-top: 6px; font-size: 11px; color: #78839a;
+  background: #0d1118; border: 1px solid #1a2030; border-radius: 3px; padding: 4px 8px;
+}
+.ext-diff-unchanged summary { cursor: pointer; user-select: none; }
+.ext-diff-unchanged-list {
+  margin-top: 6px; max-height: 200px; overflow-y: auto;
+  padding-left: 12px;
+}
+.ext-diff-unchanged-list > div { padding: 1px 0; }
+
+/* Bidirectional Sync with NINA modal — overlays multiple diff sections
+   (Outgoing / Incoming / Conflicts / New / Notes), each independently
+   scrollable so the modal stays a reasonable height. */
+.ext-bidi-section { margin: 8px 0; }
+.ext-bidi-head {
+  font-size: 11px; color: #a2aec2; padding: 4px 0;
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid #1a2030;
+  margin-bottom: 4px;
+}
+.ext-bidi-count {
+  background: #1a2030; color: #d8e0ec;
+  padding: 1px 6px; border-radius: 8px; font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.ext-bidi-sub { color: #5a657a; font-style: italic; font-size: 10px; }
+.ext-bidi-out  .ext-bidi-head { color: #c9a86a; }
+.ext-bidi-in   .ext-bidi-head { color: #88c088; }
+.ext-bidi-conflict .ext-bidi-head { color: #d68585; }
+.ext-bidi-new  .ext-bidi-head { color: #a8c0e0; }
+.ext-bidi-notes {
+  font-size: 11px; color: #a2aec2;
+  margin: 4px 0; padding-left: 18px;
+}
+.ext-diff-arrow-out { color: #c9a86a; }
+.ext-diff-arrow-in  { color: #88c088; }
+
+/* Conflict card — one per plan with a conflicting field. Inline picker. */
+.ext-conflict-card {
+  padding: 6px 8px; margin: 4px 0;
+  background: #1a1418; border: 1px solid #3a2222; border-radius: 3px;
+}
+.ext-conflict-field {
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  font-size: 11px; padding: 2px 0;
+}
+.ext-conflict-field .ext-diff-label { min-width: 110px; }
+.ext-conflict-acp { color: #c9a86a; font-variant-numeric: tabular-nums; }
+.ext-conflict-ts  { color: #88c088; font-variant-numeric: tabular-nums; }
+.ext-conflict-buttons {
+  margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap;
+}
+.ext-conflict-buttons label {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; font-size: 11px; cursor: pointer;
+  background: #11151c; border: 1px solid #2a3346; border-radius: 3px;
+  user-select: none;
+}
+.ext-conflict-buttons label.selected { background: #2a4f7a; border-color: #355d8e; color: #f0f5ff; }
+.ext-conflict-buttons label input { margin: 0; }
+
+/* ts_only_new — import-checkbox rows. */
+.ext-tsnew-row {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 4px 6px; cursor: pointer; font-size: 11px;
+  border-radius: 3px;
+}
+.ext-tsnew-row:hover { background: #11151c; }
+.ext-tsnew-row input { margin-top: 2px; }
+
+.ext-profile-list { display: flex; flex-direction: column; gap: 6px; }
+.ext-profile-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px;
+  background: #11151c; border: 1px solid #1a2030; border-radius: 3px;
+  cursor: pointer;
+}
+.ext-profile-row:hover { background: #141a24; }
+.ext-profile-row:has(input:checked) { border-color: #2a4f7a; background: #1a2230; }
+.ext-profile-pid { font-family: monospace; font-size: 10px; color: #a2aec2; }
+.ext-profile-meta { font-size: 11px; color: #d8e0ec; margin-top: 2px; }
 
 /* ----- Inventory rail panel (Plan 4b) ----------------------------------- */
 /* Each tile source = one collapsible block. Header = toggle + label;

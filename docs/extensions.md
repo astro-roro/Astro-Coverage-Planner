@@ -2,15 +2,17 @@
 
 Coverage planning often needs to reach into something ACP doesn't ship — a friend's shared FOV list, a club's target catalogue, a pipeline DB you keep alongside your archive, a curated tile inventory from another tool. Rather than fork the app, drop a Python module into a known directory and ACP will load it at startup.
 
-There are two ways an extension can plug in:
+There are three ways an extension can plug in:
 
 1. **Flask routes** — register a Blueprint to expose new HTTP endpoints (cheap, flexible, fits any custom workflow).
 2. **Plugin protocols** — implement one of the three Protocols in `sources.py` to surface data through ACP's existing UI (Sources rail, Inventory rail, Catalogues rail) without writing any frontend code.
+3. **UI manifest** — append an entry to `app.extensions_manifest` describing buttons + toggles. Core ACP renders them in the Extensions rail accordion and can swap a core button for an extension-supplied one (`replaces:`). No frontend code needed.
 
 - [Where extensions go](#where-extensions-go)
 - [The contract](#the-contract)
 - [Flask-route example](#flask-route-example-friends-fov-list-as-csv)
 - [Plugin protocols](#plugin-protocols)
+- [UI manifest](#ui-manifest)
 - [What kinds of things make sense as extensions](#what-kinds-of-things-make-sense-as-extensions)
 - [Trust, failures, debugging](#trust-failures-debugging)
 
@@ -149,6 +151,75 @@ def register(app):
 ### Declarative catalogues (no Python required)
 
 If you just want to surface an existing catalogue file in the rail without writing code, append an entry to `data/catalog_registry.json`. The full Protocol is only needed when you have logic to run (filtering, derivation, network fetch, etc.).
+
+## UI manifest
+
+Plugin protocols cover *data*. The UI manifest covers *actions* — buttons and toggles that show up in the planning rail (or replace a core button in place). Core ACP knows nothing about the specific actions; it just renders whatever extensions register.
+
+Append a dict to `app.extensions_manifest` from your `register(app)` callback. Minimal example:
+
+```python
+def register(app):
+    app.extensions_manifest.append({
+        "extension": "my_workflow",
+        "name": "My Workflow",
+        "actions": [
+            {
+                "id": "ping",
+                "kind": "button",
+                "label": "Ping pipeline",
+                "endpoint": "/api/ext/my-workflow/ping",
+                "method": "POST",
+            }
+        ],
+    })
+```
+
+The frontend fetches `/api/extensions/manifest` on page load, renders the actions, and wires each one to its endpoint.
+
+### Action kinds
+
+**`"button"`** — user-clicked one-shot. Calls `endpoint` with `method`. Optional fields:
+- `replaces: "<core-button-id>"` — swap a core button in place rather than adding a new one. Currently supported: `"sync-to-nina"` (the existing zip-export "Sync to NINA" button in the planner toolbar). The extension's label takes over when the extension is loaded; the original behaviour returns when the extension is removed.
+- `preview_endpoint: "..."` — when set, the button opens a modal that calls `preview_endpoint` first and shows the response in a plan-grouped diff before the user confirms. Useful for any action where "here's what I'm about to do" should be reviewable.
+- `pull_diff_endpoint: "..."` + `pull_apply_endpoint: "..."` — when both are set, the button switches to the bidirectional flow: the modal calls `preview_endpoint` and `pull_diff_endpoint` in parallel and shows Outgoing / Incoming / Conflicts / New / Notes sections, with per-item radio pickers for incoming changes. Apply calls `pull_apply_endpoint` first (with the user's decisions) then `endpoint`.
+- `needs: ["profile_id"]` — config keys the action needs. On first use the frontend prompts via a profile-picker step (using the extension's `config_endpoint` + `profiles_endpoint`, see below). Subsequent uses skip straight to the action.
+
+**`"toggle"`** — opt-in checkbox that auto-runs a background poll. Required fields:
+- `interval_s` — poll interval in seconds.
+- `endpoint`, `method`, `needs` — same shape as button.
+- `max_consecutive_failures` — optional, defaults to 3. After this many failures the status flips red and polling stops until the user clicks Retry.
+
+Toggle state persists across reloads. The frontend repaints the rail and any open plan-detail panel after each successful tick if the response indicates anything changed.
+
+### Per-extension config (the `profile_id` pattern)
+
+Extensions that need a small persisted setting can register top-level endpoints in the manifest:
+
+```python
+manifest.append({
+    "extension": "my_workflow",
+    "name": "My Workflow",
+    "config_endpoint": "/api/ext/my-workflow/config",
+    "profiles_endpoint": "/api/ext/my-workflow/profiles",
+    "actions": [...],
+})
+```
+
+- `config_endpoint` (GET/POST) — read and write the config dict. POST body is shallow-merged into the persisted state.
+- `profiles_endpoint` (GET) — list selectable options for the picker. Response shape: `{"profiles": [{"profile_id": "...", "project_count": N, "sample_projects": [...]}]}`.
+
+The frontend handles the picker UI; you just expose the routes.
+
+### Example: nina_ts_sync
+
+The `acp-nina-ts-sync` extension uses all of the above:
+- A `"button"` action with `replaces: "sync-to-nina"` swaps the core Manual Sync button for **Sync with NINA**.
+- The same button declares `pull_diff_endpoint` so clicking it opens the bidirectional modal (Outgoing / Incoming / Conflicts / New / Notes) instead of a simple push-preview.
+- A separate `"toggle"` action surfaces **Live progress from NINA** with `interval_s: 60`.
+- Both actions declare `needs: ["profile_id"]`; the config + profiles endpoints drive the first-time picker.
+
+Source: <https://github.com/astro-roro/Astro-Coverage-Planner> (the extension itself is a separate repo).
 
 ## What kinds of things make sense as extensions
 
