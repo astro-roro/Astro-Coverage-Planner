@@ -37,6 +37,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/target-overrides`, `POST` | Per-target metadata overrides |
 | `GET /api/ts-templates` | NINA TS plugin's exposure templates (if installed) |
 | `POST /api/sync` | Build NINA Target Scheduler import zip |
+| `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest) — drives the Extensions rail accordion and the core-button swap mechanism |
 | `GET /api/ext/...` | Routes registered by [extensions](extensions.md) |
 
 The API is unauthenticated and binds to `127.0.0.1` by default — see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network.
