@@ -15,6 +15,9 @@ data/sites.json
 data/exports/
 data/moc_cache/
 data/*.local.json
+# Backup snapshots written by the nina_ts_sync extension before any write.
+# Useful locally for rollback, but never belong in version control.
+data/plans-acpsync-*-backup.json
 .cache/
 
 # Editors / OS

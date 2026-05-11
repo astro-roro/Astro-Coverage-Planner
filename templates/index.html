@@ -118,6 +118,15 @@
         </div>
       </details>
 
+      <!-- Hidden until at least one extension registers a manifest entry.
+           Populated dynamically by loadExtensions() from /api/extensions/manifest. -->
+      <details id="railExtensions" class="rail-accordion extensions" hidden>
+        <summary>Extensions</summary>
+        <div class="accordion-body">
+          <div id="extensionsList"></div>
+        </div>
+      </details>
+
       <details id="railCatalogs" class="rail-accordion catalogs">
         <summary>Catalogues <span class="broken-note" style="display:none"></span></summary>
         <div class="accordion-body">
@@ -189,6 +198,42 @@
         <button type="submit" id="siteFSave" class="primary">Save</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Generic modal used by extension actions with a preview_endpoint
+       (currently: nina_ts_sync push). Three stacked panels — picker is shown
+       when the extension needs a profile_id and none is configured; preview
+       shows the SyncReport before applying; result shows the outcome of
+       Apply. JS in app.js (renderExtensionModal) drives transitions. -->
+  <dialog id="extActionModal" class="acp-modal ext-modal">
+    <div id="extActionTitle" class="ext-modal-title">Sync to NINA</div>
+
+    <div id="extActionPicker" class="ext-modal-step" hidden>
+      <p>Select the NINA profile to sync to:</p>
+      <div id="extActionPickerList" class="ext-profile-list"></div>
+      <div class="modal-actions">
+        <button type="button" data-act="cancel">Cancel</button>
+        <button type="button" data-act="picker-confirm" class="primary" disabled>Continue</button>
+      </div>
+    </div>
+
+    <div id="extActionPreview" class="ext-modal-step" hidden>
+      <div class="ext-hint">
+        ℹ️ Sync works while NINA is imaging. May take a moment if TS is mid-write — we'll retry automatically.
+      </div>
+      <div id="extActionPreviewBody" class="ext-preview-body">Loading preview…</div>
+      <div class="modal-actions">
+        <button type="button" data-act="cancel">Cancel</button>
+        <button type="button" data-act="apply" class="primary" disabled>Apply</button>
+      </div>
+    </div>
+
+    <div id="extActionResult" class="ext-modal-step" hidden>
+      <div id="extActionResultBody"></div>
+      <div class="modal-actions">
+        <button type="button" data-act="close" class="primary">Close</button>
+      </div>
+    </div>
   </dialog>
 
   <footer class="statusbar">

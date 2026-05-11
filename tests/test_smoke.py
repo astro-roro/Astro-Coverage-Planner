@@ -616,4 +616,42 @@ with _zf.ZipFile(body["zip_path"]) as zf:
     template_ids = {t["Id"] for t in templates}
     assert ep0["ExposureTemplateId"] in template_ids
 
+# --- Extensions manifest (UI-action registry for extensions) ---
+
+# Baseline — empty by default (user-installed extensions may have populated
+# this; count what's there rather than asserting strict emptiness).
+r = c.get("/api/extensions/manifest")
+print("GET /api/extensions/manifest (baseline)", r.status_code)
+assert r.status_code == 200
+_baseline_manifest = r.get_json()
+assert isinstance(_baseline_manifest, list)
+
+# Register a synthetic manifest entry — same pattern an extension uses inside
+# its register() callback.
+app.extensions_manifest.append({
+    "extension": "smoke_test",
+    "name": "Smoke Test Extension",
+    "actions": [
+        {"id": "test-push", "kind": "button", "label": "Synthetic Push",
+         "endpoint": "/nope", "method": "POST", "replaces": "sync-to-nina"},
+        {"id": "test-toggle", "kind": "toggle", "label": "Synthetic Toggle",
+         "endpoint": "/nope", "method": "POST", "interval_s": 30},
+    ],
+})
+try:
+    r = c.get("/api/extensions/manifest")
+    print("GET /api/extensions/manifest (with extension)", r.status_code)
+    assert r.status_code == 200
+    entries = r.get_json()
+    assert len(entries) == len(_baseline_manifest) + 1
+    smoke = next((e for e in entries if e.get("extension") == "smoke_test"), None)
+    assert smoke is not None
+    assert {a["id"] for a in smoke["actions"]} == {"test-push", "test-toggle"}
+    # Replace contract: the push action declares which core button it swaps.
+    push = next(a for a in smoke["actions"] if a["id"] == "test-push")
+    assert push["replaces"] == "sync-to-nina"
+    print("extensions manifest round-trip OK")
+finally:
+    app.extensions_manifest.pop()
+
 print("ALL OK")
