@@ -153,6 +153,17 @@ Every change was driven by an actual astrophotographer using the tool on a real 
 
 If you find a sharp edge, that's on me, not the model. PRs and issues welcome. :)
 
+## Dependency security
+
+Hygiene for the supply chain is automated end-to-end:
+
+- **Dependabot** monitors both the Python dependencies (`requirements.txt`) and the GitHub Actions versions referenced in workflows, opening weekly update PRs.
+- **Minor and patch updates auto-merge** once the test workflow passes — small bumps land without manual intervention. Major version updates stay as separate PRs for me to review by hand.
+- **Every update is tested before merge.** The test suite runs on every push and every PR via [`tests.yml`](.github/workflows/tests.yml); the container build in [`publish.yml`](.github/workflows/publish.yml) is gated on it passing, so a broken commit can't make it into the published image.
+- **The Docker base image is pinned** to a specific Python version (see `Dockerfile`) — no `python:latest`.
+- **CodeQL** runs on every push to `main` and weekly on a schedule, with the `security-and-quality` query suite.
+- **Vulnerability reports** go through GitHub's [Private Vulnerability Reporting](https://github.com/astro-roro/Astro-Coverage-Planner/security) on the Security tab — see [`SECURITY.md`](SECURITY.md) for the full process.
+
 ## License
 
 MIT — see `LICENSE`.
