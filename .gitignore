@@ -20,6 +20,8 @@ data/*.local.json
 data/plans-acpsync-*-backup.json
 # Ad-hoc backups written by tooling / interactive sessions.
 data/plans-backup-*.json
+# Demo / recording plan files (used for screencasts, video walkthroughs).
+data/plans-demo*.json
 .cache/
 
 # Editors / OS

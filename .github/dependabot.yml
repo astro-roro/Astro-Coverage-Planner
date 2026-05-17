@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Python dependencies (requirements.txt). One grouped PR per week for
+  # minor + patch updates; major versions stay as individual PRs so a
+  # breaking change can't slip into a bulk-merge.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      pip-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps"
+      include: scope
+
+  # GitHub Actions versions referenced in workflow files. Same grouping
+  # rule — minor + patch bundled, majors split out.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "ci"
+      include: scope
