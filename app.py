@@ -157,17 +157,43 @@ DEFAULT_SITES = {
 
 
 def load_manifest() -> dict | None:
+    """Load the archive manifest from disk. Returns None if the file is
+    missing OR malformed (JSON parse error) — callers already handle
+    None as "no manifest", so an unparseable file degrades to the same
+    code path instead of bubbling a JSONDecodeError up the stack and
+    crashing every endpoint that touches the manifest with a 500.
+
+    The malformed-file case is logged at WARN level so the maintainer
+    can diagnose without a crash report.
+    """
     global _manifest_cache, _manifest_cache_mtime
     if not MANIFEST_PATH.exists():
         return None
     mtime = MANIFEST_PATH.stat().st_mtime
     if _manifest_cache is None or _manifest_cache_mtime != mtime:
-        _manifest_cache = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        try:
+            _manifest_cache = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logging.warning(
+                "manifest at %s is malformed (%s) — treating as missing",
+                MANIFEST_PATH, exc,
+            )
+            _manifest_cache = None
+            _manifest_cache_mtime = mtime  # don't re-parse until the file changes
+            return None
         _manifest_cache_mtime = mtime
     return _manifest_cache
 
 
 def load_catalogs() -> dict:
+    """Read data/catalogs.json. Returns an empty dict if the file is
+    missing OR malformed — same graceful-degradation contract as
+    load_manifest. A partially-bad fetch_catalogs.py output should
+    NOT take every catalogue-touching endpoint down with it.
+
+    Per-entry validation is the caller's responsibility — this
+    function only guarantees the top-level structure is a dict.
+    """
     global _catalogs_cache, _catalogs_cache_mtime
     if not CATALOGS_PATH.exists():
         _catalogs_cache = {}
@@ -175,7 +201,26 @@ def load_catalogs() -> dict:
         return _catalogs_cache
     mtime = CATALOGS_PATH.stat().st_mtime
     if _catalogs_cache is None or _catalogs_cache_mtime != mtime:
-        _catalogs_cache = json.loads(CATALOGS_PATH.read_text(encoding="utf-8"))
+        try:
+            parsed = json.loads(CATALOGS_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logging.warning(
+                "catalogs file at %s is malformed (%s) — treating as empty",
+                CATALOGS_PATH, exc,
+            )
+            _catalogs_cache = {}
+            _catalogs_cache_mtime = mtime
+            return _catalogs_cache
+        # Top-level structure must be a dict mapping catalogue name → list.
+        # Anything else is treated as empty (graceful degradation).
+        if not isinstance(parsed, dict):
+            logging.warning(
+                "catalogs file at %s is not a JSON object (got %s) — treating as empty",
+                CATALOGS_PATH, type(parsed).__name__,
+            )
+            _catalogs_cache = {}
+        else:
+            _catalogs_cache = parsed
         _catalogs_cache_mtime = mtime
     return _catalogs_cache
 
@@ -2411,14 +2456,99 @@ def api_gear():
     return jsonify({"ok": True})
 
 
+def _validate_plan_payload(payload: dict) -> str | None:
+    """Defence-in-depth check on a plan dict before it lands in plans.json.
+
+    The UI validates per-field on entry but a misbehaving client (or a
+    direct curl) can still POST garbage. This catches the cases that
+    would silently break downstream sync to NINA TS:
+      - centre RA/Dec outside physical / wrap-tolerant range
+      - mosaic rows/cols not positive integers (sync expansion would
+        crash or emit zero panels)
+      - mosaic overlap_pct outside [0, 99]
+      - filter_goals with negative target_hours (meaningless)
+      - filter_goals.<f>.sub_exposure_s ≤ 0 (would div-by-zero in
+        the desired-count calc on sync)
+
+    All sub-checks are optional: a draft plan with no target / filters
+    is fine. Returns None on success, an error string otherwise.
+    """
+    if not isinstance(payload, dict):
+        return "payload must be a JSON object"
+    if not payload.get("id") or not isinstance(payload["id"], str):
+        return "id required (non-empty string)"
+    target = payload.get("target")
+    if target is not None:
+        if not isinstance(target, dict):
+            return "target must be an object"
+        if "center_ra_deg" in target:
+            try:
+                ra = float(target["center_ra_deg"])
+            except (TypeError, ValueError):
+                return "target.center_ra_deg must be a number"
+            if not (-360.0 <= ra <= 360.0):
+                return "target.center_ra_deg out of range [-360, 360]"
+        if "center_dec_deg" in target:
+            try:
+                dec = float(target["center_dec_deg"])
+            except (TypeError, ValueError):
+                return "target.center_dec_deg must be a number"
+            if not (-90.0 <= dec <= 90.0):
+                return "target.center_dec_deg out of range [-90, 90]"
+        if "rotation_deg" in target:
+            try:
+                float(target["rotation_deg"])
+            except (TypeError, ValueError):
+                return "target.rotation_deg must be a number"
+        mosaic = target.get("mosaic")
+        if mosaic is not None:
+            if not isinstance(mosaic, dict):
+                return "target.mosaic must be an object"
+            for dim in ("rows", "cols"):
+                if dim in mosaic:
+                    v = mosaic[dim]
+                    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+                        return f"target.mosaic.{dim} must be a positive integer"
+            if "overlap_pct" in mosaic:
+                try:
+                    op = float(mosaic["overlap_pct"])
+                except (TypeError, ValueError):
+                    return "target.mosaic.overlap_pct must be a number"
+                if not (0.0 <= op <= 99.0):
+                    return "target.mosaic.overlap_pct out of range [0, 99]"
+    fg = payload.get("filter_goals")
+    if fg is not None:
+        if not isinstance(fg, dict):
+            return "filter_goals must be an object"
+        for fname, fcfg in fg.items():
+            if not isinstance(fcfg, dict):
+                return f"filter_goals[{fname!r}] must be an object"
+            if "target_hours" in fcfg:
+                try:
+                    th = float(fcfg["target_hours"])
+                except (TypeError, ValueError):
+                    return f"filter_goals[{fname!r}].target_hours must be a number"
+                if th < 0:
+                    return f"filter_goals[{fname!r}].target_hours must be ≥ 0"
+            if "sub_exposure_s" in fcfg:
+                try:
+                    se = float(fcfg["sub_exposure_s"])
+                except (TypeError, ValueError):
+                    return f"filter_goals[{fname!r}].sub_exposure_s must be a number"
+                if se <= 0:
+                    return f"filter_goals[{fname!r}].sub_exposure_s must be > 0"
+    return None
+
+
 @app.route("/api/plans", methods=["GET", "POST"])
 def api_plans():
     data = load_plans()
     if request.method == "GET":
         return jsonify(data)
     payload = request.get_json(silent=True) or {}
-    if "id" not in payload or not payload["id"]:
-        return jsonify({"error": "id required"}), 400
+    err = _validate_plan_payload(payload)
+    if err:
+        return jsonify({"error": err}), 400
     now = datetime.now(timezone.utc).isoformat()
     payload.setdefault("guid", str(uuid.uuid4()))
     payload.setdefault("created_at", now)
@@ -2444,8 +2574,11 @@ def api_plan(plan_id: str):
         save_plans({"version": data.get("version", 1), "plans": plans})
         return ("", 204)
     payload = request.get_json(silent=True) or {}
+    payload["id"] = plan_id  # URL is authoritative; validator runs after
+    err = _validate_plan_payload(payload)
+    if err:
+        return jsonify({"error": err}), 400
     existing = plans[idx]
-    payload["id"] = plan_id
     payload["guid"] = existing.get("guid") or str(uuid.uuid4())
     payload["created_at"] = existing.get("created_at") or datetime.now(timezone.utc).isoformat()
     payload.setdefault("last_synced_at", existing.get("last_synced_at"))
