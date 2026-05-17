@@ -86,6 +86,8 @@ CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catal
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
 SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
+DESTINATIONS_PATH = Path(os.environ.get(
+    "DESTINATIONS_PATH", REPO_ROOT / "data" / "destinations.json"))
 SAVED_SEARCHES_PATH = Path(os.environ.get(
     "SAVED_SEARCHES_PATH", REPO_ROOT / "data" / "saved_searches.json"))
 TARGET_OVERRIDES_PATH = Path(os.environ.get(
@@ -133,6 +135,8 @@ _target_overrides_cache: dict | None = None
 _target_overrides_cache_mtime: float | None = None
 _sites_cache: dict | None = None
 _sites_cache_mtime: float | None = None
+_destinations_cache: dict | None = None
+_destinations_cache_mtime: float | None = None
 _saved_searches_cache: dict | None = None
 _saved_searches_cache_mtime: float | None = None
 # Per-(site, manifest, year) cache of computed visibility bins. Visibility is
@@ -195,7 +199,47 @@ def load_plans() -> dict:
     if _plans_cache is None or _plans_cache_mtime != mtime:
         _plans_cache = json.loads(PLANS_PATH.read_text(encoding="utf-8"))
         _plans_cache_mtime = mtime
+    # One-shot backfill: the first time someone declares destinations,
+    # every existing plan without a destination_id picks up the first
+    # destination's id and gets persisted. Flag stored in destinations.json
+    # so the migration never re-runs after the user opts a plan out
+    # explicitly. Skipped silently when destinations.json is absent.
+    _maybe_backfill_plan_destinations()
     return _plans_cache
+
+
+def _maybe_backfill_plan_destinations() -> None:
+    global _plans_cache
+    if _plans_cache is None:
+        return
+    dests_doc = load_destinations()
+    if not isinstance(dests_doc, dict):
+        return
+    if dests_doc.get("backfilled_at"):
+        return
+    dests = dests_doc.get("destinations") or []
+    if not dests:
+        return
+    default_id = dests[0].get("id")
+    if not default_id:
+        return
+    plans = _plans_cache.get("plans") if isinstance(_plans_cache, dict) else None
+    if not isinstance(plans, list):
+        return
+    changed = False
+    for p in plans:
+        if not isinstance(p, dict):
+            continue
+        if not p.get("destination_id"):
+            p["destination_id"] = default_id
+            changed = True
+    # Mark the migration done either way — once destinations exist, future
+    # plans must get an explicit destination_id from the UI; we don't want
+    # to silently re-assign every plan on every load.
+    dests_doc["backfilled_at"] = datetime.now(timezone.utc).isoformat()
+    save_destinations(dests_doc)
+    if changed:
+        save_plans({"version": _plans_cache.get("version", 1), "plans": plans})
 
 
 def save_plans(data: dict) -> None:
@@ -242,6 +286,40 @@ def save_sites(data: dict) -> None:
     SITES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _sites_cache = data
     _sites_cache_mtime = SITES_PATH.stat().st_mtime
+
+
+def load_destinations() -> dict:
+    """Read data/destinations.json. Returns the empty default ({version: 1,
+    destinations: []}) when the file is absent — keeps single-rig users on
+    the legacy nina_ts_sync single-DB flow with no destination concept
+    exposed in the UI.
+
+    Schema per destination:
+      id              str  (stable key)
+      label           str  (user-visible)
+      kind            "local_db" | "shared_file"
+      ts_db_path      str  (for kind=local_db) — direct write target
+      export_path     str  (for kind=shared_file) — file written by sync
+      acquired_path   str  (for kind=shared_file, optional) — file the NUC
+                            daemon writes back; ACP polls it for live progress
+      notes           str  (optional, free-form)
+    """
+    global _destinations_cache, _destinations_cache_mtime
+    if not DESTINATIONS_PATH.exists():
+        return {"version": 1, "destinations": []}
+    mtime = DESTINATIONS_PATH.stat().st_mtime
+    if _destinations_cache is None or _destinations_cache_mtime != mtime:
+        _destinations_cache = json.loads(DESTINATIONS_PATH.read_text(encoding="utf-8"))
+        _destinations_cache_mtime = mtime
+    return _destinations_cache
+
+
+def save_destinations(data: dict) -> None:
+    global _destinations_cache, _destinations_cache_mtime
+    DESTINATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DESTINATIONS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _destinations_cache = data
+    _destinations_cache_mtime = DESTINATIONS_PATH.stat().st_mtime
 
 
 def load_saved_searches() -> dict:
@@ -1875,6 +1953,87 @@ def api_sites():
         cleaned.append(out)
     save_sites({"version": 1, "sites": cleaned})
     return jsonify({"ok": True, "sites": cleaned})
+
+
+_DESTINATION_KINDS = frozenset({"local_db", "shared_file"})
+
+
+def _validate_destination(d: dict) -> str | None:
+    """Return an error string if the destination is invalid, else None."""
+    if not isinstance(d, dict):
+        return "destination must be a JSON object"
+    did = d.get("id")
+    if not isinstance(did, str) or not did.strip():
+        return "destination id required (non-empty string)"
+    label = d.get("label")
+    if not isinstance(label, str) or not label.strip():
+        return f"destination {did!r}: label required"
+    kind = d.get("kind")
+    if kind not in _DESTINATION_KINDS:
+        return (
+            f"destination {did!r}: kind must be one of "
+            f"{sorted(_DESTINATION_KINDS)}, got {kind!r}"
+        )
+    if kind == "local_db":
+        ts_db = d.get("ts_db_path")
+        if not isinstance(ts_db, str) or not ts_db.strip():
+            return f"destination {did!r}: kind=local_db requires ts_db_path"
+    elif kind == "shared_file":
+        ep = d.get("export_path")
+        if not isinstance(ep, str) or not ep.strip():
+            return f"destination {did!r}: kind=shared_file requires export_path"
+    return None
+
+
+@app.route("/api/destinations", methods=["GET", "POST"])
+def api_destinations():
+    """Read/write the full destinations list. GET returns
+    ``{version, destinations: [...]}``; the list is empty when no
+    destinations.json exists (single-rig users never see the concept).
+    POST replaces the full list — partial updates not supported (low
+    cardinality, simpler UI).
+    """
+    if request.method == "GET":
+        return jsonify(load_destinations())
+    payload = request.get_json(silent=True) or {}
+    dests = payload.get("destinations")
+    if not isinstance(dests, list):
+        return jsonify({"error": "destinations array required"}), 400
+    seen_ids: set[str] = set()
+    cleaned: list[dict] = []
+    for d in dests:
+        err = _validate_destination(d)
+        if err:
+            return jsonify({"error": err}), 400
+        did = d["id"].strip()
+        if did in seen_ids:
+            return jsonify({"error": f"duplicate destination id {did!r}"}), 400
+        seen_ids.add(did)
+        out: dict = {
+            "id": did,
+            "label": d["label"].strip(),
+            "kind": d["kind"],
+        }
+        if d["kind"] == "local_db":
+            out["ts_db_path"] = d["ts_db_path"].strip()
+        else:  # shared_file
+            out["export_path"] = d["export_path"].strip()
+            ap = d.get("acquired_path")
+            if isinstance(ap, str) and ap.strip():
+                out["acquired_path"] = ap.strip()
+        notes = d.get("notes")
+        if isinstance(notes, str) and notes.strip():
+            out["notes"] = notes.strip()
+        cleaned.append(out)
+    # Preserve any existing backfilled_at flag — it's metadata about
+    # whether the one-shot plan-backfill migration has run, not user
+    # data the editor should clobber.
+    prev = load_destinations()
+    out_doc = {"version": 1, "destinations": cleaned}
+    if isinstance(prev, dict) and prev.get("backfilled_at"):
+        out_doc["backfilled_at"] = prev["backfilled_at"]
+    save_destinations(out_doc)
+    return jsonify({"ok": True, "destinations": cleaned})
 
 
 def _gaps_query_params() -> tuple[dict, tuple[Response, int] | None]:
