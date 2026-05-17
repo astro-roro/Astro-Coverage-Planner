@@ -1344,6 +1344,90 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
 .ext-profile-pid { font-family: monospace; font-size: 10px; color: #a2aec2; }
 .ext-profile-meta { font-size: 11px; color: #d8e0ec; margin-top: 2px; }
 
+/* Extension input_schema form (collected before /preview is called) */
+.ext-inputs-form { display: flex; flex-direction: column; gap: 10px; }
+.ext-input-row { display: flex; flex-direction: column; gap: 4px; }
+.ext-input-label { font-size: 11px; color: #d8e0ec; }
+.ext-input-req { color: #ff7676; font-weight: bold; }
+.ext-input-control {
+  background: #11151c; color: #e6edf6;
+  border: 1px solid #2a3344; border-radius: 3px;
+  padding: 5px 7px; font-size: 12px;
+}
+.ext-input-control:focus { outline: none; border-color: #4a7ec7; }
+input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
+.ext-input-help { font-size: 10px; color: #8b95a8; }
+.ext-input-error { font-size: 10px; color: #ff7676; }
+
+/* Extension modal header (title + close X) and footer nav (Back / primary).
+   Replaces the per-step Cancel buttons — one nav row owns the action
+   button for all steps; JS rebinds its label + handler each step. */
+.ext-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.ext-modal-close {
+  background: transparent; color: #a2aec2; border: none;
+  font-size: 20px; line-height: 1; cursor: pointer; padding: 2px 8px;
+}
+.ext-modal-close:hover { color: #e6edf6; }
+.ext-modal-nav {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px;
+  padding-top: 10px; border-top: 1px solid #1a2030;
+}
+.ext-modal-nav-spacer { flex: 1; }
+.ext-modal-back {
+  background: transparent; color: #d8e0ec;
+  border: 1px solid #2a3344; border-radius: 3px;
+  padding: 5px 11px; font-size: 12px; cursor: pointer;
+}
+.ext-modal-back:hover { background: #1a2030; }
+.ext-modal-back[hidden] { display: none; }
+
+/* Cross-catalogue Object filter — sits under #catChips inside the
+   Catalogues accordion. Type chips aggregate categories across every
+   enabled CategorisedCatalogSource; the filter input accepts the
+   standard token search syntax (class:PNe -tag:done "phrase"). */
+.cat-objects {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #1a2030;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.cat-objects[hidden] { display: none; }
+.cat-objects-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cat-objects-row[hidden] { display: none; }
+.cat-objects-lbl { font-size: 10px; color: #a2aec2; min-width: 38px; }
+.cat-objects-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cat-objects-chips label.fchip { font-size: 10px; }
+#catObjectsFilter {
+  flex: 1;
+  background: #11151c; color: #e6edf6;
+  border: 1px solid #2a3344; border-radius: 3px;
+  padding: 4px 7px; font-size: 11px;
+}
+#catObjectsFilter:focus { outline: none; border-color: #4a7ec7; }
+.cat-objects-hint { font-size: 10px; color: #8b95a8; }
+.cat-objects-hint[hidden] { display: none; }
+
+/* Progress bar shown during streaming preview load. The explicit
+   [hidden] selector is required because `display: flex` overrides the
+   user-agent default `[hidden] { display: none }`. */
+.ext-progress-wrap { display: flex; flex-direction: column; gap: 6px; }
+.ext-progress-wrap[hidden] { display: none; }
+.ext-progress-label { font-size: 11px; color: #d8e0ec; }
+.ext-progress-track {
+  width: 100%; height: 6px;
+  background: #11151c; border: 1px solid #1a2030; border-radius: 3px;
+  overflow: hidden;
+}
+.ext-progress-bar {
+  height: 100%;
+  background: #4a7ec7;
+  width: 0%;
+  transition: width 120ms linear;
+}
+
 /* ----- Inventory rail panel (Plan 4b) ----------------------------------- */
 /* Each tile source = one collapsible block. Header = toggle + label;
    body = filter chips for priority / missing-bands / categories + a
