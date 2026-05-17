@@ -23,6 +23,8 @@ data/plans-backup-*.json
 # Demo / recording plan files (used for screencasts, video walkthroughs).
 data/plans-demo*.json
 .cache/
+.coverage
+htmlcov/
 
 # Editors / OS
 .vscode/

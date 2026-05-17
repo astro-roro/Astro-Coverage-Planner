@@ -1,0 +1,18 @@
+[run]
+source = .
+omit =
+    .venv/*
+    tests/*
+    scripts/*
+    setup.py
+branch = True
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    @abstractmethod
+skip_covered = False
+show_missing = True
+sort = -cover
