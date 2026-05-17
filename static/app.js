@@ -198,6 +198,12 @@ function applyUiStatePreManifest() {
       const cb = document.getElementById(id);
       if (cb) cb.checked = s.catalogs.includes(id);
     }
+    // The Objects panel's type-chip set depends on which catalogues
+    // are enabled — refresh after restoring their checked state so
+    // the chips show the right categories on first paint.
+    if (typeof refreshObjectFilterPanel === "function") {
+      refreshObjectFilterPanel();
+    }
   }
 
   if (typeof s.completionFilter === "string"
@@ -289,30 +295,43 @@ function updateSearchVisibility() {
 
 // --- Search tokenizer ---
 // Splits `camera:asi2600 filter:Ha "orion neb" hours>3` into tokens.
-// Supports: bareword (free-text), key:value, key>N / key<N for numeric comparators.
-// Quoted phrases preserve spaces: key:"with spaces" or just "bare phrase".
-const SEARCH_KV_KEYS = new Set(["object", "name", "filter", "telescope", "tel", "camera", "cam"]);
+// Supports:
+//   - bareword (free-text substring)
+//   - key:value (e.g. class:PNe, tag:needs-work)
+//   - key>N / key<N for numeric comparators (fov, hours)
+//   - "quoted phrase" preserves spaces, also valid inside key:"…"
+//   - leading `-` on any token negates it (e.g. -class:SNR, -tag:done)
+// Tokens are ANDed; OR is not supported (use multiple `-` tokens for NOT).
+const SEARCH_KV_KEYS = new Set([
+  "object", "name", "filter", "telescope", "tel", "camera", "cam",
+  // Cross-catalogue Object-filter keys (handled by catalogObjectMatchesTokens):
+  "class", "tag",
+]);
 const SEARCH_CMP_KEYS = new Set(["fov", "hours"]);
 
 function tokenizeSearch(query) {
   if (!query) return [];
-  // Split the query into raw tokens, preserving quoted values inside key:"..." pairs
-  // and as bare "quoted phrase" tokens.
   const rawTokens = [];
-  const re = /([a-zA-Z]+:"[^"]*"|[a-zA-Z]+[:><][^\s]+|"[^"]*"|\S+)/g;
+  // Match leading `-` followed by any token form.
+  const re = /(-?(?:[a-zA-Z]+:"[^"]*"|[a-zA-Z]+[:><][^\s]+|"[^"]*"|\S+))/g;
   let m;
   while ((m = re.exec(query)) !== null) {
     rawTokens.push(m[1]);
   }
   const parsed = [];
-  for (const raw of rawTokens) {
+  for (let raw of rawTokens) {
     if (!raw) continue;
+    let negate = false;
+    if (raw.startsWith("-") && raw.length > 1) {
+      negate = true;
+      raw = raw.slice(1);
+    }
     // Numeric comparator: key>N or key<N
     const cmp = raw.match(/^([a-zA-Z]+)([><])(.+)$/);
     if (cmp && SEARCH_CMP_KEYS.has(cmp[1].toLowerCase())) {
       const v = parseFloat(cmp[3]);
       if (isFinite(v)) {
-        parsed.push({ kind: "cmp", key: cmp[1].toLowerCase(), op: cmp[2], value: v });
+        parsed.push({ kind: "cmp", key: cmp[1].toLowerCase(), op: cmp[2], value: v, negate });
         continue;
       }
     }
@@ -321,19 +340,62 @@ function tokenizeSearch(query) {
     if (kv && SEARCH_KV_KEYS.has(kv[1].toLowerCase())) {
       let val = kv[2];
       if (val.length >= 2 && val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
-      if (val) parsed.push({ kind: "kv", key: kv[1].toLowerCase(), value: val.toLowerCase() });
+      if (val) parsed.push({ kind: "kv", key: kv[1].toLowerCase(), value: val.toLowerCase(), negate });
       continue;
     }
     // Bare quoted phrase
     if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
       const v = raw.slice(1, -1);
-      if (v) parsed.push({ kind: "text", value: v.toLowerCase() });
+      if (v) parsed.push({ kind: "text", value: v.toLowerCase(), negate });
       continue;
     }
-    // Bareword — matches object, telescope, camera (substring, OR)
-    parsed.push({ kind: "text", value: raw.toLowerCase() });
+    parsed.push({ kind: "text", value: raw.toLowerCase(), negate });
   }
   return parsed;
+}
+
+// Match a single CatalogObject against tokenized search terms.
+// Used by the cross-catalogue Object filter — separate from the
+// target-list matcher because the field shape is different.
+// Token semantics:
+//   text/name      — substring match on obj.name (case-insensitive)
+//   class:X        — exact category match
+//   tag:X          — obj.tags includes X
+// `negate: true` inverts each predicate.
+function catalogObjectMatchesTokens(obj, tokens) {
+  if (!tokens || !tokens.length) return true;
+  const name = String(obj.name || "").toLowerCase();
+  const category = String(obj.category || "").toLowerCase();
+  const tags = (obj.tags || []).map(t => String(t).toLowerCase());
+  for (const tok of tokens) {
+    let matched;
+    if (tok.kind === "text") {
+      matched = name.includes(tok.value);
+    } else if (tok.kind === "kv") {
+      switch (tok.key) {
+        case "class":
+          matched = category === tok.value;
+          break;
+        case "tag":
+          matched = tags.includes(tok.value);
+          break;
+        case "name":
+        case "object":
+          matched = name.includes(tok.value);
+          break;
+        default:
+          // Keys handled elsewhere (filter/telescope/camera) — skip
+          // silently so a single search string can target both rails.
+          matched = true;
+      }
+    } else if (tok.kind === "cmp") {
+      matched = true; // catalog objects don't have hours/fov yet
+    } else {
+      matched = true;
+    }
+    if (tok.negate ? matched : !matched) return false;
+  }
+  return true;
 }
 
 function targetMatchesSearch(t, tokens) {
@@ -350,47 +412,56 @@ function targetMatchesSearch(t, tokens) {
   const fovMax = Math.max(...((t.fov_arcmin && t.fov_arcmin.length) ? t.fov_arcmin : [0]));
 
   for (const tok of tokens) {
+    let matched;
     if (tok.kind === "text") {
       const v = tok.value;
-      if (!objs.some(s => s.includes(v)) &&
-          !tels.some(s => s.includes(v)) &&
-          !cams.some(s => s.includes(v))) return false;
-      continue;
-    }
-    if (tok.kind === "kv") {
+      matched = objs.some(s => s.includes(v)) ||
+                tels.some(s => s.includes(v)) ||
+                cams.some(s => s.includes(v));
+    } else if (tok.kind === "kv") {
       const v = tok.value;
       switch (tok.key) {
         case "object":
         case "name":
-          if (!objs.some(s => s.includes(v))) return false;
+          matched = objs.some(s => s.includes(v));
           break;
         case "filter": {
           const fname = Object.keys(filters).find(f => f.toLowerCase() === v);
-          if (!fname || !(filters[fname].total_hours > 0)) return false;
+          matched = !!(fname && filters[fname].total_hours > 0);
           break;
         }
         case "telescope":
         case "tel":
-          if (!tels.some(s => s.includes(v))) return false;
+          matched = tels.some(s => s.includes(v));
           break;
         case "camera":
         case "cam":
-          if (!cams.some(s => s.includes(v))) return false;
+          matched = cams.some(s => s.includes(v));
+          break;
+        case "class":
+        case "tag":
+          // Catalogue-only keys — neutral for the target list so a
+          // shared search string targeting catalogues doesn't hide
+          // every target.
+          matched = true;
           break;
         default:
-          return false;
+          matched = false;
       }
-      continue;
-    }
-    if (tok.kind === "cmp") {
+    } else if (tok.kind === "cmp") {
       let lhs;
       if (tok.key === "fov") lhs = fovMax;
       else if (tok.key === "hours") lhs = totalH;
-      else return false;
-      if (tok.op === ">" && !(lhs > tok.value)) return false;
-      if (tok.op === "<" && !(lhs < tok.value)) return false;
-      continue;
+      else { matched = false; }
+      if (matched !== false) {
+        if (tok.op === ">") matched = lhs > tok.value;
+        else if (tok.op === "<") matched = lhs < tok.value;
+        else matched = false;
+      }
+    } else {
+      matched = true;
     }
+    if (tok.negate ? matched : !matched) return false;
   }
   return true;
 }
@@ -1261,9 +1332,18 @@ async function setupCatalogOverlays() {
     const cb = label.querySelector("input");
     cb.addEventListener("change", () => {
       drawCatalogOverlay(cfg, cb.checked);
+      // Enabling/disabling a catalogue shifts which categories +
+      // known_tags exist — refresh the cross-catalogue Objects panel
+      // so chips appear/disappear in lockstep.
+      refreshObjectFilterPanel();
       saveUiState();
     });
   }
+  // Initial paint of the Objects panel — it stays hidden until at
+  // least one categorised catalogue is enabled, but we still need to
+  // pick up any default_filter from sources whose enable_default is
+  // already on at boot.
+  refreshObjectFilterPanel();
 }
 
 // Helper used by saveUiState / applyUiStatePreManifest / redrawEnabledCatalogs
@@ -1293,9 +1373,15 @@ function drawCatalogOverlay(cfg, enabled) {
   // In gap mode, restrict to entries the server told us are inside the gap MOC.
   // Outside gap mode (or when this catalog had no gap matches), show the full set.
   const gapNames = gapEnabled ? gapNamesByCatalog[cfg.name] : null;
-  const data = gapNames
+  let data = gapNames
     ? catalogsData[cfg.name].filter(e => gapNames.has(e.name))
     : catalogsData[cfg.name];
+  // Apply the cross-catalogue Object filter (type chips + search expression).
+  // Non-categorised objects pass the type-chip pre-filter; the search
+  // expression keys `class:` / `tag:` won't match them so users wanting
+  // to keep e.g. Messier visible alongside a categorised catalogue
+  // shouldn't add those keys to the box.
+  data = applyObjectFilterToData(data);
   for (const e of data) {
     if (e.ra_deg == null) continue;
     const src = A.source(e.ra_deg, e.dec_deg, { name: e.name, catalog: cfg.name, ...e });
@@ -1309,6 +1395,184 @@ function redrawEnabledCatalogs() {
   for (const id of catalogDomIds()) {
     const cb = document.getElementById(id);
     if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
+  }
+}
+
+// --- Cross-catalogue Object filter --------------------------------------
+//
+// Sits under the per-catalogue enable chips inside the Catalogues
+// accordion. Two filter primitives:
+//
+//   - Type chips: union of `categories()` declared by every enabled
+//     CategorisedCatalogSource. Ticking a chip whitelists that category.
+//     Objects without a category aren't subject to this gate (so older
+//     non-categorised catalogues like Messier still render even when
+//     every chip is unticked).
+//
+//   - Filter input: free-text search expression sharing the tokenizer
+//     with the target/plan search. Supports class:, tag:, name:,
+//     bareword name-substring, and leading `-` negation. Used by
+//     catalogObjectMatchesTokens.
+//
+// State persisted in localStorage UI_STATE_KEY.objectsFilter.
+
+let catObjectsTypesVisible = (() => {
+  try {
+    const s = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}");
+    return new Set((s.objectsFilter && s.objectsFilter.types) || []);
+  } catch { return new Set(); }
+})();
+let catObjectsTypesInitialised = (() => {
+  try {
+    const s = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}");
+    return !!(s.objectsFilter && s.objectsFilter.initialised);
+  } catch { return false; }
+})();
+let catObjectsFilterText = (() => {
+  try {
+    const s = JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}");
+    return (s.objectsFilter && s.objectsFilter.text) || "";
+  } catch { return ""; }
+})();
+let catObjectsFilterTokens = tokenizeSearch(catObjectsFilterText);
+
+function _saveObjectsFilterState() {
+  try {
+    const raw = localStorage.getItem(UI_STATE_KEY) || "{}";
+    const s = JSON.parse(raw);
+    s.objectsFilter = {
+      initialised: catObjectsTypesInitialised,
+      types: Array.from(catObjectsTypesVisible),
+      text: catObjectsFilterText,
+    };
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify(s));
+  } catch (_) { /* quota — non-fatal */ }
+}
+
+function _enabledCatalogEntries() {
+  const out = [];
+  for (const entry of catalogRegistry) {
+    const cb = document.getElementById(`cat_${entry.id}`);
+    if (cb && cb.checked) out.push(entry);
+  }
+  return out;
+}
+
+function applyObjectFilterToData(data) {
+  if (!data || !data.length) return data;
+  const usingTypes = catObjectsTypesInitialised;
+  const usingTokens = catObjectsFilterTokens.length > 0;
+  if (!usingTypes && !usingTokens) return data;
+  return data.filter(o => {
+    if (usingTypes && o.category) {
+      if (!catObjectsTypesVisible.has(String(o.category))) return false;
+    }
+    if (usingTokens) {
+      if (!catalogObjectMatchesTokens(o, catObjectsFilterTokens)) return false;
+    }
+    return true;
+  });
+}
+
+// Compute the union of categories + known_tags declared by every
+// currently-enabled catalogue. Returns {types: Set, knownTags: Set}.
+function _aggregateObjectMeta() {
+  const types = new Set();
+  const knownTags = new Set();
+  for (const entry of _enabledCatalogEntries()) {
+    for (const c of (entry.categories || [])) types.add(String(c));
+    for (const t of (entry.known_tags || [])) knownTags.add(String(t));
+  }
+  return { types, knownTags };
+}
+
+// First-time setup of the visible-types set: union of every enabled
+// catalogue's `default_visible_categories` declaration. Falls back to
+// "all visible" if no source declared a default. Called once per
+// session so user toggles persist across catalogue enable/disable.
+function _seedObjectsTypesIfNeeded(allTypes) {
+  if (catObjectsTypesInitialised) return;
+  const declared = new Set();
+  let anyDeclared = false;
+  for (const entry of _enabledCatalogEntries()) {
+    const defs = entry.default_visible_categories || [];
+    if (defs.length) anyDeclared = true;
+    for (const c of defs) declared.add(String(c));
+  }
+  catObjectsTypesVisible = anyDeclared ? declared : new Set(allTypes);
+  catObjectsTypesInitialised = true;
+  // Apply the union of default_filter declarations on first load too.
+  const defaultFilters = [];
+  for (const entry of _enabledCatalogEntries()) {
+    if (entry.default_filter) defaultFilters.push(String(entry.default_filter));
+  }
+  if (defaultFilters.length && !catObjectsFilterText) {
+    catObjectsFilterText = defaultFilters.join(" ");
+    catObjectsFilterTokens = tokenizeSearch(catObjectsFilterText);
+    const input = document.getElementById("catObjectsFilter");
+    if (input) input.value = catObjectsFilterText;
+  }
+  _saveObjectsFilterState();
+}
+
+function refreshObjectFilterPanel() {
+  const panel = document.getElementById("catObjects");
+  const typesRow = document.getElementById("catObjectsTypesRow");
+  const typesHost = document.getElementById("catObjectsTypes");
+  const filterInput = document.getElementById("catObjectsFilter");
+  const hint = document.getElementById("catObjectsHint");
+  if (!panel || !typesRow || !typesHost || !filterInput) return;
+
+  const { types, knownTags } = _aggregateObjectMeta();
+  const anyCategorised = types.size > 0;
+  panel.hidden = !anyCategorised;
+  if (!anyCategorised) return;
+
+  _seedObjectsTypesIfNeeded(types);
+
+  // Render type chips, sorted alphabetically for stable ordering.
+  const sortedTypes = Array.from(types).sort();
+  typesHost.innerHTML = "";
+  for (const cat of sortedTypes) {
+    const label = document.createElement("label");
+    label.className = "fchip";
+    const checked = catObjectsTypesVisible.has(cat) ? "checked" : "";
+    label.innerHTML = `<input type="checkbox" data-cat-type="${esc(cat)}" ${checked}/> ${esc(cat)}`;
+    typesHost.appendChild(label);
+    const cb = label.querySelector("input");
+    cb.addEventListener("change", () => {
+      if (cb.checked) catObjectsTypesVisible.add(cat);
+      else catObjectsTypesVisible.delete(cat);
+      _saveObjectsFilterState();
+      redrawEnabledCatalogs();
+    });
+  }
+  typesRow.hidden = sortedTypes.length === 0;
+
+  // Filter input — wire once, idempotently (avoid stacking handlers
+  // on every refresh).
+  if (!filterInput.dataset.wired) {
+    filterInput.dataset.wired = "1";
+    filterInput.value = catObjectsFilterText;
+    filterInput.addEventListener("input", () => {
+      catObjectsFilterText = filterInput.value;
+      catObjectsFilterTokens = tokenizeSearch(catObjectsFilterText);
+      _saveObjectsFilterState();
+      redrawEnabledCatalogs();
+    });
+  }
+
+  // Known-tags hint line — surfaces extension-declared tag vocabulary
+  // so the user knows what's available in `tag:` / `-tag:`.
+  if (hint) {
+    const sortedTags = Array.from(knownTags).sort();
+    if (sortedTags.length) {
+      hint.textContent = "Known tags: " + sortedTags.join(", ");
+      hint.hidden = false;
+    } else {
+      hint.textContent = "";
+      hint.hidden = true;
+    }
   }
 }
 
@@ -1722,12 +1986,149 @@ async function loadExtensions() {
 }
 
 // --- Modal flow for extension button actions ----------------------------
+//
+// All extension flows share a single modal (#extActionModal) with a
+// step-history stack so Back can pop the user to the previous step. The
+// ModalCtx wrapper owns:
+//   - the primary action button at the bottom-right (Next / Apply /
+//     extension-customised label) — rebound per step
+//   - the Back button at the bottom-left — auto-hidden on first step
+//   - the close-X in the header — confirms before close if a dirtyCheck
+//     callback signals state would be lost
+//   - the step transitions themselves, including a per-step onBack hook
+//     so an in-flight fetch / SSE reader can be cancelled when the user
+//     leaves the preview step
+//
+// On every modal open we wipe lingering button onclick handlers (the bug
+// that previously routed priority_tiler's Apply through nina_ts_sync's
+// onclick still bound to the same DOM node).
+
+function _newModalCtx(dlg) {
+  const ctx = {
+    dlg,
+    history: [],  // [{id, onBack}]
+    primaryBtn: dlg.querySelector('[data-act="primary"]'),
+    backBtn:    dlg.querySelector('[data-act="back"]'),
+    closeBtn:   dlg.querySelector('[data-act="close-x"]'),
+    dirtyCheck: () => false,
+    _onEsc: null,
+  };
+  // Wipe stale handlers from prior modal sessions.
+  if (ctx.primaryBtn) ctx.primaryBtn.onclick = null;
+  if (ctx.backBtn)    ctx.backBtn.hidden = true;
+  // Re-bind nav buttons.
+  if (ctx.backBtn)    ctx.backBtn.onclick = () => _ctxGoBack(ctx);
+  if (ctx.closeBtn)   ctx.closeBtn.onclick = () => _ctxTryClose(ctx);
+  // ESC also routes through tryClose.
+  ctx._onEsc = (e) => { e.preventDefault(); _ctxTryClose(ctx); };
+  dlg.addEventListener("cancel", ctx._onEsc);
+  return ctx;
+}
+
+function _ctxApplyPrimary(ctx, primary) {
+  if (!ctx.primaryBtn) return;
+  ctx.primaryBtn.textContent = primary.label;
+  ctx.primaryBtn.disabled = !primary.enabled;
+  ctx.primaryBtn.onclick = primary.handler;
+  ctx.primaryBtn.hidden = primary.hidden;
+}
+
+function _ctxShowStep(ctx, stepId, opts = {}) {
+  // opts: { primaryLabel, primaryHandler, primaryEnabled, dirtyCheck, onBack, showBack }
+  for (const step of ctx.dlg.querySelectorAll(".ext-modal-step")) {
+    step.hidden = step.id !== stepId;
+  }
+  if (!ctx.dlg.open) ctx.dlg.showModal();
+  // Each history entry carries the step's current primary-button binding
+  // (label / handler / enabled / hidden). _ctxSetPrimary writes through
+  // to this entry, and _ctxGoBack restores it when returning. Without
+  // this, going Back from preview would leave the primary button still
+  // saying "Create plans" instead of reverting to "Generate preview".
+  const entry = {
+    id: stepId,
+    onBack: opts.onBack || null,
+    primary: {
+      label: opts.primaryLabel || "Next",
+      handler: opts.primaryHandler || null,
+      enabled: opts.primaryEnabled !== false,
+      hidden: opts.primaryHandler === null,
+    },
+  };
+  ctx.history.push(entry);
+  if (ctx.backBtn) {
+    const canBack = opts.showBack !== false && ctx.history.length > 1;
+    ctx.backBtn.hidden = !canBack;
+  }
+  _ctxApplyPrimary(ctx, entry.primary);
+  ctx.dirtyCheck = opts.dirtyCheck || (() => false);
+}
+
+function _ctxSetPrimary(ctx, { label, handler, enabled } = {}) {
+  if (!ctx.primaryBtn) return;
+  // Write through to the current step's saved primary state so going
+  // back-and-forward preserves the latest binding.
+  const cur = ctx.history[ctx.history.length - 1];
+  if (cur && cur.primary) {
+    if (label !== undefined)   cur.primary.label = label;
+    if (enabled !== undefined) cur.primary.enabled = enabled;
+    if (handler !== undefined) {
+      cur.primary.handler = handler;
+      // Receiving a handler always unhides the button — the only way to
+      // hide is via _ctxShowStep with primaryHandler:null.
+      cur.primary.hidden = handler === null;
+    }
+    _ctxApplyPrimary(ctx, cur.primary);
+  } else {
+    if (label !== undefined)   ctx.primaryBtn.textContent = label;
+    if (enabled !== undefined) ctx.primaryBtn.disabled = !enabled;
+    if (handler !== undefined) {
+      ctx.primaryBtn.onclick = handler;
+      ctx.primaryBtn.hidden = handler === null;
+    }
+  }
+}
+
+function _ctxGoBack(ctx) {
+  if (ctx.history.length <= 1) return;
+  const leaving = ctx.history.pop();
+  // The leaving step gets a chance to cancel in-flight work (preview SSE).
+  if (leaving && typeof leaving.onBack === "function") {
+    try { leaving.onBack(); } catch (_) { /* non-fatal */ }
+  }
+  const prev = ctx.history[ctx.history.length - 1];
+  for (const step of ctx.dlg.querySelectorAll(".ext-modal-step")) {
+    step.hidden = step.id !== prev.id;
+  }
+  if (ctx.backBtn) ctx.backBtn.hidden = ctx.history.length <= 1;
+  // Restore the previous step's saved primary-button binding so the user
+  // sees "Generate preview" again instead of "Create plans" / etc.
+  if (prev && prev.primary) _ctxApplyPrimary(ctx, prev.primary);
+}
+
+function _ctxTryClose(ctx) {
+  // Per user feedback 2026-05-17: confirm dialogs on ✕ were annoying
+  // since the modal state is just a draft that disappears anyway.
+  // Close fires onBack so in-flight SSE cancels cleanly.
+  _ctxClose(ctx);
+}
+
+function _ctxClose(ctx) {
+  // Run onBack for the current step too, so in-flight work cancels on close.
+  const cur = ctx.history[ctx.history.length - 1];
+  if (cur && typeof cur.onBack === "function") {
+    try { cur.onBack(); } catch (_) { /* non-fatal */ }
+  }
+  if (ctx._onEsc) ctx.dlg.removeEventListener("cancel", ctx._onEsc);
+  ctx.dlg.close();
+}
 
 async function runExtensionAction(ext, action) {
   const dlg = document.getElementById("extActionModal");
   if (!dlg) return;
   const titleEl = document.getElementById("extActionTitle");
   if (titleEl) titleEl.textContent = action.label;
+
+  const ctx = _newModalCtx(dlg);
 
   // Resolve config needs first. Currently only profile_id.
   let profileId = null;
@@ -1736,36 +2137,247 @@ async function runExtensionAction(ext, action) {
     const cfg = await cfgR.json().catch(() => ({}));
     profileId = cfg.profile_id || null;
     if (!profileId) {
-      const picked = await promptProfilePicker(ext, dlg);
-      if (!picked) { dlg.close(); return; }
+      const picked = await promptProfilePicker(ext, ctx);
+      if (!picked) { _ctxClose(ctx); return; }
       profileId = picked;
     }
   }
 
-  if (action.pull_diff_endpoint && action.preview_endpoint) {
-    // Bidirectional: show push + pull in one modal, user picks per-conflict.
-    await runBidirectionalSync(ext, action, profileId, dlg);
-  } else if (action.preview_endpoint) {
-    await runPreviewThenApply(ext, action, profileId, dlg);
+  // Decide which flow to run after inputs (or directly when no input_schema).
+  const proceed = (extras) => {
+    if (action.pull_diff_endpoint && action.preview_endpoint) {
+      runBidirectionalSync(ext, action, profileId, ctx, extras);
+    } else if (action.preview_endpoint) {
+      runPreviewThenApply(ext, action, profileId, ctx, extras);
+    } else {
+      runApplyImmediate(ext, action, profileId, ctx, extras);
+    }
+  };
+
+  if (Array.isArray(action.input_schema) && action.input_schema.length) {
+    runInputsThenContinue(ext, action, ctx, proceed);
   } else {
-    await runApplyImmediate(ext, action, profileId, dlg);
+    proceed({});
   }
 }
 
-function showStep(dlg, stepId) {
-  for (const step of dlg.querySelectorAll(".ext-modal-step")) {
-    step.hidden = step.id !== stepId;
-  }
-  if (!dlg.open) dlg.showModal();
+// --- Input-schema form rendering ---------------------------------------
+
+// localStorage key for remembering the last-submitted values for an
+// (extension, action) pair, so re-opening the modal pre-fills the form.
+function _lastValuesKey(ext, action) {
+  return `acp.ext.${ext.extension}.${action.id}.lastValues`;
 }
 
-async function promptProfilePicker(ext, dlg) {
+function loadLastValues(ext, action) {
+  try {
+    const raw = localStorage.getItem(_lastValuesKey(ext, action));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveLastValues(ext, action, values) {
+  try {
+    localStorage.setItem(_lastValuesKey(ext, action), JSON.stringify(values));
+  } catch (_) { /* quota; non-fatal */ }
+}
+
+// Substitute {today} / {tomorrow} in a string with ISO date strings.
+// Non-strings pass through unchanged.
+function expandDefaultTokens(value) {
+  if (typeof value !== "string") return value;
+  const today = new Date();
+  const tomorrow = new Date(today.getTime() + 86400000);
+  const iso = d => d.toISOString().slice(0, 10);
+  return value
+    .replace(/\{today\}/g, iso(today))
+    .replace(/\{tomorrow\}/g, iso(tomorrow));
+}
+
+// Build the form DOM from action.input_schema. Returns the form element
+// (already appended into formEl). Each field gets a data-field=NAME so
+// collectInputs can read it back by name without ID collisions across
+// repeated openings.
+function renderInputsForm(ext, action, formEl) {
+  const schema = action.input_schema || [];
+  const last = loadLastValues(ext, action);
+  formEl.innerHTML = "";
+  for (const field of schema) {
+    if (!field || !field.name || !field.type) continue;
+    const row = document.createElement("div");
+    row.className = "ext-input-row";
+    const labelText = field.label || field.name;
+    const reqMark = field.required ? ' <span class="ext-input-req" title="required">*</span>' : "";
+    const id = `ext-input-${field.name.replace(/[^a-z0-9_-]/gi, "_")}`;
+
+    const labelEl = document.createElement("label");
+    labelEl.htmlFor = id;
+    labelEl.className = "ext-input-label";
+    labelEl.innerHTML = esc(labelText) + reqMark;
+    row.appendChild(labelEl);
+
+    const prior = Object.prototype.hasOwnProperty.call(last, field.name)
+      ? last[field.name]
+      : expandDefaultTokens(field.default);
+
+    let input;
+    if (field.type === "bool") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(prior);
+    } else if (field.type === "select") {
+      input = document.createElement("select");
+      for (const opt of field.options || []) {
+        const o = document.createElement("option");
+        o.value = String(opt.value);
+        o.textContent = String(opt.label != null ? opt.label : opt.value);
+        if (prior != null && String(prior) === String(opt.value)) o.selected = true;
+        input.appendChild(o);
+      }
+    } else {
+      input = document.createElement("input");
+      input.type = (field.type === "int" || field.type === "float") ? "number" : "text";
+      if (field.type === "int") input.step = "1";
+      if (field.type === "float") input.step = "any";
+      if (field.min != null) input.min = String(field.min);
+      if (field.max != null) input.max = String(field.max);
+      input.value = prior != null ? String(prior) : "";
+    }
+    input.id = id;
+    input.className = "ext-input-control";
+    input.dataset.field = field.name;
+    input.dataset.fieldType = field.type;
+    if (field.required) input.dataset.required = "1";
+    if (field.min != null) input.dataset.min = String(field.min);
+    if (field.max != null) input.dataset.max = String(field.max);
+    row.appendChild(input);
+
+    if (field.help) {
+      const help = document.createElement("div");
+      help.className = "ext-input-help";
+      help.textContent = field.help;
+      row.appendChild(help);
+    }
+    const errEl = document.createElement("div");
+    errEl.className = "ext-input-error";
+    errEl.dataset.errorFor = field.name;
+    errEl.hidden = true;
+    row.appendChild(errEl);
+
+    formEl.appendChild(row);
+  }
+}
+
+// Read every input back, applying client-side validation. Returns
+// {values, valid, firstError}. The `values` dict is what gets spread
+// into the payload posted to /preview or /apply.
+function collectInputs(formEl) {
+  const values = {};
+  const errors = [];
+  for (const el of formEl.querySelectorAll("[data-field]")) {
+    const name = el.dataset.field;
+    const type = el.dataset.fieldType;
+    const required = el.dataset.required === "1";
+    const errEl = formEl.querySelector(`[data-error-for="${name}"]`);
+    let err = "";
+    let value;
+    if (type === "bool") {
+      value = !!el.checked;
+    } else {
+      const raw = el.value;
+      if (raw == null || String(raw).trim() === "") {
+        if (required) err = "Required.";
+        else value = type === "int" || type === "float" ? null : "";
+      } else if (type === "int") {
+        const n = parseInt(raw, 10);
+        if (!Number.isFinite(n) || String(n) !== String(raw).trim()) {
+          err = "Must be a whole number.";
+        } else {
+          value = n;
+        }
+      } else if (type === "float") {
+        const n = parseFloat(raw);
+        if (!Number.isFinite(n)) err = "Must be a number.";
+        else value = n;
+      } else if (type === "select") {
+        value = String(raw);
+      } else {
+        value = String(raw);
+      }
+      if (!err && (type === "int" || type === "float")) {
+        const min = el.dataset.min != null ? parseFloat(el.dataset.min) : null;
+        const max = el.dataset.max != null ? parseFloat(el.dataset.max) : null;
+        if (min != null && value < min) err = `Must be ≥ ${min}.`;
+        else if (max != null && value > max) err = `Must be ≤ ${max}.`;
+      }
+    }
+    if (err) {
+      errors.push({ name, err });
+      if (errEl) { errEl.textContent = err; errEl.hidden = false; }
+    } else {
+      if (errEl) { errEl.textContent = ""; errEl.hidden = true; }
+      if (value !== undefined) values[name] = value;
+    }
+  }
+  return { values, valid: errors.length === 0, firstError: errors[0] || null };
+}
+
+function runInputsThenContinue(ext, action, ctx, next) {
+  const hint = document.getElementById("extActionInputsHint");
+  const formEl = document.getElementById("extActionInputsForm");
+  if (!formEl) { next({}); return; }
+  if (hint) {
+    if (action.preview_hint) {
+      hint.textContent = "ℹ️ " + action.preview_hint;
+      hint.hidden = false;
+    } else {
+      hint.textContent = "";
+      hint.hidden = true;
+    }
+  }
+  renderInputsForm(ext, action, formEl);
+
+  const submit = () => {
+    const { values, valid } = collectInputs(formEl);
+    if (!valid) return;
+    saveLastValues(ext, action, values);
+    next(values);
+  };
+
+  _ctxShowStep(ctx, "extActionInputs", {
+    primaryLabel: action.next_label || "Next",
+    primaryHandler: submit,
+    primaryEnabled: false,
+    dirtyCheck: () => {
+      const { values } = collectInputs(formEl);
+      return Object.keys(values).length > 0;
+    },
+  });
+
+  const revalidate = () => {
+    const { valid } = collectInputs(formEl);
+    _ctxSetPrimary(ctx, { enabled: valid });
+  };
+  for (const el of formEl.querySelectorAll("[data-field]")) {
+    el.addEventListener("input", revalidate);
+    el.addEventListener("change", revalidate);
+  }
+  revalidate();
+}
+
+async function promptProfilePicker(ext, ctx) {
   const list = document.getElementById("extActionPickerList");
-  const continueBtn = dlg.querySelector('[data-act="picker-confirm"]');
-  if (!list || !continueBtn) return null;
+  if (!list) return null;
   list.innerHTML = "Loading profiles…";
-  continueBtn.disabled = true;
-  showStep(dlg, "extActionPicker");
+  _ctxShowStep(ctx, "extActionPicker", {
+    primaryLabel: "Continue",
+    primaryEnabled: false,
+    primaryHandler: null,
+  });
 
   let profiles = [];
   try {
@@ -1774,11 +2386,16 @@ async function promptProfilePicker(ext, dlg) {
     profiles = body.profiles || [];
   } catch (e) {
     list.innerHTML = `<div class="ext-error">Could not load profiles: ${esc(String(e))}</div>`;
-    return new Promise(resolve => bindCancel(dlg, resolve));
+    return new Promise((resolve) => {
+      ctx.dlg.addEventListener("close", () => resolve(null), { once: true });
+    });
   }
   if (!profiles.length) {
     list.innerHTML = `<div class="ext-error">No profiles found in the TS DB.</div>`;
-    return new Promise(resolve => bindCancel(dlg, resolve));
+    return new Promise((resolve) => {
+      _ctxShowStep(ctx, "extActionPicker", { primaryHandler: null, primaryLabel: "Continue", primaryEnabled: false });
+      ctx._closeResolve = resolve;
+    });
   }
   list.innerHTML = profiles.map((p, i) => `
     <label class="ext-profile-row">
@@ -1789,80 +2406,229 @@ async function promptProfilePicker(ext, dlg) {
       </div>
     </label>
   `).join("");
-  continueBtn.disabled = false;
 
-  return new Promise(resolve => {
-    bindCancel(dlg, resolve);
-    continueBtn.onclick = async () => {
-      const chosen = list.querySelector('input[name="extProfilePick"]:checked');
-      if (!chosen) return;
-      try {
-        await fetch(ext.config_endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ profile_id: chosen.value }),
-        });
-      } catch (e) {
-        list.innerHTML += `<div class="ext-error">Save failed: ${esc(String(e))}</div>`;
-        return;
-      }
-      resolve(chosen.value);
-    };
+  return new Promise((resolve) => {
+    _ctxShowStep(ctx, "extActionPicker", {
+      primaryLabel: "Continue",
+      primaryEnabled: true,
+      primaryHandler: async () => {
+        const chosen = list.querySelector('input[name="extProfilePick"]:checked');
+        if (!chosen) return;
+        try {
+          await fetch(ext.config_endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ profile_id: chosen.value }),
+          });
+        } catch (e) {
+          list.innerHTML += `<div class="ext-error">Save failed: ${esc(String(e))}</div>`;
+          return;
+        }
+        resolve(chosen.value);
+      },
+    });
+    // If the dialog is closed (close-X) while the picker is showing,
+    // resolve null so runExtensionAction can clean up gracefully.
+    ctx.dlg.addEventListener("close", () => resolve(null), { once: true });
   });
 }
 
-function bindCancel(dlg, resolve) {
-  for (const btn of dlg.querySelectorAll('[data-act="cancel"]')) {
-    btn.onclick = () => { dlg.close(); resolve(null); };
+// --- Preview-then-apply with optional SSE streaming ---------------------
+//
+// Tries text/event-stream first so the preview step can show a live
+// progress bar for slow extensions (priority_tiler's greedy + rotation
+// search on 7k+ catalog objects takes several seconds). If the server
+// returns plain JSON (older extension or one that doesn't stream), we
+// fall through to the single-shot path.
+
+async function _streamingPreview(action, payload, ctx, onProgress) {
+  // Returns { preview, cancelled } on success, throws on transport error.
+  const controller = new AbortController();
+  ctx.history[ctx.history.length - 1].onBack = () => controller.abort();
+  let r;
+  try {
+    r = await fetch(action.preview_endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "text/event-stream, application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    if (e.name === "AbortError") return { cancelled: true };
+    throw e;
+  }
+  const ctype = (r.headers.get("Content-Type") || "").toLowerCase();
+  if (!ctype.startsWith("text/event-stream")) {
+    // Server returned synchronous JSON — fall through to single read.
+    const text = await r.text();
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 300)}`);
+    try { return { preview: JSON.parse(text) }; }
+    catch (_) { throw new Error(`bad JSON: ${text.slice(0, 300)}`); }
+  }
+  if (!r.body || !r.body.getReader) {
+    // Browser missing ReadableStream support — degrade.
+    return { preview: await r.json() };
+  }
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let final = null;
+  let err = null;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const parsed = _parseSSEBlock(block);
+        if (!parsed) continue;
+        if (parsed.event === "progress") {
+          try { onProgress(parsed.data); } catch (_) { /* non-fatal */ }
+        } else if (parsed.event === "result") {
+          final = parsed.data;
+        } else if (parsed.event === "error") {
+          err = parsed.data && parsed.data.error ? parsed.data.error : "unknown error";
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") return { cancelled: true };
+    throw e;
+  }
+  if (err) throw new Error(err);
+  if (final === null) throw new Error("stream closed without a result event");
+  return { preview: final };
+}
+
+function _parseSSEBlock(block) {
+  // SSE format: lines of "event: NAME" + "data: JSON" separated by \n.
+  let event = "message";
+  const dataLines = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  }
+  if (!dataLines.length) return null;
+  const raw = dataLines.join("\n");
+  let data = raw;
+  try { data = JSON.parse(raw); } catch (_) { /* keep raw string */ }
+  return { event, data };
+}
+
+function _updateProgressBar(prog) {
+  const wrap = document.getElementById("extActionPreviewProgress");
+  const bar = document.getElementById("extActionProgressBar");
+  const label = wrap ? wrap.querySelector(".ext-progress-label") : null;
+  if (!wrap || !bar || !label) return;
+  wrap.hidden = false;
+  // The server now reports a single 0..1 fraction across the whole
+  // pipeline rather than per-pick sub-percentages — the latter were
+  // misleading when the algorithm bailed out early on subtraction.
+  let pct = 0;
+  if (prog.fraction != null) {
+    pct = Math.max(0, Math.min(1, Number(prog.fraction)));
+  } else if (prog.total) {
+    // Backwards-compat for older server: (pick, total, pct) shape.
+    const totalPicks = Math.max(1, Number(prog.total || 1));
+    const pickIdx = Math.max(0, Number(prog.pick || 0));
+    const subPct = Math.max(0, Math.min(1, Number(prog.pct || 0)));
+    pct = Math.min(1, (pickIdx + subPct) / totalPicks);
+  }
+  bar.style.width = `${(pct * 100).toFixed(1)}%`;
+  const stage = prog.stage ? `${prog.stage}: ` : "";
+  label.textContent = `${stage}${Math.round(pct * 100)}%`;
+}
+
+function _resetProgressBar() {
+  const wrap = document.getElementById("extActionPreviewProgress");
+  const bar = document.getElementById("extActionProgressBar");
+  if (wrap) wrap.hidden = true;
+  if (bar) bar.style.width = "0%";
+}
+
+async function _afterApplyRefreshRail() {
+  // After any extension's apply commits, refresh the plans rail so the
+  // user sees the new/updated entries without a hard F5. Best-effort.
+  try {
+    if (typeof loadPlans === "function") await loadPlans();
+    if (typeof panelMode !== "undefined" && panelMode === "plan-list" &&
+        typeof renderPlanList === "function") {
+      renderPlanList();
+    }
+  } catch (refreshErr) {
+    console.warn("plan reload after extension apply failed:", refreshErr);
   }
 }
 
-async function runPreviewThenApply(ext, action, profileId, dlg) {
+async function runPreviewThenApply(ext, action, profileId, ctx, extras = {}) {
   const body = document.getElementById("extActionPreviewBody");
-  const applyBtn = dlg.querySelector('[data-act="apply"]');
-  if (!body || !applyBtn) return;
-  body.textContent = "Loading preview…";
-  applyBtn.disabled = true;
-  showStep(dlg, "extActionPreview");
+  if (!body) return;
 
-  const payload = { profile_id: profileId };
-  let preview;
+  setPreviewHint(action);
+  body.textContent = "";
+  _resetProgressBar();
+
+  _ctxShowStep(ctx, "extActionPreview", {
+    primaryLabel: action.apply_label || "Apply",
+    primaryEnabled: false,
+    primaryHandler: null,
+    dirtyCheck: () => true,
+    onBack: null,  // overridden by _streamingPreview once it starts
+  });
+
+  const payload = { profile_id: profileId, ...extras };
+  let result;
   try {
-    const r = await fetchWithRetry(action.preview_endpoint, payload);
-    preview = await r.json();
+    result = await _streamingPreview(action, payload, ctx, _updateProgressBar);
   } catch (e) {
-    body.innerHTML = `<div class="ext-error">Preview failed: ${esc(String(e))}</div>`;
+    _resetProgressBar();
+    body.innerHTML = `<div class="ext-error">Preview failed: ${esc(String(e.message || e))}</div>`;
     return;
   }
+  if (result.cancelled) {
+    // Back/close fired during streaming. Nothing to render — caller
+    // already navigated away.
+    return;
+  }
+  const preview = result.preview;
+  _resetProgressBar();
   body.innerHTML = renderDiffReport(preview);
-  applyBtn.disabled = false;
 
-  bindCancel(dlg, () => {});
-  applyBtn.onclick = async () => {
-    applyBtn.disabled = true;
+  const doApply = async () => {
+    const applyingLabel = action.applying_label || `${action.apply_label || "Apply"}ing…`;
+    _ctxSetPrimary(ctx, { label: applyingLabel, enabled: false });
     body.innerHTML = renderDiffReport(preview) +
-      `<div class="ext-progress">Applying… (TS may be busy, will retry)</div>`;
-    let result;
+      `<div class="ext-progress">${esc(applyingLabel)}</div>`;
+    let applyResult;
     try {
       const r = await fetchWithRetry(action.endpoint, payload, {
         onRetry: (n, max) => {
           const prog = body.querySelector(".ext-progress");
-          if (prog) prog.textContent = `Applying… retrying (${n}/${max})`;
+          if (prog) prog.textContent = `${applyingLabel} retrying (${n}/${max})`;
         },
       });
-      result = await r.json();
+      applyResult = await r.json();
     } catch (e) {
-      showResult(dlg, `<div class="ext-error">Sync failed: ${esc(String(e))}</div>`);
+      _showResult(ctx, `<div class="ext-error">${esc(action.apply_label || "Apply")} failed: ${esc(String(e))}</div>`);
       return;
     }
-    // After-apply view: show the same plan-grouped diff (now applied), with
-    // a green success header and the DB backup path.
-    showResult(dlg, `
-      <div class="ext-ok">✓ Sync complete</div>
+    await _afterApplyRefreshRail();
+    const title = action.result_title || "✓ Done";
+    _showResult(ctx, `
+      <div class="ext-ok">${esc(title)}</div>
       ${renderDiffReport(preview, { applied: true })}
-      ${result.backup_path ? `<div class="ext-meta">DB backup: <code>${esc(result.backup_path)}</code></div>` : ""}
+      ${applyResult.backup_path ? `<div class="ext-meta">DB backup: <code>${esc(applyResult.backup_path)}</code></div>` : ""}
     `);
   };
+
+  _ctxSetPrimary(ctx, {
+    label: action.apply_label || "Apply",
+    handler: doApply,
+    enabled: true,
+  });
 }
 
 // Bidirectional Sync with NINA flow.
@@ -1872,15 +2638,21 @@ async function runPreviewThenApply(ext, action, profileId, dlg) {
 // then on Apply runs /sync followed by /import/resolve. The user owns the
 // resolution for every conflict — non-conflicting pull changes apply
 // automatically; ts_only_new gets per-project import checkboxes.
-async function runBidirectionalSync(ext, action, profileId, dlg) {
+async function runBidirectionalSync(ext, action, profileId, ctx, extras = {}) {
   const body = document.getElementById("extActionPreviewBody");
-  const applyBtn = dlg.querySelector('[data-act="apply"]');
-  if (!body || !applyBtn) return;
+  if (!body) return;
+  setPreviewHint(action);
   body.textContent = "Loading preview…";
-  applyBtn.disabled = true;
-  showStep(dlg, "extActionPreview");
+  _resetProgressBar();
 
-  const payload = { profile_id: profileId };
+  _ctxShowStep(ctx, "extActionPreview", {
+    primaryLabel: action.apply_label || "Apply",
+    primaryEnabled: false,
+    primaryHandler: null,
+    dirtyCheck: () => true,
+  });
+
+  const payload = { profile_id: profileId, ...extras };
   // Per-conflict user decisions, keyed by plan_id. Three values:
   // "take_acp", "take_ts", or "skip" (default). Bound via change handlers
   // on the radio inputs in the rendered modal.
@@ -1902,20 +2674,19 @@ async function runBidirectionalSync(ext, action, profileId, dlg) {
   const rerender = () => {
     body.innerHTML = renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports);
     wireBidiInteractions(body, decisions, newImports, () => {
-      // Cheap re-render keeps the apply button summary in sync with picks.
-      applyBtn.textContent = applyButtonLabel(pushPreview, pullDiff, decisions, newImports);
+      // Cheap re-render keeps the primary button summary in sync with picks.
+      _ctxSetPrimary(ctx, { label: applyButtonLabel(pushPreview, pullDiff, decisions, newImports) });
     });
-    applyBtn.textContent = applyButtonLabel(pushPreview, pullDiff, decisions, newImports);
+    _ctxSetPrimary(ctx, { label: applyButtonLabel(pushPreview, pullDiff, decisions, newImports) });
   };
   rerender();
-  applyBtn.disabled = false;
 
-  bindCancel(dlg, () => {});
-  applyBtn.onclick = async () => {
-    applyBtn.disabled = true;
+  const doApply = async () => {
+    const applyingLabel = action.applying_label || `${action.apply_label || "Apply"}ing…`;
+    _ctxSetPrimary(ctx, { label: applyingLabel, enabled: false });
     body.insertAdjacentHTML(
       "beforeend",
-      `<div class="ext-progress" id="extBidiProgress">Applying… (TS may be busy, will retry)</div>`,
+      `<div class="ext-progress" id="extBidiProgress">${esc(applyingLabel)} (TS may be busy, will retry)</div>`,
     );
     const setProgress = (msg) => {
       const el = body.querySelector("#extBidiProgress");
@@ -1941,7 +2712,7 @@ async function runBidirectionalSync(ext, action, profileId, dlg) {
       });
       pullResult = await r.json();
     } catch (e) {
-      showResult(dlg, `<div class="ext-error">Pull failed: ${esc(String(e))}</div>`);
+      _showResult(ctx, `<div class="ext-error">Pull failed: ${esc(String(e))}</div>`);
       return;
     }
 
@@ -1954,30 +2725,24 @@ async function runBidirectionalSync(ext, action, profileId, dlg) {
       });
       pushResult = await r.json();
     } catch (e) {
-      // Pull succeeded; push failed. Surface both — pull already changed
-      // plans.json, push didn't reach TS. User can retry from the rail.
-      showResult(dlg, `
+      _showResult(ctx, `
         <div class="ext-meta">Pull applied; push failed below.</div>
         <div class="ext-error">Push failed: ${esc(String(e))}</div>
       `);
       return;
     }
 
-    // Refresh local plans so the rail picks up any pull-applied changes.
-    try {
-      await loadPlans();
-      if (panelMode === "plan-list") renderPlanList();
-      else if (panelMode === "plan-edit" && editingPlan) updatePlanEditorActuals();
-    } catch (refreshErr) {
-      console.warn("plan reload after Sync with NINA failed:", refreshErr);
-    }
+    await _afterApplyRefreshRail();
 
-    showResult(dlg, `
-      <div class="ext-ok">✓ Sync complete</div>
+    const title = action.result_title || "✓ Sync complete";
+    _showResult(ctx, `
+      <div class="ext-ok">${esc(title)}</div>
       ${renderBidiResultSummary(pushResult, pullResult)}
       ${pushResult.backup_path ? `<div class="ext-meta">DB backup: <code>${esc(pushResult.backup_path)}</code></div>` : ""}
     `);
   };
+
+  _ctxSetPrimary(ctx, { handler: doApply, enabled: true });
 }
 
 // Compute a human-readable summary for the Apply button so the user can see
@@ -2347,32 +3112,60 @@ function formatValue(v) {
   return String(v);
 }
 
-async function runApplyImmediate(ext, action, profileId, dlg) {
+async function runApplyImmediate(ext, action, profileId, ctx, extras = {}) {
   const body = document.getElementById("extActionResultBody");
   if (!body) return;
-  body.innerHTML = `<div class="ext-progress">Running…</div>`;
-  showStep(dlg, "extActionResult");
+  body.innerHTML = `<div class="ext-progress">${esc(action.apply_label || "Running")}…</div>`;
+  _ctxShowStep(ctx, "extActionResult", {
+    primaryLabel: "Close",
+    primaryEnabled: true,
+    primaryHandler: () => _ctxClose(ctx),
+    showBack: false,
+  });
   try {
-    const r = await fetchWithRetry(action.endpoint, { profile_id: profileId });
+    const r = await fetchWithRetry(action.endpoint, { profile_id: profileId, ...extras });
     const result = await r.json();
-    body.innerHTML = `<div class="ext-ok">✓ Done</div>${renderSyncReport(result.report || result)}`;
+    await _afterApplyRefreshRail();
+    const title = action.result_title || "✓ Done";
+    body.innerHTML = `<div class="ext-ok">${esc(title)}</div>${renderSyncReport(result.report || result)}`;
   } catch (e) {
     body.innerHTML = `<div class="ext-error">Failed: ${esc(String(e))}</div>`;
   }
 }
 
-function showResult(dlg, html) {
-  const body = document.getElementById("extActionResultBody");
-  if (body) body.innerHTML = html;
-  showStep(dlg, "extActionResult");
-  for (const btn of dlg.querySelectorAll('[data-act="close"]')) {
-    btn.onclick = () => dlg.close();
+// Populate the preview-step info banner from action.preview_hint, or hide
+// it when no hint declared. Replaces the hardcoded NINA-sync text that
+// used to live in templates/index.html.
+function setPreviewHint(action) {
+  const hint = document.getElementById("extActionPreviewHint");
+  if (!hint) return;
+  if (action && action.preview_hint) {
+    hint.textContent = "ℹ️ " + action.preview_hint;
+    hint.hidden = false;
+  } else {
+    hint.textContent = "";
+    hint.hidden = true;
   }
 }
 
-// Render a plan-grouped diff from a /preview response. Falls back to the
-// flat SyncReport table when plan_diffs is missing (older extension).
+function _showResult(ctx, html) {
+  const body = document.getElementById("extActionResultBody");
+  if (body) body.innerHTML = html;
+  _ctxShowStep(ctx, "extActionResult", {
+    primaryLabel: "Close",
+    primaryEnabled: true,
+    primaryHandler: () => _ctxClose(ctx),
+    showBack: false,
+  });
+}
+
+// Render a plan-grouped diff from a /preview response. Order of precedence:
+//   1. preview.preview_html — extension supplies its own pre-rendered HTML
+//      (extension-first opt-in for non-sync-shaped responses)
+//   2. plan_diffs array — nina_ts_sync's structured diff
+//   3. report dict (falls through to renderSyncReport)
 function renderDiffReport(preview, opts = {}) {
+  if (preview && typeof preview.preview_html === "string") return preview.preview_html;
   const diffs = Array.isArray(preview && preview.plan_diffs) ? preview.plan_diffs : null;
   if (!diffs) return renderSyncReport(preview && preview.report);
 

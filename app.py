@@ -1105,6 +1105,15 @@ def _entry_from_catalog_source(src) -> dict | None:
         "attribution": meta.get("attribution") or "",
         "enabled_default": bool(meta.get("enabled_default")),
         "categories": cats,
+        # Cross-catalogue Object-filter fields (all optional).
+        # `default_visible_categories` — categories ticked on first load
+        # in the Objects panel; absent ⇒ all visible.
+        # `known_tags` — tag values to render chips for up-front,
+        # before any objects load.
+        # `default_filter` — initial search-box expression.
+        "default_visible_categories": list(meta.get("default_visible_categories") or []),
+        "known_tags": list(meta.get("known_tags") or []),
+        "default_filter": str(meta.get("default_filter") or ""),
     }
 
 
