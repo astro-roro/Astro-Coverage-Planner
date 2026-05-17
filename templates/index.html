@@ -134,6 +134,23 @@
             <!-- Populated dynamically from /api/catalog-registry; empty until
                  setupCatalogOverlays() resolves. -->
           </div>
+          <!-- Cross-catalogue Object filter. Type chips aggregate
+               classes across all enabled catalogues; the filter input
+               accepts the standard token syntax (class:PNe -tag:fully-done
+               -name:foo "phrase"). Hidden until at least one
+               categorised catalogue is enabled. -->
+          <div id="catObjects" class="cat-objects" hidden>
+            <div class="cat-objects-row" id="catObjectsTypesRow" hidden>
+              <span class="cat-objects-lbl">Types</span>
+              <div id="catObjectsTypes" class="cat-objects-chips"></div>
+            </div>
+            <div class="cat-objects-row">
+              <input id="catObjectsFilter" type="search"
+                     placeholder="Filter: class:PNe -tag:fully-done"
+                     autocomplete="off" spellcheck="false" />
+            </div>
+            <div id="catObjectsHint" class="cat-objects-hint" hidden></div>
+          </div>
           <div class="gap-finder">
             <div class="row gap-row">
               <label class="gap-label">Have <select id="gapHave"></select></label>
@@ -200,39 +217,50 @@
     </form>
   </dialog>
 
-  <!-- Generic modal used by extension actions with a preview_endpoint
-       (currently: nina_ts_sync push). Three stacked panels — picker is shown
-       when the extension needs a profile_id and none is configured; preview
-       shows the SyncReport before applying; result shows the outcome of
-       Apply. JS in app.js (renderExtensionModal) drives transitions. -->
+  <!-- Generic modal used by extension actions with a preview_endpoint.
+       Multi-step flow with explicit history: each step transition
+       pushes onto a stack so Back can pop. Steps available:
+         extActionPicker   — profile picker (when needs: profile_id)
+         extActionInputs   — form rendered from action.input_schema
+         extActionPreview  — calls action.preview_endpoint, optionally
+                              streams progress; Apply commits via endpoint
+         extActionResult   — outcome shown after Apply
+       JS in app.js drives transitions and binds the bottom-bar
+       primary button per-step (resets on every modal open so prior
+       extension's handler can't leak). -->
   <dialog id="extActionModal" class="acp-modal ext-modal">
-    <div id="extActionTitle" class="ext-modal-title">Sync to NINA</div>
+    <div class="ext-modal-head">
+      <div id="extActionTitle" class="ext-modal-title">Extension action</div>
+      <button type="button" class="ext-modal-close" data-act="close-x" title="Close (Esc)" aria-label="Close">&times;</button>
+    </div>
 
     <div id="extActionPicker" class="ext-modal-step" hidden>
       <p>Select the NINA profile to sync to:</p>
       <div id="extActionPickerList" class="ext-profile-list"></div>
-      <div class="modal-actions">
-        <button type="button" data-act="cancel">Cancel</button>
-        <button type="button" data-act="picker-confirm" class="primary" disabled>Continue</button>
-      </div>
+    </div>
+
+    <div id="extActionInputs" class="ext-modal-step" hidden>
+      <div id="extActionInputsHint" class="ext-hint" hidden></div>
+      <div id="extActionInputsForm" class="ext-inputs-form"></div>
     </div>
 
     <div id="extActionPreview" class="ext-modal-step" hidden>
-      <div class="ext-hint">
-        ℹ️ Sync works while NINA is imaging. May take a moment if TS is mid-write — we'll retry automatically.
+      <div id="extActionPreviewHint" class="ext-hint" hidden></div>
+      <div id="extActionPreviewProgress" class="ext-progress-wrap" hidden>
+        <div class="ext-progress-label">Loading preview…</div>
+        <div class="ext-progress-track"><div id="extActionProgressBar" class="ext-progress-bar"></div></div>
       </div>
       <div id="extActionPreviewBody" class="ext-preview-body">Loading preview…</div>
-      <div class="modal-actions">
-        <button type="button" data-act="cancel">Cancel</button>
-        <button type="button" data-act="apply" class="primary" disabled>Apply</button>
-      </div>
     </div>
 
     <div id="extActionResult" class="ext-modal-step" hidden>
       <div id="extActionResultBody"></div>
-      <div class="modal-actions">
-        <button type="button" data-act="close" class="primary">Close</button>
-      </div>
+    </div>
+
+    <div class="ext-modal-nav">
+      <button type="button" class="ext-modal-back" data-act="back" hidden>← Back</button>
+      <span class="ext-modal-nav-spacer"></span>
+      <button type="button" class="primary" data-act="primary" disabled>Next</button>
     </div>
   </dialog>
 

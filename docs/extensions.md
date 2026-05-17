@@ -182,8 +182,54 @@ The frontend fetches `/api/extensions/manifest` on page load, renders the action
 **`"button"`** — user-clicked one-shot. Calls `endpoint` with `method`. Optional fields:
 - `replaces: "<core-button-id>"` — swap a core button in place rather than adding a new one. Currently supported: `"sync-to-nina"` (the existing zip-export "Sync to NINA" button in the planner toolbar). The extension's label takes over when the extension is loaded; the original behaviour returns when the extension is removed.
 - `preview_endpoint: "..."` — when set, the button opens a modal that calls `preview_endpoint` first and shows the response in a plan-grouped diff before the user confirms. Useful for any action where "here's what I'm about to do" should be reviewable.
+- `preview_hint: "..."` — optional plain-text banner shown above the preview body. Use it for "what the user should know before they look at the preview" — e.g. timing constraints, side effects, retry behaviour. No HTML — it's escaped on render.
+- `input_schema: [...]` — when set, the modal collects user input *before* calling the preview/apply endpoints. Each entry is `{name, type, label, default, required, min, max, options}`; collected values are spread into the JSON payload alongside `profile_id` (if any). See [Input schema](#input-schema) below.
 - `pull_diff_endpoint: "..."` + `pull_apply_endpoint: "..."` — when both are set, the button switches to the bidirectional flow: the modal calls `preview_endpoint` and `pull_diff_endpoint` in parallel and shows Outgoing / Incoming / Conflicts / New / Notes sections, with per-item radio pickers for incoming changes. Apply calls `pull_apply_endpoint` first (with the user's decisions) then `endpoint`.
 - `needs: ["profile_id"]` — config keys the action needs. On first use the frontend prompts via a profile-picker step (using the extension's `config_endpoint` + `profiles_endpoint`, see below). Subsequent uses skip straight to the action.
+
+#### Input schema
+
+Use `input_schema` when your button needs runtime parameters from the user (tile count, project name, per-filter hours, a toggle, etc.). The frontend renders one labelled field per schema entry, validates client-side, and only POSTs to the preview endpoint once all required fields are filled.
+
+Each entry is a dict:
+
+| Key        | Type                              | Notes |
+| ---------- | --------------------------------- | ----- |
+| `name`     | str                               | Payload key. Flat — extensions reshape nested structures server-side. |
+| `type`     | `"string"` / `"int"` / `"float"` / `"bool"` / `"select"` | Required. |
+| `label`    | str                               | User-visible field label. Defaults to `name`. |
+| `default`  | str / number / bool               | Prefills the field. String defaults support `{today}` / `{tomorrow}` substitution. |
+| `required` | bool                              | Default `false`. Required fields block Continue when empty. |
+| `min`/`max`| number                            | For `int` / `float`. Enforced client-side. |
+| `options`  | list of `{value, label}`          | For `select`. |
+| `help`     | str                               | Optional grey helper text shown beneath the field. |
+
+The frontend remembers the last-submitted values per `(extension, action)` in localStorage and prefills on next open, so iterating on a long form is cheap.
+
+**Example** — a hypothetical batch-renamer extension:
+
+```python
+manifest.append({
+    "extension": "batch_renamer",
+    "name": "Batch renamer",
+    "actions": [{
+        "id": "rename",
+        "kind": "button",
+        "label": "Rename plans",
+        "endpoint": "/api/ext/batch-renamer/apply",
+        "preview_endpoint": "/api/ext/batch-renamer/preview",
+        "preview_hint": "Renames every plan matching the prefix below. Preview first.",
+        "input_schema": [
+            {"name": "prefix",  "type": "string", "label": "Old prefix", "required": True},
+            {"name": "replace", "type": "string", "label": "New prefix", "required": True,
+             "default": "Survey {today}"},
+            {"name": "dry_run", "type": "bool",   "label": "Dry run (no writes)", "default": True},
+        ],
+    }],
+})
+```
+
+When the user clicks the button the modal shows three fields, the Continue button stays disabled until both string fields have values, and the payload posted to `/preview` is `{prefix, replace, dry_run}`.
 
 **`"toggle"`** — opt-in checkbox that auto-runs a background poll. Required fields:
 - `interval_s` — poll interval in seconds.

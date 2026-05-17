@@ -207,15 +207,19 @@ class CatalogObject(TypedDict, total=False):
     """One point object in a categorised catalogue.
 
     `category` is a free-form string (e.g. "PNe", "HII", "SNR"); the
-    renderer groups by it for chip filters. `metadata` carries any
-    extras the source wants to expose in tooltips (frequency, flag,
-    diameter, …).
+    renderer groups by it for chip filters. `tags` is an optional
+    secondary dimension — arbitrary string labels per object that the
+    cross-catalogue Object filter exposes alongside category chips
+    (e.g. ``["needs-work"]`` for a PNe lacking some filter coverage).
+    `metadata` carries any extras the source wants to expose in
+    tooltips (frequency, flag, diameter, …).
     """
 
     name: str
     ra_deg: float
     dec_deg: float
     category: str
+    tags: list
     metadata: dict
 
 
