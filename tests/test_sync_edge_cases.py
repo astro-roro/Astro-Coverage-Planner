@@ -1,8 +1,8 @@
 """Tests for /api/sync edge cases — mosaic with bad gear, strictest-wins
 project conflicts, fallback naming.
 
-The happy path is exercised by test_smoke; this file pins down the
-warning-emitting paths that test_smoke skips. Lines 2746-2752 and
+The happy path is exercised by tests/smoke.py; this file pins down the
+warning-emitting paths that smoke.py skips. Lines 2746-2752 and
 2878-2885 in app.py were previously uncovered.
 """
 from __future__ import annotations

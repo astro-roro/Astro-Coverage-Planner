@@ -1,4 +1,4 @@
-"""Imperative tests for scripts/sanitise_manifest.py — matches test_smoke.py style."""
+"""Imperative tests for scripts/sanitise_manifest.py — matches smoke.py style."""
 from __future__ import annotations
 
 import sys

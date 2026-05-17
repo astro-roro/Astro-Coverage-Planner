@@ -1,6 +1,6 @@
 """End-to-end tests for the ACP_FRIEND_MANIFESTS env-var loader path.
 
-Complements tests/test_smoke.py's friend-source check, which hand-constructs a
+Complements tests/smoke.py's friend-source check, which hand-constructs a
 JsonManifestSource and appends it directly to the registry. This file goes
 through the real loader: write a sanitised JSON file to disk, set the env var,
 reload the app module, and assert the source surfaces with the right metadata.
