@@ -1378,7 +1378,7 @@ def api_tiles(source_id: str):
                 continue
             tiles_out.append(tile)
     except Exception:
-        logging.exception("tile source %r tiles() raised", source_id)
+        logging.exception("tile source %r tiles() raised", _safe_log(source_id))
         return jsonify({"error": "source raised"}), 500
     return jsonify({"id": source_id, "tiles": tiles_out})
 
@@ -1546,7 +1546,7 @@ def api_moc(source_id: str):
     try:
         fits_path = src.ensure_cached()
     except _MocFetchError:
-        logging.exception("MOC fetch failed for %r", source_id)
+        logging.exception("MOC fetch failed for %r", _safe_log(source_id))
         return jsonify({"error": "upstream fetch failed"}), 502
     return Response(
         fits_path.read_bytes(),
@@ -1718,6 +1718,16 @@ def _require_astropy() -> tuple[Response, int] | None:
     return None
 
 
+def _safe_log(value) -> str:
+    """Strip CR/LF and truncate so user-supplied values can't forge log lines.
+
+    `%r` already escapes control chars, but CodeQL's taint tracker doesn't
+    model that — wrap user input through here at the log-call boundary to
+    keep the log-injection rule quiet.
+    """
+    return str(value).replace("\r", "").replace("\n", "")[:200]
+
+
 def _resolve_site_from_request() -> tuple[dict, tuple[Response, int] | None]:
     """Resolve the site for a /api/visibility call.
 
@@ -1732,7 +1742,7 @@ def _resolve_site_from_request() -> tuple[dict, tuple[Response, int] | None]:
             None,
         )
         if not sdata:
-            logging.info("visibility: unknown site_id %r", sid)
+            logging.info("visibility: unknown site_id %r", _safe_log(sid))
             return {}, (jsonify({"error": "unknown site_id"}), 404)
         return {
             "id": sid,
@@ -2652,7 +2662,7 @@ def api_ts_templates():
         ).fetchall()
         conn.close()
     except sqlite3.Error:
-        logging.exception("sqlite read failed for %r", str(path))
+        logging.exception("sqlite read failed for %r", _safe_log(path))
         return jsonify({
             "available": False,
             "path": str(path),
