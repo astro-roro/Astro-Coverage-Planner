@@ -293,178 +293,17 @@ function updateSearchVisibility() {
   wrap.style.display = topLevel ? "" : "none";
 }
 
-// --- Search tokenizer ---
-// Splits `camera:asi2600 filter:Ha "orion neb" hours>3` into tokens.
-// Supports:
-//   - bareword (free-text substring)
-//   - key:value (e.g. class:PNe, tag:needs-work)
-//   - key>N / key<N for numeric comparators (fov, hours)
-//   - "quoted phrase" preserves spaces, also valid inside key:"…"
-//   - leading `-` on any token negates it (e.g. -class:SNR, -tag:done)
-// Tokens are ANDed; OR is not supported (use multiple `-` tokens for NOT).
-const SEARCH_KV_KEYS = new Set([
-  "object", "name", "filter", "telescope", "tel", "camera", "cam",
-  // Cross-catalogue Object-filter keys (handled by catalogObjectMatchesTokens):
-  "class", "tag",
-]);
-const SEARCH_CMP_KEYS = new Set(["fov", "hours"]);
-
-function tokenizeSearch(query) {
-  if (!query) return [];
-  const rawTokens = [];
-  // Match leading `-` followed by any token form.
-  const re = /(-?(?:[a-zA-Z]+:"[^"]*"|[a-zA-Z]+[:><][^\s]+|"[^"]*"|\S+))/g;
-  let m;
-  while ((m = re.exec(query)) !== null) {
-    rawTokens.push(m[1]);
-  }
-  const parsed = [];
-  for (let raw of rawTokens) {
-    if (!raw) continue;
-    let negate = false;
-    if (raw.startsWith("-") && raw.length > 1) {
-      negate = true;
-      raw = raw.slice(1);
-    }
-    // Numeric comparator: key>N or key<N
-    const cmp = raw.match(/^([a-zA-Z]+)([><])(.+)$/);
-    if (cmp && SEARCH_CMP_KEYS.has(cmp[1].toLowerCase())) {
-      const v = parseFloat(cmp[3]);
-      if (isFinite(v)) {
-        parsed.push({ kind: "cmp", key: cmp[1].toLowerCase(), op: cmp[2], value: v, negate });
-        continue;
-      }
-    }
-    // key:value or key:"quoted value"
-    const kv = raw.match(/^([a-zA-Z]+):(.*)$/);
-    if (kv && SEARCH_KV_KEYS.has(kv[1].toLowerCase())) {
-      let val = kv[2];
-      if (val.length >= 2 && val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
-      if (val) parsed.push({ kind: "kv", key: kv[1].toLowerCase(), value: val.toLowerCase(), negate });
-      continue;
-    }
-    // Bare quoted phrase
-    if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
-      const v = raw.slice(1, -1);
-      if (v) parsed.push({ kind: "text", value: v.toLowerCase(), negate });
-      continue;
-    }
-    parsed.push({ kind: "text", value: raw.toLowerCase(), negate });
-  }
-  return parsed;
-}
-
-// Match a single CatalogObject against tokenized search terms.
-// Used by the cross-catalogue Object filter — separate from the
-// target-list matcher because the field shape is different.
-// Token semantics:
-//   text/name      — substring match on obj.name (case-insensitive)
-//   class:X        — exact category match
-//   tag:X          — obj.tags includes X
-// `negate: true` inverts each predicate.
-function catalogObjectMatchesTokens(obj, tokens) {
-  if (!tokens || !tokens.length) return true;
-  const name = String(obj.name || "").toLowerCase();
-  const category = String(obj.category || "").toLowerCase();
-  const tags = (obj.tags || []).map(t => String(t).toLowerCase());
-  for (const tok of tokens) {
-    let matched;
-    if (tok.kind === "text") {
-      matched = name.includes(tok.value);
-    } else if (tok.kind === "kv") {
-      switch (tok.key) {
-        case "class":
-          matched = category === tok.value;
-          break;
-        case "tag":
-          matched = tags.includes(tok.value);
-          break;
-        case "name":
-        case "object":
-          matched = name.includes(tok.value);
-          break;
-        default:
-          // Keys handled elsewhere (filter/telescope/camera) — skip
-          // silently so a single search string can target both rails.
-          matched = true;
-      }
-    } else if (tok.kind === "cmp") {
-      matched = true; // catalog objects don't have hours/fov yet
-    } else {
-      matched = true;
-    }
-    if (tok.negate ? matched : !matched) return false;
-  }
-  return true;
-}
-
-function targetMatchesSearch(t, tokens) {
-  if (!tokens.length) return true;
-  const objs = (t.objects || []).map(s => String(s).toLowerCase());
-  const tels = (t.telescopes || []).map(s => String(s).toLowerCase());
-  const cams = (t.cameras || []).map(s => String(s).toLowerCase());
-  const filters = t.filters || {};
-  const totalH = (function () {
-    let s = 0;
-    for (const d of Object.values(filters)) s += (d.total_hours || 0);
-    return s;
-  })();
-  const fovMax = Math.max(...((t.fov_arcmin && t.fov_arcmin.length) ? t.fov_arcmin : [0]));
-
-  for (const tok of tokens) {
-    let matched;
-    if (tok.kind === "text") {
-      const v = tok.value;
-      matched = objs.some(s => s.includes(v)) ||
-                tels.some(s => s.includes(v)) ||
-                cams.some(s => s.includes(v));
-    } else if (tok.kind === "kv") {
-      const v = tok.value;
-      switch (tok.key) {
-        case "object":
-        case "name":
-          matched = objs.some(s => s.includes(v));
-          break;
-        case "filter": {
-          const fname = Object.keys(filters).find(f => f.toLowerCase() === v);
-          matched = !!(fname && filters[fname].total_hours > 0);
-          break;
-        }
-        case "telescope":
-        case "tel":
-          matched = tels.some(s => s.includes(v));
-          break;
-        case "camera":
-        case "cam":
-          matched = cams.some(s => s.includes(v));
-          break;
-        case "class":
-        case "tag":
-          // Catalogue-only keys — neutral for the target list so a
-          // shared search string targeting catalogues doesn't hide
-          // every target.
-          matched = true;
-          break;
-        default:
-          matched = false;
-      }
-    } else if (tok.kind === "cmp") {
-      let lhs;
-      if (tok.key === "fov") lhs = fovMax;
-      else if (tok.key === "hours") lhs = totalH;
-      else { matched = false; }
-      if (matched !== false) {
-        if (tok.op === ">") matched = lhs > tok.value;
-        else if (tok.op === "<") matched = lhs < tok.value;
-        else matched = false;
-      }
-    } else {
-      matched = true;
-    }
-    if (tok.negate ? matched : !matched) return false;
-  }
-  return true;
-}
+// --- Search tokenizer + matchers ---
+// Lifted into ./search.mjs so tests/frontend/ can import them via
+// `node --test`. Re-bound here so the rest of app.js can keep using the
+// bare names without churning every call site.
+import {
+  SEARCH_KV_KEYS,
+  SEARCH_CMP_KEYS,
+  tokenizeSearch,
+  catalogObjectMatchesTokens,
+  targetMatchesSearch,
+} from "./search.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -2135,9 +1974,40 @@ async function runExtensionAction(ext, action) {
   if ((action.needs || []).includes("profile_id")) {
     const cfgR = await fetch(ext.config_endpoint);
     const cfg = await cfgR.json().catch(() => ({}));
-    profileId = cfg.profile_id || null;
-    if (!profileId) {
-      const picked = await promptProfilePicker(ext, ctx);
+    const savedId = cfg.profile_id || null;
+    // Always re-check the DB so the picker can act on the current set of
+    // profiles, not a cached config. 0 → picker (will say "no profiles"),
+    // 1 → silent use (auto-update saved config when different), ≥2 →
+    // always picker so the user can swap freely at sync time.
+    let availableProfiles = null;
+    if (ext.profiles_endpoint) {
+      try {
+        const pr = await fetch(ext.profiles_endpoint);
+        const pb = await pr.json();
+        availableProfiles = pb.profiles || [];
+      } catch (_) { /* transport error — fall back to saved id */ }
+    }
+    if (availableProfiles === null) {
+      profileId = savedId;  // can't validate, trust config; downstream call surfaces real error
+    } else if (availableProfiles.length === 1) {
+      const only = availableProfiles[0].profile_id;
+      profileId = only;
+      if (savedId !== only) {
+        try {
+          await fetch(ext.config_endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ profile_id: only }),
+          });
+        } catch (_) { /* non-fatal: sync still proceeds with the right id */ }
+      }
+    } else {
+      // 0 or ≥2 → always prompt. Pre-select the saved id so the common
+      // case (re-syncing same profile) is a single Continue click.
+      const picked = await promptProfilePicker(ext, ctx, {
+        profiles: availableProfiles,
+        preselect: savedId,
+      });
       if (!picked) { _ctxClose(ctx); return; }
       profileId = picked;
     }
@@ -2369,7 +2239,7 @@ function runInputsThenContinue(ext, action, ctx, next) {
   revalidate();
 }
 
-async function promptProfilePicker(ext, ctx) {
+async function promptProfilePicker(ext, ctx, opts = {}) {
   const list = document.getElementById("extActionPickerList");
   if (!list) return null;
   list.innerHTML = "Loading profiles…";
@@ -2379,16 +2249,18 @@ async function promptProfilePicker(ext, ctx) {
     primaryHandler: null,
   });
 
-  let profiles = [];
-  try {
-    const r = await fetch(ext.profiles_endpoint);
-    const body = await r.json();
-    profiles = body.profiles || [];
-  } catch (e) {
-    list.innerHTML = `<div class="ext-error">Could not load profiles: ${esc(String(e))}</div>`;
-    return new Promise((resolve) => {
-      ctx.dlg.addEventListener("close", () => resolve(null), { once: true });
-    });
+  let profiles = opts.profiles || null;
+  if (profiles === null) {
+    try {
+      const r = await fetch(ext.profiles_endpoint);
+      const body = await r.json();
+      profiles = body.profiles || [];
+    } catch (e) {
+      list.innerHTML = `<div class="ext-error">Could not load profiles: ${esc(String(e))}</div>`;
+      return new Promise((resolve) => {
+        ctx.dlg.addEventListener("close", () => resolve(null), { once: true });
+      });
+    }
   }
   if (!profiles.length) {
     list.innerHTML = `<div class="ext-error">No profiles found in the TS DB.</div>`;
@@ -2397,15 +2269,30 @@ async function promptProfilePicker(ext, ctx) {
       ctx._closeResolve = resolve;
     });
   }
-  list.innerHTML = profiles.map((p, i) => `
-    <label class="ext-profile-row">
-      <input type="radio" name="extProfilePick" value="${esc(p.profile_id)}" ${i === 0 ? "checked" : ""} />
+  // Sort by name so the picker is stable + human-ordered across opens.
+  // Unnamed profiles (no NINA Profiles dir, Linux dev) sort last.
+  profiles = profiles.slice().sort((a, b) => {
+    const an = (a.name || "").toLowerCase(), bn = (b.name || "").toLowerCase();
+    if (!!an !== !!bn) return an ? -1 : 1;
+    if (an !== bn) return an < bn ? -1 : 1;
+    return (a.profile_id || "").localeCompare(b.profile_id || "");
+  });
+  const preselect = opts.preselect || "";
+  const preselectExists = profiles.some(p => p.profile_id === preselect);
+  list.innerHTML = profiles.map((p, i) => {
+    const checked = (preselectExists && p.profile_id === preselect) || (!preselectExists && i === 0);
+    const displayName = p.name || `(unnamed profile · ${(p.profile_id || "").slice(0, 8)}…)`;
+    const meta = `${p.project_count} project${p.project_count === 1 ? "" : "s"}`
+      + (p.sample_projects.length ? " · " + p.sample_projects.map(esc).join(", ") : "");
+    return `
+    <label class="ext-profile-row" title="${esc(p.profile_id)}">
+      <input type="radio" name="extProfilePick" value="${esc(p.profile_id)}" ${checked ? "checked" : ""} />
       <div>
-        <div class="ext-profile-pid">${esc(p.profile_id)}</div>
-        <div class="ext-profile-meta">${p.project_count} project${p.project_count === 1 ? "" : "s"}${p.sample_projects.length ? " · " + p.sample_projects.map(esc).join(", ") : ""}</div>
+        <div class="ext-profile-pid">${esc(displayName)}</div>
+        <div class="ext-profile-meta">${meta}</div>
       </div>
-    </label>
-  `).join("");
+    </label>`;
+  }).join("");
 
   return new Promise((resolve) => {
     _ctxShowStep(ctx, "extActionPicker", {
@@ -6434,11 +6321,13 @@ function renderGearEditor() {
         .map(k => `<option value="${k}">${k}</option>`).join("");
       return `<div class="cam-block" data-cam="${i}" style="border:1px solid #2a3246;border-radius:4px;padding:6px 8px;margin-bottom:8px">
         <div style="display:flex;gap:6px;align-items:center">
-          <input type="text"   data-field="name"           value="${esc(c.name || "")}" placeholder="Camera name" style="flex:1">
-          <input type="number" data-field="pixel_size_um"  value="${c.pixel_size_um ?? ""}" step="0.01" placeholder="px µm" style="width:70px">
-          <input type="number" data-field="sensor_w"       value="${dims[0] ?? ""}" step="1" placeholder="w px" style="width:70px">
-          <input type="number" data-field="sensor_h"       value="${dims[1] ?? ""}" step="1" placeholder="h px" style="width:70px">
+          <input type="text"   data-field="name"           value="${esc(c.name || "")}" placeholder="Camera name" style="flex:1;min-width:0">
           <button type="button" class="btn-danger" data-del-cam="${i}">✕</button>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+          <input type="number" data-field="pixel_size_um"  value="${c.pixel_size_um ?? ""}" step="0.01" placeholder="px µm" style="flex:1;min-width:0">
+          <input type="number" data-field="sensor_w"       value="${dims[0] ?? ""}" step="1" placeholder="w px" style="flex:1;min-width:0">
+          <input type="number" data-field="sensor_h"       value="${dims[1] ?? ""}" step="1" placeholder="h px" style="flex:1;min-width:0">
         </div>
         <details style="margin-top:4px" open>
           <summary style="font-size:11px;color:#78839a;cursor:pointer">Filters — ${camFilterKeys.length} (sub s · gain · offset · bin)</summary>

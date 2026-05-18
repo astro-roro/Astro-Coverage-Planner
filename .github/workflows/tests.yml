@@ -35,3 +35,17 @@ jobs:
         run: |
           mkdir -p /tmp/acp-no-extensions
           python -m unittest discover -s tests -v
+
+  tests-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run frontend tests
+        # Node's built-in test runner — no npm install, no node_modules.
+        # See tests/frontend/ and static/search.mjs.
+        run: node --test tests/frontend/
