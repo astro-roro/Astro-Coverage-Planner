@@ -5,7 +5,7 @@ numpy>=1.24
 # used by /api/export/priority.
 scipy>=1.10
 # Optional — only needed for scripts/fetch_catalogs.py
-astroquery>=0.4.7
+astroquery>=0.4.11
 # Required for MOC overlay support (data/surveys.json + /api/moc/<id>); ACP gracefully degrades if absent.
 mocpy>=0.13
 # Required to read .xisf masters in scripts/build_archive_manifest.py.
