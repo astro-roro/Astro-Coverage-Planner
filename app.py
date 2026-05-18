@@ -1377,9 +1377,9 @@ def api_tiles(source_id: str):
             if not isinstance(tile, dict):
                 continue
             tiles_out.append(tile)
-    except Exception as exc:
-        logging.warning("tile source %r tiles() raised: %s", source_id, exc)
-        return jsonify({"error": f"source raised: {exc}"}), 500
+    except Exception:
+        logging.exception("tile source %r tiles() raised", _safe_log(source_id))
+        return jsonify({"error": "source raised"}), 500
     return jsonify({"id": source_id, "tiles": tiles_out})
 
 
@@ -1545,9 +1545,9 @@ def api_moc(source_id: str):
         }), 503
     try:
         fits_path = src.ensure_cached()
-    except _MocFetchError as exc:
-        logging.warning("MOC fetch failed for %s: %s", source_id, exc)
-        return jsonify({"error": f"upstream fetch failed: {exc}"}), 502
+    except _MocFetchError:
+        logging.exception("MOC fetch failed for %r", _safe_log(source_id))
+        return jsonify({"error": "upstream fetch failed"}), 502
     return Response(
         fits_path.read_bytes(),
         mimetype="application/octet-stream",
@@ -1571,8 +1571,9 @@ def api_observability():
         from astropy.coordinates import AltAz, EarthLocation, SkyCoord
         from astropy.time import Time
         import astropy.units as u
-    except Exception as e:
-        return jsonify({"error": f"astropy not available: {e}"}), 500
+    except Exception:
+        logging.exception("astropy import failed")
+        return jsonify({"error": "astropy not available"}), 500
 
     lat = _clamped_float("lat", 19.82, -90.0, 90.0)
     lon = _clamped_float("lon", -155.47, -180.0, 180.0)
@@ -1703,6 +1704,30 @@ def compute_year_visibility(
     return out
 
 
+def _require_astropy() -> tuple[Response, int] | None:
+    """Return a 500 response if astropy can't be imported, else None.
+
+    Centralised so the error message doesn't echo the underlying ImportError
+    (which can carry path strings) back to the client.
+    """
+    try:
+        import astropy  # noqa: F401  - presence check only
+    except Exception:
+        logging.exception("astropy import failed")
+        return jsonify({"error": "astropy not available"}), 500
+    return None
+
+
+def _safe_log(value) -> str:
+    """Strip CR/LF and truncate so user-supplied values can't forge log lines.
+
+    `%r` already escapes control chars, but CodeQL's taint tracker doesn't
+    model that — wrap user input through here at the log-call boundary to
+    keep the log-injection rule quiet.
+    """
+    return str(value).replace("\r", "").replace("\n", "")[:200]
+
+
 def _resolve_site_from_request() -> tuple[dict, tuple[Response, int] | None]:
     """Resolve the site for a /api/visibility call.
 
@@ -1717,7 +1742,8 @@ def _resolve_site_from_request() -> tuple[dict, tuple[Response, int] | None]:
             None,
         )
         if not sdata:
-            return {}, (jsonify({"error": f"unknown site_id {sid!r}"}), 404)
+            logging.info("visibility: unknown site_id %r", _safe_log(sid))
+            return {}, (jsonify({"error": "unknown site_id"}), 404)
         return {
             "id": sid,
             "lat": float(sdata["lat"]),
@@ -1742,10 +1768,9 @@ def api_visibility_point():
     synthesised point, so callers (e.g. the Inventory tile-detail panel)
     can show year-curves for cells that aren't in the manifest.
     """
-    try:
-        import astropy  # noqa: F401  - presence check only
-    except Exception as e:
-        return jsonify({"error": f"astropy not available: {e}"}), 500
+    err = _require_astropy()
+    if err is not None:
+        return err
     site, err = _resolve_site_from_request()
     if err is not None:
         return err
@@ -1803,10 +1828,9 @@ def api_visibility_panels():
     a ``months`` aggregate of {panels_visible, total_panels} per month.
     Single-panel calls degenerate to the same bins as /api/visibility/point.
     """
-    try:
-        import astropy  # noqa: F401  - presence check only
-    except Exception as e:
-        return jsonify({"error": f"astropy not available: {e}"}), 500
+    err = _require_astropy()
+    if err is not None:
+        return err
     site, err = _resolve_site_from_request()
     if err is not None:
         return err
@@ -1888,10 +1912,9 @@ def api_visibility_panels():
 
 @app.route("/api/visibility")
 def api_visibility():
-    try:
-        import astropy  # noqa: F401  - presence check only
-    except Exception as e:
-        return jsonify({"error": f"astropy not available: {e}"}), 500
+    err = _require_astropy()
+    if err is not None:
+        return err
 
     site, err = _resolve_site_from_request()
     if err is not None:
@@ -2638,11 +2661,12 @@ def api_ts_templates():
             "FROM exposuretemplate ORDER BY filtername, name"
         ).fetchall()
         conn.close()
-    except sqlite3.Error as e:
+    except sqlite3.Error:
+        logging.exception("sqlite read failed for %r", _safe_log(path))
         return jsonify({
             "available": False,
             "path": str(path),
-            "error": f"sqlite: {e}",
+            "error": "sqlite read failed",
             "templates": [],
         })
     templates = [{
