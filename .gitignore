@@ -37,3 +37,7 @@ Thumbs.db
 
 # Private extensions (loaded at runtime from outside the repo)
 blueprints/
+
+# JS tooling (frontend test harness only — see tests/frontend/)
+node_modules/
+
