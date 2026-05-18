@@ -41,7 +41,9 @@ CI-grade pin-down of graceful-degradation contracts in `app.py`. Coverage 71% �
 
 - **Critical tier (C1-C5):** `/api/visibility/panels` POST shape + partial-hit + oversize 400; `load_manifest` malformed-JSON / missing-keys / mtime cache; plan POST/PUT `_validate_plan_payload`; `load_catalogs` error paths; sync mosaic edge cases. App.py hardened so `load_manifest` / `load_catalogs` degrade gracefully on parse errors (previously 500'd).
 - **High tier (H1-H4, H7, H8):** sync-download path-traversal regex gate; `/api/moc/<source_id>` route coverage; `/api/export/priority` mocpy-missing fallback; gear-seed fuzzy dedupe + slug-id collision chain; observability silent-clamp coords vs 400-on-bad-time divergence; visibility point/panels cache seeding + manifest-mtime invalidation.
+- **H5 — Frontend tokenizer harness (2026-05-18).** Extracted `tokenizeSearch` / `targetMatchesSearch` / `catalogObjectMatchesTokens` to `static/search.mjs`; `templates/index.html` loads `app.js` as `type="module"` and app.js re-imports the bare names. New `tests/frontend/` with 50 cases across tokenizer + matchers, run by Node's built-in test runner (`node --test`) — zero npm deps. New `tests-frontend` job in `tests.yml`. (Originally scoped for Vitest + jsdom; switched to `node --test` because Vitest 2.x trips a Node ESM bug on Windows network drives, and the tokenizer is pure-function anyway so jsdom is unnecessary.)
 - **CI infrastructure fixes:** renamed `tests/test_smoke.py` → `tests/smoke.py` (procedural script with top-level asserts was being auto-discovered by unittest and breaking against an empty manifest in CI — the C2 hardening turned `/api/manifest` from 500 into 200-empty, blowing past the script's first assert). Added `if: github.actor != 'dependabot[bot]'` to `claude-code-review.yml` (Dependabot PRs run with a restricted secret store that doesn't expose `CLAUDE_CODE_OAUTH_TOKEN`).
+- **Plus PR #22 (2026-05-18):** stripped exception text from 9 jsonify error responses + consolidated 3 duplicate astropy presence checks + added `_safe_log()` helper, clearing all 14 CodeQL alerts (5 reflective-xss, 7 stack-trace-exposure, 2 log-injection).
 - **Dependabot triage:** merged 8 GitHub-Actions major bumps (checkout 4→6, setup-python 5→6, buildx 3→4, build-push 6→7, login 3→4, fetch-metadata 2→3, metadata-action 5→6, codeql 3→4). 6 Python majors parked: numpy 1→2 (#21), astropy 6→7 (#20), astroquery 0.4.7→0.4.11 (#17), flask 3.0→3.1 (#15), scipy 1.10→1.17 (#13), mocpy 0.13→0.20 (#11).
 
 ---
@@ -96,15 +98,6 @@ Two parked items in `acp-nina-ts-sync/FINDINGS-2026-05-11.md` worth working thro
 - **Strictest-wins UX surprise** (#6). User pushed mixed min_alts (40 + 30), got 40 in NINA, expected 30. Not a bug — but `/sync` should return a note flagging when the collapse happened, and the preview modal should surface it as a one-time warning. Workaround today: split outliers into a derived project (`project_name="PNe Survey (high)"`).
 
 Both have fix shapes in FINDINGS; not done because they need a tiny bit more design (per-plan snapshot adds another layer; surprise-note format needs to thread through the existing notes channel).
-
-### H5 — Frontend tokenizer Vitest + jsdom harness (parked 2026-05-17)
-
-Last open item from the test-hardening pass. The C/H tiers covered Python paths in `app.py`; the search-bar tokenizer/highlighter in `static/` is pure JS that no Python test reaches. Half-day's work; skipped at session end to keep the day's commits scoped to the Python + CI fixes.
-
-- New `package.json` + `vitest.config.js` (first JS tooling in the repo; `node_modules/` gitignored).
-- Either lift tokenizer functions into something importable, or test via jsdom + a script tag.
-- Coverage targets: quoted phrases (`"orion nebula"`), exclusion (`-foo`), field filters (`tel:rasa`, `cam:asi`), unicode + punctuation handling.
-- Wire into CI as a second job in `tests.yml` (or a new `tests-frontend.yml`).
 
 ---
 
