@@ -99,6 +99,55 @@ Two parked items in `acp-nina-ts-sync/FINDINGS-2026-05-11.md` worth working thro
 
 Both have fix shapes in FINDINGS; not done because they need a tiny bit more design (per-plan snapshot adds another layer; surprise-note format needs to thread through the existing notes channel).
 
+### NINA plugin initiative (parked 2026-05-19)
+
+Architecture, research, and gap-analysis locked. See `docs/nina-plugin-research.md` (Framing Wizard API, TS schema, TS pub/sub, the existing private `nina_ts_sync` extension's surface) and `docs/nina-plugin-api-audit.md` (/api/plans schema audit + recommended additions). Memory: [[nina-plugin-initiative]].
+
+Decision summary:
+- Plugin is a **thin C#/.NET 8 NINA-side UX layer** over the existing private Python `nina_ts_sync` extension — not a port. Plugin POSTs to `localhost:5555/api/ext/nina-ts-sync/*` for TS work; calls `IFramingAssistantVM.SetCoordinates()` directly for Framing.
+- ACP and NINA on the same machine for v1.x (matches [[remote-edit-architecture]]).
+- v1.0 = Framing push + manual TS sync button. v1.1 = live progress dock (subscribe to TS pub/sub topics). v1.2 = pull/conflict UI inside NINA.
+- v3.0 = full C# port of `nina_ts_sync` to enable location-independent ACP (e.g. ACP on NAS / brutix / remote home server, NINA at a dark site).
+
+Open items parked for the plugin work:
+
+- **Rotation convention verification (10-min test).** `ninaAPI` does `Rectangle.TotalRotation = 360 - rotationDeg` for Framing; our `_build_ts_export` writes `Rotation` to TS un-inverted. Either TS and Framing use different conventions (plausible) or one of these paths is off. Verify empirically before plugin v1.0 ships. Cheapest test: pick a target in the planner with a non-zero rotation, push to TS, open TS's target view, compare displayed rotation against ACP's rail value. Then push to Framing and compare against TS's display.
+- **ACP-side prep (small, pre-plugin).** Add `GET /api/version` with a `last_modified` for `/api/plans` (plugin caches against it). Add `?expand=gear,site,panels` enrichment on `/api/plans` so the plugin can do a single fetch instead of a join. Persist `filter_goals.<f>.sub_exposure_s` on save (currently 0/31 plans have it; the plugin's per-filter UI needs it). Add CORS headers on read-only endpoints.
+- **Bearer-token plumbing on `/api/*` (defer enforcement to v3.0).** Add `Authorization: Bearer <token>` parsing to every API endpoint now, defaulting to "no token required" when binding to loopback. Don't gate it on host detection — bake the contract in early so v3.0 (cross-machine, where auth MUST be on) doesn't require an API rewrite. HTTPS-ready URL parsing in the plugin's Server URL field from day one.
+
+### v3.0 cross-machine security (parked 2026-05-19)
+
+Substantial design work, not v1.x scope. The v3.0 port to C# is also when ACP becomes safely network-accessible. Today's `HOST=0.0.0.0` warning ("only do this on a trusted network") is fine for LAN exposure but inadequate for the remote-observatory use case where the imaging PC and ACP server may not share a network.
+
+**Scope (locked 2026-05-19): Shape A and Shape B only. ACP does not, and will not, attempt to be an Internet-facing service.**
+
+- **Shape A — same machine (today's state).** Loopback only, no auth needed. Must remain the simplest path. v1.x lives entirely here.
+- **Shape B — same LAN (or overlay network).** v3.0's target. App-layer auth required when binding to anything other than 127.0.0.1. Optional TLS for sniff-resistance on untrusted LANs.
+- **Shape C — direct Internet exposure: EXPLICITLY OUT OF SCOPE.** Don't build for it, don't recommend it, don't paper over it with half-measures.
+
+**For remote-observatory users:** point at an overlay network (Tailscale especially — zero-config, identity-based, NAT-traversing, already common in remote-obs setups). Once on the overlay, the deployment is Shape B as far as ACP is concerned — ACP sees a trusted "LAN" of overlay nodes, doesn't know or care that one of them is across the Internet. This means **all the hard remote-access problems** (NAT traversal, NAT-PMP, dynamic DNS, public PKI cert provisioning, certbot rotation, rate limiting, public-Internet hardening) **move from ACP to the overlay layer**, where they're solved problems with mature tooling. ACP's job is the app-layer auth; the overlay's job is everything else.
+
+Attack vectors actually in scope (Shape B):
+- LAN sniffing — compromised IoT device, guest Wi-Fi → TLS handles this if user enables it
+- MITM tampering on plan coordinates → TLS + bearer token
+- Unauthenticated LAN access — anyone on the LAN scanning ports → bearer token always required off-loopback
+- Credential theft from the plugin → store token in OS credential store, not plain text
+
+Attack vectors explicitly NOT in scope (because they're Shape C):
+- Internet replay attacks (nonces/short-lived tokens) — overlay's job
+- Public-PKI cert provisioning — overlay's job
+- NAT traversal — overlay's job
+- DDoS / rate limiting — overlay's job
+
+Pre-v3.0 hooks to land in v1.x so we don't paint ourselves into a corner:
+- Bearer-token plumbing on `/api/*` (above). Required when binding off-loopback; optional but supported on loopback.
+- Plugin's Server URL accepts `https://` from day one.
+- No hardcoded `http://` anywhere in the plugin or extension HTTP clients.
+- Token storage on the plugin side uses OS credential store (Windows Credential Manager) from the first version that needs it. Don't ship a plain-text-token fallback.
+
+Docs work (deferred until v3.0 lands):
+- One page in `docs/` titled "Running ACP across machines (Tailscale + overlay networks)" that walks through the overlay setup pattern. Explicit "don't port-forward ACP to the Internet" warning at the top with the reasoning.
+
 ---
 
 ## Follow-ups from May 2026 work
