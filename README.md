@@ -84,9 +84,18 @@ Open <http://127.0.0.1:5555/> in your browser. The first thing you'll see is an 
 
 > **Just want to look around first?** Run `python scripts/make_demo_manifest.py` to load five well-known targets as sample data (M 42, M 31, Eta Carinae, M 45, M 8 — spanning both hemispheres), then refresh.
 
-### A note on NINA Target Scheduler sync
+### Companion NINA plugin (beta)
 
-ACP's coverage map, search, planner, and catalogues all run on Windows, macOS, and Linux. The **NINA Target Scheduler sync** feature is currently Windows-only — because NINA itself only runs on Windows. If you image from Mac or Linux but have a Windows box driving NINA, that works too: run ACP on whichever machine you like, and run the sync on the Windows side.
+There's now an official **[ACP NINA plugin](https://github.com/astro-roro/ACP.NINA.Plugin)** that brings the planner directly into NINA. It adds a dock panel in the Imaging tab that lists every plan from your running ACP instance, with a one-click **Push to Framing** button that loads the target into NINA's Framing Wizard — coordinates, rotation, mosaic geometry, camera dimensions, focal length all set automatically. From there you save the framing as a sequencer target and image it however you like (Simple Sequencer, Advanced Sequencer, manual capture). **No Target Scheduler required.**
+
+For users who do use Target Scheduler, the plugin also has a one-click **Sync All to TS** button that pushes every plan into the TS database for the active NINA profile — no zip imports, no faff.
+
+**Status:** v1.0 is in beta on NINA's plugin marketplace. Two ways to install:
+
+- **Manual install:** download the latest zip from the [plugin's releases page](https://github.com/astro-roro/ACP.NINA.Plugin/releases/latest) and extract to `%localappdata%\NINA\Plugins\3.0.0\ACP.NINA.Plugin\`.
+- **Beta channel:** in NINA, go to Options → General → Plugin Repositories and add `https://nighttime-imaging.eu/wp-json/nina/v1/beta`. The plugin then shows up under Options → Plugins → Available.
+
+ACP itself still runs on Windows, macOS, and Linux — the plugin is the NINA-side layer (and NINA is Windows-only). If you image from Mac or Linux but have a Windows box driving NINA, that works too: run ACP wherever you like, install the plugin on the Windows side.
 
 (Future plugins could push to Voyager, SGP, or other planners — the extension hooks are there.)
 
