@@ -115,6 +115,24 @@ Open items parked for the plugin work:
 - **ACP-side prep (small, pre-plugin).** Add `GET /api/version` with a `last_modified` for `/api/plans` (plugin caches against it). Add `?expand=gear,site,panels` enrichment on `/api/plans` so the plugin can do a single fetch instead of a join. Persist `filter_goals.<f>.sub_exposure_s` on save (currently 0/31 plans have it; the plugin's per-filter UI needs it). Add CORS headers on read-only endpoints.
 - **Bearer-token plumbing on `/api/*` (defer enforcement to v3.0).** Add `Authorization: Bearer <token>` parsing to every API endpoint now, defaulting to "no token required" when binding to loopback. Don't gate it on host detection — bake the contract in early so v3.0 (cross-machine, where auth MUST be on) doesn't require an API rewrite. HTTPS-ready URL parsing in the plugin's Server URL field from day one.
 
+### v1.1 plugin — live progress sync (parked 2026-05-19)
+
+Goal: while NINA is imaging, acquired hours flow back to ACP automatically so the coverage map + planner rail reflect progress without a manifest re-scan.
+
+The Python `nina_ts_sync` extension already does the data work via `POST /api/ext/nina-ts-sync/sync-acquired` (reads `exposureplan.acquired` from TS, maps back to `filter_goals[*].actual_hours`, writes plans.json). Plugin work is purely the trigger + visibility.
+
+**MVP scope** (~3-4 hours):
+- Toggle in plugin Options page: "Auto-sync progress from TS every N seconds" (default OFF, opt-in)
+- When ON, dockable runs a timer that POSTs `/sync-acquired` every 60s
+- Status line in dockable footer: "Last synced: 22s ago" or similar
+
+**Polish — defer to v3.0 / C# rewrite naturally** (~3-4 extra hours):
+- **Pause polling when no TS Container is active.** Subscribe to TS pub/sub `TargetScheduler-ContainerStarted` / `-ContainerStopped`; only poll between those. Saves wasted HTTP calls when NINA isn't imaging.
+- **Immediate sync on `TargetScheduler-TargetComplete`.** Trigger an instant `/sync-acquired` when TS publishes "target finished" instead of waiting for the next 60s tick. Means ACP sees 100% completion the moment it happens.
+- Both are natural fits to fold into the v3.0 C# port of `nina_ts_sync` since they need event-handling infrastructure either way.
+
+Sequencing: build MVP only after v1.0 has cleared its Beta soak (~2 weeks). The pub/sub-driven polish items get rolled into the v3.0 work.
+
 ### v3.0 cross-machine security (parked 2026-05-19)
 
 Substantial design work, not v1.x scope. The v3.0 port to C# is also when ACP becomes safely network-accessible. Today's `HOST=0.0.0.0` warning ("only do this on a trusted network") is fine for LAN exposure but inadequate for the remote-observatory use case where the imaging PC and ACP server may not share a network.
