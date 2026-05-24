@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -180,6 +181,39 @@ def filter_from_path(p: Path) -> str | None:
             return "B"
         if u == "V":
             return "V"
+    return None
+
+
+_CATALOG_PREFIXES = [
+    "NGC", "IC", "Sh2", "Abell", "vdB", "LDN", "LBN", "RCW",
+    "PGC", "UGC", "Ced", "Mel", "Cr", "Tr", "Stock",
+]
+_CATALOG_CANON = {p.lower(): p for p in _CATALOG_PREFIXES}
+_CATALOG_PREFIX_RE = re.compile(
+    r'((?:' + '|'.join(_CATALOG_PREFIXES) + r')[-_]?\d+)',
+    re.IGNORECASE,
+)
+_MESSIER_RE = re.compile(r'(?:^|_)(M\d{1,3})(?:_|$)', re.IGNORECASE)
+
+
+def object_from_filename(stem: str) -> str | None:
+    """Extract a catalog designation from a filename stem when OBJECT is missing.
+
+    Handles ASIAIR-style filenames like ``Light_NGC6960_180.0s_...`` and
+    similar patterns from other capture software.
+    """
+    m = _CATALOG_PREFIX_RE.search(stem)
+    if m:
+        raw = m.group(1)
+        def _canon(g):
+            prefix = _CATALOG_CANON[g.group(1).lower()]
+            sep = '-' if prefix == 'Sh2' else ' '
+            return prefix + sep
+        return re.sub(r'(?i)(' + '|'.join(_CATALOG_PREFIXES) + r')[-_\s]*',
+                      _canon, raw, count=1).strip()
+    m = _MESSIER_RE.search(stem)
+    if m:
+        return m.group(1).upper()
     return None
 
 
@@ -339,6 +373,8 @@ def read_fits_meta(path: Path) -> dict:
             out["naxis2"] = int(h.get("NAXIS2") or 0) or None
             out["date_obs"] = (h.get("DATE-OBS") or "")[:19] or None
             out["object"] = str(h.get("OBJECT") or "").strip() or None
+            if out["object"] is None:
+                out["object"] = object_from_filename(Path(path).stem)
             out["telescope"] = sanitize_telescope(h.get("TELESCOP") or h.get("INSTRUME"))
             # Record INSTRUME independently as the camera identity — the telescope
             # fallback above is a legacy workaround for files missing TELESCOP.
@@ -371,7 +407,20 @@ def read_fits_meta(path: Path) -> dict:
             if "CRVAL1" in h and "CRVAL2" in h and out["naxis1"] and out["naxis2"]:
                 try:
                     w = WCS(h)
-                    cx, cy = out["naxis1"] / 2.0, out["naxis2"] / 2.0
+                    # IMAGEW/IMAGEH: if the plate-solve ran on a downsampled
+                    # frame (common with ASIAIR / astrometry.net), the WCS
+                    # pixel grid is smaller than NAXIS.  Use the solved
+                    # dimensions so the center pixel lands correctly.
+                    wcs_w = h.get("IMAGEW")
+                    wcs_h = h.get("IMAGEH")
+                    if wcs_w and wcs_h:
+                        wcs_w, wcs_h = int(float(wcs_w)), int(float(wcs_h))
+                        if wcs_w < out["naxis1"] or wcs_h < out["naxis2"]:
+                            cx, cy = wcs_w / 2.0, wcs_h / 2.0
+                        else:
+                            cx, cy = out["naxis1"] / 2.0, out["naxis2"] / 2.0
+                    else:
+                        cx, cy = out["naxis1"] / 2.0, out["naxis2"] / 2.0
                     sky = w.pixel_to_world(cx, cy)
                     out["ra_deg"] = float(sky.ra.deg)
                     out["dec_deg"] = float(sky.dec.deg)
@@ -476,6 +525,8 @@ def read_xisf_meta(path: Path) -> dict:
                     pass
         out["date_obs"] = str(fk("DATE-OBS") or "")[:19] or None
         out["object"] = str(fk("OBJECT") or "").strip() or None
+        if out["object"] is None:
+            out["object"] = object_from_filename(Path(path).stem)
         out["telescope"] = sanitize_telescope(fk("TELESCOP") or fk("INSTRUME"))
         cam_raw = str(fk("INSTRUME") or "").strip()
         out["camera"] = cam_raw or None
