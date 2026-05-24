@@ -14,7 +14,6 @@ from pathlib import Path
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
-import astropy.units as u
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from build_archive_manifest import object_from_filename, read_fits_meta  # noqa: E402
