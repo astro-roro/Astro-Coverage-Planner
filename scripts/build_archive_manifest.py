@@ -15,7 +15,7 @@ Environment variables (all optional):
   MANIFEST_PATH  Where to write the manifest. Default: ``<repo>/data/manifest.json``
                  (i.e. exactly where the Coverage Planner expects it).
   PIPELINE_DB    Optional sqlite DB with a ``frames`` table for per-sub hours
-                 (calibration-tool's job_queue.db). Missing is fine — hours
+                 (a calibration tool's job_queue.db). Missing is fine — hours
                  then come solely from master-file headers.
 
 Run:
@@ -59,7 +59,7 @@ def _env_paths(var: str) -> list[Path] | None:
 NAS_ROOTS = _env_paths("FITS_ROOTS") or [
     Path("Z:/Astro/Images"),
 ]
-NAS_PREFIX = "/mnt/remotes/NAS/"
+NAS_PREFIX = os.environ.get("NAS_PREFIX", "/mnt/remotes/NAS/")
 LOCAL_NAS_PREFIX = "Z:/"
 
 # Optional extra root of stacked full-master files (skipped if it doesn't exist).
@@ -256,7 +256,7 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
     path_str = str(p).lower().replace("\\", "/")
     imagetyp = (meta.get("imagetyp") or "").strip().upper() if meta else ""
 
-    # calibration-pipeline full_masters (plate-solved, per-object deep stacks)
+    # the calibration pipeline full_masters (plate-solved, per-object deep stacks)
     if "state/full_masters" in path_str or "\\state\\full_masters" in str(p).lower():
         if name.startswith("full_master_"):
             return "master"
@@ -297,7 +297,7 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
     if "/final images/" in path_str or "/final_images/" in path_str:
         return "processed"
 
-    # calibration-pipeline calibrated output dirs (per-job calibrated lights)
+    # the calibration pipeline calibrated output dirs (per-job calibrated lights)
     if "/calibrated/" in path_str and "calibrated_pretty" not in path_str:
         return "calibrated_sub"
     if "/calibrated_pretty/" in path_str:
@@ -630,7 +630,7 @@ def session_root_and_stage(bucket_path: str, valid_session_roots: set | None = N
 
     `valid_session_roots` gates dedup: only bucket paths whose pipeline-stage
     ancestor sits directly under a known WBPP-style session root are treated
-    as stage folders. This prevents `Images/calibrated/{job_hash}` (calibration-pipeline job
+    as stage folders. This prevents `Images/calibrated/{job_hash}` (the calibration pipeline job
     storage, where each hash is a distinct session) from being deduplicated.
     """
     from pathlib import PurePath
@@ -651,7 +651,7 @@ def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
     A directory qualifies if its children include at least two pipeline-stage
     folders AND at least one derivative-stage or 'master' marker folder —
     that combination is unique to WBPP's per-target output layout. This
-    excludes calibration-pipeline's `calibrated/{job_hash}` storage where `calibrated/` has
+    excludes the calibration pipeline's `calibrated/{job_hash}` storage where `calibrated/` has
     no `og/`/`starless/`/`stars/` sibling.
     """
     from pathlib import PurePath
@@ -782,12 +782,12 @@ def aggregate_db_subs(db_path: Path, log=print) -> dict:
     if not db_path.exists():
         log(f"  DB missing: {db_path}")
         return out
-    # Windows UNC may fail — try Y: prefix
+    # Windows UNC may fail — allow an env-configured alternate path (PIPELINE_DB_ALT)
     db_to_open = db_path
     if str(db_path).startswith("\\\\"):
-        alt = Path("CONFIGURED_DB_PATH")
-        if alt.exists():
-            db_to_open = alt
+        _alt = os.environ.get("PIPELINE_DB_ALT", "")
+        if _alt and Path(_alt).exists():
+            db_to_open = Path(_alt)
     try:
         c = _sqlite3.connect(str(db_to_open))
         c.row_factory = _sqlite3.Row
@@ -1031,7 +1031,7 @@ def main():
     # (the master file contributes hours via the masters list).
     #
     # First, find the real WBPP-style session roots so we don't accidentally
-    # treat calibration-pipeline's calibrated/{job_hash} folders (where each hash is a separate
+    # treat the calibration pipeline's calibrated/{job_hash} folders (where each hash is a separate
     # session) as one shared session.
     all_bucket_paths = [fs["bucket"] for fs in folder_subs] + [str(Path(m["path"]).parent) for m in masters]
     wbpp_session_roots = detect_wbpp_session_roots(all_bucket_paths)
