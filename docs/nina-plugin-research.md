@@ -293,7 +293,7 @@ Mounted at `/api/ext/nina-ts-sync/` by the Flask host.
 
 ### Future port to C# (deferred)
 
-If we ever want ACP to run on a separate machine from NINA (NAS-hosted, homeserver-hosted), we'd port the Python `nina_ts_sync` to C# at that point. By then we have operational experience with the algorithm and a clear contract (the HTTP surface above). Not a v1.x decision.
+If we ever want ACP to run on a separate machine from NINA (NAS-hosted, home-server-hosted), we'd port the Python `nina_ts_sync` to C# at that point. By then we have operational experience with the algorithm and a clear contract (the HTTP surface above). Not a v1.x decision.
 
 ## Cross-cutting takeaways
 
