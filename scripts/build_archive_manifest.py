@@ -617,13 +617,236 @@ def translate_nas_path(p: str) -> str:
     return p.replace(NAS_PREFIX, LOCAL_NAS_PREFIX)
 
 
-PIPELINE_STAGE_FOLDERS = {"calibrated", "registered", "master", "og", "starless", "stars"}
+# Canonical pipeline-stage folder names. Some WBPP configurations (and users
+# who reorganise by hand) write to differently-named folders for the same
+# stage; STAGE_FOLDER_ALIASES maps those variants to a canonical stage so the
+# session-dedup keys on the stage, not its spelling. Resolved by
+# canon_stage_name(); PIPELINE_STAGE_FOLDERS is the union of canonical names
+# and every alias so membership checks still recognise the folder.
+STAGE_FOLDER_ALIASES = {
+    "cal": "calibrated",
+    "reg": "registered",
+    "aligned": "registered",
+    "masters": "master",
+    "integration": "master",
+    "original": "og",
+    "originals": "og",
+    "original_fits": "og",
+}
+_CANON_STAGE_FOLDERS = {"calibrated", "registered", "master", "og", "starless", "stars"}
+PIPELINE_STAGE_FOLDERS = _CANON_STAGE_FOLDERS | set(STAGE_FOLDER_ALIASES)
 DERIVATIVE_STAGES = {"og", "starless", "stars"}
 WBPP_SIGNATURE_STAGES = {"og", "starless", "stars", "master"}  # markers of WBPP-style session
 STAGE_PRIORITY = {"master": 0, "calibrated": 1, "root": 2, "registered": 3}
 
+# WBPP appends stage suffixes to frame stems as it processes them, always in
+# the fixed pipeline order:
+#   _c     calibrated            _cc    cosmetic-corrected
+#   _d     debayered             _r     registered/aligned
+# A frame may pass through any subset of these stages, but the suffixes it
+# carries always appear in that order. A one-shot-colour (OSC) frame that was
+# calibrated, cosmetic-corrected, debayered and registered ends up as
+# ``light_001_c_cc_d_r``; a mono frame skipping the debayer step is
+# ``light_001_c_cc_r``; and so on. An archive that has been manually flattened
+# keeps the raw stem (``light_001.fits``) alongside one or more of these
+# processed siblings (``light_001_c_cc_d_r.xisf``).
+#
+# WBPP_STAGE_SUFFIXES is the closed set of suffix chains we strip when pairing a
+# FITS frame with its XISF derivative. We *generate* it as every non-empty
+# ordered subset of WBPP_STAGE_SEQUENCE (order preserved) rather than
+# hand-enumerating — the old hand-written list silently dropped the _cc+_d
+# chains (``_cc_d``, ``_c_cc_d``, ``_cc_d_r``, ``_c_cc_d_r``) that OSC/debayered
+# data take, which is the precise miss issue #24 set out to fix. The generated
+# tuple is ordered longest-chain-first so a caller iterating it strips the most
+# specific match before any prefix of it. Chains are anchored at the end of the
+# stem and never fuzzy-matched, so a target whose real name happens to end in
+# "_c" is left untouched unless the whole chain matches. Kept as a module-level
+# tuple so tests can assert membership.
+WBPP_STAGE_SEQUENCE = ("c", "cc", "d", "r")
 
-def session_root_and_stage(bucket_path: str, valid_session_roots: set | None = None) -> tuple[str, str]:
+
+def _generate_stage_suffixes(stages: tuple[str, ...]) -> tuple[str, ...]:
+    """All non-empty ordered subsets of ``stages`` as ``_a_b`` suffix chains.
+
+    Order within the original sequence is preserved (so ``_c`` always precedes
+    ``_cc`` precedes ``_d`` precedes ``_r``), and the result is sorted
+    longest-chain-first so a caller iterating it strips the most specific match
+    first. For ``("c","cc","d","r")`` this yields, longest-first:
+    ``_c_cc_d_r``, ``_c_cc_d``, ``_c_cc_r``, ``_c_d_r``, ``_cc_d_r``,
+    ``_c_cc``, ``_c_d``, ``_c_r``, ``_cc_d``, ``_cc_r``, ``_d_r``,
+    ``_c``, ``_cc``, ``_d``, ``_r`` (15 chains for 4 stages).
+    """
+    from itertools import combinations
+    chains: list[str] = []
+    for r in range(1, len(stages) + 1):
+        for combo in combinations(stages, r):
+            chains.append("_" + "_".join(combo))
+    # Sort longest-first; tie-break alphabetically for a deterministic order.
+    chains.sort(key=lambda s: (-len(s), s))
+    return tuple(chains)
+
+
+WBPP_STAGE_SUFFIXES = _generate_stage_suffixes(WBPP_STAGE_SEQUENCE)
+
+
+def canon_stage_name(name: str) -> str:
+    """Map a folder name (lowercased) to its canonical pipeline stage."""
+    return STAGE_FOLDER_ALIASES.get(name, name)
+
+
+def _strip_stage_suffix(stem: str) -> str:
+    """Return ``stem`` with its single longest trailing WBPP stage-suffix removed.
+
+    Anchored exact-suffix match against WBPP_STAGE_SUFFIXES (the tuple is already
+    ordered longest-first so ``_c_cc_d_r`` wins over ``_d_r`` wins over ``_r``).
+    Single match only — the chains in the allowlist already enumerate the legal
+    combinations, so we never strip more than one. If nothing matches, the stem
+    is returned unchanged. This is the longest-strip; for the full set of
+    candidate base stems (longest strip first, then progressively shorter) use
+    ``_candidate_stripped_stems``.
+    """
+    low = stem.lower()
+    for suf in WBPP_STAGE_SUFFIXES:
+        if low.endswith(suf) and len(stem) > len(suf):
+            return stem[: -len(suf)]
+    return stem
+
+
+def _candidate_stripped_stems(stem: str) -> list[str]:
+    """Every base stem an XISF ``stem`` could collapse onto, longest-strip first.
+
+    Returns the candidate keys produced by stripping each *trailing-anchored*
+    WBPP stage-suffix chain that matches, ordered so the longest chain (shortest
+    resulting base stem) comes first, then progressively shorter chains, and
+    finally the full unstripped stem itself. For ``light_001_c_cc_d_r`` this is::
+
+        ["light_001", "light_001_c", "light_001_c_cc", "light_001_c_cc_d",
+         "light_001_c_cc_d_r"]
+
+    Directional collapse uses this list to absorb an XISF into the FITS frame
+    whose stem matches the *longest* strip, falling back to shorter strips (an
+    intermediate pipeline stage) only when no FITS matches a longer one. The
+    full stem is always the last candidate so an XISF with no FITS match keys on
+    itself and stays a separate frame. WBPP_STAGE_SUFFIXES is already ordered
+    longest-first, so iterating it preserves the longest-strip-first preference.
+    """
+    low = stem.lower()
+    keys: list[str] = []
+    for suf in WBPP_STAGE_SUFFIXES:
+        if low.endswith(suf) and len(stem) > len(suf):
+            stripped = stem[: -len(suf)]
+            if stripped not in keys:
+                keys.append(stripped)
+    keys.append(stem)
+    return keys
+
+
+_FITS_FAMILY = {".fit", ".fits", ".fts"}
+
+
+def collapse_fits_xisf_pairs(paths: list[str]) -> tuple[list[str], int]:
+    """Collapse in-folder FITS+XISF pairs of the same frame to one frame.
+
+    Pure helper for the manifest bucket loop. The collapse is **directional**:
+    only an XISF may be absorbed into a FITS frame, never the reverse and never
+    FITS-into-FITS. This keeps two genuinely distinct raw frames that happen to
+    differ only by a WBPP suffix token (``sub.fits`` + ``sub_r.fits``) as two
+    frames, fixing the under-count/frame-loss direction of issue #24's
+    medium-severity hole.
+
+    Algorithm (given the file paths in one folder bucket):
+
+      1. Every FITS-family file (.fit/.fits/.fts) keys on its **full** stem and
+         is a frame of its own. FITS files never merge with each other.
+      2. Each XISF computes its candidate base stems via
+         ``_candidate_stripped_stems`` — longest WBPP-suffix strip first, then
+         progressively shorter strips, then its own full stem last. It is
+         absorbed into the FITS frame matching the **longest** strip; if no FITS
+         matches that, the next-shorter strip (an intermediate pipeline stage)
+         is tried, and so on. An XISF that matches no FITS keys on its own full
+         stem and stays a separate frame (current behaviour preserved).
+      3. When an XISF is absorbed, the surviving representative is the XISF (its
+         header carries the calibrated sample-meta the rest of the loop wants).
+
+    Deterministic longest-strip-first matching means ``x.fits`` + ``x_c.fits`` +
+    ``x_c.xisf`` stay 2 frames: ``x_c.xisf`` strips longest to ``x`` (a FITS) and
+    is absorbed there, leaving ``x`` and ``x_c`` as distinct frames. An OSC
+    flattened pair ``x.fits`` + ``x_c_cc_d.xisf`` collapses to 1.
+
+    Intentional limitation: collapse is only triggered by a FITS anchor. A
+    folder with NO FITS member — e.g. ``a.xisf`` + ``a_c.xisf`` — is left intact
+    as two frames even though one is plainly derived from the other, because
+    without the raw FITS we cannot tell a stage-derivative apart from two
+    distinct frames whose names collide on a suffix token, and merging XISF-into-
+    XISF would re-open the under-count hole this directional rule closes.
+
+    Returns ``(collapsed_paths, n_physical)`` where ``n_physical`` is the number
+    of distinct physical frames (== len(collapsed_paths)). ``collapsed_paths``
+    preserves first-seen order of the surviving representatives.
+    """
+    # Pass 1: index FITS-family stems (full stem, lowercased) -> first path.
+    # Each distinct FITS path is its own frame; map every FITS stem to the frame
+    # key it owns so XISF absorption can find it. (If two FITS share a stem,
+    # e.g. x.fit + x.fits, they remain separate frames keyed by path identity.)
+    fits_stem_to_paths: dict[str, list[str]] = defaultdict(list)
+    for p in paths:
+        pp = Path(p)
+        if pp.suffix.lower() in _FITS_FAMILY:
+            fits_stem_to_paths[pp.stem.lower()].append(p)
+
+    # Frames keyed by an identity token, preserving first-seen order. A FITS
+    # frame's key is ("fits", path); an XISF that stays separate keys on
+    # ("xisf", full_stem); an absorbed XISF joins its FITS anchor's key.
+    frame_members: dict[object, list[str]] = defaultdict(list)
+    order: list[object] = []
+
+    def _touch(key):
+        if key not in frame_members:
+            order.append(key)
+        return frame_members[key]
+
+    for p in paths:
+        pp = Path(p)
+        ext = pp.suffix.lower()
+        if ext in _FITS_FAMILY:
+            # Each FITS path is its own frame — never merges with anything.
+            _touch(("fits", p)).append(p)
+            continue
+        if ext != ".xisf":
+            # Unexpected extension — treat as a standalone frame, unchanged.
+            _touch(("other", p)).append(p)
+            continue
+        # XISF: try to absorb into a FITS frame, longest strip first.
+        anchor = None
+        for cand in _candidate_stripped_stems(pp.stem):
+            fits_paths = fits_stem_to_paths.get(cand.lower())
+            if fits_paths:
+                anchor = ("fits", fits_paths[0])  # first FITS with that stem
+                break
+        if anchor is not None:
+            _touch(anchor).append(p)
+        else:
+            # No FITS match — stays a separate frame keyed on its own stem.
+            _touch(("xisf", pp.stem.lower())).append(p)
+
+    collapsed: list[str] = []
+    for key in order:
+        members = frame_members[key]
+        # Prefer the XISF representative when a FITS frame absorbed one (its
+        # header carries the calibrated sample-meta the rest of the loop wants).
+        xisf_members = [m for m in members if Path(m).suffix.lower() == ".xisf"]
+        collapsed.append(xisf_members[0] if xisf_members else members[0])
+    return collapsed, len(collapsed)
+
+
+_ORIGINALS_FOLDER_RE = re.compile(r"^originals?(?:[_\-].*)?$")
+
+
+def session_root_and_stage(
+    bucket_path: str,
+    valid_session_roots: set | None = None,
+    originals_session_roots: dict | None = None,
+) -> tuple[str, str]:
     """Walk up the bucket path looking for a pipeline-stage folder name.
 
     Returns (session_root, stage). `stage` is one of PIPELINE_STAGE_FOLDERS or 'root'.
@@ -632,17 +855,60 @@ def session_root_and_stage(bucket_path: str, valid_session_roots: set | None = N
     ancestor sits directly under a known WBPP-style session root are treated
     as stage folders. This prevents `Images/calibrated/{job_hash}` (the calibration pipeline job
     storage, where each hash is a distinct session) from being deduplicated.
+
+    `originals_session_roots` maps an ``original*/`` folder bucket path to the
+    session root it shares with a ``master/`` sibling (see
+    `detect_originals_master_siblings`). When the bucket is such a folder it
+    resolves to that session root with the derivative ``og`` stage, so the
+    master-present suppression fires. Checked first because these folders carry
+    names (e.g. ``original_lights/``) that are not in PIPELINE_STAGE_FOLDERS.
     """
     from pathlib import PurePath
+    if originals_session_roots and bucket_path in originals_session_roots:
+        return originals_session_roots[bucket_path], "og"
     parts = list(PurePath(bucket_path).parts)
     for i in range(len(parts) - 1, -1, -1):
         name = parts[i].lower()
         if name in PIPELINE_STAGE_FOLDERS:
             session_root = str(PurePath(*parts[:i])) if i > 0 else parts[0]
             if valid_session_roots is None or session_root in valid_session_roots:
-                return session_root, name
+                return session_root, canon_stage_name(name)
             # Not a real WBPP session; ignore this stage-named folder and keep walking up
     return bucket_path, "root"
+
+
+def detect_originals_master_siblings(bucket_paths: list[str]) -> dict[str, str]:
+    """Map ``original*/`` folders to the session root of a ``master/`` sibling.
+
+    An archive where the raw lights live in an ``original_fits/`` (or
+    ``original_lights/`` etc.) folder that sits beside a ``master/`` folder is a
+    flattened/reorganised WBPP session: the master integration already accounts
+    for those frames, so the originals must resolve to the master's session root
+    for the master-present suppression to drop them.
+
+    Gated on master-present: a standalone raw archive (an ``originals/`` folder
+    with no master sibling) returns no mapping and is left to count normally.
+    Returns ``{originals_bucket_path: session_root}``.
+    """
+    from pathlib import PurePath
+    master_parents: set[str] = set()
+    originals_by_parent: dict[str, list[str]] = defaultdict(list)
+    for bp in bucket_paths:
+        parts = list(PurePath(bp).parts)
+        if not parts:
+            continue
+        name = parts[-1].lower()
+        parent = str(PurePath(*parts[:-1])) if len(parts) > 1 else parts[0]
+        if canon_stage_name(name) == "master":
+            master_parents.add(parent)
+        elif _ORIGINALS_FOLDER_RE.match(name):
+            originals_by_parent[parent].append(bp)
+    out: dict[str, str] = {}
+    for parent, buckets in originals_by_parent.items():
+        if parent in master_parents:
+            for b in buckets:
+                out[b] = parent
+    return out
 
 
 def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
@@ -662,12 +928,16 @@ def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
             name = parts[i].lower()
             if name in PIPELINE_STAGE_FOLDERS:
                 parent_path = str(PurePath(*parts[:i])) if i > 0 else parts[0]
-                children_by_parent[parent_path].add(name)
+                children_by_parent[parent_path].add(canon_stage_name(name))
                 break
-    return {
+    roots = {
         root for root, stages in children_by_parent.items()
         if len(stages) >= 2 and (stages & WBPP_SIGNATURE_STAGES)
     }
+    # A parent holding a master/ and an original*/ sibling is a flattened WBPP
+    # session even if original*/ isn't a recognised stage-folder name (issue #24).
+    roots |= set(detect_originals_master_siblings(bucket_paths).values())
+    return roots
 
 
 def compute_fov_from_meta(meta: dict) -> tuple[list | None, float | None, str]:
@@ -997,7 +1267,16 @@ def main():
         exp = meta.get("exptime") or 0
         if exp <= 0:
             continue
-        count = len(paths)
+        # Flattened-archive fix (issue #24): when a folder holds both the raw
+        # .fits frames and their .xisf calibrated/registered siblings, count the
+        # FITS+XISF pair as one physical frame instead of two. No-op for normal
+        # single-extension folders.
+        paths, n_physical = collapse_fits_xisf_pairs(paths)
+        if n_physical < len(session_buckets[parent]):
+            print(f"[{time.time()-t0:6.1f}s]   collapsed {len(session_buckets[parent])} files to "
+                  f"{n_physical} physical frames in flattened folder {parent} "
+                  f"(FITS+XISF siblings)")
+        count = n_physical
         basenames = frozenset(Path(p).name for p in paths)
         folder_subs.append({
             "bucket": parent,
@@ -1037,10 +1316,18 @@ def main():
     wbpp_session_roots = detect_wbpp_session_roots(all_bucket_paths)
     print(f"[{time.time()-t0:6.1f}s] Detected {len(wbpp_session_roots)} WBPP-style session roots")
 
+    # original*/ folders that sit beside a master/ folder belong to that
+    # master's session (issue #24) — resolve them so master-present suppression
+    # fires. Standalone raw archives (no master sibling) get no mapping.
+    originals_session_roots = detect_originals_master_siblings(all_bucket_paths)
+    if originals_session_roots:
+        print(f"[{time.time()-t0:6.1f}s] Mapped {len(originals_session_roots)} originals folder(s) "
+              f"to a master sibling's session root")
+
     session_dedup_log = []
     session_master_seen: dict[tuple[str, str], list[str]] = defaultdict(list)
     for fs in folder_subs:
-        sr, stage = session_root_and_stage(fs["bucket"], wbpp_session_roots)
+        sr, stage = session_root_and_stage(fs["bucket"], wbpp_session_roots, originals_session_roots)
         fs["_session_root"] = sr
         fs["_stage"] = stage
         if stage == "master":
@@ -1051,7 +1338,7 @@ def main():
     for m in masters:
         mp = Path(m["path"])
         mparent = str(mp.parent)
-        sr, stage = session_root_and_stage(mparent, wbpp_session_roots)
+        sr, stage = session_root_and_stage(mparent, wbpp_session_roots, originals_session_roots)
         filt = m.get("filter")
         if filt and stage in PIPELINE_STAGE_FOLDERS:
             session_master_seen[(sr, filt)].append(m["path"])
