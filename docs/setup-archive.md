@@ -92,6 +92,12 @@ This writes `data/catalogs.json` by querying VizieR via `astroquery` (already in
 
 The result is that your map shows clean polygons for everything you've actually processed, while the per-target hours still reflect total time on sky if you've kept the optional DB.
 
+### Flattened archives
+
+The builder de-duplicates the multiple pipeline stages WBPP writes (`calibrated/`, `registered/`, `master/`, `og/`, `starless/`, `stars/`) so a frame processed through several stages is only counted once. This works best on **WBPP's default layout**, where each stage lives in its own subfolder — that's the supported path.
+
+If you've **manually flattened** your archive — for example dragging the raw `.fits` lights into the same folder as their calibrated/registered `.xisf` siblings — the builder still pairs an `X.fits` with its `X_c.xisf` / `X_c_r.xisf` (etc.) sibling and counts them as one physical frame, printing a `collapsed N files to M physical frames` line when it does. Pairing is anchored to WBPP's stage-suffix naming (`_c`, `_cc`, `_r`, `_d` and their ordered combinations); frames that have been renamed away from that convention can't be paired and may double-count. Renamed stage folders (e.g. `cal/`, `reg/`, `masters/`, `original_fits/`) are recognised as aliases. To stay on the well-tested path, keep WBPP's default staged output rather than reorganising stages into one directory.
+
 ## Re-running after new captures
 
 After a new imaging session, just re-run the manifest builder:
