@@ -41,3 +41,4 @@ blueprints/
 # JS tooling (frontend test harness only — see tests/frontend/)
 node_modules/
 
+data/archive_manifest_summary.md
