@@ -3,7 +3,7 @@ astropy>=6.0
 numpy>=1.24
 # Required for astropy SkyCoord.match_to_catalog_sky (KDTree backend)
 # used by /api/export/priority.
-scipy>=1.17.1
+scipy>=1.18.0
 # Optional — only needed for scripts/fetch_catalogs.py
 astroquery>=0.4.11
 # Required for MOC overlay support (data/surveys.json + /api/moc/<id>); ACP gracefully degrades if absent.
