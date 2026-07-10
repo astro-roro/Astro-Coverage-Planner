@@ -287,9 +287,11 @@ def _heal_plan_list(plans: list) -> list:
         healed_fields: list[str] = []
         healed_p = _heal_nonfinite_floats(p, [], healed_fields)
         if healed_fields:
+            plan_id = repr(p.get("id", "<unknown>"))
+            fields = ", ".join(map(repr, healed_fields))
             logging.warning(
-                "plan %r: replaced non-finite value(s) with null in field(s): %s",
-                p.get("id", "<unknown>"), ", ".join(map(repr, healed_fields)),
+                "plan %s: replaced non-finite value(s) with null in field(s): %s",
+                plan_id, fields,
             )
         healed_plans.append(healed_p)
     return healed_plans
