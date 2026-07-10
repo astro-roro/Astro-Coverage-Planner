@@ -113,7 +113,7 @@ _MOC_CACHE_TTL_S = 30 * 24 * 3600  # 30 days
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
-app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # dev: browsers revalidate every request
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
 app.jinja_env.auto_reload = True
 
 if not CATALOGS_PATH.exists():
@@ -290,7 +290,12 @@ def _maybe_backfill_plan_destinations() -> None:
 def save_plans(data: dict) -> None:
     global _plans_cache, _plans_cache_mtime
     PLANS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PLANS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # allow_nan=False is a belt-and-braces tripwire: _validate_plan_payload
+    # already rejects NaN/Infinity on the way in, but if some other code
+    # path ever calls save_plans() with unvalidated data, this raises
+    # ValueError instead of silently writing JSON that strict clients (and
+    # our own int(math.ceil(...)) in the sync builder) can't handle.
+    PLANS_PATH.write_text(json.dumps(data, indent=2, allow_nan=False), encoding="utf-8")
     _plans_cache = data
     _plans_cache_mtime = PLANS_PATH.stat().st_mtime
 
@@ -932,6 +937,26 @@ def _fov_arcmin(telescope: dict | None, camera: dict | None) -> list[float]:
     return [round(w_px * arcsec_per_px / 60.0, 2), round(h_px * arcsec_per_px / 60.0, 2)]
 
 
+def _with_sensor_scalars(camera: dict) -> dict:
+    """Add scalar sensor_width_px / sensor_height_px alongside sensor_px.
+
+    ACP's own frontend reads the [w, h] pair, but the NINA companion plugin
+    expects flat scalar fields and ignores sensor_px entirely: without
+    this every camera showed up on the NINA side with a zero sensor size.
+    sensor_px stays the source of truth; the scalars are derived here
+    rather than stored twice, so there's no way for them to drift apart.
+    """
+    out = dict(camera)
+    sensor = camera.get("sensor_px")
+    if isinstance(sensor, (list, tuple)) and len(sensor) == 2:
+        try:
+            out["sensor_width_px"] = int(sensor[0])
+            out["sensor_height_px"] = int(sensor[1])
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def save_gear(data: dict) -> None:
     global _gear_cache, _gear_cache_mtime
     GEAR_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1093,13 +1118,13 @@ def _seed_gear_from_manifest() -> dict:
         base = cam_id; n = 2
         while cam_id in existing_cam_ids:
             cam_id = f"{base}-{n}"; n += 1
-        cameras.append({
+        cameras.append(_with_sensor_scalars({
             "id": cam_id,
             "name": info["name"],
             "pixel_size_um": info["pixel_size_um"] or 0,
             "sensor_px": info["sensor_px"] or [0, 0],
             "filters": {f: _default_filter_cfg(f) for f in info["filters"]},
-        })
+        }))
         added_cams.append(info["name"])
         existing_cam_norms.add(_norm_gear_name(info["name"]))
         existing_cam_ids.add(cam_id)
@@ -1674,14 +1699,16 @@ def compute_year_visibility(
                 })
             continue
 
-        # One big AltAz transformation: target i at time j.
-        ras_full = np.repeat(ras, n_t)
-        decs_full = np.repeat(decs, n_t)
-        times_full = Time(np.tile(t_grid.jd, n_targets), format="jd")
-        sc = SkyCoord(ras_full * u.deg, decs_full * u.deg)
+        # One AltAz transformation for all targets x all times, broadcasting
+        # a (n_targets, 1) SkyCoord against a (1, n_t) obstime instead of
+        # flattening to a single (n_targets * n_t,) array. Broadcasting keeps
+        # the per-timestamp precession/nutation/polar-motion matrices (ERFA
+        # pnm06a et al.) computed once per timestamp rather than once per
+        # target -- flattening previously forced ERFA to redo that work for
+        # every target, which dominated runtime at manifest scale.
+        sc = SkyCoord(ras[:, None] * u.deg, decs[:, None] * u.deg)
         alt_grid = sc.transform_to(
-            AltAz(obstime=times_full, location=loc)).alt.deg
-        alt_grid = alt_grid.reshape(n_targets, n_t)
+            AltAz(obstime=t_grid[None, :], location=loc)).alt.deg
 
         for i, tid in enumerate(ids):
             alts_dark = alt_grid[i, is_dark]
@@ -1791,7 +1818,7 @@ def api_visibility_point():
     # Cache by (site, ra, dec, year). Manifest mtime is irrelevant here since
     # the point is supplied directly, not looked up in the manifest.
     cache_key = (
-        round(site["lat"], 4), round(site["lon"], 4),
+        round(site["lat"], 4), round(site["lon"], 4), round(site["elev_m"], 1),
         round(site["min_alt_deg"], 2),
         round(ra, 4), round(dec, 4), year,
     )
@@ -1861,7 +1888,7 @@ def api_visibility_panels():
         parsed.append((round(ra, 4), round(dec, 4)))
 
     site_key = (
-        round(site["lat"], 4), round(site["lon"], 4),
+        round(site["lat"], 4), round(site["lon"], 4), round(site["elev_m"], 1),
         round(site["min_alt_deg"], 2),
     )
     per_panel_bins: list[list[dict] | None] = [None] * len(parsed)
@@ -1935,7 +1962,7 @@ def api_visibility():
     # the live request so site_id-based and lat/lon-based calls with the
     # same coords don't pollute each other's metadata.
     cache_key = (
-        round(site["lat"], 4), round(site["lon"], 4),
+        round(site["lat"], 4), round(site["lon"], 4), round(site["elev_m"], 1),
         round(site["min_alt_deg"], 2),
         _manifest_cache_mtime or 0.0, year,
     )
@@ -2463,7 +2490,11 @@ def api_gear():
         return jsonify({
             "version": g.get("version", 2),
             "telescopes": g.get("telescopes", []),
-            "cameras": g.get("cameras", []),
+            # Derive sensor_width_px/sensor_height_px on every read so
+            # cameras added via the UI editor (which only ever writes
+            # sensor_px) still carry the scalar fields the NINA plugin
+            # expects, not just ones seeded from a manifest scan.
+            "cameras": [_with_sensor_scalars(c) for c in g.get("cameras", [])],
         })
     payload = request.get_json(silent=True) or {}
     if "telescopes" not in payload or "cameras" not in payload:
@@ -2485,7 +2516,13 @@ def _validate_plan_payload(payload: dict) -> str | None:
     The UI validates per-field on entry but a misbehaving client (or a
     direct curl) can still POST garbage. This catches the cases that
     would silently break downstream sync to NINA TS:
-      - centre RA/Dec outside physical / wrap-tolerant range
+      - centre RA outside [0, 360), Dec outside [-90, 90]
+      - NaN / Infinity anywhere a number is expected: comparisons like
+        `x < 0` are silently False for NaN, so every numeric field is
+        checked with math.isfinite() rather than relying on range
+        comparisons alone. A non-finite value here would otherwise
+        write straight to plans.json and 500 every later /api/sync
+        call via int(math.ceil(nan)).
       - mosaic rows/cols not positive integers (sync expansion would
         crash or emit zero panels)
       - mosaic overlap_pct outside [0, 99]
@@ -2509,20 +2546,22 @@ def _validate_plan_payload(payload: dict) -> str | None:
                 ra = float(target["center_ra_deg"])
             except (TypeError, ValueError):
                 return "target.center_ra_deg must be a number"
-            if not (-360.0 <= ra <= 360.0):
-                return "target.center_ra_deg out of range [-360, 360]"
+            if not math.isfinite(ra) or not (0.0 <= ra < 360.0):
+                return "target.center_ra_deg out of range [0, 360)"
         if "center_dec_deg" in target:
             try:
                 dec = float(target["center_dec_deg"])
             except (TypeError, ValueError):
                 return "target.center_dec_deg must be a number"
-            if not (-90.0 <= dec <= 90.0):
+            if not math.isfinite(dec) or not (-90.0 <= dec <= 90.0):
                 return "target.center_dec_deg out of range [-90, 90]"
         if "rotation_deg" in target:
             try:
-                float(target["rotation_deg"])
+                rot = float(target["rotation_deg"])
             except (TypeError, ValueError):
                 return "target.rotation_deg must be a number"
+            if not math.isfinite(rot):
+                return "target.rotation_deg must be finite"
         mosaic = target.get("mosaic")
         if mosaic is not None:
             if not isinstance(mosaic, dict):
@@ -2537,7 +2576,7 @@ def _validate_plan_payload(payload: dict) -> str | None:
                     op = float(mosaic["overlap_pct"])
                 except (TypeError, ValueError):
                     return "target.mosaic.overlap_pct must be a number"
-                if not (0.0 <= op <= 99.0):
+                if not math.isfinite(op) or not (0.0 <= op <= 99.0):
                     return "target.mosaic.overlap_pct out of range [0, 99]"
     fg = payload.get("filter_goals")
     if fg is not None:
@@ -2551,15 +2590,22 @@ def _validate_plan_payload(payload: dict) -> str | None:
                     th = float(fcfg["target_hours"])
                 except (TypeError, ValueError):
                     return f"filter_goals[{fname!r}].target_hours must be a number"
-                if th < 0:
+                if not math.isfinite(th) or th < 0:
                     return f"filter_goals[{fname!r}].target_hours must be ≥ 0"
             if "sub_exposure_s" in fcfg:
                 try:
                     se = float(fcfg["sub_exposure_s"])
                 except (TypeError, ValueError):
                     return f"filter_goals[{fname!r}].sub_exposure_s must be a number"
-                if se <= 0:
+                if not math.isfinite(se) or se <= 0:
                     return f"filter_goals[{fname!r}].sub_exposure_s must be > 0"
+            if "actual_hours" in fcfg:
+                try:
+                    ah = float(fcfg["actual_hours"])
+                except (TypeError, ValueError):
+                    return f"filter_goals[{fname!r}].actual_hours must be a number"
+                if not math.isfinite(ah) or ah < 0:
+                    return f"filter_goals[{fname!r}].actual_hours must be ≥ 0"
     return None
 
 
@@ -2691,14 +2737,18 @@ PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
 _TS_PRIORITY_NAME = {0: "Low", 1: "Normal", 2: "High"}
 
 
-def _ts_database_version() -> str:
-    """Read PRAGMA user_version from the user's TS sqlite DB.
+def _ts_database_version(ts_db_path: str | None = None) -> str:
+    """Read PRAGMA user_version from a TS sqlite DB.
 
     TS's ImportProfile compares this against the export's `DatabaseVersion`
     and refuses imports newer than its own. Reading the live value at sync
     time guarantees a clean import without the "are you sure?" prompt.
+
+    Defaults to the global TS_DB_PATH; pass a destination's own ts_db_path
+    when syncing a single multi-rig destination so the version probe hits
+    the right rig's NINA install rather than the operator's local one.
     """
-    path = Path(os.path.expandvars(TS_DB_PATH))
+    path = Path(os.path.expandvars(ts_db_path or TS_DB_PATH))
     if not path.exists():
         return "0"
     try:
@@ -2829,9 +2879,13 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                   f"Priority differed; using '{pri_name}'.")
 
         ts_targets: list[dict] = []
+        project_is_mosaic = False
         for pl in group:
             tg = pl.get("target") or {}
-            ra_deg = float(tg.get("center_ra_deg") or 0)
+            # % 360 defends against plans written before RA-range validation
+            # existed: normalise rather than reject on export, so a
+            # pre-existing bad plan doesn't block the whole sync.
+            ra_deg = float(tg.get("center_ra_deg") or 0) % 360.0
             dec_deg = float(tg.get("center_dec_deg") or 0)
             rot_deg = float(tg.get("rotation_deg") or 0)
             telescope = telescopes_by_id.get(pl.get("telescope_id") or "")
@@ -2910,6 +2964,8 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
 
             panels = _mosaic_panel_centers(ra_deg, dec_deg, fov_w, fov_h, rot_deg, rows, cols, overlap)
             multi = len(panels) > 1
+            if multi:
+                project_is_mosaic = True
             for panel in panels:
                 if multi:
                     panel_idx = panel["row"] * cols + panel["col"] + 1
@@ -2955,7 +3011,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             "CreateDate": datetime.now(timezone.utc).isoformat(),
             "ActiveDate": None,
             "InactiveDate": None,
-            "IsMosaic": False,
+            "IsMosaic": project_is_mosaic,
             "FlatsHandling": 0,
             "MinimumTime": 0,
             "MinimumAltitude": float(min_alt),
@@ -2977,19 +3033,60 @@ def api_sync():
     """Build a Target Scheduler Import Profile zip from current plans.
 
     Writes metadata.json, profilePreference.json, exposureTemplates.json, and
-    projects.json into a zip under ZIP_OUTPUT_DIR. Returns the zip path and any
-    strictest-wins warnings so the UI can offer an inline rename and re-sync.
+    projects.json into a zip. Returns the zip path and any strictest-wins
+    warnings so the UI can offer an inline rename and re-sync.
+
+    Draft plans (plan.state == "draft") never sync: they're work in
+    progress the user hasn't committed to yet. Plans with no `state` field
+    (everything written before this field existed) are treated as
+    committed, so upgrading ACP doesn't silently stop syncing anyone's
+    existing plans. The response reports how many were skipped as drafts.
+
+    Optional `destination_id` (JSON body or `?destination_id=` query param)
+    scopes the sync to one entry from /api/destinations: only plans with a
+    matching plan.destination_id are bundled, and that destination's own
+    ts_db_path / export_path is used instead of the global TS_DB_PATH /
+    ZIP_OUTPUT_DIR. Omitting it preserves the pre-multi-rig behaviour (all
+    non-draft plans, global paths) so the existing NINA plugin integration
+    keeps working unchanged.
     """
+    body = request.get_json(silent=True) or {}
+    destination_id = body.get("destination_id") or request.args.get("destination_id")
+
+    destination = None
+    if destination_id:
+        dests = load_destinations().get("destinations") or []
+        destination = next((d for d in dests if d.get("id") == destination_id), None)
+        if destination is None:
+            return jsonify({"error": f"unknown destination_id {destination_id!r}"}), 400
+
     data = load_plans()
-    pls = data.get("plans", [])
+    all_plans = data.get("plans", [])
+    drafts = [p for p in all_plans if p.get("state") == "draft"]
+    pls = [p for p in all_plans if p.get("state") != "draft"]
+    if destination is not None:
+        pls = [p for p in pls if p.get("destination_id") == destination_id]
     if not pls:
         return jsonify({"error": "no plans to sync"}), 400
 
     payload, warnings = _build_ts_export(pls, load_gear())
 
-    ZIP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    zip_path = ZIP_OUTPUT_DIR / f"acp-sync-{stamp}.zip"
+    # Resolve output location + TS db version source. Destination-scoped
+    # syncs use the destination's own configured paths (fix: multi-rig
+    # sync ignoring destinations); the legacy no-destination call keeps
+    # writing to the global ZIP_OUTPUT_DIR / probing the global TS_DB_PATH.
+    ts_db_for_version = TS_DB_PATH
+    if destination is not None and destination["kind"] == "shared_file":
+        zip_path = Path(destination["export_path"])
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        download_url = None
+    else:
+        if destination is not None and destination["kind"] == "local_db":
+            ts_db_for_version = destination["ts_db_path"]
+        ZIP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        zip_path = ZIP_OUTPUT_DIR / f"acp-sync-{stamp}.zip"
+        download_url = f"/api/sync/download/{zip_path.name}"
 
     # Match TS's ExportMetadata schema (PascalCase). DatabaseVersion read
     # from the user's TS sqlite means the import goes through silently
@@ -2997,7 +3094,7 @@ def api_sync():
     metadata = {
         "ExportDate": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "TargetSchedulerVersion": "5.0.0",
-        "DatabaseVersion": _ts_database_version(),
+        "DatabaseVersion": _ts_database_version(ts_db_for_version),
         "ExportedProfileName": "Astro Coverage Planner",
         "ExportedProfileId": str(uuid.uuid4()),
     }
@@ -3013,16 +3110,18 @@ def api_sync():
     now = datetime.now(timezone.utc).isoformat()
     for pl in pls:
         pl["last_synced_at"] = now
-    save_plans({"version": data.get("version", 1), "plans": pls})
+    save_plans({"version": data.get("version", 1), "plans": all_plans})
 
     return jsonify({
         "ok": True,
         "plan_count": len(pls),
+        "skipped_draft_count": len(drafts),
+        "destination_id": destination_id or None,
         "project_count": len(payload["projects"]),
         "template_count": len(payload["exposureTemplates"]),
         "zip_path": str(zip_path),
         "zip_filename": zip_path.name,
-        "download_url": f"/api/sync/download/{zip_path.name}",
+        "download_url": download_url,
         "warnings": warnings,
         "conflicts": warnings,  # alias — the UI inspects this to offer renames
     })

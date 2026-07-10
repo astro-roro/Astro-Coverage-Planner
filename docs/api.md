@@ -6,6 +6,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 - [Manifest schema](#manifest-schema)
 - [Sites and visibility](#sites-and-visibility)
 - [Coverage sources, tiles, catalogues](#coverage-sources-tiles-catalogues)
+- [Plans, gear, and NINA Target Scheduler sync](#plans-gear-and-nina-target-scheduler-sync)
 - [Gap-finder](#gap-finder)
 
 ## HTTP API
@@ -26,6 +27,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/observability?lat=&lon=&time=` | Altaz for every target at one moment |
 | `GET /api/visibility` | 12-month per-target visibility bins for a site |
 | `GET /api/visibility/point?ra=&dec=` | Same bins for an arbitrary (RA, Dec) point |
+| `POST /api/visibility/panels` | Aggregated visibility bins for a list of mosaic panel centres |
 | `GET /api/sites`, `POST` | CRUD for saved observing sites |
 | `GET /api/gaps` | Multi-source gap-finder JSON response |
 | `GET /api/gaps/moc.fits` | Gap MOC as raw FITS bytes |
@@ -35,8 +37,10 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/plans`, `POST` | Session plan CRUD |
 | `GET /api/plans/<id>`, `PUT`, `DELETE` | Single-plan operations |
 | `GET /api/target-overrides`, `POST` | Per-target metadata overrides |
+| `GET /api/destinations`, `POST` | CRUD for multi-rig sync destinations |
 | `GET /api/ts-templates` | NINA TS plugin's exposure templates (if installed) |
-| `POST /api/sync` | Build NINA Target Scheduler import zip |
+| `POST /api/sync` | Build a NINA Target Scheduler import zip from current plans |
+| `GET /api/sync/download/<filename>` | Download a zip previously built by `/api/sync` |
 | `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest) — drives the Extensions rail accordion and the core-button swap mechanism |
 | `GET /api/ext/...` | Routes registered by [extensions](extensions.md) |
 
@@ -142,6 +146,71 @@ Lists every registered `PrioritisedTilesSource` (curated, ranked sky cells with 
 ### `/api/saved-searches`
 
 CRUD for saved Inventory filter bundles. The Inventory rail lets users name a combination of priority/missing-band/category filters and recall it later. State persists to `data/saved_searches.json`.
+
+## Plans, gear, and NINA Target Scheduler sync
+
+ACP lets you sketch imaging plans against the sky map, then export them as a NINA Target Scheduler (TS) import zip. This section covers the gear registry, plan CRUD, multi-rig destinations, and the sync endpoint itself.
+
+### Gear: `/api/gear`
+
+`GET /api/gear` returns `{version, telescopes: [...], cameras: [...]}`. Each camera carries `sensor_px: [width, height]` (the shape ACP's own frontend uses) and, when `sensor_px` is present, the equivalent `sensor_width_px` / `sensor_height_px` scalar fields (the NINA companion plugin reads the scalars and ignores `sensor_px`). The scalars are derived on every read, not stored separately, so they can't drift out of sync with `sensor_px`.
+
+`POST /api/gear` replaces the full telescopes + cameras arrays. `POST /api/gear/seed` merges telescope/camera metadata observed in the manifest into `gear.json`, skipping anything that fuzzy-matches an existing entry by name.
+
+### Plans: `/api/plans`
+
+`GET /api/plans` returns `{version, plans: [...]}`. `POST /api/plans` creates or replaces a plan (matched by `id`); `PUT /api/plans/<id>` and `DELETE /api/plans/<id>` operate on one plan. A plan's `target.center_ra_deg` must be in `[0, 360)` and `target.center_dec_deg` in `[-90, 90]`. Every numeric field (RA, Dec, rotation, mosaic overlap, filter goal hours and exposures) must be finite: NaN and Infinity are rejected with a 400 rather than being written to `plans.json`.
+
+A plan's optional `state` field controls whether it's eligible for sync. `state: "draft"` marks a plan as still being worked on, and draft plans are excluded from `/api/sync` (see below). Plans with no `state` field at all (anything written before this field existed) are treated as committed and keep syncing.
+
+### Destinations: `/api/destinations`
+
+Multi-rig setups (more than one NUC/rig each running its own NINA + Target Scheduler) can register a *destination* per rig instead of relying on the single global TS database path. `GET /api/destinations` returns `{version, destinations: [...]}`, empty when `destinations.json` doesn't exist (single-rig users never see the concept). `POST /api/destinations` replaces the full list.
+
+Each destination is:
+
+```json
+{
+  "id": "victoria",
+  "label": "Remote Victoria Observatory",
+  "kind": "local_db",
+  "ts_db_path": "C:/Users/me/AppData/Local/NINA/SchedulerPlugin/schedulerdb.sqlite"
+}
+```
+
+`kind` is `"local_db"` (requires `ts_db_path`, the TS sqlite ACP reads `PRAGMA user_version` from when syncing) or `"shared_file"` (requires `export_path`, the file `/api/sync` writes to directly; `acquired_path` is optional and is where a NUC-side daemon can write acquisition progress back for ACP to poll).
+
+A plan opts into a destination via its own `destination_id` field. The first time destinations are declared, any existing plan without a `destination_id` is backfilled to the first destination, once: the migration is flagged in `destinations.json` so it never re-runs after a plan is explicitly unassigned.
+
+### Sync: `POST /api/sync`
+
+Builds a Target Scheduler import zip (`metadata.json`, `exposureTemplates.json`, `projects.json`) from the current plans and returns the result:
+
+```json
+{
+  "ok": true,
+  "plan_count": 3,
+  "skipped_draft_count": 1,
+  "destination_id": null,
+  "project_count": 2,
+  "template_count": 4,
+  "zip_path": "/path/to/acp-sync-20260710T120000Z.zip",
+  "zip_filename": "acp-sync-20260710T120000Z.zip",
+  "download_url": "/api/sync/download/acp-sync-20260710T120000Z.zip",
+  "warnings": [ "...strictest-wins conflicts, mosaic FOV issues..." ],
+  "conflicts": [ "...same list, alias..." ]
+}
+```
+
+Draft plans (`state: "draft"`) are always excluded; `skipped_draft_count` reports how many so the UI can surface it. Plans are grouped into TS Projects by `project_name` (or, when blank, one Project per plan named after its target); a mosaic plan's `rows`/`cols` expand into per-panel Targets and the Project's `IsMosaic` flag is set accordingly. RA is normalised with `% 360` on export as a defence for any plan written before RA-range validation existed.
+
+By default (no `destination_id`) every non-draft plan is bundled and the zip is written under `ZIP_OUTPUT_DIR`, downloadable via `download_url`. This is the pre-multi-rig behaviour and is what the existing NINA plugin integration expects.
+
+Pass an optional `destination_id` (JSON body `{"destination_id": "victoria"}` or query param `?destination_id=victoria`) to scope the sync to one rig: only plans whose `destination_id` matches are bundled, and that destination's own configured path is used instead of the global one. That's `ts_db_path` for the `PRAGMA user_version` probe on a `local_db` destination, or `export_path` as the zip's own output path (no `download_url`, no `zip_path` under `ZIP_OUTPUT_DIR`) on a `shared_file` destination. An unknown `destination_id` returns 400; a destination with no matching plans (after draft exclusion) returns the same "no plans to sync" 400 as an empty sync.
+
+### Download: `GET /api/sync/download/<filename>`
+
+Serves a zip previously built by `/api/sync` from `ZIP_OUTPUT_DIR`. `filename` must match the `acp-sync-<UTC timestamp>.zip` pattern `/api/sync` produces; anything else is rejected before `send_from_directory` is even called, as defence in depth against path traversal.
 
 ## Gap-finder
 
