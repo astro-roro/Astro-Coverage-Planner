@@ -14,4 +14,6 @@ COPY . .
 
 EXPOSE 5555
 
-CMD ["python", "app.py"]
+# Serve with waitress instead of Flask's dev server. Host/port still come
+# from the HOST/PORT env vars above so `docker run -e PORT=...` keeps working.
+CMD ["sh", "-c", "waitress-serve --host=$HOST --port=$PORT app:app"]

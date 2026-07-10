@@ -5,6 +5,6 @@
   "description": "Node built-in test runner for the static/ frontend modules. The web app itself is served by app.py and has no build step.",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/frontend/"
+    "test": "node --test tests/frontend/**/*.test.mjs"
   }
 }
