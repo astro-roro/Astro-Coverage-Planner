@@ -329,6 +329,12 @@ def read_fits_meta(path: Path) -> dict:
         "ncombine": None,
         "naxis1": None,
         "naxis2": None,
+        # Solved-grid dimensions: when a plate solve ran on a downsampled frame
+        # (IMAGEW/IMAGEH < NAXIS) the WCS pixel scale is per downsampled pixel,
+        # so FOV must multiply the *solved* grid, not native NAXIS, by it.
+        # None means the solve grid equals NAXIS (no downsample).
+        "wcs_naxis1": None,
+        "wcs_naxis2": None,
         "pix_arcsec": None,
         "pix_arcsec_focal": None,
         "focallen": None,
@@ -417,6 +423,9 @@ def read_fits_meta(path: Path) -> dict:
                         wcs_w, wcs_h = int(float(wcs_w)), int(float(wcs_h))
                         if wcs_w < out["naxis1"] or wcs_h < out["naxis2"]:
                             cx, cy = wcs_w / 2.0, wcs_h / 2.0
+                            # Record the downsampled solve grid so FOV multiplies
+                            # it (not native NAXIS) by the per-solved-pixel scale.
+                            out["wcs_naxis1"], out["wcs_naxis2"] = wcs_w, wcs_h
                         else:
                             cx, cy = out["naxis1"] / 2.0, out["naxis2"] / 2.0
                     else:
@@ -473,6 +482,8 @@ def read_xisf_meta(path: Path) -> dict:
         "ncombine": None,
         "naxis1": None,
         "naxis2": None,
+        "wcs_naxis1": None,
+        "wcs_naxis2": None,
         "pix_arcsec": None,
         "pix_arcsec_focal": None,
         "focallen": None,
@@ -489,6 +500,7 @@ def read_xisf_meta(path: Path) -> dict:
         "date_obs": None,
         "object": None,
         "telescope": None,
+        "imagetyp": None,
         "error": None,
     }
     try:
@@ -558,6 +570,18 @@ def read_xisf_meta(path: Path) -> dict:
                 out["ra_deg"] = float(crval1)
                 out["dec_deg"] = float(crval2)
                 out["has_wcs"] = True
+                # IMAGEW/IMAGEH downsample correction, ported from the FITS path.
+                # CRVAL is the field centre at CRPIX, so unlike the FITS branch
+                # the centre needs no shift; but a downsampled solve stores a CD
+                # scale per solved pixel, so record the solved grid for FOV.
+                iw = fk("IMAGEW"); ih = fk("IMAGEH")
+                if iw and ih and out["naxis2"]:
+                    try:
+                        iw, ih = int(float(iw)), int(float(ih))
+                        if iw < out["naxis1"] or ih < out["naxis2"]:
+                            out["wcs_naxis1"], out["wcs_naxis2"] = iw, ih
+                    except (TypeError, ValueError):
+                        pass
                 # Pixel scale from CD matrix / CDELT
                 cd1_1 = fk("CD1_1"); cd1_2 = fk("CD1_2"); cd2_1 = fk("CD2_1"); cd2_2 = fk("CD2_2")
                 cdelt1 = fk("CDELT1"); cdelt2 = fk("CDELT2")
@@ -576,6 +600,18 @@ def read_xisf_meta(path: Path) -> dict:
                         pass
             except Exception:
                 pass
+        # OBJCTRA/OBJCTDEC fallback (ported from the FITS path) so pointing-only
+        # WBPP XISF that never got a plate solve still cluster by their fallback
+        # coords instead of vanishing.
+        if not out["has_wcs"]:
+            ora = fk("OBJCTRA"); odec = fk("OBJCTDEC")
+            if ora and odec:
+                try:
+                    sc = SkyCoord(str(ora), str(odec), unit=(u.hourangle, u.deg))
+                    out["ra_deg"] = float(sc.ra.deg)
+                    out["dec_deg"] = float(sc.dec.deg)
+                except Exception:
+                    pass
         try:
             focal = float(fk("FOCALLEN") or 0) or None
             xpsz = float(fk("XPIXSZ") or 0) or None
@@ -966,7 +1002,16 @@ def compute_fov_from_meta(meta: dict) -> tuple[list | None, float | None, str]:
         pix, method = pix_b, "focal_length"
     else:
         return None, None, "no_pix_scale"
-    return [naxis1 * pix / 60.0, naxis2 * pix / 60.0], pix, method
+    # Grid dimensions must match the pixel scale being used. The CD-matrix scale
+    # (pix_a) is per *solved* pixel: if the solve ran downsampled, multiply the
+    # solved grid (wcs_naxis*) not native NAXIS, else the footprint inflates by
+    # the downsample ratio. The focal-length scale (pix_b) is per native pixel,
+    # so it always pairs with native NAXIS.
+    if method in ("CD_matrix",) and meta.get("wcs_naxis1") and meta.get("wcs_naxis2"):
+        gw, gh = meta["wcs_naxis1"], meta["wcs_naxis2"]
+    else:
+        gw, gh = naxis1, naxis2
+    return [gw * pix / 60.0, gh * pix / 60.0], pix, method
 
 
 def cluster_by_coords(items, radius_arcmin=30.0):
@@ -1081,6 +1126,115 @@ def aggregate_db_subs(db_path: Path, log=print) -> dict:
     return dict(out)
 
 
+def circular_mean_deg(degs) -> float:
+    """Circular mean of a sequence of angles in degrees, wrapped to [0, 360).
+
+    Uses the unit-vector mean (atan2 of the mean sin/cos) so a cluster that
+    straddles the RA=0/360 seam gets a correct centre. A plain median-after-
+    unwrap is fragile near the seam and a bare ``median % 360`` returns the
+    antipode for seam-straddling inputs (e.g. [359.9, 0.1] -> 180). Empty input
+    returns 0.0.
+    """
+    arr = np.asarray(list(degs), dtype="float64")
+    if arr.size == 0:
+        return 0.0
+    r = np.radians(arr)
+    ang = np.arctan2(np.mean(np.sin(r)), np.mean(np.cos(r)))
+    return float(np.degrees(ang) % 360.0)
+
+
+def content_dedup_key(fs: dict):
+    """Signature identifying a folder-sub block for content (backup-copy) dedup.
+
+    Keyed on filter, exptime, the file-name set, AND the pointing (RA/Dec rounded
+    to ~0.1 deg) plus the observation date. Filename-set alone is too weak: two
+    genuinely different targets shot with generic auto-numbered filenames at the
+    same filter/exposure share a name set and used to collide, silently dropping
+    one target's hours. A true duplicate (the same files reached twice) still
+    shares coords and date, so it collapses as before. Returns None when there is
+    no name set (nothing to dedup on).
+    """
+    names = fs.get("_basenames")
+    if not names:
+        return None
+    ra = fs.get("ra_deg")
+    dec = fs.get("dec_deg")
+    ra_key = round(ra, 1) if ra is not None else None
+    dec_key = round(dec, 1) if dec is not None else None
+    date_key = (fs.get("date_obs") or "")[:10] or None
+    return (fs.get("filter"), round(float(fs.get("exptime") or 0), 1),
+            names, ra_key, dec_key, date_key)
+
+
+def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -> list[dict]:
+    """Split one folder's light files into per-(filter, exptime) sub blocks.
+
+    Every file is classified by its OWN header meta (``meta_by_path[path]``), so a
+    folder holding e.g. 2x Ha@300s + 2x OIII@600s + 1x SII@600s yields three
+    blocks instead of one block that inherits a single sampled file's fields. A
+    mis-named calibration frame that slipped through the name pre-filter is
+    classified by its own header upstream, so it never lands here wearing a
+    neighbour's filter.
+
+    FITS+XISF pipeline-stage pairs are collapsed to one physical frame first
+    (see ``collapse_fits_xisf_pairs``), then survivors are grouped. Within a
+    group the representative (for pointing/pixel-scale/date fields) prefers a
+    member with a real WCS, then any member with fallback coords, else the first.
+    Blocks with fallback-only coords keep ``has_wcs=False`` but still carry
+    coords so pointing-only subs cluster instead of vanishing.
+    """
+    collapsed, _ = collapse_fits_xisf_pairs(paths)
+    groups: dict[tuple, list] = defaultdict(list)
+    for p in collapsed:
+        meta = meta_by_path.get(p) or {}
+        filt = meta.get("filter") or filter_from_path(Path(p))
+        filt = canon_filter(filt) if filt else None
+        exp = meta.get("exptime") or 0
+        if filt is None or exp <= 0:
+            continue
+        groups[(filt, round(float(exp), 1))].append((p, meta))
+
+    blocks: list[dict] = []
+    for (filt, _exp_r), members in groups.items():
+        rep_path, rep_meta = members[0]
+        for pth, meta in members:
+            if meta.get("has_wcs"):
+                rep_path, rep_meta = pth, meta
+                break
+        else:
+            for pth, meta in members:
+                if meta.get("ra_deg") is not None:
+                    rep_path, rep_meta = pth, meta
+                    break
+        count = len(members)
+        # Sum each file's own exposure (all ~equal within the group) so hours
+        # are exact rather than count x one sampled exptime.
+        total_hours = sum((m.get("exptime") or 0) for _, m in members) / 3600.0
+        blocks.append({
+            "bucket": parent,
+            "filter": filt,
+            "exptime": rep_meta.get("exptime"),
+            "n_subs": count,
+            "total_hours": total_hours,
+            "ra_deg": rep_meta.get("ra_deg"),
+            "dec_deg": rep_meta.get("dec_deg"),
+            "pix_arcsec": rep_meta.get("pix_arcsec"),
+            "pix_arcsec_focal": rep_meta.get("pix_arcsec_focal"),
+            "naxis1": rep_meta.get("naxis1"),
+            "naxis2": rep_meta.get("naxis2"),
+            "wcs_naxis1": rep_meta.get("wcs_naxis1"),
+            "wcs_naxis2": rep_meta.get("wcs_naxis2"),
+            "date_obs": rep_meta.get("date_obs"),
+            "object": rep_meta.get("object"),
+            "telescope": rep_meta.get("telescope"),
+            "camera": rep_meta.get("camera"),
+            "sample_path": rep_path,
+            "has_wcs": bool(rep_meta.get("has_wcs")),
+            "_basenames": frozenset(Path(p).name for p, _ in members),
+        })
+    return blocks
+
+
 def main():
     t0 = time.time()
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1104,10 +1258,9 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] Found {len(files)} files total")
 
     # Step 2: Pre-filter by filename/folder for obvious calibration (skip header read)
-    print(f"[{time.time()-t0:6.1f}s] Step 2: Pre-filtering calibration + picking header-read set")
+    print(f"[{time.time()-t0:6.1f}s] Step 2: Pre-filtering calibration + selecting header-read set")
     classified = []
-    to_read = []                 # Files we will actually open
-    to_read_sample_path = {}     # parent_folder → representative path (for sampling one sub per folder)
+    to_read = []                 # Files we will header-read
     pre_cal_count = 0
     for p, sz in files:
         entry = {
@@ -1121,19 +1274,19 @@ def main():
             pre_cal_count += 1
             classified.append(entry)
             continue
-        # For imaging-candidate fits/xisf, pick ONE representative per parent folder to
-        # header-read (saves ~10× I/O). Subs in the same folder usually share WCS/filter/exptime.
-        # We still record every file, but only sample-read.
-        parent = str(p.parent)
-        if parent not in to_read_sample_path:
-            to_read_sample_path[parent] = str(p)
-            to_read.append(entry)
+        # Read EVERY imaging-candidate on its own header. A single per-folder
+        # sample let one file's filter/exposure/IMAGETYP be inherited by every
+        # sibling, so a mixed-filter folder (or a mis-named calibration frame
+        # sitting among lights) was classified from a neighbour, non-
+        # deterministically. Header-only reads (fits.open memmap, no pixel data)
+        # stay cheap and run in parallel below.
+        to_read.append(entry)
         classified.append(entry)
 
     print(f"[{time.time()-t0:6.1f}s] Pre-filtered {pre_cal_count} calibration files by name; "
-          f"header-reading {len(to_read)} folder-sample files (covering {len(classified) - pre_cal_count} imaging candidates)")
+          f"header-reading {len(to_read)} imaging-candidate files (own header each)")
 
-    # Step 3: header-read ALL imaging-candidate folder samples in parallel
+    # Step 3: header-read every imaging candidate in parallel
     WORKERS = 32
 
     def _read_one(f):
@@ -1144,7 +1297,7 @@ def main():
             m = read_fits_meta(p)
         return f["path"], m
 
-    sample_meta = {}  # path → meta
+    sample_meta = {}  # path → meta (one entry per imaging-candidate file)
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         futures = {ex.submit(_read_one, f): f for f in to_read}
         done = 0
@@ -1152,72 +1305,22 @@ def main():
             try:
                 path, meta = fut.result()
                 sample_meta[path] = meta
-                # Copy meta into the classified entry for the sample path too
+                # Copy meta into the classified entry too
                 for k, v in meta.items():
                     if k != "path":
                         futures[fut][k] = v
             except Exception as e:
                 futures[fut]["error"] = f"{type(e).__name__}: {e}"
             done += 1
-            if done % 200 == 0:
+            if done % 500 == 0:
                 print(f"[{time.time()-t0:6.1f}s]   headers read {done}/{len(to_read)}")
-    print(f"[{time.time()-t0:6.1f}s] Headers complete ({len(sample_meta)} samples read)")
+    print(f"[{time.time()-t0:6.1f}s] Headers complete ({len(sample_meta)} files read)")
 
-    # Step 3a (WCS recovery pass): for folders whose first sample has no WCS, try up to
-    # 4 more files per folder. Many sessions have the first frame saved before a plate
-    # solve ran, but later frames in the same folder DO have CRVAL1/2 written.
-    folder_candidates = defaultdict(list)
-    for entry in classified:
-        if entry["role"] == "calibration":
-            continue
-        parent = str(Path(entry["path"]).parent)
-        folder_candidates[parent].append(entry["path"])
+    # (Every imaging candidate is now header-read, so the old folder-sample
+    # WCS-recovery pass is gone: a folder's WCS is captured wherever a solved
+    # frame exists, and each block picks a WCS-bearing member as its representative.)
 
-    needs_retry = []
-    for parent, paths in folder_candidates.items():
-        first_sample = to_read_sample_path.get(parent)
-        meta = sample_meta.get(first_sample) if first_sample else None
-        if meta is None or not meta.get("ok"):
-            continue
-        if meta.get("has_wcs"):
-            continue
-        # Try up to 4 more files (evenly-spaced picks to increase chance of hitting a solved one)
-        remaining = [p for p in paths if p != first_sample]
-        if len(remaining) <= 1:
-            continue
-        # Pick 4 evenly-spaced candidates from the remaining
-        step = max(1, len(remaining) // 4)
-        picks = remaining[::step][:4]
-        for pick in picks:
-            needs_retry.append((parent, pick))
-
-    if needs_retry:
-        print(f"[{time.time()-t0:6.1f}s] Step 3a: WCS-recovery pass on {len({p for p,_ in needs_retry})} folders ({len(needs_retry)} additional header reads)")
-        def _try_one(pp):
-            parent, path = pp
-            p = Path(path)
-            if p.suffix.lower() == ".xisf":
-                m = read_xisf_meta(p)
-            else:
-                m = read_fits_meta(p)
-            return parent, path, m
-        with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-            futures = {ex.submit(_try_one, pp): pp for pp in needs_retry}
-            recovered = 0
-            for fut in as_completed(futures):
-                try:
-                    parent, path, meta = fut.result()
-                except Exception:
-                    continue
-                if meta.get("ok") and meta.get("has_wcs"):
-                    # Promote this file as the folder's sample
-                    if not sample_meta.get(to_read_sample_path.get(parent, ""), {}).get("has_wcs"):
-                        sample_meta[path] = meta
-                        to_read_sample_path[parent] = path
-                        recovered += 1
-            print(f"[{time.time()-t0:6.1f}s] WCS-recovery pass: gained WCS for {recovered} folders")
-
-    # Step 3b: classify each file using header (from its folder's sample) + path fallback
+    # Step 3b: classify each file by its OWN header + path fallback.
     print(f"[{time.time()-t0:6.1f}s] Step 3b: Post-read classification (IMAGETYP-first)")
     roles_count = defaultdict(int)
     for entry in classified:
@@ -1225,12 +1328,9 @@ def main():
             roles_count["calibration"] += 1
             continue
         p = Path(entry["path"])
-        # Use this file's own meta if it was the sample; otherwise fall back to its folder's sample
-        parent = str(p.parent)
-        meta = sample_meta.get(entry["path"]) or sample_meta.get(to_read_sample_path.get(parent, ""))
+        meta = sample_meta.get(entry["path"])
         role = classify_by_header(meta or {}, p, entry["size_bytes"])
         entry["role"] = role
-        entry["_meta_source"] = "self" if sample_meta.get(entry["path"]) else "folder_sample"
         roles_count[role] += 1
     for role, n in sorted(roles_count.items(), key=lambda x: -x[1]):
         print(f"  {role:20s} {n:>7d}")
@@ -1255,47 +1355,14 @@ def main():
             parent = str(Path(entry["path"]).parent)
             session_buckets[parent].append(entry["path"])
 
+    # Split each folder into per-(filter, exptime) blocks classified by every
+    # file's own header. A folder mixing e.g. Ha@300s and OIII@600s now yields
+    # one block per real filter/exposure instead of one block wearing whichever
+    # file happened to be sampled first. FITS+XISF pipeline-stage pairs are still
+    # collapsed to one physical frame inside the helper (issue #24).
     folder_subs = []
     for parent, paths in session_buckets.items():
-        sample_path = to_read_sample_path.get(parent)
-        meta = sample_meta.get(sample_path or "") or {}
-        if not meta.get("ok"):
-            continue
-        filt = meta.get("filter") or filter_from_path(Path(sample_path or parent))
-        if filt is None:
-            continue
-        exp = meta.get("exptime") or 0
-        if exp <= 0:
-            continue
-        # Flattened-archive fix (issue #24): when a folder holds both the raw
-        # .fits frames and their .xisf calibrated/registered siblings, count the
-        # FITS+XISF pair as one physical frame instead of two. No-op for normal
-        # single-extension folders.
-        paths, n_physical = collapse_fits_xisf_pairs(paths)
-        if n_physical < len(session_buckets[parent]):
-            print(f"[{time.time()-t0:6.1f}s]   collapsed {len(session_buckets[parent])} files to "
-                  f"{n_physical} physical frames in flattened folder {parent} "
-                  f"(FITS+XISF siblings)")
-        count = n_physical
-        basenames = frozenset(Path(p).name for p in paths)
-        folder_subs.append({
-            "bucket": parent,
-            "filter": canon_filter(filt),
-            "exptime": exp,
-            "n_subs": count,
-            "total_hours": exp * count / 3600.0,
-            "ra_deg": meta.get("ra_deg"),
-            "dec_deg": meta.get("dec_deg"),
-            "pix_arcsec": meta.get("pix_arcsec"),
-            "naxis1": meta.get("naxis1"),
-            "naxis2": meta.get("naxis2"),
-            "date_obs": meta.get("date_obs"),
-            "object": meta.get("object"),
-            "telescope": meta.get("telescope"),
-            "sample_path": sample_path,
-            "has_wcs": bool(meta.get("has_wcs")),
-            "_basenames": basenames,
-        })
+        folder_subs.extend(build_folder_sub_blocks(parent, paths, sample_meta))
     n_fs_wcs_raw = sum(1 for f in folder_subs if f["has_wcs"])
     total_sub_hours_raw = sum(f["total_hours"] for f in folder_subs)
     print(f"[{time.time()-t0:6.1f}s] Built {len(folder_subs)} raw folder-sub blocks "
@@ -1402,8 +1469,13 @@ def main():
     content_dedup_log = []
     content_groups: dict[tuple, list] = defaultdict(list)
     for fs in folder_subs:
-        key = (fs["filter"], round(fs["exptime"], 1), fs.get("_basenames"))
-        if not key[2]:
+        # Key includes pointing (RA/Dec ~0.1 deg) and date, not just filter +
+        # exptime + filename-set: two different targets shot with generic auto-
+        # numbered filenames at the same filter/exposure share a name set and
+        # used to collide (one target's hours vanished). True backup copies still
+        # share coords and date, so they still collapse.
+        key = content_dedup_key(fs)
+        if key is None:
             continue
         content_groups[key].append(fs)
     content_kept: list = []
@@ -1444,27 +1516,38 @@ def main():
     # Step 5: Cluster masters + folder-sub-samples by WCS center.
     print(f"[{time.time()-t0:6.1f}s] Step 5: Clustering targets (masters + folder-sub samples)")
     wcs_masters = [m for m in masters if m.get("has_wcs")]
-    # Add folder_subs as pseudo-members for clustering (tagged with role=folder_sub)
+    # Add folder_subs as pseudo-members for clustering (tagged with role=folder_sub).
+    # Include ANY block with coords, not just plate-solved ones: pointing-only
+    # subs (OBJCTRA/OBJCTDEC fallback, no plate solve) populate ra/dec but
+    # has_wcs=False, and used to be dropped here so their hours silently vanished.
+    # They cluster by their fallback coords; the block's real has_wcs is carried
+    # through so the footprint stays honestly marked (fov_flag 'estimated' when a
+    # cluster has no solved master).
     wcs_folder_subs = [{
         "role": "folder_sub",
         "path": fs["sample_path"],
         "ra_deg": fs["ra_deg"],
         "dec_deg": fs["dec_deg"],
         "naxis1": fs["naxis1"], "naxis2": fs["naxis2"],
+        "wcs_naxis1": fs.get("wcs_naxis1"), "wcs_naxis2": fs.get("wcs_naxis2"),
         "pix_arcsec": fs["pix_arcsec"],
+        "pix_arcsec_focal": fs.get("pix_arcsec_focal"),
         "date_obs": fs["date_obs"],
         "object": fs["object"],
         "telescope": fs["telescope"],
         "filter": fs["filter"],
         "exptime": fs["exptime"],
         "ncombine": fs["n_subs"],
-        "has_wcs": True,
+        "has_wcs": bool(fs.get("has_wcs")),
         "_folder_sub": fs,
-    } for fs in folder_subs if fs.get("has_wcs")]
+    } for fs in folder_subs
+      if fs.get("ra_deg") is not None and fs.get("dec_deg") is not None]
     cluster_members = wcs_masters + wcs_folder_subs
     clusters = cluster_by_coords(cluster_members, radius_arcmin=30.0)
-    print(f"[{time.time()-t0:6.1f}s] {len(clusters)} WCS-clustered targets "
-          f"(from {len(wcs_masters)} masters + {len(wcs_folder_subs)} sub-folder blocks)")
+    n_pointing_only = sum(1 for m in wcs_folder_subs if not m["has_wcs"])
+    print(f"[{time.time()-t0:6.1f}s] {len(clusters)} clustered targets "
+          f"(from {len(wcs_masters)} masters + {len(wcs_folder_subs)} sub-folder blocks, "
+          f"{n_pointing_only} pointing-only)")
 
     # Build target records
     targets = []
@@ -1472,10 +1555,10 @@ def main():
         members = [cluster_members[k] for k in idxs]
         ras = np.array([m["ra_deg"] for m in members])
         decs = np.array([m["dec_deg"] for m in members])
-        # RA wrap
-        if ras.max() - ras.min() > 180:
-            ras = np.where(ras < 180, ras + 360, ras)
-        ra_c = float(np.median(ras)) % 360.0
+        # RA centre via circular mean (unit-vector atan2): a plain median % 360
+        # returns the antipode for a cluster straddling the RA=0/360 seam. Dec
+        # has no wrap so its median is fine.
+        ra_c = circular_mean_deg(ras)
         dec_c = float(np.median(decs))
         sc = SkyCoord(ra_c * u.deg, dec_c * u.deg)
         gal = sc.galactic
