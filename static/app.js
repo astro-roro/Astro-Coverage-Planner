@@ -893,16 +893,26 @@ function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
   }
 }
 
+// Unwraps polygon-corner RAs onto a common 360°-shifted frame when the
+// polygon spans the 0/360° seam (threshold: vertex spread > 180°). Vertices
+// < 180° get +360 shifted. Returns whether unwrapping happened so callers
+// that also need to shift a query RA (see _ptInRaDecPoly) know to do so.
+function _unwrapSeamRas(corners) {
+  let ras = corners.map(c => c[0]);
+  const decs = corners.map(c => c[1]);
+  const unwrapped = Math.max(...ras) - Math.min(...ras) > 180;
+  if (unwrapped) {
+    ras = ras.map(r => r < 180 ? r + 360 : r);
+  }
+  return { ras, decs, unwrapped };
+}
+
 // Ray-cast point-in-polygon in RA/Dec. Polygons here are small (< a few degrees);
 // flat math is fine. Handles RA wraparound by unwrapping vertices + query point
 // onto a common 360°-shifted frame when the polygon spans the 0/360° seam.
 function _ptInRaDecPoly(ra, dec, corners) {
-  let ras = corners.map(c => c[0]);
-  const decs = corners.map(c => c[1]);
-  if (Math.max(...ras) - Math.min(...ras) > 180) {
-    ras = ras.map(r => r < 180 ? r + 360 : r);
-    if (ra < 180) ra += 360;
-  }
+  const { ras, decs, unwrapped } = _unwrapSeamRas(corners);
+  if (unwrapped && ra < 180) ra += 360;
   let inside = false;
   for (let i = 0, j = ras.length - 1; i < ras.length; j = i++) {
     const rai = ras[i], deci = decs[i], raj = ras[j], decj = decs[j];
@@ -915,10 +925,12 @@ function _ptInRaDecPoly(ra, dec, corners) {
 }
 
 // Bounding-box area in deg² — only used to rank overlapping polygons consistently
-// so the smallest (tightest framing) wins on click.
+// so the smallest (tightest framing) wins on click. Unwraps RA the same way
+// _ptInRaDecPoly does: without this, a polygon straddling the 0/360° seam gets
+// a ~360°-wide bbox and always loses click-disambiguation priority to smaller,
+// non-straddling polygons.
 function _polyBBoxArea(corners) {
-  const ras = corners.map(c => c[0]);
-  const decs = corners.map(c => c[1]);
+  const { ras, decs } = _unwrapSeamRas(corners);
   return Math.abs(Math.max(...ras) - Math.min(...ras)) * Math.abs(Math.max(...decs) - Math.min(...decs));
 }
 
@@ -1069,6 +1081,19 @@ function onMapPolyClick(ra, dec) {
 }
 
 let catalogsData = {}; // {green_snrs: [...], smgps_candidates: [...], ...}
+
+// rAF-coalesced trigger for redrawFootprints(), same pattern as the map
+// hover handler below: collapse a burst of synchronous "input" events (fast
+// typing, slider drag) into at most one rebuild per animation frame instead
+// of one full overlay.removeAll()+rebuild per keystroke/tick.
+let _redrawRaf = 0;
+function scheduleRedrawFootprints() {
+  if (_redrawRaf) return;
+  _redrawRaf = requestAnimationFrame(() => {
+    _redrawRaf = 0;
+    redrawFootprints();
+  });
+}
 
 function redrawFootprints() {
   if (!overlay || !manifest) return;
@@ -3793,13 +3818,25 @@ function _planAllGoalsMet(plan) {
   return true;
 }
 
-function tilePlanInfo(tile) {
+// Per-plan mosaic-bounds corners, optionally memoised via `cornersCache` (a
+// Map keyed by plan object) so a caller iterating many tiles against the
+// same plan list only pays for planMosaicBoundsCorners() once per plan.
+// Not cached across renders: plan.target fields mutate in place while a
+// plan is being edited, so a cache must not outlive a single render pass.
+function _planCornersFor(pl, cornersCache) {
+  if (cornersCache && cornersCache.has(pl)) return cornersCache.get(pl);
+  let corners;
+  try { corners = planMosaicBoundsCorners(pl); } catch { corners = null; }
+  if (cornersCache) cornersCache.set(pl, corners);
+  return corners;
+}
+
+function tilePlanInfo(tile, cornersCache) {
   const ra = Number(tile.ra_deg), dec = Number(tile.dec_deg);
   if (!Number.isFinite(ra) || !Number.isFinite(dec)) return { plan: null, state: "none" };
   for (const pl of plans) {
     if (pl?.target?.center_ra_deg == null) continue;
-    let corners;
-    try { corners = planMosaicBoundsCorners(pl); } catch { continue; }
+    const corners = _planCornersFor(pl, cornersCache);
     if (!corners || corners.length < 3) continue;
     if (!_ptInRaDecPoly(ra, dec, corners)) continue;
     let state;
@@ -3842,7 +3879,7 @@ function _tileFootprint(tile) {
   ];
 }
 
-function _tilePassesFilters(tile, st) {
+function _tilePassesFilters(tile, st, getPlanInfo) {
   // Priority: tile must be in the active set. Treat anything past pri-4 as
   // "other" to match the chip's pri-other bucket.
   const p = Number(tile.priority_level) || 0;
@@ -3877,10 +3914,7 @@ function _tilePassesFilters(tile, st) {
   // Hide planned: when on, drop tiles whose centre falls inside any plan's
   // mosaic bounds (regardless of plan state). The Inventory then surfaces
   // only the tiles you haven't queued yet.
-  if (st.hidePlanned) {
-    const info = tilePlanInfo(tile);
-    if (info.state !== "none") return false;
-  }
+  if (st.hidePlanned && getPlanInfo().state !== "none") return false;
   return true;
 }
 
@@ -3921,16 +3955,26 @@ function renderTileOverlay(sourceId) {
   }
   ovr.removeAll();
   let drawn = 0;
+  // Memoise plan mosaic-bounds corners for this render pass only (plans can
+  // be edited in place between renders, so the cache must not persist).
+  // tilePlanInfo() is O(plans) per tile; without this, ~40 tiles × ~10 plans
+  // recomputed planMosaicBoundsCorners() up to twice per tile per render.
+  const planCornersCache = new Map();
   for (const tile of tiles) {
-    if (!_tilePassesFilters(tile, st)) continue;
+    // planInfo is needed for the Hide-planned filter and for downstream
+    // click handling, but only ever computed once per tile per render pass
+    // (memoised in the closure below) instead of once in the filter and
+    // again unconditionally afterward. It no longer drives tile styling:
+    // planned tiles read with their normal status colour so within-plan
+    // priority stays legible.
+    let planInfo = null;
+    const getPlanInfo = () => (planInfo ??= tilePlanInfo(tile, planCornersCache));
+    if (!_tilePassesFilters(tile, st, getPlanInfo)) continue;
     const corners = _tileFootprint(tile);
     if (!corners) continue;
     const color = _tileColorFor(tile, st);
     const alphaHex = _tileFillAlphaHex(tile.per_band);
-    // planInfo still computed for the Hide-planned filter and downstream
-    // click handling; no longer drives styling — planned tiles read with
-    // their normal status colour so within-plan priority stays legible.
-    const planInfo = tilePlanInfo(tile);
+    planInfo = getPlanInfo();
     const poly = A.polygon(corners, {
       color: color,
       lineWidth: 0.5,
@@ -4449,7 +4493,7 @@ function setupFilterUI() {
     searchInput.addEventListener("input", () => {
       searchTokens = tokenizeSearch(searchInput.value);
       saveUiState();
-      redrawFootprints();
+      scheduleRedrawFootprints();
     });
   }
   document.getElementById("filterLogic").addEventListener("change", e => {
@@ -4461,7 +4505,7 @@ function setupFilterUI() {
     minHours = parseFloat(e.target.value);
     document.getElementById("depthValue").textContent = `${minHours}h`;
     saveUiState();
-    redrawFootprints();
+    scheduleRedrawFootprints();
   });
   populateGapDropdowns();
   document.getElementById("gapMode").addEventListener("click", () => {
@@ -5990,7 +6034,11 @@ async function savePlan() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(editingPlan),
   });
-  if (!r.ok) { alert("Save failed: " + r.status); return false; }
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    alert(j.error || `Save failed (${r.status}).`);
+    return false;
+  }
   const saved = await r.json();
   const idx = plans.findIndex(p => p.id === saved.id);
   if (idx >= 0) plans[idx] = saved; else plans.push(saved);
