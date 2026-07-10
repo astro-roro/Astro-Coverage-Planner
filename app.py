@@ -289,7 +289,7 @@ def _heal_plan_list(plans: list) -> list:
         if healed_fields:
             logging.warning(
                 "plan %r: replaced non-finite value(s) with null in field(s): %s",
-                p.get("id", "<unknown>"), ", ".join(healed_fields),
+                p.get("id", "<unknown>"), ", ".join(map(repr, healed_fields)),
             )
         healed_plans.append(healed_p)
     return healed_plans
@@ -3166,8 +3166,11 @@ def api_sync():
     # through to the global paths.
     try:
         resolved = resolve_destination_paths(destination)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    except ValueError:
+        kind = (destination or {}).get("kind")
+        return jsonify(
+            {"error": f"destination {destination_id!r}: unsupported kind {kind!r}"}
+        ), 400
     ts_db_for_version = resolved["ts_db_path"]
     if resolved["zip_path"] is not None:
         zip_path = resolved["zip_path"]
