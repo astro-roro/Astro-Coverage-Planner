@@ -86,6 +86,21 @@ class TestPlanPostHappyPath(unittest.TestCase):
             ))
             self.assertEqual(r.status_code, 201, f"dec={dec} should be valid")
 
+    def test_ra_zero_accepted(self):
+        # 0.0 is the lower (inclusive) bound of the [0, 360) range.
+        r = self.client.post("/api/plans", json=_valid_plan_payload(
+            target={"center_ra_deg": 0.0, "center_dec_deg": 0.0,
+                    "mosaic": {"rows": 1, "cols": 1}},
+        ))
+        self.assertEqual(r.status_code, 201)
+
+    def test_ra_just_under_360_accepted(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(
+            target={"center_ra_deg": 359.999, "center_dec_deg": 0.0,
+                    "mosaic": {"rows": 1, "cols": 1}},
+        ))
+        self.assertEqual(r.status_code, 201)
+
 
 class TestPlanPostValidation(unittest.TestCase):
     """Each test exercises one rejection branch in _validate_plan_payload."""
@@ -120,6 +135,100 @@ class TestPlanPostValidation(unittest.TestCase):
             "center_ra_deg": -400.0, "center_dec_deg": 0,
             "mosaic": {"rows": 1, "cols": 1},
         }), "ra_deg")
+
+    def test_ra_negative_rejected(self):
+        # RA must be [0, 360): a small negative value used to sneak
+        # through the old [-360, 360] check and export unnormalised.
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": -10.0, "center_dec_deg": 0,
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "ra_deg")
+
+    def test_ra_at_360_rejected(self):
+        # Range is half-open: 360 itself is out (0 is the same point).
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": 360.0, "center_dec_deg": 0,
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "ra_deg")
+
+    def test_ra_nan_rejected(self):
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": float("nan"), "center_dec_deg": 0,
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "ra_deg")
+
+    def test_ra_infinity_rejected(self):
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": float("inf"), "center_dec_deg": 0,
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "ra_deg")
+
+    def test_ra_negative_infinity_rejected(self):
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": float("-inf"), "center_dec_deg": 0,
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "ra_deg")
+
+    def test_dec_nan_rejected(self):
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": 100.0, "center_dec_deg": float("nan"),
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "dec_deg")
+
+    def test_rotation_nan_rejected(self):
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": 100.0, "center_dec_deg": -30.0,
+            "rotation_deg": float("nan"),
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "rotation_deg")
+
+    def test_rotation_infinity_rejected(self):
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": 100.0, "center_dec_deg": -30.0,
+            "rotation_deg": float("inf"),
+            "mosaic": {"rows": 1, "cols": 1},
+        }), "rotation_deg")
+
+    def test_mosaic_overlap_pct_nan_rejected(self):
+        self._post_expect_400(_valid_plan_payload(target={
+            "center_ra_deg": 100.0, "center_dec_deg": -30.0,
+            "mosaic": {"rows": 1, "cols": 1, "overlap_pct": float("nan")},
+        }), "overlap_pct")
+
+    def test_filter_goal_target_hours_nan_rejected(self):
+        # The old `th < 0` check was silently False for NaN, so this
+        # previously passed validation and poisoned plans.json: every
+        # later /api/sync then 500'd on int(math.ceil(nan)).
+        self._post_expect_400(_valid_plan_payload(
+            filter_goals={"Ha": {"target_hours": float("nan")}},
+        ), "target_hours")
+
+    def test_filter_goal_target_hours_infinity_rejected(self):
+        self._post_expect_400(_valid_plan_payload(
+            filter_goals={"Ha": {"target_hours": float("inf")}},
+        ), "target_hours")
+
+    def test_filter_goal_sub_exposure_nan_rejected(self):
+        # Same silent-False-comparison bug as target_hours, on the
+        # `se <= 0` check.
+        self._post_expect_400(_valid_plan_payload(
+            filter_goals={"Ha": {"target_hours": 5, "sub_exposure_s": float("nan")}},
+        ), "sub_exposure_s")
+
+    def test_filter_goal_sub_exposure_infinity_rejected(self):
+        self._post_expect_400(_valid_plan_payload(
+            filter_goals={"Ha": {"target_hours": 5, "sub_exposure_s": float("inf")}},
+        ), "sub_exposure_s")
+
+    def test_filter_goal_actual_hours_nan_rejected(self):
+        self._post_expect_400(_valid_plan_payload(
+            filter_goals={"Ha": {"target_hours": 5, "actual_hours": float("nan")}},
+        ), "actual_hours")
+
+    def test_filter_goal_actual_hours_negative_rejected(self):
+        self._post_expect_400(_valid_plan_payload(
+            filter_goals={"Ha": {"target_hours": 5, "actual_hours": -1}},
+        ), "actual_hours")
 
     def test_ra_non_numeric(self):
         self._post_expect_400(_valid_plan_payload(target={
@@ -255,6 +364,32 @@ class TestPlanPutValidation(unittest.TestCase):
         r = self.client.put("/api/plans/does-not-exist",
                             json=_valid_plan_payload(plan_id="does-not-exist"))
         self.assertEqual(r.status_code, 404)
+
+
+class TestSavePlansNaNTripwire(unittest.TestCase):
+    """save_plans() itself refuses to write NaN/Infinity (allow_nan=False),
+    even if some future code path calls it with data that bypassed
+    _validate_plan_payload. Belt-and-braces so a non-finite value can
+    never reach plans.json silently."""
+
+    def setUp(self):
+        _fresh_plans_path()
+
+    def test_nan_in_plan_raises_on_save(self):
+        bad = {"version": 1, "plans": [{
+            "id": "p1",
+            "filter_goals": {"Ha": {"target_hours": float("nan")}},
+        }]}
+        with self.assertRaises(ValueError):
+            app_module.save_plans(bad)
+
+    def test_infinity_in_plan_raises_on_save(self):
+        bad = {"version": 1, "plans": [{
+            "id": "p1",
+            "target": {"center_ra_deg": float("inf")},
+        }]}
+        with self.assertRaises(ValueError):
+            app_module.save_plans(bad)
 
 
 if __name__ == "__main__":

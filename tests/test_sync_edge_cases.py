@@ -98,7 +98,11 @@ def _plan(plan_id, **kwargs):
         }),
         "priority": kwargs.pop("priority", "normal"),
         "min_altitude_deg": kwargs.pop("min_altitude_deg", 30),
-        "state": "draft",
+        # Not "draft": this whole file exercises /api/sync, and draft
+        # plans are excluded from sync by default (see api_sync). Tests
+        # here care about mosaic/warning/naming behaviour, not draft
+        # filtering, so the shared helper defaults to committed plans.
+        "state": "active",
     }
     base.update(kwargs)
     return base
