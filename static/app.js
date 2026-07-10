@@ -917,8 +917,14 @@ function _ptInRaDecPoly(ra, dec, corners) {
 // Bounding-box area in deg² — only used to rank overlapping polygons consistently
 // so the smallest (tightest framing) wins on click.
 function _polyBBoxArea(corners) {
-  const ras = corners.map(c => c[0]);
+  // Unwrap RA the same way _ptInRaDecPoly does: without this, a polygon
+  // straddling the 0/360° seam gets a ~360°-wide bbox and always loses
+  // click-disambiguation priority to smaller, non-straddling polygons.
+  let ras = corners.map(c => c[0]);
   const decs = corners.map(c => c[1]);
+  if (Math.max(...ras) - Math.min(...ras) > 180) {
+    ras = ras.map(r => r < 180 ? r + 360 : r);
+  }
   return Math.abs(Math.max(...ras) - Math.min(...ras)) * Math.abs(Math.max(...decs) - Math.min(...decs));
 }
 
@@ -1069,6 +1075,19 @@ function onMapPolyClick(ra, dec) {
 }
 
 let catalogsData = {}; // {green_snrs: [...], smgps_candidates: [...], ...}
+
+// rAF-coalesced trigger for redrawFootprints(), same pattern as the map
+// hover handler below: collapse a burst of synchronous "input" events (fast
+// typing, slider drag) into at most one rebuild per animation frame instead
+// of one full overlay.removeAll()+rebuild per keystroke/tick.
+let _redrawRaf = 0;
+function scheduleRedrawFootprints() {
+  if (_redrawRaf) return;
+  _redrawRaf = requestAnimationFrame(() => {
+    _redrawRaf = 0;
+    redrawFootprints();
+  });
+}
 
 function redrawFootprints() {
   if (!overlay || !manifest) return;
@@ -3793,13 +3812,25 @@ function _planAllGoalsMet(plan) {
   return true;
 }
 
-function tilePlanInfo(tile) {
+// Per-plan mosaic-bounds corners, optionally memoised via `cornersCache` (a
+// Map keyed by plan object) so a caller iterating many tiles against the
+// same plan list only pays for planMosaicBoundsCorners() once per plan.
+// Not cached across renders: plan.target fields mutate in place while a
+// plan is being edited, so a cache must not outlive a single render pass.
+function _planCornersFor(pl, cornersCache) {
+  if (cornersCache && cornersCache.has(pl)) return cornersCache.get(pl);
+  let corners;
+  try { corners = planMosaicBoundsCorners(pl); } catch { corners = null; }
+  if (cornersCache) cornersCache.set(pl, corners);
+  return corners;
+}
+
+function tilePlanInfo(tile, cornersCache) {
   const ra = Number(tile.ra_deg), dec = Number(tile.dec_deg);
   if (!Number.isFinite(ra) || !Number.isFinite(dec)) return { plan: null, state: "none" };
   for (const pl of plans) {
     if (pl?.target?.center_ra_deg == null) continue;
-    let corners;
-    try { corners = planMosaicBoundsCorners(pl); } catch { continue; }
+    const corners = _planCornersFor(pl, cornersCache);
     if (!corners || corners.length < 3) continue;
     if (!_ptInRaDecPoly(ra, dec, corners)) continue;
     let state;
@@ -3842,7 +3873,7 @@ function _tileFootprint(tile) {
   ];
 }
 
-function _tilePassesFilters(tile, st) {
+function _tilePassesFilters(tile, st, getPlanInfo) {
   // Priority: tile must be in the active set. Treat anything past pri-4 as
   // "other" to match the chip's pri-other bucket.
   const p = Number(tile.priority_level) || 0;
@@ -3877,10 +3908,7 @@ function _tilePassesFilters(tile, st) {
   // Hide planned: when on, drop tiles whose centre falls inside any plan's
   // mosaic bounds (regardless of plan state). The Inventory then surfaces
   // only the tiles you haven't queued yet.
-  if (st.hidePlanned) {
-    const info = tilePlanInfo(tile);
-    if (info.state !== "none") return false;
-  }
+  if (st.hidePlanned && getPlanInfo().state !== "none") return false;
   return true;
 }
 
@@ -3921,16 +3949,26 @@ function renderTileOverlay(sourceId) {
   }
   ovr.removeAll();
   let drawn = 0;
+  // Memoise plan mosaic-bounds corners for this render pass only (plans can
+  // be edited in place between renders, so the cache must not persist).
+  // tilePlanInfo() is O(plans) per tile; without this, ~40 tiles × ~10 plans
+  // recomputed planMosaicBoundsCorners() up to twice per tile per render.
+  const planCornersCache = new Map();
   for (const tile of tiles) {
-    if (!_tilePassesFilters(tile, st)) continue;
+    // planInfo is needed for the Hide-planned filter and for downstream
+    // click handling, but only ever computed once per tile per render pass
+    // (memoised in the closure below) instead of once in the filter and
+    // again unconditionally afterward. It no longer drives tile styling:
+    // planned tiles read with their normal status colour so within-plan
+    // priority stays legible.
+    let planInfo = null;
+    const getPlanInfo = () => (planInfo ??= tilePlanInfo(tile, planCornersCache));
+    if (!_tilePassesFilters(tile, st, getPlanInfo)) continue;
     const corners = _tileFootprint(tile);
     if (!corners) continue;
     const color = _tileColorFor(tile, st);
     const alphaHex = _tileFillAlphaHex(tile.per_band);
-    // planInfo still computed for the Hide-planned filter and downstream
-    // click handling; no longer drives styling — planned tiles read with
-    // their normal status colour so within-plan priority stays legible.
-    const planInfo = tilePlanInfo(tile);
+    planInfo = getPlanInfo();
     const poly = A.polygon(corners, {
       color: color,
       lineWidth: 0.5,
@@ -4449,7 +4487,7 @@ function setupFilterUI() {
     searchInput.addEventListener("input", () => {
       searchTokens = tokenizeSearch(searchInput.value);
       saveUiState();
-      redrawFootprints();
+      scheduleRedrawFootprints();
     });
   }
   document.getElementById("filterLogic").addEventListener("change", e => {
@@ -4461,7 +4499,7 @@ function setupFilterUI() {
     minHours = parseFloat(e.target.value);
     document.getElementById("depthValue").textContent = `${minHours}h`;
     saveUiState();
-    redrawFootprints();
+    scheduleRedrawFootprints();
   });
   populateGapDropdowns();
   document.getElementById("gapMode").addEventListener("click", () => {
@@ -5249,10 +5287,18 @@ async function seedGearFromManifest() {
 }
 
 async function saveGear() {
+  // NINA's Target Scheduler plugin reads scalar sensor_width_px/
+  // sensor_height_px rather than the sensor_px:[w,h] pair the rest of ACP
+  // uses internally, so emit both forms here (this is the single place
+  // gear gets POSTed, regardless of which UI path last touched a camera).
+  const cameras = (gear.cameras || []).map(c => {
+    const [w, h] = c.sensor_px || [];
+    return { ...c, sensor_width_px: w ?? null, sensor_height_px: h ?? null };
+  });
   const r = await fetch("/api/gear", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ telescopes: gear.telescopes, cameras: gear.cameras }),
+    body: JSON.stringify({ telescopes: gear.telescopes, cameras }),
   });
   return r.ok;
 }
