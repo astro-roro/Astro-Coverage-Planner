@@ -248,6 +248,22 @@ class TestSyncDestinationScoping(unittest.TestCase):
         self.assertEqual(body["plan_count"], 1)
         self.assertEqual(body["skipped_draft_count"], 1)
 
+    def test_unsupported_destination_kind_returns_400(self):
+        # destinations.json isn't validated on load (only the POST /api
+        # /destinations editor validates), so a hand-edited entry with an
+        # unrecognised kind must 400 rather than silently falling through
+        # to the legacy global ZIP_OUTPUT_DIR / TS_DB_PATH.
+        app_module.save_destinations({"version": 1, "destinations": [
+            {"id": "hook", "label": "Webhook Rig", "kind": "webhook",
+             "url": "https://example.invalid/ingest"},
+        ]})
+        app_module.save_plans({"version": 1, "plans": [
+            _plan("p1", destination_id="hook"),
+        ]})
+        r = self.client.post("/api/sync", json={"destination_id": "hook"})
+        self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
+        self.assertIn("webhook", r.get_json().get("error", ""))
+
 
 class TestSyncIsMosaic(unittest.TestCase):
     """IsMosaic on the exported TS Project must reflect whether the

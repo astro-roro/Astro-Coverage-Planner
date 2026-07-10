@@ -893,16 +893,26 @@ function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
   }
 }
 
+// Unwraps polygon-corner RAs onto a common 360°-shifted frame when the
+// polygon spans the 0/360° seam (threshold: vertex spread > 180°). Vertices
+// < 180° get +360 shifted. Returns whether unwrapping happened so callers
+// that also need to shift a query RA (see _ptInRaDecPoly) know to do so.
+function _unwrapSeamRas(corners) {
+  let ras = corners.map(c => c[0]);
+  const decs = corners.map(c => c[1]);
+  const unwrapped = Math.max(...ras) - Math.min(...ras) > 180;
+  if (unwrapped) {
+    ras = ras.map(r => r < 180 ? r + 360 : r);
+  }
+  return { ras, decs, unwrapped };
+}
+
 // Ray-cast point-in-polygon in RA/Dec. Polygons here are small (< a few degrees);
 // flat math is fine. Handles RA wraparound by unwrapping vertices + query point
 // onto a common 360°-shifted frame when the polygon spans the 0/360° seam.
 function _ptInRaDecPoly(ra, dec, corners) {
-  let ras = corners.map(c => c[0]);
-  const decs = corners.map(c => c[1]);
-  if (Math.max(...ras) - Math.min(...ras) > 180) {
-    ras = ras.map(r => r < 180 ? r + 360 : r);
-    if (ra < 180) ra += 360;
-  }
+  const { ras, decs, unwrapped } = _unwrapSeamRas(corners);
+  if (unwrapped && ra < 180) ra += 360;
   let inside = false;
   for (let i = 0, j = ras.length - 1; i < ras.length; j = i++) {
     const rai = ras[i], deci = decs[i], raj = ras[j], decj = decs[j];
@@ -915,16 +925,12 @@ function _ptInRaDecPoly(ra, dec, corners) {
 }
 
 // Bounding-box area in deg² — only used to rank overlapping polygons consistently
-// so the smallest (tightest framing) wins on click.
+// so the smallest (tightest framing) wins on click. Unwraps RA the same way
+// _ptInRaDecPoly does: without this, a polygon straddling the 0/360° seam gets
+// a ~360°-wide bbox and always loses click-disambiguation priority to smaller,
+// non-straddling polygons.
 function _polyBBoxArea(corners) {
-  // Unwrap RA the same way _ptInRaDecPoly does: without this, a polygon
-  // straddling the 0/360° seam gets a ~360°-wide bbox and always loses
-  // click-disambiguation priority to smaller, non-straddling polygons.
-  let ras = corners.map(c => c[0]);
-  const decs = corners.map(c => c[1]);
-  if (Math.max(...ras) - Math.min(...ras) > 180) {
-    ras = ras.map(r => r < 180 ? r + 360 : r);
-  }
+  const { ras, decs } = _unwrapSeamRas(corners);
   return Math.abs(Math.max(...ras) - Math.min(...ras)) * Math.abs(Math.max(...decs) - Math.min(...decs));
 }
 
@@ -5287,18 +5293,10 @@ async function seedGearFromManifest() {
 }
 
 async function saveGear() {
-  // NINA's Target Scheduler plugin reads scalar sensor_width_px/
-  // sensor_height_px rather than the sensor_px:[w,h] pair the rest of ACP
-  // uses internally, so emit both forms here (this is the single place
-  // gear gets POSTed, regardless of which UI path last touched a camera).
-  const cameras = (gear.cameras || []).map(c => {
-    const [w, h] = c.sensor_px || [];
-    return { ...c, sensor_width_px: w ?? null, sensor_height_px: h ?? null };
-  });
   const r = await fetch("/api/gear", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ telescopes: gear.telescopes, cameras }),
+    body: JSON.stringify({ telescopes: gear.telescopes, cameras: gear.cameras }),
   });
   return r.ok;
 }
@@ -6036,7 +6034,11 @@ async function savePlan() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(editingPlan),
   });
-  if (!r.ok) { alert("Save failed: " + r.status); return false; }
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    alert(j.error || `Save failed (${r.status}).`);
+    return false;
+  }
   const saved = await r.json();
   const idx = plans.findIndex(p => p.id === saved.id);
   if (idx >= 0) plans[idx] = saved; else plans.push(saved);

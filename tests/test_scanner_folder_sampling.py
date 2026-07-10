@@ -16,6 +16,8 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import astropy.units as u
+from astropy.coordinates import Angle
 from astropy.io import fits
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -44,16 +46,16 @@ def _write_light(path: Path, *, filt: str, exptime: float, imagetyp: str = "Ligh
 
 
 def _deg_to_hms(ra_deg: float) -> str:
-    h = ra_deg / 15.0
-    hh = int(h); mm = int((h - hh) * 60); ss = (((h - hh) * 60) - mm) * 60
-    return f"{hh:02d} {mm:02d} {ss:05.2f}"
+    # Let astropy carry rounding across the sexagesimal fields so a value like
+    # dec=30.7 never emits an invalid "... 60.00" seconds component that only
+    # parsed before because astropy leniently reinterpreted it on read.
+    return Angle(ra_deg, unit=u.deg).to_string(
+        unit=u.hourangle, sep=" ", precision=2, pad=True)
 
 
 def _deg_to_dms(dec_deg: float) -> str:
-    sign = "+" if dec_deg >= 0 else "-"
-    d = abs(dec_deg)
-    dd = int(d); mm = int((d - dd) * 60); ss = (((d - dd) * 60) - mm) * 60
-    return f"{sign}{dd:02d} {mm:02d} {ss:05.2f}"
+    return Angle(dec_deg, unit=u.deg).to_string(
+        unit=u.deg, sep=" ", precision=2, pad=True, alwayssign=True)
 
 
 class TestMixedFilterFolder(unittest.TestCase):
@@ -119,6 +121,43 @@ class TestMisnamedCalibrationClassifiedByOwnHeader(unittest.TestCase):
         meta = {"imagetyp": "LIGHT", "exptime": 300.0, "object": "NGC6960",
                 "naxis1": 64, "naxis2": 64}
         self.assertEqual(classify_by_header(meta, p, size=100_000), "sub")
+
+
+class TestNotOkMetaExcluded(unittest.TestCase):
+    """A read that raised partway (ok=False) must not leak into counted blocks.
+
+    read_fits_meta sets filter/exptime early, so a later raise leaves ok=False
+    with real-looking partial fields. build_folder_sub_blocks must skip those so
+    corrupt reads never contribute to block counts or hours.
+    """
+
+    def test_ok_false_meta_produces_no_block(self):
+        # ok=False but filter/exptime/coords all look real (the leak scenario).
+        bad_meta = {
+            "ok": False, "filter": "Ha", "exptime": 300.0,
+            "ra_deg": 311.4, "dec_deg": 30.7, "has_wcs": False,
+            "naxis1": 64, "naxis2": 64,
+        }
+        blocks = build_folder_sub_blocks(
+            "/some/folder", ["/some/folder/Light_0001.fit"],
+            {"/some/folder/Light_0001.fit": bad_meta})
+        self.assertEqual(blocks, [])
+
+    def test_ok_false_dropped_but_ok_true_kept(self):
+        with tempfile.TemporaryDirectory() as td:
+            good = Path(td) / "Light_0001.fit"
+            _write_light(good, filt="H", exptime=300.0)
+            good_meta = read_fits_meta(good)
+            bad = Path(td) / "Light_0002.fit"
+            bad_meta = {"ok": False, "filter": "Ha", "exptime": 300.0,
+                        "ra_deg": 311.4, "dec_deg": 30.7,
+                        "naxis1": 64, "naxis2": 64}
+            paths = [str(good), str(bad)]
+            meta_by_path = {str(good): good_meta, str(bad): bad_meta}
+            blocks = build_folder_sub_blocks(td, paths, meta_by_path)
+        # Only the ok=True frame is counted.
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["n_subs"], 1)
 
 
 if __name__ == "__main__":

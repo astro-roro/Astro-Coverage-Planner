@@ -100,5 +100,47 @@ class TestXisfDownsampleCorrection(unittest.TestCase):
         self.assertAlmostEqual(fov[0], 4656 * pix / 60.0, places=3)
 
 
+class TestXisfFocalBackfillPairsWithNativeGrid(unittest.TestCase):
+    """The backfill hole, XISF side: a downsampled solve grid is recorded but the
+    CD matrix is absent, so the only scale is the per-native focal-length one.
+
+    The old code copied the focal (per-native) scale into pix_arcsec and paired
+    it with the DOWNSAMPLED grid, undersizing FOV by the downsample ratio. The
+    canonical resolver must pair the focal scale with native NAXIS -> full size.
+    """
+
+    def test_no_backfill_and_native_size_fov(self):
+        focal_pix = 206.265 * 3.8 / 334.0  # ~2.347 arcsec/native px
+        kw = {
+            "FILTER": "H",
+            "EXPTIME": 180.0,
+            "IMAGETYP": "Light",
+            "OBJECT": "NGC 6960",
+            "CRVAL1": 311.41,
+            "CRVAL2": 30.72,
+            # Downsampled solve grid recorded, but NO CD matrix / CDELT.
+            "IMAGEW": 1164.0,
+            "IMAGEH": 880.0,
+            "FOCALLEN": 334.0,
+            "XPIXSZ": 3.8,
+        }
+        with mock.patch.dict("sys.modules", {"xisf": mock.MagicMock(
+                XISF=_fake_xisf(kw, naxis1=4656, naxis2=3520))}):
+            meta = bam.read_xisf_meta(Path("frame.xisf"))
+        self.assertTrue(meta["has_wcs"])
+        self.assertEqual(meta["wcs_naxis1"], 1164)
+        self.assertEqual(meta["wcs_naxis2"], 880)
+        # The WCS scale is absent and MUST NOT be backfilled from focal.
+        self.assertIsNone(meta["pix_arcsec"])
+        self.assertAlmostEqual(meta["pix_arcsec_focal"], focal_pix, places=6)
+        self.assertEqual(meta["fov_method"], "focal_length")
+        fov, pix, method = bam.compute_fov_from_meta(meta)
+        self.assertEqual(method, "focal_length")
+        self.assertAlmostEqual(pix, focal_pix, places=6)
+        # Full native footprint (~182 arcmin), not the ~46 arcmin the bug gave.
+        self.assertAlmostEqual(fov[0], 4656 * focal_pix / 60.0, places=3)
+        self.assertGreater(fov[0], 150.0)
+
+
 if __name__ == "__main__":
     unittest.main()
