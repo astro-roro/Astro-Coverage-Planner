@@ -26,6 +26,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Audit dependencies for known vulnerabilities
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: requirements.txt
+
       - name: Run tests
         env:
           # Point the extension auto-loader at an empty dir so the
