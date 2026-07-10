@@ -98,5 +98,68 @@ class TestDownsampledFovNotInflated(unittest.TestCase):
         self.assertAlmostEqual(fov[0], 4656 * 2.35 / 60.0, places=3)
 
 
+def _write_downsampled_grid_but_wcs_scale_fails(path: Path, *, naxis1=4656,
+                                                naxis2=3520, imagew=1164,
+                                                imageh=880):
+    """Downsampled solve grid recorded, but the WCS pixel scale can't be computed.
+
+    CRVAL1/2 + IMAGEW/IMAGEH are present (so ``wcs_naxis1/2`` get recorded from
+    the smaller solve grid), but there is no CTYPE and no CD/CDELT, so the WCS
+    operation raises into the blanket except and ``pix_arcsec`` is never set. The
+    only pixel scale left is the per-native focal-length one (FOCALLEN+XPIXSZ).
+    This is the exact backfill hole: the old code copied the focal (per-native)
+    scale into pix_arcsec and then paired it with the DOWNSAMPLED grid,
+    undersizing FOV by the downsample ratio.
+    """
+    hdr = fits.Header()
+    hdr["NAXIS"] = 2
+    hdr["NAXIS1"] = naxis1
+    hdr["NAXIS2"] = naxis2
+    hdr["BITPIX"] = 16
+    hdr["IMAGETYP"] = "Light"
+    hdr["EXPTIME"] = 180.0
+    hdr["FILTER"] = "H"
+    hdr["OBJECT"] = "NGC 6960"
+    hdr["CRVAL1"] = 311.41
+    hdr["CRVAL2"] = 30.72
+    hdr["IMAGEW"] = float(imagew)
+    hdr["IMAGEH"] = float(imageh)
+    hdr["FOCALLEN"] = 334
+    hdr["XPIXSZ"] = 3.8  # focal scale = 206.265 * 3.8 / 334 ~ 2.347 arcsec/native px
+    fits.PrimaryHDU(data=np.zeros((naxis2, naxis1), dtype=np.int16), header=hdr).writeto(path, overwrite=True)
+
+
+class TestFocalBackfillPairsWithNativeGrid(unittest.TestCase):
+    """The backfill hole: focal (per-native) scale must pair with the native grid.
+
+    When the WCS pixel-scale computation fails but a downsampled solve grid was
+    recorded, the only scale left is the focal-length one. It must be paired with
+    native NAXIS, so FOV comes out at the full native size, not undersized by the
+    downsample ratio.
+    """
+
+    def test_no_backfill_and_native_size_fov(self):
+        focal_pix = 206.265 * 3.8 / 334.0  # ~2.347 arcsec/native px
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "Light_NGC6960_180s.fit"
+            _write_downsampled_grid_but_wcs_scale_fails(p)
+            meta = read_fits_meta(p)
+        # The downsampled solve grid was recorded...
+        self.assertEqual(meta["wcs_naxis1"], 1164)
+        self.assertEqual(meta["wcs_naxis2"], 880)
+        # ...but the WCS scale is absent and MUST NOT be backfilled from focal.
+        self.assertIsNone(meta["pix_arcsec"])
+        self.assertAlmostEqual(meta["pix_arcsec_focal"], focal_pix, places=6)
+        # Canonical pairing resolves to focal scale + native grid.
+        self.assertEqual(meta["fov_method"], "focal_length")
+        fov, pix, method = compute_fov_from_meta(meta)
+        self.assertEqual(method, "focal_length")
+        self.assertAlmostEqual(pix, focal_pix, places=6)
+        # Full native footprint: 4656 * 2.347" / 60 ~ 182 arcmin. The bug paired
+        # the focal scale with the 1164 grid -> ~46 arcmin (4x undersized).
+        self.assertAlmostEqual(fov[0], 4656 * focal_pix / 60.0, places=3)
+        self.assertGreater(fov[0], 150.0, f"footprint {fov[0]:.0f}' looks undersized")
+
+
 if __name__ == "__main__":
     unittest.main()

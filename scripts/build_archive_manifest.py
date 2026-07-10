@@ -337,6 +337,14 @@ def read_fits_meta(path: Path) -> dict:
         "wcs_naxis2": None,
         "pix_arcsec": None,
         "pix_arcsec_focal": None,
+        # Canonical FOV pairing resolved at parse time (see _resolve_fov_pairing):
+        # the single (grid, scale, method) that compute_fov_from_meta consumes, so
+        # no downstream consumer can mispair a per-native-pixel scale with the
+        # downsampled solve grid.
+        "fov_grid1": None,
+        "fov_grid2": None,
+        "fov_pix_arcsec": None,
+        "fov_method": None,
         "focallen": None,
         "xpixsz": None,
         "ypixsz": None,
@@ -464,8 +472,12 @@ def read_fits_meta(path: Path) -> dict:
                     out["pix_arcsec_focal"] = 206.265 * xpsz / focal
             except Exception:
                 pass
-            if out["pix_arcsec"] is None and out["pix_arcsec_focal"]:
-                out["pix_arcsec"] = out["pix_arcsec_focal"]
+            # Resolve the (grid, scale) pairing once, here, into canonical fields.
+            # Do NOT backfill pix_arcsec from pix_arcsec_focal: pix_arcsec is the
+            # per-solved-pixel WCS scale and would then get paired with the
+            # downsampled solve grid, undersizing FOV by the downsample ratio. The
+            # resolver pairs the focal (per-native) scale with the native grid.
+            _resolve_fov_pairing(out)
             out["ok"] = True
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
@@ -486,6 +498,11 @@ def read_xisf_meta(path: Path) -> dict:
         "wcs_naxis2": None,
         "pix_arcsec": None,
         "pix_arcsec_focal": None,
+        # Canonical FOV pairing resolved at parse time (see _resolve_fov_pairing).
+        "fov_grid1": None,
+        "fov_grid2": None,
+        "fov_pix_arcsec": None,
+        "fov_method": None,
         "focallen": None,
         "xpixsz": None,
         "ypixsz": None,
@@ -621,8 +638,9 @@ def read_xisf_meta(path: Path) -> dict:
                 out["pix_arcsec_focal"] = 206.265 * xpsz / focal
         except Exception:
             pass
-        if out["pix_arcsec"] is None and out["pix_arcsec_focal"]:
-            out["pix_arcsec"] = out["pix_arcsec_focal"]
+        # Same canonical pairing as the FITS path (no per-native scale ever gets
+        # paired with the downsampled solve grid). See _resolve_fov_pairing.
+        _resolve_fov_pairing(out)
         out["ok"] = True
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
@@ -976,41 +994,68 @@ def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
     return roots
 
 
+def _resolve_fov_pairing(meta: dict) -> tuple[tuple, float | None, str]:
+    """Resolve the two competing (grid, scale) pairs into one canonical set.
+
+    A solved frame can carry two independent pixel-scale/grid pairs:
+
+      * the WCS/CD-matrix scale (``pix_arcsec``), which is per *solved* pixel and
+        so pairs with the solved grid — ``wcs_naxis*`` when the plate solve ran
+        downsampled, else native NAXIS; and
+      * the focal-length scale (``pix_arcsec_focal`` = 206.265 x XPIXSZ / FOCALLEN),
+        which is per *native* pixel and always pairs with native NAXIS.
+
+    Only this function knows the pairing rule. It cross-checks the two scales
+    (Method A vs Method B): if they disagree by more than 1.5x, the plate solve
+    likely stored a scaled/drizzled matrix, so the focal-length physics wins.
+    Returns ``((grid_w, grid_h), pix_arcsec, method)``. It stores the result on
+    ``meta`` (fov_grid1/fov_grid2/fov_pix_arcsec/fov_method) so the resolution
+    happens once, at parse time, and no consumer downstream can mispair the
+    scale with the wrong grid (the backfill-into-downsampled-grid bug).
+    """
+    naxis1, naxis2 = meta.get("naxis1"), meta.get("naxis2")
+    native_grid = (naxis1, naxis2)
+    if meta.get("wcs_naxis1") and meta.get("wcs_naxis2"):
+        cd_grid = (meta["wcs_naxis1"], meta["wcs_naxis2"])
+    else:
+        cd_grid = native_grid
+    pix_cd = meta.get("pix_arcsec")           # per solved pixel (WCS/CD)
+    pix_focal = meta.get("pix_arcsec_focal")  # per native pixel (focal length)
+    if pix_cd and pix_focal:
+        ratio = max(pix_cd, pix_focal) / min(pix_cd, pix_focal)
+        if ratio > 1.5:
+            grid, pix, method = native_grid, pix_focal, "focal_length_override"
+        else:
+            grid, pix, method = cd_grid, pix_cd, "CD_matrix"
+    elif pix_cd:
+        grid, pix, method = cd_grid, pix_cd, "CD_matrix"
+    elif pix_focal:
+        grid, pix, method = native_grid, pix_focal, "focal_length"
+    else:
+        grid, pix, method = native_grid, None, "no_pix_scale"
+    meta["fov_grid1"], meta["fov_grid2"] = grid
+    meta["fov_pix_arcsec"] = pix
+    meta["fov_method"] = method
+    return grid, pix, method
+
+
 def compute_fov_from_meta(meta: dict) -> tuple[list | None, float | None, str]:
     """Return (fov_arcmin, pix_arcsec, method).
 
-    Cross-checks CD-matrix pixel scale (Method A) against FOCALLEN+XPIXSZ
-    (Method B). If they disagree by more than 1.5x, trust Method B — the
-    plate solve likely stored a scaled/drizzled matrix.
+    Consumes only the canonical FOV fields (fov_grid*/fov_pix_arcsec/fov_method)
+    that ``_resolve_fov_pairing`` settled at parse time. Bare meta dicts that were
+    never run through the parser (tests, cluster pseudo-members) are resolved on
+    the fly from their raw fields, using the same single pairing rule.
     """
-    naxis1, naxis2 = meta.get("naxis1"), meta.get("naxis2")
-    if not (naxis1 and naxis2):
+    if meta.get("fov_method"):
+        gw, gh = meta.get("fov_grid1"), meta.get("fov_grid2")
+        pix, method = meta.get("fov_pix_arcsec"), meta["fov_method"]
+    else:
+        (gw, gh), pix, method = _resolve_fov_pairing(meta)
+    if not (gw and gh):
         return None, None, "no_naxis"
-    pix_a = meta.get("pix_arcsec")
-    pix_b = meta.get("pix_arcsec_focal")
-    if pix_a and pix_b:
-        ratio = max(pix_a, pix_b) / min(pix_a, pix_b)
-        if ratio > 1.5:
-            pix = pix_b
-            method = "focal_length_override"
-        else:
-            pix = pix_a
-            method = "CD_matrix"
-    elif pix_a:
-        pix, method = pix_a, "CD_matrix"
-    elif pix_b:
-        pix, method = pix_b, "focal_length"
-    else:
+    if not pix:
         return None, None, "no_pix_scale"
-    # Grid dimensions must match the pixel scale being used. The CD-matrix scale
-    # (pix_a) is per *solved* pixel: if the solve ran downsampled, multiply the
-    # solved grid (wcs_naxis*) not native NAXIS, else the footprint inflates by
-    # the downsample ratio. The focal-length scale (pix_b) is per native pixel,
-    # so it always pairs with native NAXIS.
-    if method in ("CD_matrix",) and meta.get("wcs_naxis1") and meta.get("wcs_naxis2"):
-        gw, gh = meta["wcs_naxis1"], meta["wcs_naxis2"]
-    else:
-        gw, gh = naxis1, naxis2
     return [gw * pix / 60.0, gh * pix / 60.0], pix, method
 
 
@@ -1143,6 +1188,26 @@ def circular_mean_deg(degs) -> float:
     return float(np.degrees(ang) % 360.0)
 
 
+def circular_median_deg(degs) -> float:
+    """Circular median of a sequence of angles in degrees, wrapped to [0, 360).
+
+    Unwraps every angle onto the branch nearest the circular mean (so a cluster
+    straddling the RA=0/360 seam stays contiguous), takes the plain median of the
+    unwrapped values, then re-normalises. The median keeps the outlier resistance
+    a plain circular mean loses: one mis-solved frame at the greedy cluster's
+    ~30-60 arcmin edge can drag a small cluster's mean by ~10-20 arcmin, but the
+    median stays with the majority. Empty input returns 0.0.
+    """
+    arr = np.asarray(list(degs), dtype="float64")
+    if arr.size == 0:
+        return 0.0
+    centre = circular_mean_deg(arr)
+    # Map each angle into [centre - 180, centre + 180) so seam-straddling values
+    # unwrap to a single contiguous run around the circular mean.
+    unwrapped = centre + ((arr - centre + 180.0) % 360.0 - 180.0)
+    return float(np.median(unwrapped) % 360.0)
+
+
 def content_dedup_key(fs: dict):
     """Signature identifying a folder-sub block for content (backup-copy) dedup.
 
@@ -1187,6 +1252,12 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
     groups: dict[tuple, list] = defaultdict(list)
     for p in collapsed:
         meta = meta_by_path.get(p) or {}
+        # Exclude reads that raised partway: read_fits_meta sets filter/exptime
+        # early, so a later raise leaves ok=False with real-looking partial
+        # fields. Counting those would leak corrupt reads into blocks/hours (the
+        # old pipeline excluded them with `if not meta.get("ok"): continue`).
+        if not meta.get("ok"):
+            continue
         filt = meta.get("filter") or filter_from_path(Path(p))
         filt = canon_filter(filt) if filt else None
         exp = meta.get("exptime") or 0
@@ -1323,15 +1394,28 @@ def main():
     # Step 3b: classify each file by its OWN header + path fallback.
     print(f"[{time.time()-t0:6.1f}s] Step 3b: Post-read classification (IMAGETYP-first)")
     roles_count = defaultdict(int)
+    n_unreadable = 0
     for entry in classified:
         if entry["role"] == "calibration":
             roles_count["calibration"] += 1
             continue
         p = Path(entry["path"])
         meta = sample_meta.get(entry["path"])
+        # A read that raised partway leaves ok=False with real-looking partial
+        # fields (filter/exptime are set before the raise). Exclude it here so it
+        # never reaches classify/bucket/count — otherwise a corrupt read leaks
+        # into counted blocks. (The old pipeline dropped not-ok metas outright.)
+        if meta is not None and not meta.get("ok"):
+            entry["role"] = "unreadable"
+            roles_count["unreadable"] += 1
+            n_unreadable += 1
+            continue
         role = classify_by_header(meta or {}, p, entry["size_bytes"])
         entry["role"] = role
         roles_count[role] += 1
+    if n_unreadable:
+        print(f"[{time.time()-t0:6.1f}s]   excluded {n_unreadable} unreadable file(s) "
+              f"(header read raised partway; ok=False)")
     for role, n in sorted(roles_count.items(), key=lambda x: -x[1]):
         print(f"  {role:20s} {n:>7d}")
 
@@ -1555,10 +1639,12 @@ def main():
         members = [cluster_members[k] for k in idxs]
         ras = np.array([m["ra_deg"] for m in members])
         decs = np.array([m["dec_deg"] for m in members])
-        # RA centre via circular mean (unit-vector atan2): a plain median % 360
-        # returns the antipode for a cluster straddling the RA=0/360 seam. Dec
-        # has no wrap so its median is fine.
-        ra_c = circular_mean_deg(ras)
+        # RA centre via circular MEDIAN: unwrap about the circular mean (so a
+        # cluster straddling the RA=0/360 seam stays contiguous, unlike a plain
+        # median % 360 which returns the antipode) then take the median, which
+        # resists one mis-solved frame at the cluster edge dragging the centre.
+        # Dec has no wrap so its median is fine.
+        ra_c = circular_median_deg(ras)
         dec_c = float(np.median(decs))
         sc = SkyCoord(ra_c * u.deg, dec_c * u.deg)
         gal = sc.galactic

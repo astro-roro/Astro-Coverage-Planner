@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from build_archive_manifest import (  # noqa: E402
     build_folder_sub_blocks,
     circular_mean_deg,
+    circular_median_deg,
     cluster_by_coords,
     read_fits_meta,
 )
@@ -49,7 +50,11 @@ class TestCircularMeanRa(unittest.TestCase):
         self.assertEqual(circular_mean_deg([]), 0.0)
 
     def test_clustered_seam_target_gets_correct_centre(self):
-        """End-to-end: cluster members straddling the seam -> centre near 0."""
+        """End-to-end: cluster members straddling the seam -> centre near 0.
+
+        Uses circular_median_deg, the statistic the target-building code now
+        applies to the RA cluster centre.
+        """
         members = [
             {"ra_deg": 359.95, "dec_deg": 12.0},
             {"ra_deg": 0.05, "dec_deg": 12.01},
@@ -58,8 +63,46 @@ class TestCircularMeanRa(unittest.TestCase):
         clusters = cluster_by_coords(members, radius_arcmin=30.0)
         self.assertEqual(len(clusters), 1)
         idxs = clusters[0]
-        ra_c = circular_mean_deg([members[k]["ra_deg"] for k in idxs])
+        ra_c = circular_median_deg([members[k]["ra_deg"] for k in idxs])
         self.assertLess(_ang_sep(ra_c, 0.0), 0.5)
+
+
+class TestCircularMedianRa(unittest.TestCase):
+    """The RA cluster centre uses a circular MEDIAN: seam-safe AND outlier-resistant."""
+
+    def test_seam_straddle_centre_near_zero(self):
+        ras = [359.9, 0.1, 359.8, 0.2]
+        c = circular_median_deg(ras)
+        self.assertLess(_ang_sep(c, 0.0), 1.0,
+                        f"seam median {c:.2f} should sit near 0, not the antipode")
+
+    def test_empty_returns_zero(self):
+        self.assertEqual(circular_median_deg([]), 0.0)
+
+    def test_non_seam_cluster_matches_plain_median(self):
+        ras = [120.0, 120.1, 119.9, 120.2]
+        self.assertLess(_ang_sep(circular_median_deg(ras), 120.05), 0.1)
+
+    def test_outlier_frame_does_not_drag_centre(self):
+        """A 3-member cluster: two tight frames + one mis-solved at the greedy
+        cluster's ~40 arcmin edge. The median stays with the majority; the mean
+        gets dragged by ~10+ arcmin."""
+        majority = 100.0
+        ras = [majority, majority + 0.01, majority + 0.7]  # 0.7 deg = 42 arcmin outlier
+        med = circular_median_deg(ras)
+        mean = circular_mean_deg(ras)
+        # Median sits on the majority (within ~1 arcmin of the two tight frames).
+        self.assertLess(_ang_sep(med, majority) * 60.0, 2.0,
+                        f"median {med:.4f} drifted off the majority")
+        # The mean is pulled measurably further off by the outlier.
+        self.assertGreater(_ang_sep(mean, majority) * 60.0, 10.0)
+        self.assertLess(_ang_sep(med, majority), _ang_sep(mean, majority))
+
+    def test_outlier_across_seam_stays_with_majority(self):
+        """Majority straddles the seam; the outlier is on the far side."""
+        ras = [359.95, 0.05, 0.7]  # majority ~0, outlier at 0.7 deg
+        med = circular_median_deg(ras)
+        self.assertLess(_ang_sep(med, 0.0) * 60.0, 5.0)
 
 
 def _write_pointing_only(path: Path, *, filt="H", exptime=300.0):
