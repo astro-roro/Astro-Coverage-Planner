@@ -72,17 +72,29 @@ Once they're there, anywhere with a terminal:
 
     git clone https://github.com/astro-roro/Astro-Coverage-Planner.git
     cd Astro-Coverage-Planner
-    python -m venv .venv
-    source .venv/bin/activate            # macOS/Linux
-    .venv\Scripts\activate               # Windows PowerShell
+    python3 -m venv .venv                # Windows: python -m venv .venv
+    source .venv/bin/activate            # Windows: .venv\Scripts\activate
     pip install -r requirements.txt
-    python app.py
+    python3 app.py                       # Windows: python app.py
+
+(macOS and most Linux distros only ship `python3`, not a bare `python`: that's why the commands above are split. Windows is the other way round.)
 
 Open <http://127.0.0.1:5555/> in your browser. The first thing you'll see is an empty sky map with a banner pointing you at step two: scan your archive.
 
 **Step two — point ACP at your FITS library.** See [Setting up your own archive](docs/setup-archive.md) — covers the manifest builder, multiple image roots, configuration variables, and the optional pipeline-DB integration for sub-exposure hours. Once it's built, refresh the page and your coverage will populate.
 
-> **Just want to look around first?** Run `python scripts/make_demo_manifest.py` to load five well-known targets as sample data (M 42, M 31, Eta Carinae, M 45, M 8 — spanning both hemispheres), then refresh.
+> **Just want to look around first?** Run `python3 scripts/make_demo_manifest.py` (Windows: `python scripts/make_demo_manifest.py`) to load five well-known targets as sample data (M 42, M 31, Eta Carinae, M 45, M 8 — spanning both hemispheres), then refresh.
+
+### Running it in Docker
+
+A prebuilt image is published to `ghcr.io/astro-roro/astro-coverage-planner:latest` on every merge to `main`. Mount your FITS library and a data volume, then run:
+
+    docker run -p 127.0.0.1:5555:5555 \
+      -v /path/to/your/fits:/fits:ro \
+      -v acp-data:/app/data \
+      ghcr.io/astro-roro/astro-coverage-planner:latest
+
+Bind the port mapping to `127.0.0.1` like the example above unless you actually want the app reachable from other machines on your network. The container listens on `0.0.0.0` inside itself (so Docker's port mapping works at all), and ACP has no authentication of its own. Change it to `-p 5555:5555` only if you deliberately want LAN access.
 
 ### Companion NINA plugin (beta)
 
@@ -135,7 +147,7 @@ The headline features are above. These are the secondary bits — the stuff that
 - **Plugin platform** — extensions can register custom coverage sources, ranked tile inventories, class-tagged catalogues, or UI actions (buttons + toggles in the planning rail, including swapping a core button for an extension-supplied one) and they show up alongside the built-ins. See [the extensions guide](docs/extensions.md) for the protocols and the manifest API.
 
 ### Export
-- **CSV export** of priority candidates (e.g. Hα ≥ 1h, SII < 0.5h) — paste into NINA or whatever you keep your target list in.
+- **CSV export** of priority candidates (e.g. Hα ≥ 1h, SII < 0.5h) — paste into NINA or whatever you keep your target list in. This needs both your manifest and the catalogue overlays built first, so run `python scripts/fetch_catalogs.py` (see [Setting up your own archive](docs/setup-archive.md#optional-download-catalogue-overlays)) before using it: without that, the export endpoint returns an error.
 
 ## Want to dig deeper?
 
