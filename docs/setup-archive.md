@@ -26,6 +26,12 @@ To build it, point `FITS_ROOTS` at one or more folders of stacked FITS/XISF mast
 
 Use **`;`** as the separator on Windows and **`:`** on macOS/Linux (matching each shell's PATH convention).
 
+Both of these are set for the current terminal session only. Close the window or open a new tab and it's gone, so if you also start `app.py` from a different terminal (or a different session later on) it won't see `FITS_ROOTS` unless you set it there too. On macOS/Linux, the `FITS_ROOTS="..." python ...` form above only applies to that one command anyway, which is usually what you want. On Windows, if you'd rather not retype `$env:FITS_ROOTS=...` every session, set it permanently with:
+
+    [Environment]::SetEnvironmentVariable("FITS_ROOTS", "D:/Astro/Images;E:/Archive", "User")
+
+That writes it to your user profile, so it's there in every new PowerShell window from then on (you'll need to open a fresh window for it to take effect).
+
 The script walks every folder under each root, opens every FITS/XISF master to read its WCS (sky position) and gear headers (`TELESCOP`, `INSTRUME`, `FOCALLEN`, `XPIXSZ`, `APTDIA`, `GAIN`, `OFFSET`, `XBINNING`), clusters results into targets by sky position, and writes `data/manifest.json`. On a ~100,000-file archive it takes around 5 minutes.
 
 When it finishes, the app will pick up the new manifest automatically — no restart needed. Refresh the browser tab.
