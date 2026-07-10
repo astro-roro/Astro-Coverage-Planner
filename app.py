@@ -144,6 +144,20 @@ _saved_searches_cache_mtime: float | None = None
 # relative to RA/Dec) so a one-shot compute per site is fine, and the entry
 # is invalidated implicitly when the manifest mtime ticks over.
 _visibility_cache: dict[tuple, dict] = {}
+
+
+def _site_cache_key(site: dict) -> tuple:
+    """The site-derived portion of a visibility cache key.
+
+    Rounded to swallow float noise from repeated site lookups while
+    staying stable across requests for the "same" site. Callers append
+    their own endpoint-specific fields (ra/dec/year, manifest mtime, ...).
+    """
+    return (
+        round(site["lat"], 4), round(site["lon"], 4), round(site["elev_m"], 1),
+        round(site["min_alt_deg"], 2),
+    )
+
 _catalog_registry_cache: dict | None = None
 _catalog_registry_cache_mtime: float | None = None
 
@@ -236,6 +250,51 @@ def load_gear() -> dict:
     return _gear_cache
 
 
+def _heal_nonfinite_floats(value, path_parts: list[str], healed: list[str]):
+    """Recursively replace non-finite floats (NaN/Infinity) with None.
+
+    ``healed`` collects a dotted-path string for every value replaced, so
+    the caller can log one clear warning per plan naming exactly which
+    field was poisoned. Returns the (possibly replaced) value; dicts and
+    lists are rebuilt, everything else is passed through unchanged.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        healed.append(".".join(path_parts) or "<root>")
+        return None
+    if isinstance(value, dict):
+        return {k: _heal_nonfinite_floats(v, path_parts + [str(k)], healed) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_heal_nonfinite_floats(v, path_parts + [f"[{i}]"], healed) for i, v in enumerate(value)]
+    return value
+
+
+def _heal_plan_list(plans: list) -> list:
+    """Heal legacy plans.json entries written before NaN/Infinity were
+    rejected on the way in (_validate_plan_payload). Every write path
+    (POST/PUT/DELETE/sync) re-serialises the FULL plan list with
+    allow_nan=False, so a single poisoned plan would 500 every subsequent
+    write, and GET would hand the browser a NaN literal its own
+    JSON.parse can't handle either. Replace non-finite floats with None
+    and log which plan/field so the breakage is discoverable, rather than
+    crashing the next time anything touches plans.json. The next save
+    (for any reason) then persists the healed, JSON-strict version.
+    """
+    healed_plans = []
+    for p in plans:
+        if not isinstance(p, dict):
+            healed_plans.append(p)
+            continue
+        healed_fields: list[str] = []
+        healed_p = _heal_nonfinite_floats(p, [], healed_fields)
+        if healed_fields:
+            logging.warning(
+                "plan %r: replaced non-finite value(s) with null in field(s): %s",
+                p.get("id", "<unknown>"), ", ".join(healed_fields),
+            )
+        healed_plans.append(healed_p)
+    return healed_plans
+
+
 def load_plans() -> dict:
     global _plans_cache, _plans_cache_mtime
     if not PLANS_PATH.exists():
@@ -244,6 +303,9 @@ def load_plans() -> dict:
     if _plans_cache is None or _plans_cache_mtime != mtime:
         _plans_cache = json.loads(PLANS_PATH.read_text(encoding="utf-8"))
         _plans_cache_mtime = mtime
+        plans = _plans_cache.get("plans")
+        if isinstance(plans, list):
+            _plans_cache["plans"] = _heal_plan_list(plans)
     # One-shot backfill: the first time someone declares destinations,
     # every existing plan without a destination_id picks up the first
     # destination's id and gets persisted. Flag stored in destinations.json
@@ -1817,11 +1879,7 @@ def api_visibility_point():
 
     # Cache by (site, ra, dec, year). Manifest mtime is irrelevant here since
     # the point is supplied directly, not looked up in the manifest.
-    cache_key = (
-        round(site["lat"], 4), round(site["lon"], 4), round(site["elev_m"], 1),
-        round(site["min_alt_deg"], 2),
-        round(ra, 4), round(dec, 4), year,
-    )
+    cache_key = _site_cache_key(site) + (round(ra, 4), round(dec, 4), year)
     bins = _visibility_cache.get(cache_key)
     if bins is None:
         bins = compute_year_visibility(
@@ -1887,10 +1945,7 @@ def api_visibility_panels():
             return jsonify({"error": f"panel {i}: ra/dec out of range"}), 400
         parsed.append((round(ra, 4), round(dec, 4)))
 
-    site_key = (
-        round(site["lat"], 4), round(site["lon"], 4), round(site["elev_m"], 1),
-        round(site["min_alt_deg"], 2),
-    )
+    site_key = _site_cache_key(site)
     per_panel_bins: list[list[dict] | None] = [None] * len(parsed)
     misses: list[tuple[int, float, float]] = []
     for idx, (ra, dec) in enumerate(parsed):
@@ -1961,11 +2016,7 @@ def api_visibility():
     # Cache only the bins (the expensive part). The site dict comes from
     # the live request so site_id-based and lat/lon-based calls with the
     # same coords don't pollute each other's metadata.
-    cache_key = (
-        round(site["lat"], 4), round(site["lon"], 4), round(site["elev_m"], 1),
-        round(site["min_alt_deg"], 2),
-        _manifest_cache_mtime or 0.0, year,
-    )
+    cache_key = _site_cache_key(site) + (_manifest_cache_mtime or 0.0, year)
     bins = _visibility_cache.get(cache_key)
     if bins is None:
         targets = m.get("targets") or []
@@ -2078,6 +2129,36 @@ def _validate_destination(d: dict) -> str | None:
         if not isinstance(ep, str) or not ep.strip():
             return f"destination {did!r}: kind=shared_file requires export_path"
     return None
+
+
+def resolve_destination_paths(destination: dict | None) -> dict:
+    """Resolve where a sync's zip should land and which sqlite file to read
+    for TS's DatabaseVersion, based on a destination's ``kind``.
+
+    Centralises the kind dispatch that used to be copy-pasted at
+    validation, serialisation, and sync-path-resolution sites. Unlike the
+    other two sites, ``destination`` here can come straight off disk via
+    load_destinations() (which never validates), so a hand-edited
+    destinations.json with an unknown kind must not silently fall through
+    to the legacy global-path behaviour: it RAISES ValueError instead,
+    which the caller turns into a 400 naming the bad kind.
+
+    ``destination=None`` means the legacy, pre-multi-rig call: sync all
+    non-draft plans to the global ZIP_OUTPUT_DIR / TS_DB_PATH.
+
+    Returns {"zip_path": Path|None, "download_url": bool, "ts_db_path": str}.
+    ``zip_path`` is None when the caller should build the default
+    timestamped path in ZIP_OUTPUT_DIR (legacy mode, or kind=local_db);
+    ``download_url`` says whether that default download-url scheme applies.
+    """
+    if destination is None:
+        return {"zip_path": None, "download_url": True, "ts_db_path": str(TS_DB_PATH)}
+    kind = destination.get("kind")
+    if kind == "shared_file":
+        return {"zip_path": Path(destination["export_path"]), "download_url": False, "ts_db_path": str(TS_DB_PATH)}
+    if kind == "local_db":
+        return {"zip_path": None, "download_url": True, "ts_db_path": destination["ts_db_path"]}
+    raise ValueError(f"destination {destination.get('id')!r}: unsupported kind {kind!r}")
 
 
 @app.route("/api/destinations", methods=["GET", "POST"])
@@ -2516,7 +2597,9 @@ def _validate_plan_payload(payload: dict) -> str | None:
     The UI validates per-field on entry but a misbehaving client (or a
     direct curl) can still POST garbage. This catches the cases that
     would silently break downstream sync to NINA TS:
-      - centre RA outside [0, 360), Dec outside [-90, 90]
+      - centre RA is normalised into [0, 360) rather than rejected (Aladin's
+        seam-drag and the manual field can legitimately hand back small
+        negatives or exactly 360.0); Dec outside [-90, 90] is still rejected
       - NaN / Infinity anywhere a number is expected: comparisons like
         `x < 0` are silently False for NaN, so every numeric field is
         checked with math.isfinite() rather than relying on range
@@ -2546,8 +2629,11 @@ def _validate_plan_payload(payload: dict) -> str | None:
                 ra = float(target["center_ra_deg"])
             except (TypeError, ValueError):
                 return "target.center_ra_deg must be a number"
-            if not math.isfinite(ra) or not (0.0 <= ra < 360.0):
-                return "target.center_ra_deg out of range [0, 360)"
+            if not math.isfinite(ra):
+                return "target.center_ra_deg must be finite"
+            # Normalise rather than reject: seam-drag in Aladin and manual
+            # entry both legitimately produce -0.5 or exactly 360.0.
+            target["center_ra_deg"] = ra % 360.0
         if "center_dec_deg" in target:
             try:
                 dec = float(target["center_dec_deg"])
@@ -3075,14 +3161,19 @@ def api_sync():
     # syncs use the destination's own configured paths (fix: multi-rig
     # sync ignoring destinations); the legacy no-destination call keeps
     # writing to the global ZIP_OUTPUT_DIR / probing the global TS_DB_PATH.
-    ts_db_for_version = TS_DB_PATH
-    if destination is not None and destination["kind"] == "shared_file":
-        zip_path = Path(destination["export_path"])
+    # destinations.json is never validated on load, so an unknown kind
+    # (hand-edited file) must 400 here rather than silently falling
+    # through to the global paths.
+    try:
+        resolved = resolve_destination_paths(destination)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    ts_db_for_version = resolved["ts_db_path"]
+    if resolved["zip_path"] is not None:
+        zip_path = resolved["zip_path"]
         zip_path.parent.mkdir(parents=True, exist_ok=True)
         download_url = None
     else:
-        if destination is not None and destination["kind"] == "local_db":
-            ts_db_for_version = destination["ts_db_path"]
         ZIP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         zip_path = ZIP_OUTPUT_DIR / f"acp-sync-{stamp}.zip"

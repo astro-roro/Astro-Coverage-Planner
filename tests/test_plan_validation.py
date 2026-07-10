@@ -101,6 +101,44 @@ class TestPlanPostHappyPath(unittest.TestCase):
         ))
         self.assertEqual(r.status_code, 201)
 
+    def test_ra_small_negative_normalised(self):
+        # Aladin's seam-drag and manual entry both legitimately produce a
+        # small negative RA; it's normalised into [0, 360) rather than
+        # rejected (-0.5 -> 359.5), matching what the old validator used
+        # to reject with a 400.
+        r = self.client.post("/api/plans", json=_valid_plan_payload(
+            target={"center_ra_deg": -0.5, "center_dec_deg": 0.0,
+                    "mosaic": {"rows": 1, "cols": 1}},
+        ))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertAlmostEqual(r.get_json()["target"]["center_ra_deg"], 359.5)
+
+    def test_ra_at_360_normalised_to_zero(self):
+        # Range is conceptually half-open: 360 and 0 are the same point,
+        # so exactly 360.0 normalises down to 0.0 rather than 400ing.
+        r = self.client.post("/api/plans", json=_valid_plan_payload(
+            target={"center_ra_deg": 360.0, "center_dec_deg": 0.0,
+                    "mosaic": {"rows": 1, "cols": 1}},
+        ))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertAlmostEqual(r.get_json()["target"]["center_ra_deg"], 0.0)
+
+    def test_ra_large_negative_normalised(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(
+            target={"center_ra_deg": -400.0, "center_dec_deg": 0.0,
+                    "mosaic": {"rows": 1, "cols": 1}},
+        ))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertAlmostEqual(r.get_json()["target"]["center_ra_deg"], 320.0)
+
+    def test_ra_large_positive_normalised(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(
+            target={"center_ra_deg": 400.0, "center_dec_deg": 0.0,
+                    "mosaic": {"rows": 1, "cols": 1}},
+        ))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertAlmostEqual(r.get_json()["target"]["center_ra_deg"], 40.0)
+
 
 class TestPlanPostValidation(unittest.TestCase):
     """Each test exercises one rejection branch in _validate_plan_payload."""
@@ -123,33 +161,6 @@ class TestPlanPostValidation(unittest.TestCase):
 
     def test_id_not_string(self):
         self._post_expect_400({"id": 42}, "id required")
-
-    def test_ra_above_range(self):
-        self._post_expect_400(_valid_plan_payload(target={
-            "center_ra_deg": 400.0, "center_dec_deg": 0,
-            "mosaic": {"rows": 1, "cols": 1},
-        }), "ra_deg")
-
-    def test_ra_below_range(self):
-        self._post_expect_400(_valid_plan_payload(target={
-            "center_ra_deg": -400.0, "center_dec_deg": 0,
-            "mosaic": {"rows": 1, "cols": 1},
-        }), "ra_deg")
-
-    def test_ra_negative_rejected(self):
-        # RA must be [0, 360): a small negative value used to sneak
-        # through the old [-360, 360] check and export unnormalised.
-        self._post_expect_400(_valid_plan_payload(target={
-            "center_ra_deg": -10.0, "center_dec_deg": 0,
-            "mosaic": {"rows": 1, "cols": 1},
-        }), "ra_deg")
-
-    def test_ra_at_360_rejected(self):
-        # Range is half-open: 360 itself is out (0 is the same point).
-        self._post_expect_400(_valid_plan_payload(target={
-            "center_ra_deg": 360.0, "center_dec_deg": 0,
-            "mosaic": {"rows": 1, "cols": 1},
-        }), "ra_deg")
 
     def test_ra_nan_rejected(self):
         self._post_expect_400(_valid_plan_payload(target={
@@ -390,6 +401,89 @@ class TestSavePlansNaNTripwire(unittest.TestCase):
         }]}
         with self.assertRaises(ValueError):
             app_module.save_plans(bad)
+
+
+class TestLegacyNaNHealingOnLoad(unittest.TestCase):
+    """A plans.json written before allow_nan=False existed can still carry
+    NaN/Infinity. Every write path re-serialises the FULL plan list with
+    allow_nan=False, so one poisoned plan used to 500 every subsequent
+    POST/PUT/DELETE/sync, and GET handed the browser a NaN literal its own
+    JSON.parse can't handle either. load_plans() must heal those fields to
+    null in memory (and log a warning) so legacy files work immediately."""
+
+    def setUp(self):
+        self.plans_path = _fresh_plans_path()
+        # Python's json.dump writes NaN/Infinity by default (allow_nan=True):
+        # that's exactly how a pre-fix plans.json could have gotten here.
+        self.plans_path.write_text(json.dumps({
+            "version": 1,
+            "plans": [
+                {
+                    "id": "poisoned",
+                    "target": {
+                        "center_ra_deg": float("nan"),
+                        "center_dec_deg": -30.0,
+                    },
+                    "filter_goals": {
+                        "Ha": {"target_hours": float("inf"), "sub_exposure_s": 300},
+                    },
+                },
+                {
+                    "id": "clean",
+                    "target": {"center_ra_deg": 100.0, "center_dec_deg": -30.0},
+                },
+            ],
+        }), encoding="utf-8")
+        self.client = app.test_client()
+
+    def test_load_plans_heals_nonfinite_fields_to_none(self):
+        data = app_module.load_plans()
+        plans = {p["id"]: p for p in data["plans"]}
+        self.assertIsNone(plans["poisoned"]["target"]["center_ra_deg"])
+        self.assertIsNone(plans["poisoned"]["filter_goals"]["Ha"]["target_hours"])
+        # Untouched fields on the same plan survive.
+        self.assertEqual(plans["poisoned"]["target"]["center_dec_deg"], -30.0)
+        # The clean plan is unaffected.
+        self.assertEqual(plans["clean"]["target"]["center_ra_deg"], 100.0)
+
+    def test_load_plans_logs_a_warning_naming_plan_and_field(self):
+        with self.assertLogs(level="WARNING") as cm:
+            app_module._plans_cache = None
+            app_module._plans_cache_mtime = None
+            app_module.load_plans()
+        joined = "\n".join(cm.output)
+        self.assertIn("poisoned", joined)
+        self.assertIn("target.center_ra_deg", joined)
+        self.assertIn("filter_goals.Ha.target_hours", joined)
+
+    def test_get_plans_returns_strict_parseable_json(self):
+        r = self.client.get("/api/plans")
+        self.assertEqual(r.status_code, 200)
+        raw = r.get_data(as_text=True)
+        self.assertNotIn("NaN", raw)
+        self.assertNotIn("Infinity", raw)
+        # json.loads() with default strict=True must not choke, matching
+        # the browser's JSON.parse.
+        reparsed = json.loads(raw)
+        plans = {p["id"]: p for p in reparsed["plans"]}
+        self.assertIsNone(plans["poisoned"]["target"]["center_ra_deg"])
+
+    def test_post_after_healing_succeeds_and_persists_clean_data(self):
+        # Touching any plan re-serialises the FULL list; before the fix
+        # this 500'd because the poisoned plan was still in memory.
+        r = self.client.post("/api/plans", json=_valid_plan_payload(plan_id="new"))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        on_disk = json.loads(self.plans_path.read_text(encoding="utf-8"))
+        poisoned = next(p for p in on_disk["plans"] if p["id"] == "poisoned")
+        self.assertIsNone(poisoned["target"]["center_ra_deg"])
+
+    def test_put_after_healing_succeeds(self):
+        r = self.client.put("/api/plans/clean", json=_valid_plan_payload(plan_id="clean"))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+
+    def test_delete_after_healing_succeeds(self):
+        r = self.client.delete("/api/plans/clean")
+        self.assertEqual(r.status_code, 204, r.get_data(as_text=True))
 
 
 if __name__ == "__main__":
