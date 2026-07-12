@@ -42,3 +42,6 @@ blueprints/
 node_modules/
 
 data/archive_manifest_summary.md
+
+# Obsidian-vault-backed notes (see note-link)
+/notes
