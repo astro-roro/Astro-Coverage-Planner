@@ -1649,7 +1649,7 @@ def _clamped_float(name: str, default: float, lo: float, hi: float) -> float:
         v = float(request.args.get(name, default))
     except (TypeError, ValueError):
         v = default
-    if v != v or v < lo or v > hi:
+    if math.isnan(v) or v < lo or v > hi:
         v = default
     return v
 
@@ -1740,7 +1740,6 @@ def compute_year_visibility(
     ras = np.array([float(t["center_ra_deg"]) for t in targets])
     decs = np.array([float(t["center_dec_deg"]) for t in targets])
     ids = [int(t["target_id"]) for t in targets]
-    n_targets = len(ids)
     samples_per_day = (24 * 60) // sample_step_min  # 96 at 15-min steps
 
     for month in range(1, 13):
@@ -1748,7 +1747,6 @@ def compute_year_visibility(
         times_dt = [anchor + _td(minutes=sample_step_min * i)
                     for i in range(samples_per_day + 1)]
         t_grid = Time(times_dt)
-        n_t = len(t_grid)
 
         # Astronomical darkness mask via sun altitude.
         sun_altaz = get_sun(t_grid).transform_to(

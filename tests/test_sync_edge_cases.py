@@ -7,7 +7,6 @@ warning-emitting paths that smoke.py skips. Lines 2746-2752 and
 """
 from __future__ import annotations
 
-import json
 import sys
 import tempfile
 import unittest
