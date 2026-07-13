@@ -18,9 +18,7 @@ import gaps as gaps_module  # noqa: E402
 from gaps import GapResult, candidates_in_moc, compute_gap_moc  # noqa: E402
 
 from mocpy import MOC  # noqa: E402
-import numpy as np  # noqa: E402
 from astropy.coordinates import SkyCoord  # noqa: E402
-import astropy.units as u  # noqa: E402
 
 
 def _write_manifest(targets: list[dict]) -> Path:

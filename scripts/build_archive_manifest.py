@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 import traceback
@@ -137,7 +136,6 @@ def canon_filter(raw: str | None) -> str | None:
 
 def filter_from_path(p: Path) -> str | None:
     """Cascading heuristics: header missed/absent? try filename & parent dirs."""
-    name = p.name
     # Filename patterns: *_Ha*, *_SII*, H.xisf, S_integration.xisf, etc.
     stem = p.stem
     # Exact suffix patterns (e.g., target_Ha.fit)
@@ -601,7 +599,7 @@ def read_xisf_meta(path: Path) -> dict:
                         pass
                 # Pixel scale from CD matrix / CDELT
                 cd1_1 = fk("CD1_1"); cd1_2 = fk("CD1_2"); cd2_1 = fk("CD2_1"); cd2_2 = fk("CD2_2")
-                cdelt1 = fk("CDELT1"); cdelt2 = fk("CDELT2")
+                cdelt1 = fk("CDELT1")
                 if cd1_1 is not None:
                     try:
                         cd = np.array([[float(cd1_1), float(cd1_2 or 0)],
