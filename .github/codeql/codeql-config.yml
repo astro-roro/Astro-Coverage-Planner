@@ -1,0 +1,39 @@
+name: "ACP CodeQL config"
+
+# We run the full security-and-quality suite. The excludes below silence a
+# handful of quality (maintainability) rules that fire on deliberate idioms
+# in this codebase, not on real defects. None of them are security rules, so
+# nothing in the security coverage is weakened. Each exclude records why the
+# pattern it flags is intentional here.
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  # `except (TypeError, ValueError): pass` guards around float()/int() of
+  # optional FITS-header and manifest metadata. A missing or malformed value
+  # is expected and simply skipped; there is nothing to handle or log.
+  - exclude:
+      id: py/empty-except
+
+  # Module-level cache-mtime and cache-value globals assigned inside their
+  # loader functions (e.g. `_gear_cache_mtime = mtime`). The value is read on
+  # the next call to decide whether to reuse the cache; CodeQL does not track
+  # the cross-call read and reports the write as unused.
+  - exclude:
+      id: py/unused-global-variable
+
+  # `...` bodies and field docstrings in the Protocol and TypedDict
+  # definitions in sources.py. This is the standard way to declare a
+  # structural interface, not dead code.
+  - exclude:
+      id: py/ineffectual-statement
+
+  # Test modules that use both `import unittest` and `from unittest import ...`
+  # (or the same for a module under test). Harmless and conventional.
+  - exclude:
+      id: py/import-and-import-from
+
+  # Flask view functions returning either `body` or `(body, status_code)`.
+  # This is idiomatic Flask, not an inconsistent-return-shape bug.
+  - exclude:
+      id: py/mixed-tuple-returns
