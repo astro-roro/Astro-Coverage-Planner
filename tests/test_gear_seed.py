@@ -166,7 +166,7 @@ class TestSeedDedupe(unittest.TestCase):
             "cameras": [],
         })
         _write_manifest([("X", "ASI6200MM Pro", "Ha")])
-        r = self.client.post("/api/gear/seed")
+        self.client.post("/api/gear/seed")
         gear = json.loads(app_module.GEAR_PATH.read_text(encoding="utf-8"))
         ids = {t["id"] for t in gear["telescopes"]}
         self.assertIn("x-3", ids, f"expected x-3 in {ids}")
