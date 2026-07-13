@@ -5,7 +5,6 @@ the suite never touches the user's real data.
 """
 from __future__ import annotations
 
-import json
 import sys
 import tempfile
 import unittest
