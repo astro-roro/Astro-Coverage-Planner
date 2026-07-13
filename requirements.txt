@@ -1,5 +1,5 @@
 flask>=3.0
-astropy>=6.0
+astropy>=8.0.1
 numpy>=2.5.1
 # Required for astropy SkyCoord.match_to_catalog_sky (KDTree backend)
 # used by /api/export/priority.
