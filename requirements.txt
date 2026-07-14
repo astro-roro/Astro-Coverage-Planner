@@ -12,4 +12,4 @@ mocpy>=0.20.0
 xisf>=0.9.7
 # Production WSGI server used by the Docker image (see Dockerfile) instead
 # of Flask's dev server.
-waitress>=3.0.1
+waitress>=3.0.2
