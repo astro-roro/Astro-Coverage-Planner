@@ -304,6 +304,7 @@ import {
   catalogObjectMatchesTokens,
   targetMatchesSearch,
 } from "./search.mjs";
+import { describeInitError } from "./init-error.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -5191,6 +5192,11 @@ function init() {
 
     // Load manifest
     const r = await fetch("/api/manifest");
+    if (!r.ok) {
+      const err = new Error("manifest request failed");
+      err.status = r.status;
+      throw err;
+    }
     manifest = await r.json();
 
     // Show the onboarding banner if the manifest is empty (fresh install).
@@ -5237,6 +5243,13 @@ function init() {
     // If planning mode was remembered from last session, switch now (after
     // manifest + plans loaded so the right panel renders correctly).
     if (planningMode) setPlanningMode(true);
+  }).catch(err => {
+    // Without this, any exception during startup left the "Loading
+    // targets…" placeholder on screen forever with nothing but an
+    // unhandled rejection in devtools — see GitHub issue #46.
+    console.error("ACP failed to start:", err);
+    const panel = document.getElementById("panelBody");
+    if (panel) panel.innerHTML = `<div class="panel-error">${esc(describeInitError(err))}</div>`;
   });
 }
 
