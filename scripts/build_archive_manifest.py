@@ -582,13 +582,9 @@ def read_xisf_meta(path: Path) -> dict:
         crval1 = fk("CRVAL1"); crval2 = fk("CRVAL2")
         if crval1 is not None and crval2 is not None and out["naxis1"]:
             try:
-                out["ra_deg"] = float(crval1)
-                out["dec_deg"] = float(crval2)
-                out["has_wcs"] = True
                 # IMAGEW/IMAGEH downsample correction, ported from the FITS path.
-                # CRVAL is the field centre at CRPIX, so unlike the FITS branch
-                # the centre needs no shift; but a downsampled solve stores a CD
-                # scale per solved pixel, so record the solved grid for FOV.
+                # A downsampled solve stores a CD scale per solved pixel, so
+                # record the solved grid for FOV.
                 iw = fk("IMAGEW"); ih = fk("IMAGEH")
                 if iw and ih and out["naxis2"]:
                     try:
@@ -597,9 +593,44 @@ def read_xisf_meta(path: Path) -> dict:
                             out["wcs_naxis1"], out["wcs_naxis2"] = iw, ih
                     except (TypeError, ValueError):
                         pass
-                # Pixel scale from CD matrix / CDELT
+                # CRVAL is the sky position AT CRPIX, not necessarily the
+                # image centre — a plate solver is free to put its reference
+                # pixel anywhere (astrometry.net in particular often doesn't
+                # centre it). Build the actual WCS and evaluate it at the
+                # image centre pixel, exactly like the FITS path, instead of
+                # assuming CRPIX == centre and using CRVAL directly: that
+                # assumption silently mis-points every target whose solve
+                # didn't happen to centre CRPIX, by up to half the FOV.
+                crpix1 = fk("CRPIX1"); crpix2 = fk("CRPIX2")
                 cd1_1 = fk("CD1_1"); cd1_2 = fk("CD1_2"); cd2_1 = fk("CD2_1"); cd2_2 = fk("CD2_2")
-                cdelt1 = fk("CDELT1")
+                cdelt1 = fk("CDELT1"); cdelt2 = fk("CDELT2")
+                if crpix1 is not None and crpix2 is not None and (
+                        cd1_1 is not None or cdelt1 is not None):
+                    w = WCS(naxis=2)
+                    w.wcs.crval = [float(crval1), float(crval2)]
+                    w.wcs.crpix = [float(crpix1), float(crpix2)]
+                    ctype1 = fk("CTYPE1") or "RA---TAN"
+                    ctype2 = fk("CTYPE2") or "DEC--TAN"
+                    w.wcs.ctype = [str(ctype1), str(ctype2)]
+                    if cd1_1 is not None:
+                        w.wcs.cd = [[float(cd1_1), float(cd1_2 or 0)],
+                                    [float(cd2_1 or 0), float(cd2_2 or cd1_1)]]
+                    else:
+                        w.wcs.cdelt = [float(cdelt1), float(cdelt2 or cdelt1)]
+                    if out["wcs_naxis1"] and out["wcs_naxis2"]:
+                        cx, cy = out["wcs_naxis1"] / 2.0, out["wcs_naxis2"] / 2.0
+                    else:
+                        cx, cy = out["naxis1"] / 2.0, out["naxis2"] / 2.0
+                    sky = w.pixel_to_world(cx, cy)
+                    out["ra_deg"] = float(sky.ra.deg)
+                    out["dec_deg"] = float(sky.dec.deg)
+                else:
+                    # No CRPIX/CD available to build a real WCS — fall back
+                    # to CRVAL as the best available approximation.
+                    out["ra_deg"] = float(crval1)
+                    out["dec_deg"] = float(crval2)
+                out["has_wcs"] = True
+                # Pixel scale from CD matrix / CDELT
                 if cd1_1 is not None:
                     try:
                         cd = np.array([[float(cd1_1), float(cd1_2 or 0)],
