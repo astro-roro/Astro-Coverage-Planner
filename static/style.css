@@ -217,6 +217,12 @@ button:active { background: #262e40; }
   line-height: 1.5;
 }
 
+.panel-error {
+  color: #e77;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .panel-list h3 {
   display: flex;
   align-items: baseline;
