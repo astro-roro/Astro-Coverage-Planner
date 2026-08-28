@@ -142,5 +142,92 @@ class TestXisfFocalBackfillPairsWithNativeGrid(unittest.TestCase):
         self.assertGreater(fov[0], 150.0)
 
 
+class TestXisfOffCenterCrpix(unittest.TestCase):
+    """CRVAL is the sky position AT CRPIX, not necessarily the image centre.
+
+    A plate solver is free to put its reference pixel anywhere in the
+    frame (astrometry.net in particular doesn't guarantee CRPIX is
+    centred). Using CRVAL directly as "the pointing" — as the old code
+    did — silently mis-points every target whose solve didn't happen to
+    centre CRPIX, by however far off-centre CRPIX was. This reproduces
+    that with CRPIX pinned to a corner of the frame, far from centre.
+    """
+
+    def test_crval_at_corner_still_resolves_to_frame_centre(self):
+        naxis1, naxis2 = 4656, 3520
+        pix_scale_deg = 0.002606  # ~9.38 arcsec/px
+        # CRPIX at pixel (1,1) (bottom-left corner, FITS 1-indexed): CRVAL
+        # is the sky position of that CORNER, not of the frame centre.
+        kw = {
+            "FILTER": "H",
+            "EXPTIME": 180.0,
+            "IMAGETYP": "Light",
+            "OBJECT": "NGC 6960",
+            "CRVAL1": 311.41,
+            "CRVAL2": 30.72,
+            "CRPIX1": 1.0,
+            "CRPIX2": 1.0,
+            "CTYPE1": "RA---TAN",
+            "CTYPE2": "DEC--TAN",
+            "CD1_1": -pix_scale_deg,
+            "CD1_2": 0.0,
+            "CD2_1": 0.0,
+            "CD2_2": pix_scale_deg,
+        }
+        with mock.patch.dict("sys.modules", {"xisf": mock.MagicMock(
+                XISF=_fake_xisf(kw, naxis1=naxis1, naxis2=naxis2))}):
+            meta = bam.read_xisf_meta(Path("frame.xisf"))
+
+        self.assertTrue(meta["ok"])
+        self.assertTrue(meta["has_wcs"])
+        # The frame centre is naxis/2 px away from CRPIX (corner) in each
+        # axis. Using CRVAL directly (the old bug) would report the
+        # corner's sky position unchanged; the fix must move substantially
+        # toward the true image-centre coordinate instead. Ground truth
+        # computed independently via astropy's own WCS, not by re-deriving
+        # the implementation's arithmetic by hand.
+        from astropy.coordinates import SkyCoord
+        from astropy.wcs import WCS as _WCS
+        import astropy.units as u
+        w = _WCS(naxis=2)
+        w.wcs.crval = [311.41, 30.72]
+        w.wcs.crpix = [1.0, 1.0]
+        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        w.wcs.cd = [[-pix_scale_deg, 0.0], [0.0, pix_scale_deg]]
+        expected = w.pixel_to_world(naxis1 / 2.0, naxis2 / 2.0)
+
+        corner = SkyCoord(311.41 * u.deg, 30.72 * u.deg)
+        reported = SkyCoord(meta["ra_deg"] * u.deg, meta["dec_deg"] * u.deg)
+        half_frame_deg = (naxis1 / 2.0) * pix_scale_deg
+        # Must have moved well away from the corner CRVAL (the pre-fix
+        # value) — a real image-centre correction, not noise.
+        self.assertGreater(corner.separation(reported).deg, half_frame_deg * 0.5)
+        # And must match the independently-computed expected centre tightly.
+        self.assertLess(expected.separation(reported).arcsec, 1.0)
+
+    def test_crpix_missing_falls_back_to_crval(self):
+        """No CRPIX at all (older synthetic/legacy headers): keep the old
+        CRVAL-as-centre approximation rather than crashing or dropping
+        coords entirely."""
+        kw = {
+            "FILTER": "H",
+            "EXPTIME": 180.0,
+            "IMAGETYP": "Light",
+            "OBJECT": "NGC 6960",
+            "CRVAL1": 311.41,
+            "CRVAL2": 30.72,
+            "CD1_1": -0.002606,
+            "CD1_2": 0.0,
+            "CD2_1": 0.0,
+            "CD2_2": 0.002606,
+        }
+        with mock.patch.dict("sys.modules", {"xisf": mock.MagicMock(
+                XISF=_fake_xisf(kw, naxis1=4656, naxis2=3520))}):
+            meta = bam.read_xisf_meta(Path("frame.xisf"))
+        self.assertTrue(meta["has_wcs"])
+        self.assertAlmostEqual(meta["ra_deg"], 311.41, places=6)
+        self.assertAlmostEqual(meta["dec_deg"], 30.72, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()
