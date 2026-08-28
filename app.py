@@ -46,6 +46,7 @@ import os
 import re
 import sqlite3
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -144,6 +145,32 @@ _saved_searches_cache_mtime: float | None = None
 # relative to RA/Dec) so a one-shot compute per site is fine, and the entry
 # is invalidated implicitly when the manifest mtime ticks over.
 _visibility_cache: dict[tuple, dict] = {}
+
+
+def _atomic_write_json(path: Path, data: dict, **dumps_kwargs) -> None:
+    """Write JSON to ``path`` atomically (temp file + rename).
+
+    A plain ``write_text`` truncates the target file before writing, so a
+    crash or kill mid-write (OOM, power loss, container kill) leaves a
+    half-written, unparseable file — the next ``load_*`` call then throws
+    and every endpoint touching that store 500s until someone manually
+    repairs the file. Writing to a sibling temp file first and renaming
+    over the target means the target is only ever replaced by a complete,
+    validated write; ``os.replace`` is atomic on both POSIX and Windows.
+    """
+    text = json.dumps(data, **dumps_kwargs)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _site_cache_key(site: dict) -> tuple:
@@ -359,7 +386,7 @@ def save_plans(data: dict) -> None:
     # path ever calls save_plans() with unvalidated data, this raises
     # ValueError instead of silently writing JSON that strict clients (and
     # our own int(math.ceil(...)) in the sync builder) can't handle.
-    PLANS_PATH.write_text(json.dumps(data, indent=2, allow_nan=False), encoding="utf-8")
+    _atomic_write_json(PLANS_PATH, data, indent=2, allow_nan=False)
     _plans_cache = data
     _plans_cache_mtime = PLANS_PATH.stat().st_mtime
 
@@ -378,7 +405,7 @@ def load_target_overrides() -> dict:
 def save_target_overrides(data: dict) -> None:
     global _target_overrides_cache, _target_overrides_cache_mtime
     TARGET_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TARGET_OVERRIDES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _atomic_write_json(TARGET_OVERRIDES_PATH, data, indent=2)
     _target_overrides_cache = data
     _target_overrides_cache_mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
 
@@ -397,7 +424,7 @@ def load_sites() -> dict:
 def save_sites(data: dict) -> None:
     global _sites_cache, _sites_cache_mtime
     SITES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SITES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _atomic_write_json(SITES_PATH, data, indent=2)
     _sites_cache = data
     _sites_cache_mtime = SITES_PATH.stat().st_mtime
 
@@ -431,7 +458,7 @@ def load_destinations() -> dict:
 def save_destinations(data: dict) -> None:
     global _destinations_cache, _destinations_cache_mtime
     DESTINATIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    DESTINATIONS_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _atomic_write_json(DESTINATIONS_PATH, data, indent=2)
     _destinations_cache = data
     _destinations_cache_mtime = DESTINATIONS_PATH.stat().st_mtime
 
@@ -451,7 +478,7 @@ def load_saved_searches() -> dict:
 def save_saved_searches(data: dict) -> None:
     global _saved_searches_cache, _saved_searches_cache_mtime
     SAVED_SEARCHES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SAVED_SEARCHES_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _atomic_write_json(SAVED_SEARCHES_PATH, data, indent=2)
     _saved_searches_cache = data
     _saved_searches_cache_mtime = SAVED_SEARCHES_PATH.stat().st_mtime
 
@@ -1024,7 +1051,7 @@ def _with_sensor_scalars(camera: dict) -> dict:
 def save_gear(data: dict) -> None:
     global _gear_cache, _gear_cache_mtime
     GEAR_PATH.parent.mkdir(parents=True, exist_ok=True)
-    GEAR_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _atomic_write_json(GEAR_PATH, data, indent=2)
     _gear_cache = data
     _gear_cache_mtime = GEAR_PATH.stat().st_mtime
 
