@@ -5,12 +5,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=5555
 
-# rsync and ssh let the live-page publisher push from inside the container
-# (docs/sharing.md, "Publishing a live page").
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client rsync \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 COPY requirements.txt .

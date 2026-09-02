@@ -77,13 +77,13 @@ Once `ACP_PUBLISH_DEST` is set (below) and ACP restarted, the plan editor gains 
 
 | Variable | Meaning |
 |---|---|
-| `ACP_PUBLISH_DEST` | rsync target for the JSON file, for example `user@host:/var/www/site/live/shooting.json`. Publishing refuses to run when unset. |
+| `ACP_PUBLISH_DEST` | Where to upload the JSON over SFTP, as `user@host:/var/www/site/live/shooting.json`. Publishing refuses to run when unset. |
 | `ACP_PUBLISH_SSH_KEY` | Optional path to an SSH key. Defaults to whatever SSH would use. |
 | `ACP_LIVE_OUT_DIR` | Where the JSON is written locally before pushing. Defaults to `data/live/`. |
 
-The destination folder on the server must be writable by the SSH user, since the push is a plain rsync with no sudo. ACP only ever pushes; the server never connects back.
+The destination folder on the server must be writable by the SSH user, since the upload is a plain SFTP put with no sudo. ACP only ever pushes; the server never connects back. The upload uses paramiko, so no ssh or rsync binary is needed, which matters in Docker where the container user often has no passwd entry and OpenSSH refuses to run.
 
-When `ACP_PUBLISH_SSH_KEY` is set, ssh keeps its known hosts in `known_hosts` next to the JSON in the output folder and accepts the server's key on first contact, so it works in a container with no home directory. In Docker, mount a dedicated key read-only and point the variable at it:
+Host keys are kept in `known_hosts` next to the JSON in the output folder. The first contact records the server's key and a changed key is refused after that. Without `ACP_PUBLISH_SSH_KEY`, the usual keys and agent are tried. In Docker, mount a dedicated key read-only and point the variable at it:
 
 ```yaml
     environment:

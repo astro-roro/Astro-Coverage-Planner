@@ -86,7 +86,7 @@ MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manif
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
-# Where the live-page publisher writes shooting.json before rsyncing it.
+# Where the live-page publisher writes shooting.json before uploading it.
 LIVE_OUT_DIR = Path(os.environ.get("ACP_LIVE_OUT_DIR", REPO_ROOT / "data" / "live"))
 SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
 DESTINATIONS_PATH = Path(os.environ.get(
@@ -2809,8 +2809,8 @@ def api_public_shooting():
 
 @app.route("/api/publish/shooting", methods=["POST"])
 def api_publish_shooting():
-    """Write data/live/shooting.json and rsync it to ACP_PUBLISH_DEST.
-    400 when the destination is unset, 502 when rsync fails."""
+    """Write data/live/shooting.json and upload it to ACP_PUBLISH_DEST.
+    400 when the destination is unset, 502 when the upload fails."""
     import shooting_publish as sp
     try:
         dest = sp.resolve_dest()
