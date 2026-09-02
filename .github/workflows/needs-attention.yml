@@ -1,0 +1,73 @@
+name: Needs attention
+
+# Assigns the repo owner to anything that actually needs a human, so the
+# owner can stop watching the repo and rely on "participating"
+# notifications alone. Everything else (bot PRs that auto-merge cleanly)
+# stays silent.
+#
+# Cases that assign the owner:
+#   1. A PR or issue opened by a human (anyone whose login is not a bot).
+#   2. A Dependabot PR whose Tests or CodeQL run failed. Auto-merge will
+#      not fire on a failing check, so the PR sits open until someone
+#      looks at it.
+#
+# Major-version Dependabot bumps are handled in dependabot-auto-merge.yml,
+# which assigns the owner instead of enabling auto-merge.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+  issues:
+    types: [opened, reopened]
+  workflow_run:
+    workflows: ["Tests", "CodeQL"]
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  OWNER: astro-roro
+
+jobs:
+  human-opened:
+    if: >-
+      (github.event_name == 'pull_request_target' || github.event_name == 'issues')
+      && !endsWith(github.actor, '[bot]')
+      && github.actor != 'astro-roro'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign owner
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          URL: ${{ github.event.pull_request.html_url || github.event.issue.html_url }}
+        run: |
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            gh pr edit "$URL" --add-assignee "$OWNER"
+          else
+            gh issue edit "$URL" --add-assignee "$OWNER"
+          fi
+
+  bot-check-failed:
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'failure'
+      && github.event.workflow_run.actor.login == 'dependabot[bot]'
+      && github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign owner on the failing Dependabot PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CHECK: ${{ github.event.workflow_run.name }}
+        run: |
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          if [ -z "$pr" ]; then
+            echo "No open PR for $BRANCH; nothing to do."
+            exit 0
+          fi
+          gh pr edit "$pr" --add-assignee "$OWNER"
+          gh pr comment "$pr" --body "The $CHECK run failed, so auto-merge will not proceed. Assigned to @$OWNER for a look."
