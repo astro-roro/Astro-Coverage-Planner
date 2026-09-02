@@ -1,4 +1,4 @@
-"""Build and publish the public "live" document for astrowithroro.com/live.
+"""Build and publish the public "live" document for a static web page.
 
 Spec: docs/specs/shooting-page.md. Only plans with visibility == "public"
 are included. The document is scanned for path-shaped strings before it
@@ -213,7 +213,7 @@ def resolve_dest() -> str:
     if not dest:
         raise PublishConfigError(
             "ACP_PUBLISH_DEST is not set. Example: "
-            "linuxuser@100.106.46.47:/home/astrowithroro.com/public_html/live/shooting.json"
+            "user@your-web-host:/var/www/site/live/shooting.json"
         )
     return dest
 

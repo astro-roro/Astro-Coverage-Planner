@@ -65,7 +65,7 @@ Separate from friend manifests: this pushes a small public summary of your own c
 
 ### Marking a plan public
 
-In the plan editor there is a "Public page" section with three fields:
+Once `ACP_PUBLISH_DEST` is set (below) and ACP restarted, the plan editor gains a "Public page" section with three fields. Without it, nothing in the UI changes and nothing is ever published.
 
 - **Visibility**: private (default) or public. Nothing leaves your machine unless this is public.
 - **Current project**: shows a "current" badge on the page. More than one is fine.
