@@ -1,10 +1,10 @@
-# Spec: the "what I'm shooting" public page
+# Spec: the live page, "what I'm shooting"
 
 Status: draft, 2026-09-02. Part one of the public sharing work. Part two (friends and family voting on targets) is a separate spec that builds on this one.
 
 ## Goal
 
-A page at astrowithroro.com/shooting that shows which projects Rohan is currently working on, how far along each one is, and when it was last imaged. ACP is the only source. NINA is not involved. Only plans Rohan has explicitly marked public appear.
+A page at astrowithroro.com/live that shows which projects Rohan is currently working on, how far along each one is, and when it was last imaged. ACP is the only source. NINA is not involved. Only plans Rohan has explicitly marked public appear.
 
 ## What the reader sees
 
@@ -17,7 +17,7 @@ One page with a short list of project cards, most recent activity first. Each ca
 - "last imaged N nights ago" (or "not started yet")
 - a thumbnail of the field, fetched by the browser from the CDS hips2fits service using the plan's centre and field of view, so no images are stored or pushed
 
-Above the cards, one line: "Updated <date>, from a scan on <date>". The page never claims to be live. Below the cards, one line linking back to the ACP GitHub repo.
+Above the cards, one line: "Updated <date>, from a scan on <date>". The page is called live because that is as live as astrophotography gets, but it never claims more than its dates show. Below the cards, one line linking back to the ACP GitHub repo.
 
 ## Plan fields added
 
@@ -95,22 +95,22 @@ What it does:
 3. Writes `data/shooting/shooting.json` locally.
 4. Pushes that one file to the destination with rsync over SSH.
 
-The page that reads the file lives in the site repo, `astro-roro/astrowithroro`, under `shooting/`. ACP owns the data and the contract above; the site owns the presentation. The site repo gitignores `shooting/shooting.json` so the pushed file never shows up as drift there.
+The page that reads the file lives in the site repo, `astro-roro/astrowithroro`, under `live/`. ACP owns the data and the contract above; the site owns the presentation. The site repo gitignores `live/shooting.json` so the pushed file never shows up as drift there.
 
 Configuration, all environment variables, matching the rest of ACP:
 
 | Variable | Meaning |
 |---|---|
-| `ACP_PUBLISH_DEST` | rsync target, for example `linuxuser@100.106.46.47:/home/astrowithroro.com/public_html/shooting/shooting.json`. Publishing refuses to run when unset. |
+| `ACP_PUBLISH_DEST` | rsync target, for example `linuxuser@100.106.46.47:/home/astrowithroro.com/public_html/live/shooting.json`. Publishing refuses to run when unset. |
 | `ACP_PUBLISH_SSH_KEY` | Optional path to the key. Defaults to whatever SSH would use. |
 
-The push is initiated from the ACP machine, never from Canopus, which keeps to the rule that Canopus only ever receives. The web root on Canopus is owned by `astro2735` and the SSH user is `linuxuser`, so a one-off setup step creates `public_html/shooting/` owned by `linuxuser` with mode 755. After that rsync writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
+The push is initiated from the ACP machine, never from Canopus, which keeps to the rule that Canopus only ever receives. The web root on Canopus is owned by `astro2735` and the SSH user is `linuxuser`, so a one-off setup step creates `public_html/live/` owned by `linuxuser` with mode 755. After that rsync writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
 
 There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a rescan and returns the rsync result, so a "Publish now" button in the plan rail works without a terminal.
 
 ## The page itself
 
-`shooting/index.html` and `shooting/shooting.js` in the site repo, plain HTML and vanilla JS, no build step, one small stylesheet inlined. The page fetches `shooting.json` relative to itself. It renders the cards described above, handles a missing or malformed JSON with a single "nothing public right now" line, and uses hips2fits with the DSS2 colour survey for thumbnails. The page is built as part of this work and deployed the same way as the rest of the site. Matching the site's existing look is done once, at build time, by copying the header and colours from `index.html`.
+`live/index.html` and `live/shooting.js` in the site repo, plain HTML and vanilla JS, no build step, one small stylesheet inlined. The page fetches `shooting.json` relative to itself. It renders the cards described above, handles a missing or malformed JSON with a single "nothing public right now" line, and uses hips2fits with the DSS2 colour survey for thumbnails. The page is built as part of this work and deployed the same way as the rest of the site. Matching the site's existing look is done once, at build time, by copying the header and colours from `index.html`.
 
 ## Out of scope
 
