@@ -258,14 +258,23 @@ def push_document(path: Path, dest: str, ssh_key: str | None = None) -> PushResu
 
     user, host, port, remote_path = parse_dest(dest)
     known = Path(path).parent / "known_hosts"
+    class _FirstContactOnly(paramiko.MissingHostKeyPolicy):
+        """Trust on first use: record the key only while known_hosts is empty.
+        Once any host is recorded, an unknown or changed key is refused."""
+
+        def missing_host_key(self, client_, hostname, key):
+            if len(client_.get_host_keys()) > 0:
+                raise paramiko.SSHException(
+                    f"host key for {hostname} is not in {known}; refusing to connect"
+                )
+            client_.get_host_keys().add(hostname, key.get_name(), key)
+
     client = paramiko.SSHClient()
-    if known.exists():
-        client.load_host_keys(str(known))
-    else:
-        known.parent.mkdir(parents=True, exist_ok=True)
+    known.parent.mkdir(parents=True, exist_ok=True)
+    if not known.exists():
         known.touch()
-        client.load_host_keys(str(known))
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.load_host_keys(str(known))
+    client.set_missing_host_key_policy(_FirstContactOnly())
     try:
         client.connect(
             host, port=port, username=user, key_filename=ssh_key,
