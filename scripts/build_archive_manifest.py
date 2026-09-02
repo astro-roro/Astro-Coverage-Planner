@@ -87,16 +87,31 @@ MOUNT_TELESCOP_PATTERNS = (
 )
 
 # Canonicalize slightly-different telescope names to one form so the UI doesn't
-# split the same rig into multiple chips.
+# split the same rig into multiple chips. Keys are the exact lowercased TELESCOP
+# value; values are the display name.
 TELESCOPE_ALIAS = {
     "sw maknewt 190": "190MN",
     "skywatcher maknewt 190": "190MN",
     "skywatcher mn190": "190MN",
     "sky-watcher mn190": "190MN",
+    "190mak": "190MN",
+    "skywatcher 190makn": "190MN",
     "redcat51": "RedCat 51",
     "william optics redcat 51": "RedCat 51",
     "ap 110gtx": "110GTX",
     "astro-physics 110gtx": "110GTX",
+}
+
+# Canonical display spellings. Any TELESCOP value that matches one of these once
+# case and spacing are ignored is rewritten to this exact spelling, so a rig that
+# reads "HyperStar" in one session and "Hyperstar" in another collapses to one
+# chip. Register a scope here once and every casing variant folds to it, without
+# needing a per-variant TELESCOPE_ALIAS entry.
+TELESCOPE_CANONICAL = (
+    "110GTX", "190MN", "RedCat 51", "HyperStar",
+)
+_TELESCOPE_CANONICAL_BY_FOLD = {
+    re.sub(r"\s+", " ", c).strip().casefold(): c for c in TELESCOPE_CANONICAL
 }
 
 
@@ -110,7 +125,9 @@ def sanitize_telescope(raw):
     lr = s.lower()
     if any(p in lr for p in MOUNT_TELESCOP_PATTERNS):
         return None
-    return TELESCOPE_ALIAS.get(lr, s)
+    s = TELESCOPE_ALIAS.get(lr, s)
+    fold = re.sub(r"\s+", " ", s).strip().casefold()
+    return _TELESCOPE_CANONICAL_BY_FOLD.get(fold, s)
 
 
 FILTER_CANON = {
