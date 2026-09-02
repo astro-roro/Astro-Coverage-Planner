@@ -193,38 +193,66 @@ class WriteAndPush(unittest.TestCase):
         finally:
             os.environ.pop("ACP_PUBLISH_DEST", None)
 
-    def test_push_document_builds_rsync_command(self):
-        import shooting_publish as sp
-        calls = []
+    def test_parse_dest(self):
+        from shooting_publish import parse_dest
+        self.assertEqual(parse_dest("u@h:/srv/live/shooting.json"), ("u", "h", 22, "/srv/live/shooting.json"))
+        self.assertEqual(parse_dest("h:/srv/x.json"), (None, "h", 22, "/srv/x.json"))
+        with self.assertRaises(PublishConfigError):
+            parse_dest("just-a-host")
 
-        def fake_run(cmd, **kw):
-            calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+    def test_push_document_uploads_then_renames(self):
+        import paramiko
+        events = []
 
-        orig = sp.subprocess.run
-        sp.subprocess.run = fake_run
+        class FakeSftp:
+            def put(self, local, remote): events.append(("put", local, remote))
+            def posix_rename(self, a, b): events.append(("rename", a, b))
+            def close(self): events.append(("sftp-close",))
+
+        class FakeClient:
+            def __init__(self): events.append(("new",))
+            def load_host_keys(self, f): events.append(("load", f))
+            def set_missing_host_key_policy(self, p): events.append(("policy", type(p).__name__))
+            def connect(self, host, **kw): events.append(("connect", host, kw["username"], kw["key_filename"], kw["look_for_keys"]))
+            def save_host_keys(self, f): events.append(("save", f))
+            def open_sftp(self): return FakeSftp()
+            def close(self): events.append(("close",))
+
+        td = Path(tempfile.mkdtemp())
+        local = td / "shooting.json"
+        local.write_text("{}")
+        orig = paramiko.SSHClient
+        paramiko.SSHClient = FakeClient
         try:
-            push_document(Path("/x/shooting.json"), "u@h:/srv/live/shooting.json", ssh_key="/k")
+            r = push_document(local, "u@h:/srv/live/shooting.json", ssh_key="/k")
         finally:
-            sp.subprocess.run = orig
-        cmd = calls[0]
-        self.assertEqual(cmd[0], "rsync")
-        self.assertEqual(cmd[-1], "u@h:/srv/live/shooting.json")
-        e = cmd[cmd.index("-e") + 1]
-        self.assertTrue(e.startswith("ssh -o BatchMode=yes -i /k"))
-        self.assertIn("UserKnownHostsFile=/x/known_hosts", e)
-        self.assertIn("StrictHostKeyChecking=accept-new", e)
+            paramiko.SSHClient = orig
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(("connect", "h", "u", "/k", False), events)
+        self.assertIn(("put", str(local), "/srv/live/shooting.json.tmp"), events)
+        self.assertIn(("rename", "/srv/live/shooting.json.tmp", "/srv/live/shooting.json"), events)
+        self.assertIn(("save", str(td / "known_hosts")), events)
+        self.assertTrue((td / "known_hosts").exists())
 
-    def test_push_without_key_uses_default_ssh(self):
-        import shooting_publish as sp
-        calls = []
-        orig = sp.subprocess.run
-        sp.subprocess.run = lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0, "", ""))[1]
+    def test_push_document_reports_failure_without_raising(self):
+        import paramiko
+
+        class FailingClient:
+            def load_host_keys(self, f): pass
+            def set_missing_host_key_policy(self, p): pass
+            def connect(self, host, **kw): raise OSError("connection refused")
+            def close(self): pass
+
+        td = Path(tempfile.mkdtemp())
+        (td / "shooting.json").write_text("{}")
+        orig = paramiko.SSHClient
+        paramiko.SSHClient = FailingClient
         try:
-            push_document(Path("/x/shooting.json"), "u@h:/srv/live/shooting.json")
+            r = push_document(td / "shooting.json", "u@h:/srv/live/shooting.json", ssh_key="/k")
         finally:
-            sp.subprocess.run = orig
-        self.assertEqual(calls[0][calls[0].index("-e") + 1], "ssh -o BatchMode=yes")
+            paramiko.SSHClient = orig
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("connection refused", r.stderr)
 
 
 class Endpoints(unittest.TestCase):
@@ -280,7 +308,7 @@ class Endpoints(unittest.TestCase):
 
         def fake_push(path, dest, ssh_key=None):
             seen["path"], seen["dest"] = path, dest
-            return subprocess.CompletedProcess([], 0, "", "")
+            return sp.PushResult(0, "")
 
         orig = sp.push_document
         sp.push_document = fake_push
@@ -299,7 +327,7 @@ class Endpoints(unittest.TestCase):
         import shooting_publish as sp
         os.environ["ACP_PUBLISH_DEST"] = "u@h:/srv/live/shooting.json"
         orig = sp.push_document
-        sp.push_document = lambda path, dest, ssh_key=None: subprocess.CompletedProcess([], 255, "", "connection refused")
+        sp.push_document = lambda path, dest, ssh_key=None: sp.PushResult(255, "connection refused")
         try:
             r = self.client.post("/api/publish/shooting")
         finally:
@@ -323,14 +351,12 @@ class Cli(unittest.TestCase):
         env.pop("ACP_PUBLISH_DEST", None)
         return env
 
-    def test_dry_run_writes_json_without_rsync(self):
+    def test_dry_run_writes_json_without_pushing(self):
         td = Path(tempfile.mkdtemp())
         (td / "plans.json").write_text(json.dumps({"version": 1, "plans": [_plan()]}))
         (td / "manifest.json").write_text(json.dumps(_manifest()))
         (td / "gear.json").write_text(json.dumps(GEAR))
         env = self._env(td)
-        # No PATH means rsync cannot be found; a dry run must never need it.
-        env["PATH"] = "/nonexistent"
         r = subprocess.run([sys.executable, str(self.SCRIPT), "--dry-run"],
                            env=env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
