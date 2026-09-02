@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -27,6 +28,23 @@ from build_archive_manifest import canon_filter  # noqa: E402
 from sanitise_manifest import _aperture_class, validate_no_paths  # noqa: E402
 
 DOC_VERSION = 1
+
+# The friend sanitiser's tripwire only matches a path at the start or a
+# file extension at the end of a string. Free text written by a person can
+# carry a path anywhere, so the three text fields get an unanchored scan.
+_FREE_TEXT_LEAK = re.compile(
+    r"(?:[A-Za-z]:[\\/])"                       # C:\ or C:/
+    r"|(?:/(?:home|Users|var|tmp|mnt|media|Volumes)/)"  # POSIX system dirs, anywhere
+    r"|(?:\\\\)"                                  # UNC \\server\share
+    r"|(?:\.(?:fits?|xisf|raw|cr2|nef|arw|dng)\b)",  # image file extensions, anywhere
+    re.IGNORECASE,
+)
+
+
+def _check_free_text(field: str, value: str) -> str:
+    if _FREE_TEXT_LEAK.search(value):
+        raise RuntimeError(f"path-shaped text in {field}: {value!r}")
+    return value
 
 
 class PublishConfigError(RuntimeError):
@@ -142,9 +160,9 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
     nights = (today - date.fromisoformat(last)).days if last else None
 
     entry = {
-        "project_name": str(plan.get("project_name") or ""),
-        "target_name": str(tg.get("name") or ""),
-        "blurb": str(plan.get("public_blurb") or ""),
+        "project_name": _check_free_text("project_name", str(plan.get("project_name") or "")),
+        "target_name": _check_free_text("target_name", str(tg.get("name") or "")),
+        "blurb": _check_free_text("public_blurb", str(plan.get("public_blurb") or "")),
         "is_current": bool(plan.get("is_current")),
         "center_ra_deg": round(ra, 2),
         "center_dec_deg": round(dec, 2),

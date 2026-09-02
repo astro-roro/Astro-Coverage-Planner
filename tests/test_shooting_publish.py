@@ -87,7 +87,7 @@ class BuildDocument(unittest.TestCase):
         doc = build_shooting_document([_plan()], _manifest(_target(128.5, -45.0)), GEAR, now=NOW)
         text = json.dumps(doc)
         for bad in ("guid", "abc-123", "telescope_id", "camera_id", "sub_exposure_s",
-                    "master_files", "/Users/", "\"id\"", "RedCat"):
+                    "master_files", "/Users/", "\"id\"", "RedCat", "ASI2600", "2023-", "T06:10"):
             self.assertNotIn(bad, text, bad)
 
     def test_matching_target_contributes_hours_and_date(self):
@@ -143,9 +143,37 @@ class BuildDocument(unittest.TestCase):
         doc = build_shooting_document(plans, man, GEAR, now=NOW)
         self.assertEqual([p["project_name"] for p in doc["projects"]], ["Charlie", "Bravo", "Alpha"])
 
-    def test_path_in_blurb_trips_the_tripwire(self):
-        with self.assertRaises(RuntimeError):
-            build_shooting_document([_plan(public_blurb="/Users/rohan/notes has the details")], _manifest(), GEAR, now=NOW)
+    def test_path_anywhere_in_free_text_raises(self):
+        cases = [
+            _plan(public_blurb="the raw data is in /Users/rohan/astro/vela, huge"),
+            _plan(public_blurb="master is vela_Ha.fit and it is big"),
+            _plan(project_name="Vela (D:\\astro\\vela)"),
+            _plan(target={"name": "see \\\\nas\\astro", "center_ra_deg": 1.0, "center_dec_deg": 1.0}),
+        ]
+        for plan in cases:
+            with self.assertRaises(RuntimeError, msg=plan):
+                build_shooting_document([plan], _manifest(), GEAR, now=NOW)
+
+    def test_ordinary_free_text_passes(self):
+        doc = build_shooting_document(
+            [_plan(public_blurb="Shot at f/4.9 from Sydney. Ha and OIII, 3nm.")], _manifest(), GEAR, now=NOW)
+        self.assertEqual(len(doc["projects"]), 1)
+
+    def test_match_boundary_is_half_the_larger_diagonal(self):
+        # Plan footprint is about 323 x 216 arcmin, diagonal about 389, so the
+        # limit is about 3.24 deg. A tiny target just inside matches, one just
+        # outside does not. If the rule were the full diagonal both would match.
+        near = _target(128.5, -45.0 + 3.1, fov=(10.0, 10.0))
+        far = _target(128.5, -45.0 + 3.4, fov=(10.0, 10.0))
+        doc = build_shooting_document([_plan()], _manifest(near, far), GEAR, now=NOW)
+        self.assertEqual(doc["projects"][0]["filters"]["Ha"]["done_hours"], 2.5)
+        doc = build_shooting_document([_plan()], _manifest(far), GEAR, now=NOW)
+        self.assertEqual(doc["projects"][0]["filters"]["Ha"]["done_hours"], 0.0)
+
+    def test_sort_ties_on_date_break_by_name(self):
+        plans = [_plan(id="a", project_name="Zulu"), _plan(id="b", project_name="alpha")]
+        doc = build_shooting_document(plans, _manifest(_target(128.5, -45.0)), GEAR, now=NOW)
+        self.assertEqual([p["project_name"] for p in doc["projects"]], ["alpha", "Zulu"])
 
 
 class WriteAndPush(unittest.TestCase):
