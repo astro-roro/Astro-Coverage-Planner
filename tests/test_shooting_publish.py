@@ -210,7 +210,21 @@ class WriteAndPush(unittest.TestCase):
         cmd = calls[0]
         self.assertEqual(cmd[0], "rsync")
         self.assertEqual(cmd[-1], "u@h:/srv/live/shooting.json")
-        self.assertIn("ssh -o BatchMode=yes -i /k", cmd)
+        e = cmd[cmd.index("-e") + 1]
+        self.assertTrue(e.startswith("ssh -o BatchMode=yes -i /k"))
+        self.assertIn("UserKnownHostsFile=/x/known_hosts", e)
+        self.assertIn("StrictHostKeyChecking=accept-new", e)
+
+    def test_push_without_key_uses_default_ssh(self):
+        import shooting_publish as sp
+        calls = []
+        orig = sp.subprocess.run
+        sp.subprocess.run = lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0, "", ""))[1]
+        try:
+            push_document(Path("/x/shooting.json"), "u@h:/srv/live/shooting.json")
+        finally:
+            sp.subprocess.run = orig
+        self.assertEqual(calls[0][calls[0].index("-e") + 1], "ssh -o BatchMode=yes")
 
 
 class Endpoints(unittest.TestCase):
