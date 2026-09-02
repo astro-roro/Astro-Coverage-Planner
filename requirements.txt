@@ -13,3 +13,6 @@ xisf>=0.9.7
 # Production WSGI server used by the Docker image (see Dockerfile) instead
 # of Flask's dev server.
 waitress>=3.0.2
+# Used by the live-page publisher (scripts/publish_shooting.py, /api/publish/shooting)
+# to upload shooting.json over SFTP. See docs/sharing.md.
+paramiko>=3.4

@@ -13,8 +13,6 @@ import json
 import math
 import os
 import re
-import shlex
-import subprocess
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -228,20 +226,61 @@ def write_document(doc: dict, out_dir: Path) -> Path:
     return target
 
 
-def push_document(path: Path, dest: str, ssh_key: str | None = None) -> subprocess.CompletedProcess:
-    """rsync one file to dest. The push is always initiated from this machine.
+class PushResult:
+    """Mirror of the subset of subprocess.CompletedProcess the callers use."""
 
-    When ssh_key is given the run is self-contained: known hosts live next to
-    the document (so a container with no home directory still works) and the
-    first connection records the host key, after which it must not change.
+    def __init__(self, returncode: int, stderr: str = ""):
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def parse_dest(dest: str) -> tuple[str | None, str, int, str]:
+    """Split user@host:/remote/path (optional :port before the path is not
+    supported; use the ssh config for that). Returns (user, host, port, path)."""
+    if ":" not in dest or "/" not in dest.split(":", 1)[1]:
+        raise PublishConfigError(f"ACP_PUBLISH_DEST must look like user@host:/remote/path, got {dest!r}")
+    account, remote_path = dest.split(":", 1)
+    user, host = (account.split("@", 1) + [None])[:2] if "@" in account else (None, account)
+    if "@" in account:
+        user, host = account.split("@", 1)
+    return user, host, 22, remote_path
+
+
+def push_document(path: Path, dest: str, ssh_key: str | None = None) -> PushResult:
+    """Upload one file to dest over SFTP. The push is always initiated from
+    this machine. Uses paramiko rather than an ssh binary so it works inside
+    a container running as a uid with no passwd entry.
+
+    Host keys live in known_hosts next to the document. The first contact
+    records the server's key; a changed key is refused after that.
     """
-    ssh_cmd = "ssh -o BatchMode=yes"
-    if ssh_key:
-        known = Path(path).parent / "known_hosts"
-        ssh_cmd += (
-            f" -i {shlex.quote(ssh_key)}"
-            f" -o UserKnownHostsFile={shlex.quote(str(known))}"
-            " -o StrictHostKeyChecking=accept-new"
+    import paramiko  # imported here so the builder stays importable without it
+
+    user, host, port, remote_path = parse_dest(dest)
+    known = Path(path).parent / "known_hosts"
+    client = paramiko.SSHClient()
+    if known.exists():
+        client.load_host_keys(str(known))
+    else:
+        known.parent.mkdir(parents=True, exist_ok=True)
+        known.touch()
+        client.load_host_keys(str(known))
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            host, port=port, username=user, key_filename=ssh_key,
+            allow_agent=ssh_key is None, look_for_keys=ssh_key is None, timeout=20,
         )
-    cmd = ["rsync", "-az", "-e", ssh_cmd, str(path), dest]
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+        client.save_host_keys(str(known))
+        sftp = client.open_sftp()
+        try:
+            tmp_remote = remote_path + ".tmp"
+            sftp.put(str(path), tmp_remote)
+            sftp.posix_rename(tmp_remote, remote_path)
+        finally:
+            sftp.close()
+    except Exception as e:  # paramiko raises a wide family; report, do not crash the app
+        return PushResult(1, f"{type(e).__name__}: {e}")
+    finally:
+        client.close()
+    return PushResult(0, "")

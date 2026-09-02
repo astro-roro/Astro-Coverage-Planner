@@ -93,7 +93,7 @@ What it does:
 1. With `--rescan`, runs the manifest builder with the same arguments as the normal scan.
 2. Builds the JSON document via the same code path as `/api/public/shooting`.
 3. Writes `data/live/shooting.json` locally.
-4. Pushes that one file to the destination with rsync over SSH.
+4. Uploads that one file to the destination over SFTP, using paramiko so no ssh binary is needed in Docker.
 
 The page that reads the file lives in the site repo, `astro-roro/astrowithroro`, under `live/`. ACP owns the data and the contract above; the site owns the presentation. The site repo gitignores `live/shooting.json` so the pushed file never shows up as drift there.
 
@@ -101,12 +101,12 @@ Configuration, all environment variables, matching the rest of ACP:
 
 | Variable | Meaning |
 |---|---|
-| `ACP_PUBLISH_DEST` | rsync target, for example `linuxuser@100.106.46.47:/home/astrowithroro.com/public_html/live/shooting.json`. Publishing refuses to run when unset. |
+| `ACP_PUBLISH_DEST` | SFTP destination, for example `linuxuser@100.106.46.47:/home/astrowithroro.com/public_html/live/shooting.json`. Publishing refuses to run when unset. |
 | `ACP_PUBLISH_SSH_KEY` | Optional path to the key. Defaults to whatever SSH would use. |
 
-The push is initiated from the ACP machine, never from Canopus, which keeps to the rule that Canopus only ever receives. The web root on Canopus is owned by `astro2735` and the SSH user is `linuxuser`, so a one-off setup step creates `public_html/live/` owned by `linuxuser` with mode 755. After that rsync writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
+The push is initiated from the ACP machine, never from Canopus, which keeps to the rule that Canopus only ever receives. The web root on Canopus is owned by `astro2735` and the SSH user is `linuxuser`, so a one-off setup step creates `public_html/live/` owned by `linuxuser` with mode 755. After that the upload writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
 
-There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a rescan and returns the rsync result, so a "Publish now" button in the plan rail works without a terminal.
+There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a rescan and returns the upload result, so a "Publish now" button in the plan rail works without a terminal.
 
 ## The page itself
 
@@ -130,4 +130,4 @@ There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a re
 - `done_hours` takes the larger of manifest hours and `actual_hours`.
 - `last_imaged` is null and `last_imaged_nights_ago` is null when nothing matches.
 - Sort order is as specified.
-- `publish_shooting.py --dry-run` writes the JSON and does not call rsync. Without `ACP_PUBLISH_DEST` and without `--dry-run` it exits non-zero with a clear message.
+- `publish_shooting.py --dry-run` writes the JSON and does not connect anywhere. Without `ACP_PUBLISH_DEST` and without `--dry-run` it exits non-zero with a clear message.
