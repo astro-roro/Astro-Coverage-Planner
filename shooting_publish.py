@@ -229,9 +229,19 @@ def write_document(doc: dict, out_dir: Path) -> Path:
 
 
 def push_document(path: Path, dest: str, ssh_key: str | None = None) -> subprocess.CompletedProcess:
-    """rsync one file to dest. The push is always initiated from this machine."""
+    """rsync one file to dest. The push is always initiated from this machine.
+
+    When ssh_key is given the run is self-contained: known hosts live next to
+    the document (so a container with no home directory still works) and the
+    first connection records the host key, after which it must not change.
+    """
     ssh_cmd = "ssh -o BatchMode=yes"
     if ssh_key:
-        ssh_cmd += f" -i {shlex.quote(ssh_key)}"
+        known = Path(path).parent / "known_hosts"
+        ssh_cmd += (
+            f" -i {shlex.quote(ssh_key)}"
+            f" -o UserKnownHostsFile={shlex.quote(str(known))}"
+            " -o StrictHostKeyChecking=accept-new"
+        )
     cmd = ["rsync", "-az", "-e", ssh_cmd, str(path), dest]
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
