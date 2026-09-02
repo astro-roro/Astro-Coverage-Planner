@@ -486,5 +486,37 @@ class TestLegacyNaNHealingOnLoad(unittest.TestCase):
         self.assertEqual(r.status_code, 204, r.get_data(as_text=True))
 
 
+class TestPublicPageFields(unittest.TestCase):
+    """visibility / is_current / public_blurb feed the live page publisher
+    (docs/specs/shooting-page.md). Absent means private, so a bad value
+    must be rejected rather than coerced."""
+
+    def setUp(self):
+        _fresh_plans_path()
+        self.client = app.test_client()
+
+    def test_visibility_accepts_private_and_public(self):
+        for v in ("private", "public"):
+            r = self.client.post("/api/plans", json=_valid_plan_payload(plan_id=v, visibility=v))
+            self.assertEqual(r.status_code, 201, v)
+
+    def test_visibility_rejects_other_values(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(visibility="friends"))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("visibility", r.get_json()["error"])
+
+    def test_is_current_must_be_bool(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(is_current="yes"))
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/plans", json=_valid_plan_payload(is_current=True))
+        self.assertEqual(r.status_code, 201)
+
+    def test_public_blurb_capped_at_500(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(public_blurb="x" * 501))
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/plans", json=_valid_plan_payload(public_blurb="x" * 500))
+        self.assertEqual(r.status_code, 201)
+
+
 if __name__ == "__main__":
     unittest.main()
