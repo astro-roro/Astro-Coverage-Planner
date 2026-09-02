@@ -304,7 +304,13 @@ import {
   catalogObjectMatchesTokens,
   targetMatchesSearch,
 } from "./search.mjs";
-import { describeInitError } from "./init-error.mjs";
+import {
+  ALADIN_INIT_TIMEOUT_MS,
+  describeInitError,
+  startupError,
+  webgl2Available,
+  withTimeout,
+} from "./init-error.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -5020,7 +5026,35 @@ function positionCatTooltip() {
 }
 
 function init() {
-  A.init.then(async () => {
+  const showInitError = err => {
+    // Without this, any exception during startup left the "Loading
+    // targets…" placeholder on screen forever with nothing but an
+    // unhandled rejection in devtools. See GitHub issue #46.
+    console.error("ACP failed to start:", err);
+    const panel = document.getElementById("panelBody");
+    if (panel) panel.innerHTML = `<div class="panel-error">${esc(describeInitError(err))}</div>`;
+  };
+
+  // Everything below hangs off Aladin Lite. Name the two ways it fails to
+  // even begin, because neither produces an exception on its own: the CDN
+  // script never arrived (A is undefined), or the browser has no WebGL2 and
+  // A.init simply never settles.
+  if (typeof A === "undefined" || !A || !A.init) {
+    showInitError(startupError("aladin-missing"));
+    return;
+  }
+  if (!webgl2Available()) {
+    showInitError(startupError("webgl2-missing"));
+    return;
+  }
+
+  const aladinReady = withTimeout(
+    A.init,
+    ALADIN_INIT_TIMEOUT_MS,
+    startupError("aladin-timeout", { ms: ALADIN_INIT_TIMEOUT_MS }),
+  );
+
+  aladinReady.then(async () => {
     aladin = A.aladin("#aladin-lite-div", {
       fov: 180,
       projection: "AIT",
@@ -5243,14 +5277,7 @@ function init() {
     // If planning mode was remembered from last session, switch now (after
     // manifest + plans loaded so the right panel renders correctly).
     if (planningMode) setPlanningMode(true);
-  }).catch(err => {
-    // Without this, any exception during startup left the "Loading
-    // targets…" placeholder on screen forever with nothing but an
-    // unhandled rejection in devtools — see GitHub issue #46.
-    console.error("ACP failed to start:", err);
-    const panel = document.getElementById("panelBody");
-    if (panel) panel.innerHTML = `<div class="panel-error">${esc(describeInitError(err))}</div>`;
-  });
+  }).catch(showInitError);
 }
 
 function renderTelescopeLegend(telescopes) {
