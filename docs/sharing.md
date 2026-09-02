@@ -58,3 +58,47 @@ These exist mostly to bound memory usage if a malformed manifest somehow slips t
 - Agree on a labelling convention with your group (`dave`, `sara`, `astrocollective_dave`) so the legend stays readable when you have several friends loaded.
 - The sanitiser is deterministic — re-running it on an updated manifest produces a stable diff, useful if you're versioning shared manifests in a private git repo.
 - Friend manifests participate in the [gap-finder](api.md#gap-finder) — their hours count toward the "have" side, so you can find regions *your group* hasn't covered together.
+
+## Publishing a live page
+
+Separate from friend manifests: this pushes a small public summary of your own current projects to a web page you host, so people can see what you are shooting. Spec and data contract: [specs/shooting-page.md](specs/shooting-page.md). Only plans you mark public are ever included, and the output goes through the same path tripwire as the friend sanitiser.
+
+### Marking a plan public
+
+Once `ACP_PUBLISH_DEST` is set (below) and ACP restarted, the plan editor gains a "Public page" section with three fields. Without it, nothing in the UI changes and nothing is ever published.
+
+- **Visibility**: private (default) or public. Nothing leaves your machine unless this is public.
+- **Current project**: shows a "current" badge on the page. More than one is fine.
+- **Why I'm shooting this**: a short blurb, up to 500 characters, shown on the card.
+
+`GET /api/public/shooting` returns exactly what would be published, so you can check it in a browser first.
+
+### Configuration
+
+| Variable | Meaning |
+|---|---|
+| `ACP_PUBLISH_DEST` | rsync target for the JSON file, for example `user@host:/var/www/site/live/shooting.json`. Publishing refuses to run when unset. |
+| `ACP_PUBLISH_SSH_KEY` | Optional path to an SSH key. Defaults to whatever SSH would use. |
+| `ACP_LIVE_OUT_DIR` | Where the JSON is written locally before pushing. Defaults to `data/live/`. |
+
+The destination folder on the server must be writable by the SSH user, since the push is a plain rsync with no sudo. ACP only ever pushes; the server never connects back.
+
+### Running it
+
+```bash
+python scripts/publish_shooting.py --rescan    # rebuild the manifest, then publish
+python scripts/publish_shooting.py             # publish from the current manifest
+python scripts/publish_shooting.py --dry-run   # write data/live/shooting.json and stop
+```
+
+The page can only be as current as your last archive scan, so run it after the rig has finished for the night. A cron entry on the machine that runs ACP:
+
+```
+15 7 * * * cd /path/to/acp && .venv/bin/python scripts/publish_shooting.py --rescan >> data/live/publish.log 2>&1
+```
+
+On Windows, the same command in Task Scheduler. `POST /api/publish/shooting` does the same thing without a rescan, for a "publish now" from anything that can reach the API.
+
+### The page itself
+
+ACP ships the data, not the page. A reference page (plain HTML and JS, no build step) lives in the `astro-roro/astrowithroro` repo under `live/`. It reads `shooting.json` from its own folder and fetches field thumbnails from CDS hips2fits in the browser, so no images are stored or pushed.
