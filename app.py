@@ -86,6 +86,8 @@ MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manif
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+# Where the live-page publisher writes shooting.json before rsyncing it.
+LIVE_OUT_DIR = Path(os.environ.get("ACP_LIVE_OUT_DIR", REPO_ROOT / "data" / "live"))
 SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
 DESTINATIONS_PATH = Path(os.environ.get(
     "DESTINATIONS_PATH", REPO_ROOT / "data" / "destinations.json"))
@@ -2782,6 +2784,38 @@ def api_plan(plan_id: str):
     plans[idx] = payload
     save_plans({"version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
+
+
+def _build_live_document() -> dict:
+    import shooting_publish as sp
+    plans = load_plans().get("plans", [])
+    return sp.build_shooting_document(plans, load_manifest(), load_gear())
+
+
+@app.route("/api/public/shooting")
+def api_public_shooting():
+    """Preview of the document the publisher pushes to astrowithroro.com/live.
+    Only plans with visibility == "public" appear. See docs/specs/shooting-page.md."""
+    return jsonify(_build_live_document())
+
+
+@app.route("/api/publish/shooting", methods=["POST"])
+def api_publish_shooting():
+    """Write data/live/shooting.json and rsync it to ACP_PUBLISH_DEST.
+    400 when the destination is unset, 502 when rsync fails."""
+    import shooting_publish as sp
+    try:
+        dest = sp.resolve_dest()
+    except sp.PublishConfigError as e:
+        return jsonify({"error": str(e)}), 400
+    doc = _build_live_document()
+    path = sp.write_document(doc, LIVE_OUT_DIR)
+    result = sp.push_document(path, dest, os.environ.get("ACP_PUBLISH_SSH_KEY") or None)
+    ok = result.returncode == 0
+    if not ok:
+        logging.warning("live publish failed: %s", _safe_log(result.stderr))
+    body = {"ok": ok, "dest": dest, "projects": len(doc["projects"]), "stderr": (result.stderr or "")[-2000:]}
+    return jsonify(body), (200 if ok else 502)
 
 
 @app.route("/api/target-overrides", methods=["GET", "POST"])
