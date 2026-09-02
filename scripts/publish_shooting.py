@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Publish the public live document to astrowithroro.com/live.
+"""Publish the public live document to a static web page.
 
     python scripts/publish_shooting.py --rescan    rebuild the manifest first, then publish
     python scripts/publish_shooting.py             publish from the current manifest

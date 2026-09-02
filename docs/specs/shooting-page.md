@@ -29,7 +29,7 @@ Three optional fields on a plan, all validated in `_validate_plan_payload` and e
 | `is_current` | bool | `false` | Shows the "current" badge. More than one current plan is allowed. |
 | `public_blurb` | string, max 500 chars | `""` | Rohan's "why I'm shooting this" text. Plain text, no markup. |
 
-A plan with no `visibility` field is private. The UI shows a visibility toggle and the blurb field only when the plan is public, so the default state of every existing plan is unchanged and nothing leaks from plans created before this feature.
+A plan with no `visibility` field is private. The whole section is shown only when the server reports publishing is configured (`GET /api/publish/config`, true when `ACP_PUBLISH_DEST` is set), and within it the blurb and current fields appear only when the plan is public. A stock install looks unchanged, every existing plan stays private, and the wording is generic: the option is just "Public", with no site named.
 
 ## The published JSON
 

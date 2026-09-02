@@ -2792,9 +2792,17 @@ def _build_live_document() -> dict:
     return sp.build_shooting_document(plans, load_manifest(), load_gear())
 
 
+@app.route("/api/publish/config")
+def api_publish_config():
+    """Tells the frontend whether live-page publishing is configured. The
+    plan editor only shows the Public page section when it is, so a stock
+    install looks the same as before this feature existed."""
+    return jsonify({"live_page_enabled": bool((os.environ.get("ACP_PUBLISH_DEST") or "").strip())})
+
+
 @app.route("/api/public/shooting")
 def api_public_shooting():
-    """Preview of the document the publisher pushes to astrowithroro.com/live.
+    """Preview of the document the live-page publisher pushes.
     Only plans with visibility == "public" appear. See docs/specs/shooting-page.md."""
     return jsonify(_build_live_document())
 
