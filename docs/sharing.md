@@ -83,6 +83,18 @@ Once `ACP_PUBLISH_DEST` is set (below) and ACP restarted, the plan editor gains 
 
 The destination folder on the server must be writable by the SSH user, since the push is a plain rsync with no sudo. ACP only ever pushes; the server never connects back.
 
+When `ACP_PUBLISH_SSH_KEY` is set, ssh keeps its known hosts in `known_hosts` next to the JSON in the output folder and accepts the server's key on first contact, so it works in a container with no home directory. In Docker, mount a dedicated key read-only and point the variable at it:
+
+```yaml
+    environment:
+      ACP_PUBLISH_DEST: "user@your-web-host:/var/www/site/live/shooting.json"
+      ACP_PUBLISH_SSH_KEY: "/run/secrets/acp_publish_key"
+    volumes:
+      - "/path/on/host/acp_publish_key:/run/secrets/acp_publish_key:ro"
+```
+
+The key file must be readable by the container user and no one else, or ssh refuses it.
+
 ### Running it
 
 ```bash
