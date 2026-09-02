@@ -7,7 +7,10 @@ name: Dependabot auto-merge
 # GitHub to enable auto-merge on it. GitHub then merges the PR as soon
 # as every pending check completes successfully — in practice, the
 # Tests workflow that runs on the same PR. If Tests fails, the PR
-# stays open for me to inspect.
+# stays open for me to inspect (needs-attention.yml assigns me to it).
+#
+# Major bumps are not auto-merged; instead the owner is assigned so the
+# PR shows up as a "participating" notification.
 #
 # Requires the repo setting "Allow auto-merge" to be enabled
 # (Settings → General → Pull Requests). Without that, the gh CLI call
@@ -41,3 +44,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR_URL"
+
+      - name: Assign owner for major updates
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr edit "$PR_URL" --add-assignee astro-roro
