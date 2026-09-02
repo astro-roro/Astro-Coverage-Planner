@@ -2719,6 +2719,20 @@ def _validate_plan_payload(payload: dict) -> str | None:
                     return f"filter_goals[{fname!r}].actual_hours must be a number"
                 if not math.isfinite(ah) or ah < 0:
                     return f"filter_goals[{fname!r}].actual_hours must be ≥ 0"
+    # Live-page fields (docs/specs/shooting-page.md). Absent means private,
+    # so anything other than the two known values is rejected, never coerced.
+    vis = payload.get("visibility")
+    if vis is not None and vis not in ("private", "public"):
+        return "visibility must be 'private' or 'public'"
+    cur = payload.get("is_current")
+    if cur is not None and not isinstance(cur, bool):
+        return "is_current must be a boolean"
+    blurb = payload.get("public_blurb")
+    if blurb is not None:
+        if not isinstance(blurb, str):
+            return "public_blurb must be a string"
+        if len(blurb) > 500:
+            return "public_blurb must be 500 characters or fewer"
     return None
 
 
