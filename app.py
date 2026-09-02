@@ -2815,14 +2815,21 @@ def api_publish_shooting():
     try:
         dest = sp.resolve_dest()
     except sp.PublishConfigError as e:
-        return jsonify({"error": str(e)}), 400
+        # Fixed text on the wire; the detail goes to the log.
+        logging.warning("live publish refused: %s", _safe_log(str(e)))
+        return jsonify({"error": "ACP_PUBLISH_DEST is not set on the server"}), 400
     doc = _build_live_document()
     path = sp.write_document(doc, LIVE_OUT_DIR)
     result = sp.push_document(path, dest, os.environ.get("ACP_PUBLISH_SSH_KEY") or None)
     ok = result.returncode == 0
     if not ok:
         logging.warning("live publish failed: %s", _safe_log(result.stderr))
-    body = {"ok": ok, "dest": dest, "projects": len(doc["projects"]), "stderr": (result.stderr or "")[-2000:]}
+    body = {
+        "ok": ok,
+        "dest": dest,
+        "projects": len(doc["projects"]),
+        "error": None if ok else "upload failed; see the ACP server log for the reason",
+    }
     return jsonify(body), (200 if ok else 502)
 
 

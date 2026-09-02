@@ -233,6 +233,49 @@ class WriteAndPush(unittest.TestCase):
         self.assertIn(("rename", "/srv/live/shooting.json.tmp", "/srv/live/shooting.json"), events)
         self.assertIn(("save", str(td / "known_hosts")), events)
         self.assertTrue((td / "known_hosts").exists())
+        self.assertEqual([e for e in events if e[0] == "policy"], [("policy", "_FirstContactOnly")])
+
+    def test_first_contact_policy_refuses_once_a_host_is_known(self):
+        import paramiko
+        import shooting_publish as sp
+
+        # Drive the policy through a real SSHClient host-key store.
+        class Client:
+            def __init__(self): self._hk = paramiko.HostKeys()
+            def get_host_keys(self): return self._hk
+            def load_host_keys(self, f): pass
+            def set_missing_host_key_policy(self, p): self.policy = p
+            def connect(self, host, **kw):
+                self.policy.missing_host_key(self, host, paramiko.RSAKey.generate(1024))
+            def save_host_keys(self, f): pass
+            def open_sftp(self):
+                class S:
+                    def put(self, a, b): pass
+                    def posix_rename(self, a, b): pass
+                    def close(self): pass
+                return S()
+            def close(self): pass
+
+        td = Path(tempfile.mkdtemp())
+        (td / "shooting.json").write_text("{}")
+        orig = paramiko.SSHClient
+        paramiko.SSHClient = Client
+        try:
+            first = sp.push_document(td / "shooting.json", "u@h1:/srv/x.json", ssh_key="/k")
+        finally:
+            paramiko.SSHClient = orig
+        self.assertEqual(first.returncode, 0, first.stderr)
+
+        # Same store, second unknown host: must be refused.
+        seeded = Client()
+        seeded.get_host_keys().add("h1", "ssh-rsa", paramiko.RSAKey.generate(1024))
+        paramiko.SSHClient = lambda: seeded
+        try:
+            second = sp.push_document(td / "shooting.json", "u@h2:/srv/x.json", ssh_key="/k")
+        finally:
+            paramiko.SSHClient = orig
+        self.assertEqual(second.returncode, 1)
+        self.assertIn("refusing", second.stderr)
 
     def test_push_document_reports_failure_without_raising(self):
         import paramiko
@@ -335,7 +378,9 @@ class Endpoints(unittest.TestCase):
             os.environ.pop("ACP_PUBLISH_DEST", None)
         self.assertEqual(r.status_code, 502)
         self.assertFalse(r.get_json()["ok"])
-        self.assertIn("refused", r.get_json()["stderr"])
+        # The reason stays in the server log, not on the wire.
+        self.assertNotIn("refused", json.dumps(r.get_json()))
+        self.assertIn("server log", r.get_json()["error"])
 
 
 class Cli(unittest.TestCase):
