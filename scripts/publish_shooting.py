@@ -5,7 +5,7 @@
     python scripts/publish_shooting.py             publish from the current manifest
     python scripts/publish_shooting.py --dry-run   write data/live/shooting.json and stop
 
-The rsync destination comes from ACP_PUBLISH_DEST and an optional key from
+The SFTP destination comes from ACP_PUBLISH_DEST and an optional key from
 ACP_PUBLISH_SSH_KEY. See docs/specs/shooting-page.md and docs/sharing.md.
 """
 from __future__ import annotations
