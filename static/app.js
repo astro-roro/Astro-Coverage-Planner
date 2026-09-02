@@ -5904,6 +5904,24 @@ function renderPlanEditor(plan) {
         </label>
       </fieldset>
 
+      <fieldset>
+        <legend>Public page</legend>
+        <label><span class="lab">Visibility</span>
+          <select id="f_visibility">
+            <option value="private" ${(editingPlan.visibility || "private") === "private" ? "selected" : ""}>Private</option>
+            <option value="public"  ${editingPlan.visibility === "public" ? "selected" : ""}>Public (shown on astrowithroro.com/live)</option>
+          </select>
+        </label>
+        <div id="f_public_extra" ${editingPlan.visibility === "public" ? "" : "hidden"}>
+          <label><span class="lab">Current project</span>
+            <input type="checkbox" id="f_is_current" ${editingPlan.is_current ? "checked" : ""}>
+          </label>
+          <label><span class="lab">Why I'm shooting this</span>
+            <textarea id="f_public_blurb" maxlength="500" rows="3">${esc(editingPlan.public_blurb || "")}</textarea>
+          </label>
+        </div>
+      </fieldset>
+
       <div class="plan-editor-actions">
         <button type="button" id="planSave" class="btn-primary">Save</button>
         <button type="button" id="planCancel">Cancel</button>
@@ -6002,6 +6020,13 @@ function renderPlanEditor(plan) {
     }
   });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
+  panel.querySelector("#f_visibility")?.addEventListener("change", e => {
+    editingPlan.visibility = e.target.value;
+    const extra = panel.querySelector("#f_public_extra");
+    if (extra) extra.hidden = e.target.value !== "public";
+  });
+  panel.querySelector("#f_is_current")?.addEventListener("change", e => { editingPlan.is_current = !!e.target.checked; });
+  panel.querySelector("#f_public_blurb")?.addEventListener("input", e => { editingPlan.public_blurb = e.target.value.slice(0, 500); });
   panel.querySelector("#f_minalt")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value); if (isFinite(v)) editingPlan.min_altitude_deg = v;
   });
