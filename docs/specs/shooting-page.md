@@ -66,7 +66,7 @@ Rules:
 - Only plans with `visibility == "public"` are included. `is_current` on a private plan does not publish it.
 - Coordinates are rounded to 0.01 degrees. Hours are rounded to 0.1. Dates are dates, never datetimes.
 - No plan id, guid, gear ids, camera model, sub-exposure, site, or timestamps other than the ones above.
-- The document is run through `validate_no_paths` from `scripts/sanitise_manifest.py` before it is written. A leak raises and nothing is published.
+- The document is run through `validate_no_paths` from `scripts/sanitise_manifest.py` before it is written, and the three free-text fields (project name, target name, blurb) get a stricter unanchored scan for drive letters, system directories, UNC paths and image file extensions anywhere in the string. A hit raises and nothing is published.
 - Sorted by `last_imaged` descending, nulls last, then by `project_name`.
 
 ## Matching a plan to logged data
@@ -85,14 +85,14 @@ Plans do not know which manifest targets are theirs. The publisher matches them 
 ```
 python scripts/publish_shooting.py --rescan   # rebuild manifest first, then publish
 python scripts/publish_shooting.py            # publish from the current manifest
-python scripts/publish_shooting.py --dry-run  # write to data/shooting/ and stop
+python scripts/publish_shooting.py --dry-run  # write to data/live/ and stop
 ```
 
 What it does:
 
 1. With `--rescan`, runs the manifest builder with the same arguments as the normal scan.
 2. Builds the JSON document via the same code path as `/api/public/shooting`.
-3. Writes `data/shooting/shooting.json` locally.
+3. Writes `data/live/shooting.json` locally.
 4. Pushes that one file to the destination with rsync over SSH.
 
 The page that reads the file lives in the site repo, `astro-roro/astrowithroro`, under `live/`. ACP owns the data and the contract above; the site owns the presentation. The site repo gitignores `live/shooting.json` so the pushed file never shows up as drift there.
