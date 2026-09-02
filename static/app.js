@@ -93,6 +93,7 @@ let _pressInfo = null;        // {x, y, t, dragged} — last mousedown over the 
 let planningMode = false;      // false = Coverage mode, true = Planning mode
 let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_goals, priority, ...}]
 let gear = { telescopes: [], cameras: [] };  // /api/gear response (v2)
+let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on the server
 let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
@@ -5259,7 +5260,7 @@ function init() {
     // Sydney fallback in `currentSite`).
     await Promise.all([
       loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides(),
-      initSites(), catalogReady,
+      loadPublishConfig(), initSites(), catalogReady,
     ]);
 
     // Restore previous session state before the first draw so the map
@@ -5306,6 +5307,14 @@ function renderTelescopeLegend(telescopes) {
 }
 
 // === Planner mode ===
+
+async function loadPublishConfig() {
+  try {
+    const r = await fetch("/api/publish/config");
+    const c = await r.json();
+    livePageEnabled = !!(c && c.live_page_enabled);
+  } catch { livePageEnabled = false; }
+}
 
 async function loadGear() {
   try {
@@ -5904,12 +5913,12 @@ function renderPlanEditor(plan) {
         </label>
       </fieldset>
 
-      <fieldset>
+      ${livePageEnabled ? `<fieldset>
         <legend>Public page</legend>
         <label><span class="lab">Visibility</span>
           <select id="f_visibility">
             <option value="private" ${(editingPlan.visibility || "private") === "private" ? "selected" : ""}>Private</option>
-            <option value="public"  ${editingPlan.visibility === "public" ? "selected" : ""}>Public (shown on astrowithroro.com/live)</option>
+            <option value="public"  ${editingPlan.visibility === "public" ? "selected" : ""}>Public</option>
           </select>
         </label>
         <div id="f_public_extra" ${editingPlan.visibility === "public" ? "" : "hidden"}>
@@ -5920,7 +5929,7 @@ function renderPlanEditor(plan) {
             <textarea id="f_public_blurb" maxlength="500" rows="3">${esc(editingPlan.public_blurb || "")}</textarea>
           </label>
         </div>
-      </fieldset>
+      </fieldset>` : ""}
 
       <div class="plan-editor-actions">
         <button type="button" id="planSave" class="btn-primary">Save</button>

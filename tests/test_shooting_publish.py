@@ -244,6 +244,15 @@ class Endpoints(unittest.TestCase):
         self.assertEqual(body["projects"][0]["project_name"], "Vela")
         self.assertEqual(body["projects"][0]["filters"]["Ha"]["done_hours"], 2.5)
 
+    def test_publish_config_reflects_env(self):
+        os.environ.pop("ACP_PUBLISH_DEST", None)
+        self.assertFalse(self.client.get("/api/publish/config").get_json()["live_page_enabled"])
+        os.environ["ACP_PUBLISH_DEST"] = "u@h:/srv/live/shooting.json"
+        try:
+            self.assertTrue(self.client.get("/api/publish/config").get_json()["live_page_enabled"])
+        finally:
+            os.environ.pop("ACP_PUBLISH_DEST", None)
+
     def test_publish_without_dest_is_400(self):
         os.environ.pop("ACP_PUBLISH_DEST", None)
         r = self.client.post("/api/publish/shooting")

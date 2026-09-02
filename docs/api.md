@@ -41,6 +41,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/ts-templates` | NINA TS plugin's exposure templates (if installed) |
 | `POST /api/sync` | Build a NINA Target Scheduler import zip from current plans |
 | `GET /api/sync/download/<filename>` | Download a zip previously built by `/api/sync` |
+| `GET /api/publish/config` | `{"live_page_enabled": bool}`, true when `ACP_PUBLISH_DEST` is set; the plan editor shows its Public page section only then |
 | `GET /api/public/shooting` | Sanitised document of public plans for the live page at astrowithroro.com/live ([spec](specs/shooting-page.md)) |
 | `POST /api/publish/shooting` | Write that document to `data/live/` and rsync it to `ACP_PUBLISH_DEST` |
 | `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest) — drives the Extensions rail accordion and the core-button swap mechanism |
