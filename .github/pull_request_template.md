@@ -1,6 +1,7 @@
 ## Summary
 
 <!-- 1-3 bullets on what changed and why -->
+<!-- Link issues with `Refs #N`. Only use `Fixes #N` when we have verified the fix ourselves: GitHub closes the issue on merge, before the reporter has confirmed. -->
 
 ## Smoke check
 
