@@ -42,6 +42,7 @@ import hashlib
 import json
 import logging
 import math
+import mimetypes
 import os
 import re
 import sqlite3
@@ -113,6 +114,14 @@ _MOC_ALLOWED_HOSTS = frozenset({"alasky.cds.unistra.fr", "alasky.u-strasbg.fr"})
 _MOC_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 _MOC_FETCH_TIMEOUT_S = 30
 _MOC_CACHE_TTL_S = 30 * 24 * 3600  # 30 days
+
+# Browsers refuse to run a module script unless it arrives as JavaScript.
+# Flask picks the Content-Type from Python's mimetypes table, and on Windows
+# that table also absorbs registry entries, where some programs register
+# .mjs and .js as text/plain. Pin both so the front end loads everywhere
+# (issue #46).
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("text/javascript", ".js")
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
