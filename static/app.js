@@ -275,6 +275,78 @@ function buildSkyControl() {
   syncSkyControl(DEFAULT_SURVEY_ID);
 }
 
+// Aladin Lite redraws the sky on every animation frame, forever, even when
+// nothing is moving. On a 120 Hz retina display that is 120 WebGL frames a
+// second for a static image, and it showed up as a third of an M2 Max GPU
+// while the tab just sat there (profiled 2026-09-03). The library has no idle
+// path: View.redraw() calls wasm.update(), then reschedules itself through a
+// requestAnimationFrame reference it captured at load, so patching window
+// does nothing. It does, however, reschedule through this.redrawClbk, an
+// instance property, so we can wrap that.
+//
+// While the view is busy (tiles loading, inertia, pan, zoom, or an overlay
+// asked for a redraw) the wrapper runs the real frame straight away. When idle
+// it defers the next frame by IDLE_FRAME_MS instead, dropping to ten frames a
+// second. Any pointer, wheel, or key input on the map bumps it back to full
+// rate at once, and holds it there for HOT_WINDOW_MS so the first frames of a
+// drag are not late.
+// Aladin's pix2world destructures the wasm result without checking it, so a
+// pixel off the sky (the black corners outside the Aitoff ellipse) throws
+// "can't access property Symbol.iterator" instead of returning undefined,
+// which is what every caller in the library already tests for. Firefox
+// surfaces it at startup when the cursor happens to sit in a corner as the
+// canvas appears. This wraps the prototype method so it returns undefined for
+// off-sky pixels. It cannot reach a throw that happens inside the constructor
+// itself, since the class is not exported until an instance exists.
+function guardAladinPix2world(al) {
+  const proto = Object.getPrototypeOf(al);
+  const orig = proto?.pix2world;
+  if (typeof orig !== "function" || orig._acpGuarded) return;
+  const guarded = function pix2world(x, y, frame) {
+    try { return orig.call(this, x, y, frame); } catch { return undefined; }
+  };
+  guarded._acpGuarded = true;
+  proto.pix2world = guarded;
+}
+
+const IDLE_FRAME_MS = 100;
+const HOT_WINDOW_MS = 400;
+function installAladinIdleThrottle(al) {
+  const view = al?.view;
+  const real = view?.redrawClbk;
+  const wasm = view?.wasm;
+  if (typeof real !== "function" || typeof wasm?.isRendering !== "function") {
+    console.warn("Aladin idle throttle not installed: view internals changed");
+    return;
+  }
+  let hotUntil = 0;
+  let pending = 0;
+  const wake = () => {
+    hotUntil = performance.now() + HOT_WINDOW_MS;
+    if (pending) {
+      clearTimeout(pending);
+      pending = 0;
+      real(performance.now());
+    }
+  };
+  view.redrawClbk = function throttledRedraw(t) {
+    let busy = true;
+    try {
+      busy = wasm.isRendering() || view.needRedraw || view.moving || !!view.pan
+        || Math.abs(view.zoomDelta || 0) > 0.001 || t < hotUntil;
+    } catch { /* treat as busy */ }
+    if (busy) {
+      real(t);
+    } else {
+      pending = setTimeout(() => { pending = 0; real(performance.now()); }, IDLE_FRAME_MS);
+    }
+  };
+  const el = al.aladinDiv || document.getElementById("aladin-lite-div");
+  for (const ev of ["pointerdown", "pointermove", "wheel", "keydown", "touchstart"]) {
+    el.addEventListener(ev, wake, { passive: true });
+  }
+}
+
 // What to hand aladin.setImageSurvey for a survey id: the id itself, or a
 // HiPS object carrying a colour map for single-band surveys that would
 // otherwise render in greyscale.
@@ -5212,6 +5284,9 @@ function init() {
       showFrame: true,
       target: "galactic center",
     });
+
+    installAladinIdleThrottle(aladin);
+    guardAladinPix2world(aladin);
 
     overlay = A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
     aladin.addOverlay(overlay);
