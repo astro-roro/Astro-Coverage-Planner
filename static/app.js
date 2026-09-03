@@ -5060,9 +5060,11 @@ function init() {
       fov: 180,
       projection: "AIT",
       cooFrame: "ICRSd",
-      // DSS2/red (grayscale, single-channel) is ~1/3 the bandwidth and decode cost
-      // of DSS2/color. Switch via Aladin's layers control if you want a colour survey.
-      survey: "P/DSS2/red",
+      // Mellinger is a natural-colour optical panorama with tiny tiles, so it is
+      // both prettier and lighter than DSS2. It goes soft when zoomed into a
+      // single target; users who want detail can pick DSS2 from the layers
+      // control and ACP remembers the choice.
+      survey: "P/Mellinger",
       showReticle: false,
       showZoomControl: true,
       showFullscreenControl: true,
