@@ -290,6 +290,25 @@ function buildSkyControl() {
 // second. Any pointer, wheel, or key input on the map bumps it back to full
 // rate at once, and holds it there for HOT_WINDOW_MS so the first frames of a
 // drag are not late.
+// Aladin's pix2world destructures the wasm result without checking it, so a
+// pixel off the sky (the black corners outside the Aitoff ellipse) throws
+// "can't access property Symbol.iterator" instead of returning undefined,
+// which is what every caller in the library already tests for. Firefox
+// surfaces it at startup when the cursor happens to sit in a corner as the
+// canvas appears. This wraps the prototype method so it returns undefined for
+// off-sky pixels. It cannot reach a throw that happens inside the constructor
+// itself, since the class is not exported until an instance exists.
+function guardAladinPix2world(al) {
+  const proto = Object.getPrototypeOf(al);
+  const orig = proto?.pix2world;
+  if (typeof orig !== "function" || orig._acpGuarded) return;
+  const guarded = function pix2world(x, y, frame) {
+    try { return orig.call(this, x, y, frame); } catch { return undefined; }
+  };
+  guarded._acpGuarded = true;
+  proto.pix2world = guarded;
+}
+
 const IDLE_FRAME_MS = 100;
 const HOT_WINDOW_MS = 400;
 function installAladinIdleThrottle(al) {
@@ -5267,6 +5286,7 @@ function init() {
     });
 
     installAladinIdleThrottle(aladin);
+    guardAladinPix2world(aladin);
 
     overlay = A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
     aladin.addOverlay(overlay);
