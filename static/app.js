@@ -5864,14 +5864,14 @@ function renderPlanEditor(plan) {
 
       <fieldset>
         <legend>Mosaic</legend>
-        <div class="coord-row">
-          <label style="flex:1"><span class="lab">Rows</span>
+        <div class="coord-row mosaic-row">
+          <label><span class="lab">Rows</span>
             <input type="number" id="f_mrows" min="1" max="20" step="1" value="${mos.rows}">
           </label>
-          <label style="flex:1"><span class="lab">Cols</span>
+          <label><span class="lab">Cols</span>
             <input type="number" id="f_mcols" min="1" max="20" step="1" value="${mos.cols}">
           </label>
-          <label style="flex:1"><span class="lab">Overlap %</span>
+          <label><span class="lab">Overlap %</span>
             <input type="number" id="f_moverlap" min="0" max="90" step="1" value="${mos.overlap_pct}">
           </label>
         </div>

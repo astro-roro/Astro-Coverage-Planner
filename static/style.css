@@ -709,6 +709,12 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
   gap: 6px;
   align-items: center;
 }
+/* Three equal columns that share the rail width. The default 110px input
+   width does not fit three across inside the 380px rail, which clipped the
+   Overlap spinner on the right. */
+.plan-form .mosaic-row label { flex: 1 1 0; min-width: 0; }
+.plan-form .mosaic-row label > span.lab { min-width: 0; }
+.plan-form .mosaic-row input[type="number"] { width: 100%; }
 .plan-form .coord-row .hms {
   color: #78839a;
   font-family: "SF Mono", Monaco, Consolas, monospace;
