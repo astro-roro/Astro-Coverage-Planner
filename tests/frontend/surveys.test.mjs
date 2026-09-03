@@ -84,3 +84,23 @@ describe("surveyCaption", () => {
     assert.match(c.text, /Aladin/);
   });
 });
+
+describe("surveyRenderOptions", () => {
+  it("gives H-alpha a red colour map so the single band is not greyscale", async () => {
+    const { surveyRenderOptions } = await import("../../static/surveys.mjs");
+    const r = surveyRenderOptions("CDS/P/Finkbeiner");
+    assert.equal(r.colormap, "redtemperature");
+    assert.equal(r.imgFormat, "fits");
+  });
+
+  it("returns null for surveys that render fine from the plain id", async () => {
+    const { surveyRenderOptions } = await import("../../static/surveys.mjs");
+    assert.equal(surveyRenderOptions("CDS/P/Mellinger/color"), null);
+    assert.equal(surveyRenderOptions("CDS/P/DSS2/red"), null);
+  });
+
+  it("returns a fresh object each time", async () => {
+    const { surveyRenderOptions } = await import("../../static/surveys.mjs");
+    assert.notEqual(surveyRenderOptions("CDS/P/Finkbeiner"), surveyRenderOptions("CDS/P/Finkbeiner"));
+  });
+});

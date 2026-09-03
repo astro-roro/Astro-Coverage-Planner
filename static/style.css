@@ -121,6 +121,18 @@ body {
 }
 .sky-chip.full { border-color: #2f6b45; background: #15301f; color: #9fe0b5; }
 .sky-chip.partial { border-color: #7a5a1f; background: #332611; color: #f0c674; }
+.sky-more {
+  margin-left: auto;
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: #7fb3ff;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.sky-more:hover { color: #a9ccff; }
 
 .fchip {
   display: inline-flex;
