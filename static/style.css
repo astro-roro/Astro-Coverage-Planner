@@ -95,6 +95,33 @@ body {
   letter-spacing: 0.04em;
 }
 
+/* Sky survey caption: a full-width row under the toolbar controls that says
+   what the chosen background survey shows and how much sky it covers. The
+   coverage chip is the point: a partial survey has a hard edge where the
+   tiles stop, and without the chip users report that edge as a bug. */
+.sky-caption {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #a2aec2;
+  line-height: 1.3;
+}
+.sky-chip {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid #2a3246;
+  background: #1a2030;
+  color: #c8d2e4;
+}
+.sky-chip.full { border-color: #2f6b45; background: #15301f; color: #9fe0b5; }
+.sky-chip.partial { border-color: #7a5a1f; background: #332611; color: #f0c674; }
+
 .fchip {
   display: inline-flex;
   align-items: center;
