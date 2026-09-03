@@ -56,6 +56,15 @@ Both the build script and the webapp read these environment variables. Set whate
 | `ACP_EXTENSIONS_DIR` | `%APPDATA%/acp/extensions` (Win) / `~/.config/acp/extensions` | Directory of extension modules. |
 | `ACP_FRIEND_MANIFESTS` | unset | Semicolon-separated paths to sanitised friend manifests. |
 | `ACP_SURVEYS_PATH` | `./data/surveys.json` | Path to the public-survey registry. |
+| `ACP_CATALOG_REGISTRY` | `./data/catalog_registry.json` | Catalogue registry read by the catalogue loader. |
+| `ACP_MOC_CACHE_DIR` | `./data/moc_cache` | Cache for downloaded survey coverage (MOC) files. |
+| `SITES_PATH` | `./data/sites.json` | Observing sites. |
+| `DESTINATIONS_PATH` | `./data/destinations.json` | Export destinations. |
+| `SAVED_SEARCHES_PATH` | `./data/saved_searches.json` | Saved target searches. |
+| `TARGET_OVERRIDES_PATH` | `./data/target_overrides.json` | Per-target overrides. |
+| `ACP_STATIC_MAX_AGE_S` | `3600` | Cache lifetime for static files; set `0` in development. |
+| `ACP_PUBLISH_DEST`, `ACP_PUBLISH_SSH_KEY`, `ACP_LIVE_OUT_DIR` | unset | Live-page publishing, see [sharing.md](sharing.md). |
+| `NAS_PREFIX`, `PIPELINE_DB_ALT` | unset | Manifest builder only: NAS path prefix and an alternate pipeline DB, see `scripts/build_archive_manifest.py`. |
 
 A typical "everything in one custom location" invocation:
 
@@ -119,6 +128,6 @@ If you've added new gear (a new scope or camera), open Planning mode in the app 
 ACP is intended to run on your own machine, behind your own firewall, against your own data. Two things to be aware of before exposing it to anything beyond `localhost`:
 
 - **Default bind is `127.0.0.1`.** Only switch to `HOST=0.0.0.0` on a trusted LAN. ACP has no authentication and the `/api/manifest` and `/api/target/<id>` endpoints expose your archive's full file paths over HTTP — anyone who can reach the port can enumerate where your imaging data lives on disk.
-- **It's Flask's dev server.** Fine for local single-user use; not built to handle public internet traffic. For anything beyond your own network, front it with `gunicorn` or `uwsgi` behind a reverse proxy (nginx, caddy) that adds TLS and authentication. Don't expose the dev server directly.
+- **`python3 app.py` runs Flask's dev server.** Fine for local single-user use; not built to handle public internet traffic. The Docker image runs `waitress` instead, which is a production WSGI server, but it still has no TLS or authentication. For anything beyond your own network, put either behind a reverse proxy (nginx, caddy) that adds TLS and authentication.
 
 If you need genuinely shared access for a small group, the [friend manifests](sharing.md) feature is the intended path — each person runs their own copy of ACP locally and consumes sanitised exports from the others, rather than pointing multiple browsers at one shared instance.
