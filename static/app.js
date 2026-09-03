@@ -287,28 +287,45 @@ function surveyLayerFor(id) {
 }
 
 // Open Aladin's HiPS browser (search plus a folder tree of every survey)
-// with the base layer as its target, so a pick there replaces the sky.
-// Aladin has no public call for this, so we drive its own controls: open
-// the stack panel, choose "More..." in the base-layer select, then close
-// the stack panel so only the browser is left. If Aladin's markup has
-// changed and any step fails, the stack panel stays open as the fallback.
+// so a pick there replaces the sky. Aladin has no public call for this.
+// The browser object is created lazily by Aladin's own stack panel, so on
+// the first click we drive that panel: open it, choose "More..." in the
+// base-layer select, close it. Aladin's own callback for that route adds
+// a second layer instead of replacing the base one, so once the browser
+// exists we show it again with our own callback, which replaces the base
+// layer and keeps the Sky dropdown in step. If Aladin's markup changes and
+// the browser cannot be reached, the stack panel stays open as a fallback.
 async function openAladinSurveyBrowser() {
   const root = document.getElementById("aladin-lite-div");
   const wait = ms => new Promise(r => setTimeout(r, ms));
-  const stackBtn = root?.querySelector(".aladin-stack-control button");
-  if (!stackBtn) return;
-  let stack = root.querySelector(".aladin-stack-box");
-  if (!stack || !stack.offsetParent) stackBtn.click();
-  await wait(50);
-  stack = root.querySelector(".aladin-stack-box");
-  const sel = stack?.querySelector("select");
-  const more = sel && [...sel.options].find(o => o.value === "More...");
-  if (!more) return;
-  sel.value = more.value;
-  sel.dispatchEvent(new Event("change", { bubbles: true }));
-  await wait(50);
-  const browser = root.querySelector(".aladin-HiPS-browser-box");
-  if (browser && stack.offsetParent) stackBtn.click();
+  if (!aladin || !root) return;
+
+  if (!aladin.hipsBrowser) {
+    const stackBtn = root.querySelector(".aladin-stack-control button");
+    if (!stackBtn) return;
+    let stack = root.querySelector(".aladin-stack-box");
+    if (!stack || !stack.offsetParent) stackBtn.click();
+    await wait(50);
+    stack = root.querySelector(".aladin-stack-box");
+    const sel = stack?.querySelector("select");
+    const more = sel && [...sel.options].find(o => o.value === "More...");
+    if (!more) return;
+    sel.value = more.value;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait(50);
+    if (aladin.hipsBrowser && stack.offsetParent) stackBtn.click();
+  }
+
+  const browser = aladin.hipsBrowser;
+  if (!browser || typeof browser._show !== "function") return;
+  browser._show({
+    selected: hips => {
+      try { aladin.setBaseImageLayer(hips); } catch (err) { console.warn("setBaseImageLayer failed", err); }
+      syncSkyControl(hips?.id || hips?.url || "");
+      saveUiState();
+    },
+    position: { anchor: "center center" },
+  });
 }
 
 function currentSurveyId() {
