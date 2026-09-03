@@ -286,9 +286,29 @@ function surveyLayerFor(id) {
   return id;
 }
 
-function openAladinLayers() {
-  const btn = document.querySelector("#aladin-lite-div .aladin-stack-control button");
-  if (btn) btn.click();
+// Open Aladin's HiPS browser (search plus a folder tree of every survey)
+// with the base layer as its target, so a pick there replaces the sky.
+// Aladin has no public call for this, so we drive its own controls: open
+// the stack panel, choose "More..." in the base-layer select, then close
+// the stack panel so only the browser is left. If Aladin's markup has
+// changed and any step fails, the stack panel stays open as the fallback.
+async function openAladinSurveyBrowser() {
+  const root = document.getElementById("aladin-lite-div");
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const stackBtn = root?.querySelector(".aladin-stack-control button");
+  if (!stackBtn) return;
+  let stack = root.querySelector(".aladin-stack-box");
+  if (!stack || !stack.offsetParent) stackBtn.click();
+  await wait(50);
+  stack = root.querySelector(".aladin-stack-box");
+  const sel = stack?.querySelector("select");
+  const more = sel && [...sel.options].find(o => o.value === "More...");
+  if (!more) return;
+  sel.value = more.value;
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+  await wait(50);
+  const browser = root.querySelector(".aladin-HiPS-browser-box");
+  if (browser && stack.offsetParent) stackBtn.click();
 }
 
 function currentSurveyId() {
@@ -4651,7 +4671,7 @@ function setupFilterUI() {
     aladin.setFrame(e.target.value);
     saveUiState();
   });
-  document.getElementById("skyMore")?.addEventListener("click", openAladinLayers);
+  document.getElementById("skyMore")?.addEventListener("click", () => { openAladinSurveyBrowser(); });
   document.getElementById("skySel").addEventListener("change", e => {
     const id = e.target.value;
     if (id === CUSTOM_SURVEY_VALUE) return;
