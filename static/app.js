@@ -182,7 +182,7 @@ function applyUiStatePreManifest() {
   }
 
   if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
-    try { aladin.setImageSurvey(s.imageSurvey); } catch { /* unknown id — keep default */ }
+    try { aladin.setImageSurvey(surveyLayerFor(s.imageSurvey)); } catch { /* unknown id, keep default */ }
     syncSkyControl(s.imageSurvey);
   }
 
@@ -273,6 +273,22 @@ function buildSkyControl() {
   sel.appendChild(custom);
   sel.value = DEFAULT_SURVEY_ID;
   syncSkyControl(DEFAULT_SURVEY_ID);
+}
+
+// What to hand aladin.setImageSurvey for a survey id: the id itself, or a
+// HiPS object carrying a colour map for single-band surveys that would
+// otherwise render in greyscale.
+function surveyLayerFor(id) {
+  const opts = surveyRenderOptions(id);
+  if (opts && typeof A !== "undefined" && A?.imageHiPS) {
+    try { return A.imageHiPS(id, opts); } catch (err) { console.warn("imageHiPS failed", id, err); }
+  }
+  return id;
+}
+
+function openAladinLayers() {
+  const btn = document.querySelector("#aladin-lite-div .aladin-stack-control button");
+  if (btn) btn.click();
 }
 
 function currentSurveyId() {
@@ -378,6 +394,7 @@ import {
   DEFAULT_SURVEY_ID,
   SURVEY_GROUPS,
   surveyCaption,
+  surveyRenderOptions,
   surveySelectValue,
 } from "./surveys.mjs";
 import {
@@ -4634,10 +4651,11 @@ function setupFilterUI() {
     aladin.setFrame(e.target.value);
     saveUiState();
   });
+  document.getElementById("skyMore")?.addEventListener("click", openAladinLayers);
   document.getElementById("skySel").addEventListener("change", e => {
     const id = e.target.value;
     if (id === CUSTOM_SURVEY_VALUE) return;
-    try { aladin.setImageSurvey(id); } catch (err) { console.warn("setImageSurvey failed", id, err); }
+    try { aladin.setImageSurvey(surveyLayerFor(id)); } catch (err) { console.warn("setImageSurvey failed", id, err); }
     // Aladin swaps the base layer asynchronously, so caption from the chosen
     // id rather than from getBaseImageLayer(), which may still be the old one.
     syncSkyControl(id);
