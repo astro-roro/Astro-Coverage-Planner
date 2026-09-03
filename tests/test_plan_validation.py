@@ -12,7 +12,9 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -362,14 +364,26 @@ class TestPlanPutValidation(unittest.TestCase):
         original = self.client.get("/api/plans/seed").get_json()
         original_guid = original["guid"]
         original_created = original["created_at"]
-        r = self.client.put("/api/plans/seed", json=_valid_plan_payload(
-            plan_id="seed", priority="high",
-        ))
+        # Pin the clock one second past the seed's timestamp. Without this
+        # the update can land in the same clock tick as the seed on Windows,
+        # where Python 3.12's wall clock only advances every ~16 ms.
+        later = datetime.fromisoformat(original["updated_at"]) + timedelta(seconds=1)
+
+        class _Later(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return later if tz is None else later.astimezone(tz)
+
+        with mock.patch.object(app_module, "datetime", _Later):
+            r = self.client.put("/api/plans/seed", json=_valid_plan_payload(
+                plan_id="seed", priority="high",
+            ))
         self.assertEqual(r.status_code, 200)
         updated = r.get_json()
         self.assertEqual(updated["guid"], original_guid)
         self.assertEqual(updated["created_at"], original_created)
         self.assertNotEqual(updated["updated_at"], original.get("updated_at"))
+        self.assertEqual(updated["updated_at"], later.isoformat())
 
     def test_put_on_nonexistent_plan_returns_404(self):
         r = self.client.put("/api/plans/does-not-exist",
