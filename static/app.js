@@ -183,6 +183,7 @@ function applyUiStatePreManifest() {
 
   if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
     try { aladin.setImageSurvey(s.imageSurvey); } catch { /* unknown id — keep default */ }
+    syncSkyControl(s.imageSurvey);
   }
 
   if (typeof s.frame === "string" && s.frame) {
@@ -243,13 +244,80 @@ function applyUiStatePostManifest() {
   }
 }
 
+// --- Sky survey dropdown (#skySel) + caption (#skyCaption) ---
+// A curated, described list of HiPS surveys (static/surveys.mjs) offered in
+// place of Aladin's own layers control, which lists hundreds by id and only
+// explains them on hover. Aladin's control still works; a survey picked
+// there that is not in our table shows as "Custom" with an unknown-coverage
+// chip rather than a made-up description.
+
+function buildSkyControl() {
+  const sel = document.getElementById("skySel");
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const group of SURVEY_GROUPS) {
+    const og = document.createElement("optgroup");
+    og.label = group.label;
+    for (const s of group.surveys) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.name;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+  const custom = document.createElement("option");
+  custom.value = CUSTOM_SURVEY_VALUE;
+  custom.textContent = "Custom (chosen in Aladin)";
+  custom.hidden = true;
+  sel.appendChild(custom);
+  sel.value = DEFAULT_SURVEY_ID;
+  syncSkyControl(DEFAULT_SURVEY_ID);
+}
+
+function currentSurveyId() {
+  try {
+    const layer = aladin?.getBaseImageLayer?.();
+    return layer?.id || layer?.url || "";
+  } catch { return ""; }
+}
+
+// Point the dropdown and caption at `id` (or at whatever Aladin currently
+// shows when `id` is omitted). Safe to call before Aladin is up.
+function syncSkyControl(id) {
+  const sel = document.getElementById("skySel");
+  const chip = document.getElementById("skyCoverage");
+  const text = document.getElementById("skyCaptionText");
+  const surveyId = id || currentSurveyId();
+  if (sel) {
+    const value = surveySelectValue(surveyId);
+    const customOpt = sel.querySelector(`option[value="${CUSTOM_SURVEY_VALUE}"]`);
+    if (customOpt) customOpt.hidden = value !== CUSTOM_SURVEY_VALUE;
+    sel.value = value;
+  }
+  const cap = surveyCaption(surveyId);
+  if (chip) {
+    chip.textContent = cap.chip;
+    chip.classList.toggle("full", cap.chipFull);
+    chip.classList.toggle("partial", !cap.chipFull);
+  }
+  if (text) text.textContent = cap.text;
+}
+
 function saveUiState() {
   try {
+    // Prefer the Sky dropdown: it is set synchronously when the user picks a
+    // survey, whereas Aladin reports the new base layer only once the tiles
+    // resolve. A save in that window (or before Aladin is up at all) would
+    // otherwise blank the stored survey. Custom means the user chose in
+    // Aladin's own control, so fall through to what Aladin reports.
     let imageSurvey = "";
-    try {
-      const layer = aladin?.getBaseImageLayer?.();
-      imageSurvey = layer?.id || layer?.url || "";
-    } catch { /* older Aladin — skip */ }
+    const skySel = document.getElementById("skySel");
+    if (skySel && skySel.value && skySel.value !== CUSTOM_SURVEY_VALUE) {
+      imageSurvey = skySel.value;
+    } else {
+      imageSurvey = currentSurveyId();
+    }
     const state = {
       search: document.getElementById("searchInput")?.value || "",
       filters: [...selectedFilters],
@@ -305,6 +373,13 @@ import {
   catalogObjectMatchesTokens,
   targetMatchesSearch,
 } from "./search.mjs";
+import {
+  CUSTOM_SURVEY_VALUE,
+  DEFAULT_SURVEY_ID,
+  SURVEY_GROUPS,
+  surveyCaption,
+  surveySelectValue,
+} from "./surveys.mjs";
 import {
   ALADIN_INIT_TIMEOUT_MS,
   describeInitError,
@@ -4559,6 +4634,15 @@ function setupFilterUI() {
     aladin.setFrame(e.target.value);
     saveUiState();
   });
+  document.getElementById("skySel").addEventListener("change", e => {
+    const id = e.target.value;
+    if (id === CUSTOM_SURVEY_VALUE) return;
+    try { aladin.setImageSurvey(id); } catch (err) { console.warn("setImageSurvey failed", id, err); }
+    // Aladin swaps the base layer asynchronously, so caption from the chosen
+    // id rather than from getBaseImageLayer(), which may still be the old one.
+    syncSkyControl(id);
+    saveUiState();
+  });
 
   const siteSel = document.getElementById("siteSel");
   siteSel.addEventListener("change", () => {
@@ -5062,9 +5146,9 @@ function init() {
       cooFrame: "ICRSd",
       // Mellinger is a natural-colour optical panorama with tiny tiles, so it is
       // both prettier and lighter than DSS2. It goes soft when zoomed into a
-      // single target; users who want detail can pick DSS2 from the layers
-      // control and ACP remembers the choice.
-      survey: "P/Mellinger",
+      // single target; users who want detail can pick DSS2 or Pan-STARRS from
+      // the Sky dropdown and ACP remembers the choice.
+      survey: DEFAULT_SURVEY_ID,
       showReticle: false,
       showZoomControl: true,
       showFullscreenControl: true,
@@ -5164,6 +5248,7 @@ function init() {
         if (id && id !== _lastSurveyId) {
           if (_lastSurveyId !== null) saveUiState(); // skip the first observation (init)
           _lastSurveyId = id;
+          syncSkyControl(id);
         }
       } catch { /* no-op */ }
     }, 3000);
@@ -5267,6 +5352,7 @@ function init() {
 
     // Restore previous session state before the first draw so the map
     // reflects saved filters/telescopes/search immediately.
+    buildSkyControl();
     applyUiStatePreManifest();
     applyUiStatePostManifest();
 

@@ -34,6 +34,9 @@
           <option value="galactic">Galactic</option>
         </select>
       </label>
+      <label class="ctrl">Sky:
+        <select id="skySel" title="Background sky survey. Aladin's layers button on the map offers the full list."></select>
+      </label>
       <label class="ctrl">Site:
         <select id="siteSel"></select>
         <button type="button" id="siteEditBtn" class="icon-btn" title="Edit active site">✎</button>
@@ -43,6 +46,10 @@
               title="Toggle site-aware time/visibility features (year curves, what's up tonight, horizon shading).">
         <span class="toggle-icon">🕐</span><span class="toggle-lbl">Time-aware</span>
       </button>
+    </div>
+    <div id="skyCaption" class="sky-caption" aria-live="polite">
+      <span id="skyCoverage" class="sky-chip"></span>
+      <span id="skyCaptionText"></span>
     </div>
   </header>
 
