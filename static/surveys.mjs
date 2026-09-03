@@ -29,8 +29,8 @@ export const SURVEY_GROUPS = [
       },
       {
         id: "CDS/P/DSS2/red",
-        name: "DSS2 red",
-        caption: "Digitized Sky Survey red plates only. Greyscale with a purple tint in Aladin. Nebulae show well.",
+        name: "DSS2 red (greyscale)",
+        caption: "Digitized Sky Survey red plates only, shown in greyscale. Nebulae show well.",
         fullSky: true,
         coverage: "Full sky",
       },
@@ -56,9 +56,13 @@ export const SURVEY_GROUPS = [
       {
         id: "CDS/P/Finkbeiner",
         name: "H-alpha (hydrogen)",
-        caption: "Glowing hydrogen gas. Emission nebulae stand out, so this is the map to use when planning narrowband targets.",
+        caption: "Glowing hydrogen gas, shown in red. Emission nebulae stand out, so this is the map to use when planning narrowband targets.",
         fullSky: true,
         coverage: "Full sky",
+        // Single-band FITS tiles. Without a colour map Aladin shows them in
+        // greyscale; red is what people expect hydrogen to look like. The
+        // cuts are Aladin's own preset for its "P/Finkbeiner" alias.
+        render: { imgFormat: "fits", colormap: "redtemperature", minCut: -10, maxCut: 800, stretch: "linear" },
       },
       {
         id: "CDS/P/allWISE/color",
@@ -100,6 +104,15 @@ export const SURVEY_GROUPS = [
 ];
 
 export const ALL_SURVEYS = SURVEY_GROUPS.flatMap(g => g.surveys);
+
+/**
+ * Options to pass to Aladin's HiPS factory for a survey, or null when the
+ * plain id is enough. Returns a fresh object each call so Aladin can own it.
+ */
+export function surveyRenderOptions(id) {
+  const s = ALL_SURVEYS.find(x => x.id === id);
+  return s?.render ? { ...s.render } : null;
+}
 
 export const DEFAULT_SURVEY_ID = ALL_SURVEYS[0].id;
 
