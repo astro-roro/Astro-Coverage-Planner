@@ -3692,6 +3692,63 @@ function applySavedSearch(sourceId, search) {
   renderTileOverlay(sourceId);
 }
 
+// --- NINA rigs rail -----------------------------------------------------
+//
+// Every time the companion plugin asks /api/plans/match which plans the
+// connected gear can shoot, ACP stores that fingerprint under the NINA
+// profile name. This block reports what each install last said, so the
+// question "why does my laptop show 3 fits and the obsy NUC shows 30?"
+// is answerable without opening a terminal. Read-only: the only writer
+// is the match endpoint itself.
+
+function _agoLabel(iso) {
+  const then = Date.parse(iso || "");
+  if (!isFinite(then)) return "unknown";
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
+}
+
+async function initProfiles() {
+  const accordion = document.getElementById("railProfiles");
+  const host = document.getElementById("profilesList");
+  if (!accordion || !host) return;
+  let profiles = {};
+  try {
+    const r = await fetch("/api/fingerprints");
+    const d = await r.json();
+    if (d && typeof d.profiles === "object" && d.profiles) profiles = d.profiles;
+  } catch (e) {
+    console.warn("fingerprints unavailable:", e);
+  }
+  const entries = Object.values(profiles).sort(
+    (a, b) => String(b.received_at || "").localeCompare(String(a.received_at || "")));
+  if (!entries.length) {
+    accordion.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  accordion.hidden = false;
+  host.innerHTML = entries.map(e => {
+    const fp = e.fingerprint || {};
+    const cam = (fp.camera || {}).name || "unknown camera";
+    // The solved focal length is the one that matched; fall back to the
+    // profile's nominal value when NINA never plate solved.
+    const fl = fp.focal_length_mm || {};
+    const mm = Number(fl.solved ?? fl.profile ?? fl);
+    const flLabel = isFinite(mm) && mm > 0 ? `${Math.round(mm)} mm` : "no focal length";
+    const fits = Number((e.summary || {}).fit || 0);
+    return `<div class="rig-row">
+        <div class="rig-name">${esc(e.profile_name || "(unnamed profile)")}</div>
+        <div class="rig-meta">${esc(cam)} · ${esc(flLabel)}</div>
+        <div class="rig-meta">${fits} fit${fits === 1 ? "" : "s"} · ${esc(_agoLabel(e.received_at))}</div>
+      </div>`;
+  }).join("");
+}
+
 async function initInventory() {
   const accordion = document.getElementById("railInventory");
   if (!accordion) return;
@@ -5534,6 +5591,7 @@ function init() {
     loadCatalogs();
     loadSources();
     initInventory();
+    initProfiles();
     loadExtensions();
     initTimeAware();
 
