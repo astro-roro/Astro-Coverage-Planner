@@ -51,6 +51,11 @@ class TestCanonFilter(unittest.TestCase):
         self.assertEqual(canon_filter("No Filter"), "NoFilter")
         self.assertEqual(canon_filter("None"), "NoFilter")
 
+    def test_brand_prefix_dropped(self):
+        self.assertEqual(canon_filter("Antlia Ha"), "Ha")
+        self.assertEqual(canon_filter("Astronomik OIII"), "OIII")
+        self.assertEqual(canon_filter("Optolong L-eXtreme"), "L-eXtreme")
+
     def test_dual_band_passes_through(self):
         self.assertEqual(canon_filter("L-eXtreme"), "L-eXtreme")
 
