@@ -50,6 +50,12 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 
 The API is unauthenticated by default and binds to `127.0.0.1` — see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network, and [Optional bearer-token auth](#optional-bearer-token-auth) below if you do.
 
+### Optional bearer-token auth
+
+Set `ACP_API_TOKEN` to require `Authorization: Bearer <token>` on every request under `/api/*`. Leave it unset (the default) and every request passes, same as before this existed — this is meant for the case where you've put ACP on a LAN or a NUC that the NINA plugin reaches over the network, not for a stock loopback install. A request to `/api/*` with a missing or wrong token gets `401 {"error": "unauthorized"}`; the token is compared with `hmac.compare_digest`, not `==`. The HTML page (`GET /`) and static files are never gated, so a browser can always load the UI — only the JSON API is behind the token. ACP logs one line at startup saying whether API auth is on.
+
+Every `GET` under `/api/*` also carries `Access-Control-Allow-Origin: *` (plus the usual allow-methods/allow-headers), and `OPTIONS` on those paths returns a bare `204` for CORS preflight — the plugin runs as a desktop app making requests that behave like cross-origin ones. Write methods (`POST`/`PUT`/`DELETE`) don't get the CORS headers.
+
 ## Manifest schema
 
 The manifest is the JSON file ACP reads at startup (default path `data/manifest.json`). It's produced by `scripts/build_archive_manifest.py` from your FITS/XISF archive — see [setting up your own archive](setup-archive.md) for how to build it.

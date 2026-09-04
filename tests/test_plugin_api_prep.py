@@ -8,10 +8,12 @@ to a temp dir so the suite never touches real data.
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -197,6 +199,68 @@ class TestSubExposurePersists(unittest.TestCase):
             "OIII": {"target_hours": 2.0, "sub_exposure_s": 240},
         }))
         self.assertEqual(r.get_json()["filter_goals"]["OIII"]["sub_exposure_s"], 240)
+
+
+class TestApiAuth(unittest.TestCase):
+    """ACP_API_TOKEN unset keeps today's loopback behaviour (every request
+    passes); setting it gates /api/* only, leaving the HTML page and
+    static files reachable so a stock install doesn't change shape."""
+
+    def setUp(self):
+        _fresh_state()
+        self.client = app.test_client()
+
+    def test_auth_off_when_env_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ACP_API_TOKEN", None)
+            r = self.client.get("/api/version")
+            self.assertEqual(r.status_code, 200)
+
+    def test_missing_token_rejected_when_set(self):
+        with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
+            r = self.client.get("/api/version")
+            self.assertEqual(r.status_code, 401)
+            self.assertEqual(r.get_json(), {"error": "unauthorized"})
+
+    def test_bad_token_rejected(self):
+        with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
+            r = self.client.get("/api/version", headers={"Authorization": "Bearer wrong"})
+            self.assertEqual(r.status_code, 401)
+
+    def test_correct_token_accepted(self):
+        with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
+            r = self.client.get("/api/version", headers={"Authorization": "Bearer secret123"})
+            self.assertEqual(r.status_code, 200)
+
+    def test_index_not_gated(self):
+        with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
+            r = self.client.get("/")
+            self.assertEqual(r.status_code, 200)
+
+    def test_static_not_gated(self):
+        with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
+            r = self.client.get("/static/app.js")
+            self.assertEqual(r.status_code, 200)
+
+
+class TestApiCors(unittest.TestCase):
+    def setUp(self):
+        _fresh_state()
+        self.client = app.test_client()
+
+    def test_cors_headers_on_api_get(self):
+        r = self.client.get("/api/version")
+        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+
+    def test_cors_headers_absent_on_index(self):
+        r = self.client.get("/")
+        self.assertNotIn("Access-Control-Allow-Origin", r.headers)
+
+    def test_options_preflight(self):
+        r = self.client.options("/api/plans")
+        self.assertEqual(r.status_code, 204)
+        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+        self.assertIn("GET", r.headers.get("Access-Control-Allow-Methods", ""))
 
 
 if __name__ == "__main__":
