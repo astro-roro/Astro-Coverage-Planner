@@ -167,5 +167,37 @@ class TestPlansExpand(unittest.TestCase):
         self.assertIn("Last-Modified", r.headers)
 
 
+class TestSubExposurePersists(unittest.TestCase):
+    """docs/nina-plugin-api-audit.md found 0/31 real plans had
+    sub_exposure_s stored. The validator already accepts it; these
+    confirm the save path actually keeps it, both via POST (create)
+    and PUT (update)."""
+
+    def setUp(self):
+        _fresh_state()
+        self.client = app.test_client()
+
+    def test_round_trips_through_post_and_get(self):
+        r = self.client.post("/api/plans", json=_plan(filter_goals={
+            "OIII": {"target_hours": 2.0, "sub_exposure_s": 180},
+        }))
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.get_json()["filter_goals"]["OIII"]["sub_exposure_s"], 180)
+
+        r2 = self.client.get("/api/plans/p1")
+        self.assertEqual(r2.get_json()["filter_goals"]["OIII"]["sub_exposure_s"], 180)
+
+        r3 = self.client.get("/api/plans")
+        plan = next(p for p in r3.get_json()["plans"] if p["id"] == "p1")
+        self.assertEqual(plan["filter_goals"]["OIII"]["sub_exposure_s"], 180)
+
+    def test_round_trips_through_put(self):
+        self.client.post("/api/plans", json=_plan())
+        r = self.client.put("/api/plans/p1", json=_plan(filter_goals={
+            "OIII": {"target_hours": 2.0, "sub_exposure_s": 240},
+        }))
+        self.assertEqual(r.get_json()["filter_goals"]["OIII"]["sub_exposure_s"], 240)
+
+
 if __name__ == "__main__":
     unittest.main()

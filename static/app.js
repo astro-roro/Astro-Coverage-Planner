@@ -6255,8 +6255,20 @@ function renderPlanEditor(plan) {
     const f = e.target.dataset.f;
     const v = parseFloat(e.target.value);
     editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
-    if (isFinite(v) && v > 0) editingPlan.filter_goals[f].target_hours = v;
-    else delete editingPlan.filter_goals[f];
+    if (isFinite(v) && v > 0) {
+      editingPlan.filter_goals[f].target_hours = v;
+      // The sub-exposure field shows a sensible default (stored value, gear
+      // default, or 300s) whether or not the user ever touches it. Commit
+      // that displayed value here so a plan saved right after setting a
+      // target-hours goal still carries sub_exposure_s.
+      if (!editingPlan.filter_goals[f].sub_exposure_s) {
+        const subEl = panel.querySelector(`.goal-sub-s[data-f="${CSS.escape(f)}"]`);
+        const sub = parseFloat(subEl?.value);
+        if (isFinite(sub) && sub > 0) editingPlan.filter_goals[f].sub_exposure_s = sub;
+      }
+    } else {
+      delete editingPlan.filter_goals[f];
+    }
   }));
   panel.querySelectorAll(".goal-sub-s").forEach(el => el.addEventListener("input", e => {
     const f = e.target.dataset.f;
