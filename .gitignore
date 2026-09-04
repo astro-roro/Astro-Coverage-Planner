@@ -12,6 +12,8 @@ data/gear.json
 data/plans.json
 data/target_overrides.json
 data/sites.json
+# Gear fingerprints reported by NINA — carry the site's lat/lon.
+data/fingerprints.json
 data/exports/
 data/moc_cache/
 data/*.local.json
