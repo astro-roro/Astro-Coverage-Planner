@@ -131,7 +131,7 @@ class TestMatchGeometry(unittest.TestCase):
         self.assertTrue(any("Pixel scale" in r for r in body["plans"][0]["match"]["reasons"]))
 
     def test_solved_focal_length_wins_over_profile(self):
-        """The profile says 250mm but the plate solve says 540mm — a
+        """The profile says 250mm but the plate solve says 540mm, a
         reducer or simply a stale profile. The solve is what's real."""
         _write_gear([TEL_540], [CAM_2600MM])
         _write_plans([_plan("p-540", "tel-540", "cam-2600", ["Ha"])])
