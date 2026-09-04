@@ -43,6 +43,20 @@ function chipHours(t, f) {
   if (f === RGB_CHIP) return oscHours(t);
   return t?.filters?.[f]?.total_hours || 0;
 }
+// Hours a target has towards a plan goal named f. A band name reads the band
+// total. A real filter label that is not a band (OSC, L-eXtreme) reads the
+// largest credit that label gave to any band, since one OSC hour is recorded
+// under R, G and B alike.
+function hoursForGoal(t, f) {
+  const band = t?.filters?.[f];
+  if (band) return band.total_hours || 0;
+  let best = 0;
+  for (const d of Object.values(t?.filters || {})) {
+    const v = d?.sources?.[f] || 0;
+    if (v > best) best = v;
+  }
+  return best;
+}
 function pillClass(f) {
   return FILTER_COLORS[f] ? `fp-${f}` : "fp-other";
 }
@@ -718,7 +732,7 @@ function planGoalsMet(plan) {
   const filterNames = Object.keys(goals);
   if (filterNames.length === 0) return false;
   const target = manifest?.targets?.find(x => String(x.target_id) === String(plan.target?.target_id));
-  const actualHrs = f => target?.filters?.[f]?.total_hours || 0;
+  const actualHrs = f => hoursForGoal(target, f);
   return filterNames.every(f => {
     const tgt = parseFloat(goals[f]?.target_hours || 0);
     return tgt > 0 && actualHrs(f) >= tgt;
@@ -3692,6 +3706,52 @@ function applySavedSearch(sourceId, search) {
   renderTileOverlay(sourceId);
 }
 
+// Scan health: the scanner's integrity flags, shown in the rail so nobody has
+// to open the summary markdown. Hidden when the manifest predates the flags.
+const ACP_ISSUES_URL = "https://github.com/astro-roro/Astro-Coverage-Planner/issues/new";
+function renderScanHealth(h) {
+  const acc = document.getElementById("railHealth");
+  const host = document.getElementById("scanHealthBody");
+  if (!acc || !host) return;
+  if (!h) { acc.hidden = true; return; }
+  acc.hidden = false;
+  const unrec = Array.isArray(h.unrecognised_filters) ? h.unrecognised_filters : [];
+  const rows = [
+    ["Masters without a plate solve", h.masters_missing_wcs || 0,
+     "Stacked masters with no WCS in the header. They still count through their lights, but only a solved master draws its own footprint."],
+    ["Masters with no filter found", h.masters_ambiguous_filter || 0,
+     "Neither the header nor the path said which filter these were shot through."],
+    ["SII and Ha look identical", h.sii_ha_suspects || 0,
+     "Targets whose SII and Ha hours match exactly, which usually means one filter was mislabelled."],
+    ["Hours removed as duplicates", (h.dedup_hours_dropped || 0).toFixed(1) + "h",
+     "The same frames seen at more than one processing stage were counted once."],
+  ];
+  const stat = ([label, value, title]) =>
+    `<div class="health-row" title="${esc(title)}"><span>${esc(label)}</span><span class="num">${esc(String(value))}</span></div>`;
+  let html = rows.map(stat).join("");
+  if (unrec.length) {
+    html += `<div class="health-sub">Filter names the scanner could not place</div>`;
+    html += `<table class="health-table"><tbody>` + unrec.slice(0, 20).map(r =>
+      `<tr><td>${esc(r.name)}</td><td class="num">${esc(String(r.frames))} frames</td></tr>`).join("") + `</tbody></table>`;
+    const body = [
+      "The scanner could not map these filter names to a band. Please add them to the catalogue.",
+      "",
+      "| Filter name | Frames |", "|---|---:|",
+      ...unrec.map(r => `| ${r.name} | ${r.frames} |`),
+      "",
+      "Camera and capture software: (fill in)",
+    ].join("\n");
+    const url = `${ACP_ISSUES_URL}?title=${encodeURIComponent("Unrecognised filter names: " + unrec.slice(0, 3).map(r => r.name).join(", "))}&body=${encodeURIComponent(body)}`;
+    html += `<a class="health-report" href="${url}" target="_blank" rel="noopener">Report these filters</a>`;
+  } else {
+    html += `<div class="health-sub">Every filter name resolved to a band.</div>`;
+  }
+  host.innerHTML = html;
+  const bad = (h.masters_missing_wcs || 0) + (h.masters_ambiguous_filter || 0) + (h.sii_ha_suspects || 0) + unrec.length;
+  const badge = document.getElementById("scanHealthBadge");
+  if (badge) { badge.textContent = bad ? String(bad) : ""; badge.hidden = !bad; }
+}
+
 async function initInventory() {
   const accordion = document.getElementById("railInventory");
   if (!accordion) return;
@@ -5499,6 +5559,7 @@ function init() {
     // The user can dismiss it; we don't pin the dismissal across reloads
     // because seeing it every time is a useful nag until a manifest exists.
     setupOnboardingBanner(manifest);
+    renderScanHealth(manifest.scan_health);
 
     // Assign telescope colors and build toggle UI
     const { map, sorted } = assignTelescopeColors(manifest.targets);
