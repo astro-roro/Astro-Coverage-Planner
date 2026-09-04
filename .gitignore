@@ -14,6 +14,9 @@ data/target_overrides.json
 data/sites.json
 data/exports/
 data/moc_cache/
+# Per-file header cache written by scripts/build_archive_manifest.py: derived
+# from the user's archive and rebuilt on demand.
+data/scan_cache.json
 data/*.local.json
 # Backup snapshots written by the nina_ts_sync extension before any write.
 # Useful locally for rollback, but never belong in version control.
