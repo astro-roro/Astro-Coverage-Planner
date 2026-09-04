@@ -46,8 +46,9 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `POST /api/publish/shooting` | Write that document to `data/live/` and upload it over SFTP to `ACP_PUBLISH_DEST` |
 | `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest) — drives the Extensions rail accordion and the core-button swap mechanism |
 | `GET /api/ext/...` | Routes registered by [extensions](extensions.md) |
+| `GET /api/version` | `{version, plans_last_modified, manifest_last_modified}` — lets a client poll cheaply instead of refetching plans on a timer |
 
-The API is unauthenticated and binds to `127.0.0.1` by default — see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network.
+The API is unauthenticated by default and binds to `127.0.0.1` — see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network, and [Optional bearer-token auth](#optional-bearer-token-auth) below if you do.
 
 ## Manifest schema
 
@@ -165,6 +166,22 @@ ACP lets you sketch imaging plans against the sky map, then export them as a NIN
 `GET /api/plans` returns `{version, plans: [...]}`. `POST /api/plans` creates or replaces a plan (matched by `id`); `PUT /api/plans/<id>` and `DELETE /api/plans/<id>` operate on one plan. A plan's `target.center_ra_deg` is normalised into `[0, 360)` (so -0.5 becomes 359.5 and 360.0 becomes 0.0, matching Aladin seam-drag and manual entry) rather than rejected; `target.center_dec_deg` must be in `[-90, 90]`. Every numeric field (RA, Dec, rotation, mosaic overlap, filter goal hours and exposures) must be finite: NaN and Infinity are rejected with a 400 rather than being written to `plans.json`. A `plans.json` written before this healing existed and containing legacy NaN/Infinity values is healed on load (the poisoned fields become `null`, logged as a warning) rather than 500ing every subsequent write.
 
 A plan's optional `state` field controls whether it's eligible for sync. `state: "draft"` marks a plan as still being worked on, and draft plans are excluded from `/api/sync` (see below). Plans with no `state` field at all (anything written before this field existed) are treated as committed and keep syncing.
+
+`filter_goals.<filter>.sub_exposure_s` is persisted as supplied — the value a client POSTs or PUTs on a plan is what a later GET returns. Sync-time consumers (`/api/sync`, and the same math the plugin does client-side for desired sub counts) fall back to `cameras[].filters.<filter>.default_sub_s` from `/api/gear`, then to 300s, only when a plan has no stored value at all.
+
+### Polling for changes: `GET /api/version`
+
+`GET /api/version` returns `{"version": "1.0.0", "plans_last_modified": "2026-09-04T10:00:00+00:00", "manifest_last_modified": "2026-09-04T09:00:00+00:00"}`. Both timestamps are the UTC mtime of the underlying file, ISO 8601, or `null` when the file doesn't exist yet. A client (the NINA plugin, in particular) can poll this cheaply and only refetch `/api/plans` when `plans_last_modified` changes, instead of refetching on a fixed timer regardless of whether anything moved.
+
+### Enriched plans: `?expand=` on `GET /api/plans`
+
+`GET /api/plans` on its own returns exactly what it always has, byte for byte — `expand` is opt-in so existing callers are unaffected. `GET /api/plans?expand=gear,site,panels` adds, to each plan:
+
+- `gear` — `telescope` and `camera`, the full objects from `/api/gear` resolved by the plan's `telescope_id` / `camera_id` (absent, not null, when the id doesn't resolve).
+- `site` — the first site from `/api/sites`, since a plan has no site of its own today. Absent when no sites are configured.
+- `panels` — the computed mosaic panel list, `[{row, col, ra_deg, dec_deg}, ...]`, using the same geometry `/api/sync` uses to expand a mosaic into per-panel TS targets. A single-panel plan (`rows=1, cols=1`) still gets a one-element list.
+
+Any `expand` token other than `gear`, `site`, `panels` is ignored rather than rejected. The response also carries a `Last-Modified` header set from `plans.json`'s mtime, whether or not `expand` is used.
 
 ### Destinations: `/api/destinations`
 
