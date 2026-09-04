@@ -154,13 +154,15 @@ else:
 def _api_gate():
     """Bearer-token gate for /api/*, off by default (issue: NINA plugin
     prep). The HTML page and static files are never gated: only the API
-    surface a plugin or curl would hit. OPTIONS is answered here (204,
-    no auth check) so CORS preflight from a browser-based client works
-    even when a token is required."""
+    surface a plugin or curl would hit.
+
+    OPTIONS used to be answered here with a 204 and no auth check, to serve
+    a CORS preflight. The preflight is gone (see the note below where the
+    CORS headers used to be), so OPTIONS is now treated like any other
+    method and Flask answers it. That removes an unauthenticated path
+    through the gate for no loss."""
     if not request.path.startswith("/api/"):
         return None
-    if request.method == "OPTIONS":
-        return ("", 204)
     token = _api_auth_token()
     if not token:
         return None
@@ -171,17 +173,19 @@ def _api_gate():
     return None
 
 
-@app.after_request
-def _api_cors(response):
-    """CORS on /api/* GETs (and the OPTIONS preflight for them) only: the
-    plugin runs as a desktop app making cross-origin-flavoured requests,
-    but this isn't meant to open up the write endpoints to arbitrary
-    origins, so POST/PUT/DELETE responses are left alone."""
-    if request.path.startswith("/api/") and request.method in ("GET", "OPTIONS"):
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    return response
+# There is deliberately no CORS here. An earlier version of this file sent
+# `Access-Control-Allow-Origin: *` on API reads and on the preflight, reasoning
+# that withholding it from write responses kept writes closed. That is half
+# right: it stops an attacker reading the reply, not sending the request. The
+# preflight was answering 204 and listing PUT and DELETE as allowed, so any web
+# page the user happened to visit could delete their plans or flip one public
+# and publish it, silently, with no LAN access needed, because the browser runs
+# on the same machine as ACP. Proved end to end on 2026-09-05.
+#
+# Nothing needs the header. The NINA plugin is a desktop HTTP client and CORS is
+# a browser mechanism it never sees; ACP's own page is same-origin. If a
+# browser-based client is ever wanted, allow that one origin by name, never "*",
+# and never on a preflight for a method that writes.
 
 
 if not CATALOGS_PATH.exists():
