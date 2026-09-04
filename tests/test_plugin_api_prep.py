@@ -105,5 +105,67 @@ class TestApiVersion(unittest.TestCase):
         self.assertIsInstance(body["manifest_last_modified"], str)
 
 
+class TestPlansExpand(unittest.TestCase):
+    def setUp(self):
+        _fresh_state()
+        _save_gear()
+        _save_sites()
+        self.client = app.test_client()
+        self.client.post("/api/plans", json=_plan())
+
+    def test_no_expand_unchanged(self):
+        baseline = self.client.get("/api/plans").get_json()
+        r = self.client.get("/api/plans")
+        self.assertEqual(r.get_json(), baseline)
+        plan = r.get_json()["plans"][0]
+        self.assertNotIn("telescope", plan)
+        self.assertNotIn("camera", plan)
+        self.assertNotIn("site", plan)
+        self.assertNotIn("panels", plan)
+
+    def test_expand_gear(self):
+        r = self.client.get("/api/plans?expand=gear")
+        plan = r.get_json()["plans"][0]
+        self.assertEqual(plan["telescope"]["id"], "tel-1")
+        self.assertEqual(plan["camera"]["id"], "cam-1")
+        self.assertNotIn("site", plan)
+        self.assertNotIn("panels", plan)
+
+    def test_expand_site(self):
+        r = self.client.get("/api/plans?expand=site")
+        plan = r.get_json()["plans"][0]
+        self.assertEqual(plan["site"]["id"], "sydney")
+
+    def test_expand_panels(self):
+        r = self.client.get("/api/plans?expand=panels")
+        plan = r.get_json()["plans"][0]
+        self.assertEqual(len(plan["panels"]), 2)  # rows=1, cols=2
+        for panel in plan["panels"]:
+            self.assertIn("row", panel)
+            self.assertIn("col", panel)
+            self.assertIn("ra_deg", panel)
+            self.assertIn("dec_deg", panel)
+
+    def test_expand_multiple_tokens(self):
+        r = self.client.get("/api/plans?expand=gear,site,panels")
+        plan = r.get_json()["plans"][0]
+        self.assertIn("telescope", plan)
+        self.assertIn("camera", plan)
+        self.assertIn("site", plan)
+        self.assertIn("panels", plan)
+
+    def test_unknown_expand_token_ignored(self):
+        r = self.client.get("/api/plans?expand=bogus")
+        self.assertEqual(r.status_code, 200)
+        plan = r.get_json()["plans"][0]
+        self.assertNotIn("telescope", plan)
+        self.assertNotIn("site", plan)
+        self.assertNotIn("panels", plan)
+
+    def test_last_modified_header_present(self):
+        r = self.client.get("/api/plans")
+        self.assertIn("Last-Modified", r.headers)
+
+
 if __name__ == "__main__":
     unittest.main()

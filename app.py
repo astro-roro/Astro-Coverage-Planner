@@ -2780,11 +2780,71 @@ def _validate_plan_payload(payload: dict) -> str | None:
     return None
 
 
+_PLAN_EXPAND_TOKENS = frozenset({"gear", "site", "panels"})
+
+
+def _plan_panels(plan: dict, gear_data: dict) -> list[dict]:
+    """Mosaic panel centers for one plan, using the same geometry
+    /api/sync expands a mosaic with. Collapses to a single "panel" when
+    the plan isn't a mosaic, or when gear doesn't resolve to a FOV."""
+    tg = plan.get("target") or {}
+    ra_deg = float(tg.get("center_ra_deg") or 0) % 360.0
+    dec_deg = float(tg.get("center_dec_deg") or 0)
+    rot_deg = float(tg.get("rotation_deg") or 0)
+    telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", [])}
+    cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", [])}
+    telescope = telescopes_by_id.get(plan.get("telescope_id") or "")
+    camera = cameras_by_id.get(plan.get("camera_id") or "")
+    fov_w, fov_h = _fov_arcmin(telescope, camera)
+    mosaic = tg.get("mosaic") or {"rows": 1, "cols": 1, "overlap_pct": 0}
+    rows = max(1, int(mosaic.get("rows") or 1))
+    cols = max(1, int(mosaic.get("cols") or 1))
+    overlap = float(mosaic.get("overlap_pct") or 0)
+    return _mosaic_panel_centers(ra_deg, dec_deg, fov_w, fov_h, rot_deg, rows, cols, overlap)
+
+
+def _expand_plan(plan: dict, tokens: frozenset[str], gear_data: dict | None, sites_data: dict | None) -> dict:
+    """Add inline `telescope`/`camera` (expand=gear), `site` (expand=site),
+    and `panels` (expand=panels) to a shallow copy of `plan`. Unresolvable
+    ids are left off rather than set to null."""
+    out = dict(plan)
+    if "gear" in tokens and gear_data is not None:
+        telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", [])}
+        cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", [])}
+        telescope = telescopes_by_id.get(plan.get("telescope_id") or "")
+        if telescope is not None:
+            out["telescope"] = telescope
+        camera = cameras_by_id.get(plan.get("camera_id") or "")
+        if camera is not None:
+            out["camera"] = _with_sensor_scalars(camera)
+    if "site" in tokens and sites_data is not None:
+        sites = sites_data.get("sites") or []
+        if sites:
+            out["site"] = sites[0]
+    if "panels" in tokens and gear_data is not None:
+        out["panels"] = _plan_panels(plan, gear_data)
+    return out
+
+
 @app.route("/api/plans", methods=["GET", "POST"])
 def api_plans():
     data = load_plans()
     if request.method == "GET":
-        return jsonify(data)
+        tokens = _PLAN_EXPAND_TOKENS.intersection(
+            t.strip() for t in (request.args.get("expand") or "").split(",")
+        )
+        if tokens:
+            gear_data = load_gear() if ("gear" in tokens or "panels" in tokens) else None
+            sites_data = load_sites() if "site" in tokens else None
+            resp = jsonify({
+                "version": data.get("version", 1),
+                "plans": [_expand_plan(p, tokens, gear_data, sites_data) for p in data.get("plans", [])],
+            })
+        else:
+            resp = jsonify(data)
+        if PLANS_PATH.exists():
+            resp.last_modified = datetime.fromtimestamp(PLANS_PATH.stat().st_mtime, tz=timezone.utc)
+        return resp
     payload = request.get_json(silent=True) or {}
     err = _validate_plan_payload(payload)
     if err:
