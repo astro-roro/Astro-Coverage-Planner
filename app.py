@@ -25,6 +25,7 @@ Endpoints:
 - GET /api/export/priority       CSV of gap-mode candidates
 - GET /api/gaps                  multi-source gap-finder (JSON)
 - GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
+- GET /api/scan/status           state of the scheduled archive rescan
 
 Env:
 - MANIFEST_PATH   path to archive manifest JSON  (default: ./data/manifest.json)
@@ -34,6 +35,7 @@ Env:
 - PORT            bind port                      (default: 5555)
 - ACP_EXTENSIONS_DIR  directory of optional extension modules (default: unset)
 - ACP_FRIEND_MANIFESTS  semicolon-separated paths to sanitised friend manifests (default: unset)
+- ACP_SCAN_CRON   cron expression for an automatic archive rescan (default: unset, no rescan)
 """
 from __future__ import annotations
 
@@ -46,6 +48,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -105,6 +108,7 @@ SURVEYS_PATH = Path(os.environ.get("ACP_SURVEYS_PATH", REPO_ROOT / "data" / "sur
 CATALOG_REGISTRY_PATH = Path(os.environ.get(
     "ACP_CATALOG_REGISTRY", REPO_ROOT / "data" / "catalog_registry.json"))
 MOC_CACHE_DIR = Path(os.environ.get("ACP_MOC_CACHE_DIR", REPO_ROOT / "data" / "moc_cache"))
+SCAN_SCRIPT_PATH = REPO_ROOT / "scripts" / "build_archive_manifest.py"
 
 # Hostname allowlist for MOC fetches. Both entries point at the same CDS
 # infrastructure: alasky.u-strasbg.fr is the legacy hostname kept alive for
@@ -3344,6 +3348,174 @@ def api_sync_download(filename: str):
         as_attachment=True,
         mimetype="application/zip",
     )
+
+
+# ---------------------------------------------------------------------------
+# Scheduled archive rescan
+#
+# Set ACP_SCAN_CRON to a five-field cron expression and this process runs the
+# manifest builder on that schedule. The point is the Docker image: there is no
+# cron daemon in it, and adding one means a second process to supervise. A
+# scheduler thread costs nothing when the variable is unset, and the scan itself
+# runs as a subprocess so a builder crash, or a MemoryError on a huge archive,
+# cannot take the web app down with it. Times are the container's local time,
+# so set TZ if you care which midnight you get.
+# ---------------------------------------------------------------------------
+
+SCAN_STATE_LOCK = threading.Lock()
+_scan_state = {
+    "running": False,
+    "last_start": None,
+    "last_finish": None,
+    "last_exit_code": None,
+    "last_trigger": None,
+    "last_error": None,
+}
+_scan_scheduler_thread: threading.Thread | None = None
+_scan_scheduler_stop = threading.Event()
+_scan_cron_expr: str | None = None
+
+
+def scan_status() -> dict:
+    """Snapshot of the rescan state, safe to hand to jsonify."""
+    with SCAN_STATE_LOCK:
+        state = dict(_scan_state)
+    state["cron"] = _scan_cron_expr
+    state["scheduled"] = _scan_scheduler_thread is not None
+    return state
+
+
+def _run_scan_subprocess(args: list[str]) -> int:
+    """Run the builder and return its exit code. Overridden in tests."""
+    proc = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+        logging.error("scheduled scan failed (exit %s):\n%s",
+                      proc.returncode, "\n".join(tail))
+        with SCAN_STATE_LOCK:
+            _scan_state["last_error"] = tail[-1] if tail else None
+    else:
+        with SCAN_STATE_LOCK:
+            _scan_state["last_error"] = None
+    return proc.returncode
+
+
+def run_scan_now(trigger: str = "cron") -> bool:
+    """Run one scan, unless one is already running.
+
+    Returns False when a scan was already in flight. Two builders writing the
+    same manifest and the same scan cache at once would race each other's
+    output, and on a big archive the overlap is likely rather than theoretical,
+    so a second start is refused rather than queued.
+    """
+    with SCAN_STATE_LOCK:
+        if _scan_state["running"]:
+            logging.warning("scan already running; skipping %s trigger", trigger)
+            return False
+        _scan_state["running"] = True
+        _scan_state["last_start"] = datetime.now().isoformat(timespec="seconds")
+        _scan_state["last_finish"] = None
+        _scan_state["last_trigger"] = trigger
+    code = None
+    try:
+        code = _run_scan_subprocess([sys.executable, str(SCAN_SCRIPT_PATH)])
+    except Exception as e:
+        logging.error("scheduled scan could not start: %s: %s", type(e).__name__, e)
+        with SCAN_STATE_LOCK:
+            _scan_state["last_error"] = f"{type(e).__name__}: {e}"
+    finally:
+        with SCAN_STATE_LOCK:
+            _scan_state["running"] = False
+            _scan_state["last_finish"] = datetime.now().isoformat(timespec="seconds")
+            _scan_state["last_exit_code"] = code
+    return True
+
+
+def _next_fire_time(expr: str, now: datetime) -> datetime:
+    """The next local time ``expr`` fires after ``now``."""
+    from croniter import croniter
+
+    return croniter(expr, now).get_next(datetime)
+
+
+def _scan_scheduler_loop(expr: str, poll_seconds: float = 30.0) -> None:
+    while not _scan_scheduler_stop.is_set():
+        now = datetime.now()
+        try:
+            next_at = _next_fire_time(expr, now)
+        except Exception as e:
+            logging.error("ACP_SCAN_CRON became unusable (%s: %s); scheduler stopping",
+                          type(e).__name__, e)
+            return
+        while not _scan_scheduler_stop.is_set():
+            remaining = (next_at - datetime.now()).total_seconds()
+            if remaining <= 0:
+                break
+            # Wake up regularly rather than sleeping until the fire time: it
+            # keeps shutdown responsive, and a laptop that suspends across the
+            # scheduled minute re-reads the clock instead of firing hours late.
+            _scan_scheduler_stop.wait(min(remaining, poll_seconds))
+        if _scan_scheduler_stop.is_set():
+            return
+        run_scan_now("cron")
+
+
+def start_scan_scheduler(expr: str | None = None) -> bool:
+    """Start the rescan thread if ACP_SCAN_CRON is set and valid.
+
+    Returns True if a thread was started. Calling it again while a scheduler is
+    already running is a no-op, so an import that happens twice (or a test that
+    calls it twice) cannot end up with two threads racing the same builder.
+    """
+    global _scan_scheduler_thread, _scan_cron_expr
+    expr = (expr if expr is not None else os.environ.get("ACP_SCAN_CRON", "")).strip()
+    if not expr:
+        return False
+    try:
+        from croniter import croniter
+    except ImportError:
+        logging.error("ACP_SCAN_CRON is set but croniter is not installed; "
+                      "no rescan will be scheduled (pip install -r requirements.txt)")
+        return False
+    if not croniter.is_valid(expr):
+        logging.error("ACP_SCAN_CRON=%r is not a valid cron expression; "
+                      "no rescan will be scheduled", expr)
+        return False
+    with SCAN_STATE_LOCK:
+        if _scan_scheduler_thread is not None and _scan_scheduler_thread.is_alive():
+            logging.warning("scan scheduler already running; ignoring restart")
+            return False
+        _scan_cron_expr = expr
+        _scan_scheduler_stop.clear()
+        _scan_scheduler_thread = threading.Thread(
+            target=_scan_scheduler_loop, args=(expr,),
+            name="acp-scan-scheduler", daemon=True)
+        _scan_scheduler_thread.start()
+    logging.info("scheduled archive rescan on %r (next run computed from local time)", expr)
+    return True
+
+
+def stop_scan_scheduler() -> None:
+    """Stop the scheduler thread. Used by tests and by a clean shutdown."""
+    global _scan_scheduler_thread, _scan_cron_expr
+    _scan_scheduler_stop.set()
+    thread = _scan_scheduler_thread
+    if thread is not None:
+        thread.join(timeout=5)
+    _scan_scheduler_thread = None
+    _scan_cron_expr = None
+    # Leave the module startable again: a set stop event would make the next
+    # start_scan_scheduler() spawn a thread that returns immediately.
+    _scan_scheduler_stop.clear()
+
+
+@app.route("/api/scan/status")
+def api_scan_status():
+    """Last start, last finish, last exit code, and whether a scan is running."""
+    return jsonify(scan_status())
+
+
+start_scan_scheduler()
 
 
 if __name__ == "__main__":
