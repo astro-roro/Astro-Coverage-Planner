@@ -160,6 +160,10 @@ OSC_BAND_FILTERS = {
 }
 
 
+_FILTER_BRANDS = {"ANTLIA", "ASTRONOMIK", "ASTRODON", "BAADER", "CHROMA", "OPTOLONG",
+                  "ZWO", "SVBONY", "IDAS", "ALTAIR", "PLAYERONE", "ASKAR"}
+
+
 def canon_filter(raw: str | None) -> str | None:
     if raw is None:
         return None
@@ -170,6 +174,11 @@ def canon_filter(raw: str | None) -> str | None:
     band = OSC_BAND_FILTERS.get(s.lower())
     if band is not None:
         return band
+    # "Antlia Ha", "Astronomik OIII" and the like: drop the maker's name and
+    # try again on what is left.
+    words = [w for w in re.split(r"[\s_]+", s) if w]
+    if len(words) > 1 and words[0] in _FILTER_BRANDS:
+        return canon_filter(" ".join(words[1:]))
     return str(raw).strip()
 
 
@@ -179,6 +188,89 @@ def _osc_band_in(text: str) -> str | None:
         if key in low:
             return name
     return None
+
+
+# Which coverage bands a filter credits. Anything not listed credits a band
+# named after itself, so unknown filters (IR, sodium, ...) still show up.
+# Broadband light pollution filters behave like no filter at all: L on mono,
+# RGB on a colour camera.
+_BROADBAND_LIKE_NOFILTER = {"NoFilter", "L-Pro", "L-Quad", "L-QEF", "CLS", "UHC"}
+_MULTI_BAND = {
+    "L-eXtreme": ["Ha", "OIII"], "L-eNhance": ["Ha", "OIII"], "L-Ultimate": ["Ha", "OIII"],
+    "NBZ": ["Ha", "OIII"], "NBZ UHS": ["Ha", "OIII"], "ALP-T": ["Ha", "OIII"],
+    "Duo-Band": ["Ha", "OIII"], "Duo-Narrowband": ["Ha", "OIII"], "HaO3": ["Ha", "OIII"],
+    "SV220": ["Ha", "OIII"],
+    "Quad-Band": ["Ha", "OIII", "SII"],
+}
+
+
+def bands_for(filt: str | None, colour: bool) -> list[str]:
+    """Coverage bands a frame credits, given its canonical filter and sensor type."""
+    if not filt:
+        return ["Unknown"]
+    if filt in _BROADBAND_LIKE_NOFILTER:
+        return ["R", "G", "B"] if colour else ["L"]
+    if filt in _MULTI_BAND:
+        return list(_MULTI_BAND[filt])
+    return [filt]
+
+
+def filter_label(filt: str | None, colour: bool) -> str:
+    """Display name for the real filter behind a band credit."""
+    if not filt:
+        return "Unknown"
+    if filt == "NoFilter" and colour:
+        return "OSC"
+    return filt
+
+
+def build_filters_data(members: list[dict]) -> dict:
+    """Per-band hours for one target from its cluster members.
+
+    Masters contribute NCOMBINE x EXPTIME when available, else EXPTIME. Folder
+    sub blocks contribute n_subs x exptime (their exptime and ncombine already
+    encode this). Each member credits every band its filter maps to, and each
+    band records which real filters fed it under ``sources``.
+    """
+    filters_data = defaultdict(lambda: {
+        "total_hours": 0.0, "files": 0, "paths": [],
+        "sub_folders": 0, "n_subs": 0, "folder_sub_buckets": [],
+        "sources": defaultdict(float),
+    })
+    for m in members:
+        colour = bool(m.get("colour"))
+        label = filter_label(m.get("filter"), colour)
+        is_folder_sub = m.get("role") == "folder_sub"
+        if m.get("exptime") and m.get("ncombine"):
+            hours = m["exptime"] * m["ncombine"] / 3600.0
+        elif m.get("exptime"):
+            hours = m["exptime"] / 3600.0
+        else:
+            hours = 0.0
+        for band in bands_for(m.get("filter"), colour):
+            d = filters_data[band]
+            if not is_folder_sub:
+                d["paths"].append(m["path"])
+                d["files"] += 1
+            else:
+                d["sub_folders"] += 1
+                d["n_subs"] += m.get("ncombine") or 0
+                fs = m.get("_folder_sub") or {}
+                d["folder_sub_buckets"].append({
+                    "bucket": fs.get("bucket"),
+                    "n_subs": fs.get("n_subs"),
+                    "exptime": fs.get("exptime"),
+                    "hours": round((fs.get("exptime") or 0) * (fs.get("n_subs") or 0) / 3600.0, 2),
+                    "stage": fs.get("_stage"),
+                    "session_root": fs.get("_session_root"),
+                    "sample_path": fs.get("sample_path"),
+                    "telescope": fs.get("telescope"),
+                })
+            d["total_hours"] += hours
+            d["sources"][label] += hours
+    for d in filters_data.values():
+        d["sources"] = {k: round(v, 2) for k, v in d["sources"].items()}
+    return dict(filters_data)
 
 
 def filter_from_path(p: Path) -> str | None:
@@ -421,6 +513,7 @@ def read_fits_meta(path: Path) -> dict:
         "object": None,
         "telescope": None,
         "imagetyp": None,
+        "colour": False,
         "error": None,
     }
     try:
@@ -456,6 +549,11 @@ def read_fits_meta(path: Path) -> dict:
             cam_raw = str(h.get("INSTRUME") or "").strip()
             out["camera"] = cam_raw or None
             out["imagetyp"] = str(h.get("IMAGETYP") or h.get("OBSTYPE") or "").strip() or None
+            # A Bayer matrix keyword means a colour sensor. NINA, SGP and
+            # ASIAIR all write BAYERPAT for OSC cameras; a debayered RGB stack
+            # has NAXIS3 == 3 instead.
+            out["colour"] = bool(str(h.get("BAYERPAT") or h.get("COLORTYP") or "").strip()) \
+                or int(h.get("NAXIS3") or 0) == 3
             # Sensor/exposure settings useful for TS template seeding.
             for src_key, dst_key, caster in (
                 ("GAIN", "gain", float), ("OFFSET", "offset", float),
@@ -579,6 +677,7 @@ def read_xisf_meta(path: Path) -> dict:
         "object": None,
         "telescope": None,
         "imagetyp": None,
+        "colour": False,
         "error": None,
     }
     try:
@@ -600,6 +699,10 @@ def read_xisf_meta(path: Path) -> dict:
             if v and isinstance(v, list) and len(v):
                 return v[0].get("value")
             return default
+        # Colour sensor: Bayer keyword carried through, or a 3-channel RGB stack.
+        out["colour"] = bool(str(fk("BAYERPAT") or fk("COLORTYP") or "").strip()) \
+            or (bool(geom) and len(geom) >= 3 and int(geom[2]) == 3) \
+            or str(img.get("colorSpace") or "").upper() == "RGB"
         out["filter"] = canon_filter(fk("FILTER") or fk("FILTRE"))
         try:
             exp = fk("EXPTIME") or fk("EXPOSURE")
@@ -1391,6 +1494,7 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
             "object": rep_meta.get("object"),
             "telescope": rep_meta.get("telescope"),
             "camera": rep_meta.get("camera"),
+            "colour": bool(rep_meta.get("colour")),
             "sample_path": rep_path,
             "has_wcs": bool(rep_meta.get("has_wcs")),
             "_basenames": frozenset(Path(p).name for p, _ in members),
@@ -1712,6 +1816,7 @@ def main():
         "object": fs["object"],
         "telescope": fs["telescope"],
         "camera": fs.get("camera"),
+        "colour": bool(fs.get("colour")),
         "filter": fs["filter"],
         "exptime": fs["exptime"],
         "ncombine": fs["n_subs"],
@@ -1742,37 +1847,8 @@ def main():
         sc = SkyCoord(ra_c * u.deg, dec_c * u.deg)
         gal = sc.galactic
 
-        # Derive filters & hours from cluster members.
-        # Masters contribute NCOMBINE×EXPTIME when available, else EXPTIME.
-        # Folder-sub blocks contribute n_subs×exptime (their exptime/ncombine already encode this).
-        filters_data = defaultdict(lambda: {
-            "total_hours": 0.0, "files": 0, "paths": [],
-            "sub_folders": 0, "n_subs": 0, "folder_sub_buckets": [],
-        })
-        for m in members:
-            f = m.get("filter") or "Unknown"
-            is_folder_sub = m.get("role") == "folder_sub"
-            if not is_folder_sub:
-                filters_data[f]["paths"].append(m["path"])
-                filters_data[f]["files"] += 1
-            else:
-                filters_data[f]["sub_folders"] += 1
-                filters_data[f]["n_subs"] += m.get("ncombine") or 0
-                fs = m.get("_folder_sub") or {}
-                filters_data[f]["folder_sub_buckets"].append({
-                    "bucket": fs.get("bucket"),
-                    "n_subs": fs.get("n_subs"),
-                    "exptime": fs.get("exptime"),
-                    "hours": round((fs.get("exptime") or 0) * (fs.get("n_subs") or 0) / 3600.0, 2),
-                    "stage": fs.get("_stage"),
-                    "session_root": fs.get("_session_root"),
-                    "sample_path": fs.get("sample_path"),
-                    "telescope": fs.get("telescope"),
-                })
-            if m.get("exptime") and m.get("ncombine"):
-                filters_data[f]["total_hours"] += m["exptime"] * m["ncombine"] / 3600.0
-            elif m.get("exptime"):
-                filters_data[f]["total_hours"] += m["exptime"] / 3600.0
+        # Derive per-band hours from cluster members (see build_filters_data).
+        filters_data = build_filters_data(members)
 
         # Attach DB sub hours by matching object names that fall near the cluster
         # (We don't re-read all sub headers; we trust DB object_name → spatial match
@@ -1870,6 +1946,7 @@ def main():
                     "sub_folders": d.get("sub_folders", 0),
                     "n_subs": d.get("n_subs", 0),
                     "folder_sub_buckets": d.get("folder_sub_buckets", [])[:10],
+                    "sources": d.get("sources", {}),
                 }
                 for f, d in filters_data.items()
             },

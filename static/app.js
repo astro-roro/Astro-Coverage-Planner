@@ -30,6 +30,22 @@ const FILTER_PRIORITY = ["Ha", "SII", "OIII", "L", "R", "G", "B", "V", "IDAS"];
 
 // Filter dot render order (user-requested: L R G B Ha OIII SII)
 const FILTER_DOT_ORDER = ["L", "R", "G", "B", "Ha", "OIII", "SII"];
+// Bands a colour camera credits at once. A target's OSC hours are the R band
+// hours that came from an unfiltered colour sensor (the scanner writes the
+// real filter behind each band under filters[band].sources).
+const RGB_CHIP = "RGB";
+function oscHours(t) {
+  return t?.filters?.R?.sources?.OSC || 0;
+}
+// Hours for a chip name: bands read straight from the manifest, the RGB chip
+// reads the OSC share so colour data can be picked out on its own.
+function chipHours(t, f) {
+  if (f === RGB_CHIP) return oscHours(t);
+  return t?.filters?.[f]?.total_hours || 0;
+}
+function pillClass(f) {
+  return FILTER_COLORS[f] ? `fp-${f}` : "fp-other";
+}
 
 // Stable palette for telescope colors (ColorBrewer Set1 + extras)
 const TELESCOPE_PALETTE = [
@@ -660,11 +676,8 @@ function targetMatches(t) {
   // Search tokens AND with the chip/telescope/depth predicates below.
   if (!targetMatchesSearch(t, searchTokens)) return false;
 
-  const hrs = {};
-  for (const [f, d] of Object.entries(t.filters)) hrs[f] = d.total_hours || 0;
-
-  const has = f => (hrs[f] || 0) >= minHours;
-  const hasAny = f => (hrs[f] || 0) > 0;
+  const has = f => chipHours(t, f) >= minHours;
+  const hasAny = f => chipHours(t, f) > 0;
 
   // Telescope toggle: a tagged target is visible only if its telescope is in
   // the selected set. Empty set = hide every tagged target (so the user can
@@ -921,18 +934,34 @@ function renderTargetPanel(t) {
   // LRGBHOS order everywhere — header pills, coverage rows. Extras (non-canonical
   // filters present in the manifest) are dropped for now per the same rule
   // we apply to the sky-map filter chips.
-  const filtersSorted = FILTER_DOT_ORDER
+  // LRGBHOS first, then any other band the manifest carries (IR, sodium, ...)
+  // in a neutral grey so it is visible without pretending to be plannable.
+  const extraBands = Object.keys(t.filters || {})
+    .filter(f => !FILTER_DOT_ORDER.includes(f) && f !== "Unknown" && f !== "NoFilter")
+    .sort();
+  const filtersSorted = [...FILTER_DOT_ORDER, ...extraBands]
     .filter(f => t.filters?.[f])
     .map(f => [f, t.filters[f]]);
 
-  const filterPills = filtersSorted
+  const oscPill = oscHours(t) > 0
+    ? `<span class="filter-pill fp-OSC" title="One shot colour, ${oscHours(t).toFixed(1)}h"><span class="rgb-pie"></span>OSC</span>`
+    : "";
+  const filterPills = oscPill + filtersSorted
     .filter(([f, d]) => (d.total_hours || 0) > 0)
-    .map(([f]) => `<span class="filter-pill fp-${f}">${f}</span>`)
+    .map(([f]) => `<span class="filter-pill ${pillClass(f)}">${esc(f)}</span>`)
     .join("");
 
+  // A band fed by something other than a filter of the same name says so,
+  // e.g. "Ha via L-eXtreme" or "R via OSC".
+  const viaText = (f, d) => {
+    const src = Object.keys(d.sources || {}).filter(k => k !== f);
+    if (!src.length) return "";
+    const partly = f in (d.sources || {}) ? "partly " : "";
+    return ` <span class="via">${partly}via ${esc(src.join(", "))}</span>`;
+  };
   const filterRows = filtersSorted.map(([f, d]) => `
     <tr>
-      <td><span class="filter-pill fp-${f}">${f}</span></td>
+      <td><span class="filter-pill ${pillClass(f)}">${esc(f)}</span>${viaText(f, d)}</td>
       <td class="num">${(d.total_hours || 0).toFixed(2)}h</td>
       <td class="num">${d.files || 0}</td>
       <td class="num">${d.db_sub_hours ? (d.db_sub_hours).toFixed(1) + "h" : "—"}</td>
@@ -4663,15 +4692,22 @@ function updateCatalogStatusHint() {
 function _availableFilters() {
   const NOISE = new Set(["Unknown", "NoFilter"]);
   const present = new Set();
+  let anyOsc = false;
   for (const t of (manifest?.targets || [])) {
     for (const [f, d] of Object.entries(t.filters || {})) {
       if ((d?.total_hours || 0) > 0 && !NOISE.has(f)) present.add(f);
     }
+    if (oscHours(t) > 0) anyOsc = true;
   }
-  // LRGBHOS order, matching the planning + coverage target lists.
-  // Extras (IDAS/IR/etc.) are intentionally hidden for now.
-  const CANON = ["L", "R", "G", "B", "Ha", "OIII", "SII"];
-  return CANON.filter(f => present.has(f));
+  // LRGBHOS order, matching the planning + coverage target lists, then an
+  // RGB chip when any colour camera data exists, then the other bands
+  // (IR, sodium, ...) in a neutral style.
+  const canon = FILTER_DOT_ORDER.filter(f => present.has(f));
+  // Other bands are shown as long as they look like a filter name; a bare
+  // number or a literal "unknown" from a mislabelled header is not a chip.
+  const looksLikeFilter = f => !/^\d+$/.test(f) && f.toLowerCase() !== "unknown";
+  const extras = [...present].filter(f => !FILTER_DOT_ORDER.includes(f) && looksLikeFilter(f)).sort();
+  return [...canon, ...(anyOsc ? [RGB_CHIP] : []), ...extras];
 }
 
 function renderFilterChips() {
@@ -4683,7 +4719,15 @@ function renderFilterChips() {
     const lbl = document.createElement("label");
     lbl.className = "fchip";
     const checked = selectedFilters.has(f) ? "checked" : "";
-    lbl.innerHTML = `<input type="checkbox" data-f="${esc(f)}" ${checked}/> ${esc(f)}`;
+    let text = esc(f);
+    if (f === RGB_CHIP) {
+      lbl.title = "One shot colour camera with no filter: credits R, G and B at once";
+      text = `<span class="rgb-pie"></span>${text}`;
+    } else if (!FILTER_COLORS[f]) {
+      lbl.classList.add("fchip-other");
+      lbl.title = `${f}: shown for reference, not used in planning`;
+    }
+    lbl.innerHTML = `<input type="checkbox" data-f="${esc(f)}" ${checked}/> ${text}`;
     host.appendChild(lbl);
     const cb = lbl.querySelector("input");
     cb.addEventListener("change", () => {

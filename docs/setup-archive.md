@@ -101,6 +101,8 @@ This writes `data/catalogs.json` by querying VizieR via `astroquery` (already in
 
 ## What gets scanned vs skipped
 
+**Colour cameras and multi band filters.** Coverage is tracked per band (L, R, G, B, Ha, OIII, SII). A frame credits every band its filter covers, decided from the FITS `FILTER` keyword plus whether the header carries a Bayer pattern (`BAYERPAT`). No filter on a mono camera counts as L. No filter on a colour camera is labelled OSC and counts as R, G and B at once. A dual band filter such as L-eXtreme, L-eNhance, NBZ or ALP-T counts as Ha and OIII. Broadband light pollution filters such as L-Pro behave like no filter. Any other name (IR, sodium, a maker's own label) is kept as its own band and shown in grey. The target panel says which real filter fed each band, and an RGB chip in the filter bar picks out colour camera data.
+
 - **Plotted as FOV polygons:** any FITS or XISF file with standard WCS keywords (`CRVAL1/CRVAL2/CD1_1`, etc., or `CDELT1/CDELT2`). These are typically your stacked masters.
 - **Counted for hours but not plotted:** files classified as "subs" (unstacked individual exposures) — only if you've wired up a `PIPELINE_DB`. Otherwise they're skipped entirely.
 - **Skipped silently:** any file without WCS, any non-FITS/XISF file, anything the loader can't parse.
