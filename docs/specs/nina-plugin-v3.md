@@ -86,7 +86,7 @@ Built by the plugin from NINA's mediators at the moment of use, never cached acr
 
 Profile write-back: when a solve gives a focal length that differs from the profile by more than 2 percent, the plugin offers to write the solved value into `ActiveProfile.TelescopeSettings.FocalLength`. In the sequencer instruction this is a checkbox, default on, so it happens without a prompt. If ACP knows the aperture of the matched telescope, the plugin also writes `FocalRatio` as focal length over aperture. Both then land in the FITS headers of every frame that night, which is the win the scanner benefits from next time it reads the archive.
 
-Verify before building: the exact mediator calls for camera info, filter wheel names, and last plate solve result, and that `TelescopeSettings.FocalLength` is settable and persisted from a plugin. The May research doc covers the Framing API and TS but not these three. Budget a short spike on Windows first and record the calls in `docs/nina-plugin-research.md`.
+Verified 2026-09-04 against the NINA SDK: camera info, filter names, the capture and solve call, and the focal length setter are all public API. The exact calls are recorded at the end of `docs/nina-plugin-research.md`. No spike is needed before building.
 
 ### Part C: plan matching in ACP
 
@@ -149,7 +149,7 @@ Acceptance: server side in tests; plugin side by hand during a real session, the
 | v3.1 | Part D, then E gains the TS step | Yes |
 | v3.2 | Part F | Yes, a real night |
 
-ACP side work for v3.0 and v3.2 can be built and tested without NINA and should go first. The Windows spike for Part B is the first plugin task and the only one with real uncertainty.
+ACP side work for v3.0 and v3.2 can be built and tested without NINA and should go first. The plugin builds from the Windows machine over SSH, so plugin work can be built and unit tested without a person present; only the NINA UI checks need someone at the screen.
 
 ## Security
 
