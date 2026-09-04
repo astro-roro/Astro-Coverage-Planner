@@ -25,6 +25,7 @@ Endpoints:
 - GET /api/export/priority       CSV of gap-mode candidates
 - GET /api/gaps                  multi-source gap-finder (JSON)
 - GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
+- GET /api/version               app version + plans/manifest mtimes, for the NINA plugin's poll loop
 
 Env:
 - MANIFEST_PATH   path to archive manifest JSON  (default: ./data/manifest.json)
@@ -81,6 +82,12 @@ except ImportError:
     )
 
 from gaps import candidates_in_moc, compute_gap_moc
+
+# No git tag or Dockerfile label carries a version today; this is the
+# first one, bumped by hand until a release process picks it up. The NINA
+# plugin polls GET /api/version to know when to refetch plans, so this
+# constant matters more for cache-busting than for human version pride.
+VERSION = "1.0.0"
 
 REPO_ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
@@ -1253,6 +1260,24 @@ def _seed_gear_from_manifest() -> dict:
 @app.route("/api/gear/seed", methods=["POST"])
 def api_gear_seed():
     return jsonify(_seed_gear_from_manifest())
+
+
+def _iso_mtime(path: Path) -> str | None:
+    """UTC ISO 8601 mtime of `path`, or None when it doesn't exist."""
+    if not path.exists():
+        return None
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+@app.route("/api/version")
+def api_version():
+    """Lets the NINA plugin poll cheaply for plan/manifest changes instead of
+    refetching /api/plans on a timer regardless of whether anything moved."""
+    return jsonify({
+        "version": VERSION,
+        "plans_last_modified": _iso_mtime(PLANS_PATH),
+        "manifest_last_modified": _iso_mtime(MANIFEST_PATH),
+    })
 
 
 @app.route("/")
