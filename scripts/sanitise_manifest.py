@@ -131,7 +131,7 @@ def _stable_target_id(orig_id: Any, ra: Any, dec: Any) -> str:
 
 
 def _clean_filter_entry(entry: Any) -> dict:
-    """Keep only total_hours (rounded 0.1h) and files count."""
+    """Keep total_hours (rounded 0.1h), files count and the per-source hours."""
     if not isinstance(entry, dict):
         return {"total_hours": 0.0, "files": 0}
     hours = entry.get("total_hours", 0.0) or 0.0
@@ -144,7 +144,18 @@ def _clean_filter_entry(entry: Any) -> dict:
         files = int(files)
     except (TypeError, ValueError):
         files = 0
-    return {"total_hours": hours, "files": files}
+    out = {"total_hours": hours, "files": files}
+    sources = entry.get("sources")
+    if isinstance(sources, dict):
+        clean = {}
+        for k, v in sources.items():
+            try:
+                clean[str(k)[:32]] = round(float(v), 1)
+            except (TypeError, ValueError):
+                continue
+        if clean:
+            out["sources"] = clean
+    return out
 
 
 def _clean_target(t: dict) -> dict:
