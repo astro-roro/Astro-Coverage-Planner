@@ -31,7 +31,7 @@ import re
 import sys
 import time
 import traceback
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -163,6 +163,110 @@ OSC_BAND_FILTERS = {
 _FILTER_BRANDS = {"ANTLIA", "ASTRONOMIK", "ASTRODON", "BAADER", "CHROMA", "OPTOLONG",
                   "ZWO", "SVBONY", "IDAS", "ALTAIR", "PLAYERONE", "ASKAR"}
 
+# Filter names the scanner saw that neither the hand tables above nor the
+# AstroBin catalogue below could map to a band. Populated by canon_filter,
+# read by write_summary() for the "Unrecognised filter names" report section
+# (issue #63 follow-up: keep real archives feeding the catalogue).
+UNRECOGNISED_FILTER_COUNTS: Counter[str] = Counter()
+
+FILTER_CATALOGUE_PATH = REPO_ROOT / "data" / "filter_catalogue.json"
+
+
+def _normalise_filter_key(s: str) -> str:
+    """casefold + collapse whitespace/punctuation to single spaces."""
+    s = re.sub(r"[^a-z0-9]+", " ", s.casefold())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# AstroBin product names carry size/mount noise ("L-Para 2''", "NBZ UHS
+# f/1.4-f/2", "L-eNhance EOS APS-C") that a user typing a filter wheel slot
+# name never includes. Stripped only when building the catalogue's lookup
+# keys, so "L-Para" (no size) still finds "L-Para 2''" (the only size AstroBin
+# lists it under).
+_SIZE_NOISE_RE = re.compile(
+    r"\b\d+(\.\d+)?\s*(mm|nm)\b"
+    r"|\d+(\.\d+)?\s*(''|[\"′″])+"
+    r"|\bf/[\d.]+(?:-f/[\d.]+)?\b"
+    r"|\b(eos aps-c|aps-c|full frame|mounted|unmounted|round|clip)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_size_noise(name: str) -> str:
+    return _SIZE_NOISE_RE.sub(" ", name)
+
+
+def _load_filter_catalogue() -> dict[str, tuple[str, list[str]]]:
+    """Build a normalised-name -> (canonical name, bands) lookup from the
+    AstroBin-sourced catalogue in ``data/filter_catalogue.json``.
+
+    Keys are indexed both as "brand name" (unambiguous, one row per product)
+    and as bare "name" (only kept when every catalogue row sharing that bare
+    name agrees on the bands, so a plain "Duo-Band" typed with no brand isn't
+    guessed at if two brands' Duo-Band filters disagree).
+    """
+    if not FILTER_CATALOGUE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(FILTER_CATALOGUE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    brand_words = set(_FILTER_BRANDS)
+    for f in data.get("filters", []):
+        b = (f.get("brand") or "").strip()
+        if b:
+            brand_words.add(_normalise_filter_key(b).upper())
+
+    by_full: dict[str, tuple[str, list[str]]] = {}
+    bare_candidates: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+    bare_name: dict[str, str] = {}
+    for f in data.get("filters", []):
+        brand = (f.get("brand") or "").strip()
+        name = (f.get("name") or "").strip()
+        raw_bands = f.get("bands") or []
+        if not name or not raw_bands:
+            continue
+        clean_name = re.sub(r"\s+", " ", _strip_size_noise(name)).strip() or name
+        # Own-name bands ("Sodium 589nm 1.25\"") get the same size-noise strip
+        # as the product name itself; canonical tokens (Ha, OIII, ...) have no
+        # digits to strip so this is a no-op for them.
+        bands = [
+            re.sub(r"\s+", " ", _strip_size_noise(b)).strip() or b for b in raw_bands
+        ]
+        full_key = _normalise_filter_key(f"{brand} {clean_name}")
+        by_full.setdefault(full_key, (clean_name, bands))
+        bare_key = _normalise_filter_key(clean_name)
+        bare_candidates[bare_key].add(tuple(bands))
+        bare_name.setdefault(bare_key, clean_name)
+
+    lookup = dict(by_full)
+    for bare_key, band_sets in bare_candidates.items():
+        if len(band_sets) == 1 and bare_key not in lookup:
+            lookup[bare_key] = (bare_name[bare_key], list(next(iter(band_sets))))
+    return lookup
+
+
+_FILTER_CATALOGUE = None
+
+
+def _filter_catalogue() -> dict[str, tuple[str, list[str]]]:
+    global _FILTER_CATALOGUE
+    if _FILTER_CATALOGUE is None:
+        _FILTER_CATALOGUE = _load_filter_catalogue()
+    return _FILTER_CATALOGUE
+
+
+def _catalogue_lookup(raw: str) -> tuple[str, list[str]] | None:
+    key = _normalise_filter_key(raw)
+    hit = _filter_catalogue().get(key)
+    if hit is not None:
+        return hit
+    words = key.split(" ")
+    if len(words) > 1 and words[0].upper() in _FILTER_BRANDS:
+        return _filter_catalogue().get(" ".join(words[1:]))
+    return None
+
 
 def canon_filter(raw: str | None) -> str | None:
     if raw is None:
@@ -179,6 +283,10 @@ def canon_filter(raw: str | None) -> str | None:
     words = [w for w in re.split(r"[\s_]+", s) if w]
     if len(words) > 1 and words[0] in _FILTER_BRANDS:
         return canon_filter(" ".join(words[1:]))
+    catalogue_hit = _catalogue_lookup(str(raw))
+    if catalogue_hit is not None:
+        return catalogue_hit[0]
+    UNRECOGNISED_FILTER_COUNTS[str(raw).strip()] += 1
     return str(raw).strip()
 
 
@@ -203,6 +311,11 @@ _MULTI_BAND = {
     "Quad-Band": ["Ha", "OIII", "SII"],
 }
 
+# canon_filter's own single-band vocabulary (Ha, OIII, SII, L, R, G, B, ...).
+# Checked before the catalogue so a coincidental catalogue product literally
+# named e.g. "Ha" can never relabel the plain single-band filter.
+_SINGLE_BAND_NAMES = set(FILTER_CANON.values()) - {"NoFilter"}
+
 
 def bands_for(filt: str | None, colour: bool) -> list[str]:
     """Coverage bands a frame credits, given its canonical filter and sensor type."""
@@ -212,6 +325,11 @@ def bands_for(filt: str | None, colour: bool) -> list[str]:
         return ["R", "G", "B"] if colour else ["L"]
     if filt in _MULTI_BAND:
         return list(_MULTI_BAND[filt])
+    if filt in _SINGLE_BAND_NAMES:
+        return [filt]
+    catalogue_hit = _catalogue_lookup(filt)
+    if catalogue_hit is not None:
+        return list(catalogue_hit[1])
     return [filt]
 
 
@@ -2040,6 +2158,12 @@ def main():
             "content_dedup_drops": content_dedup_log,
             "content_dedup_hours_dropped": round(content_dropped_hours, 2),
             "content_dedup_buckets_dropped": len(content_dedup_log),
+            "unrecognised_filter_names": [
+                {"name": name, "frames": count}
+                for name, count in sorted(
+                    UNRECOGNISED_FILTER_COUNTS.items(), key=lambda kv: -kv[1]
+                )
+            ],
         },
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -2069,6 +2193,9 @@ def main():
     print(f"  Total hours (gross, all filters): {total_hours:.1f}")
     print(f"  sii==ha suspects:  {len(flagged)}")
     print(f"  Masters missing WCS: {len(no_wcs)}")
+    if UNRECOGNISED_FILTER_COUNTS:
+        print(f"  Unrecognised filter names: {len(UNRECOGNISED_FILTER_COUNTS)} "
+              f"(see {SUMMARY_PATH})")
 
 
 def write_summary(m: dict):
@@ -2137,6 +2264,29 @@ def write_summary(m: dict):
     lines.append(f"- **Masters with ambiguous filter**: {len(amb)}")
     lines.append("")
     lines.append(f"_Full detail in `archive_manifest.json` (integrity_flags section)._")
+    lines.append("")
+
+    # Unrecognised filter names: names the hand tables and the AstroBin
+    # catalogue both missed, so this archive can't tell the planner which
+    # band they cover. Paste this list into a GitHub issue against
+    # data/filter_catalogue.json so the next scan resolves them.
+    unrec = flags.get("unrecognised_filter_names", [])
+    lines.append("## Unrecognised filter names")
+    lines.append("")
+    if unrec:
+        lines.append(
+            "These filter names did not resolve to a known coverage band via "
+            "the hand tables or `data/filter_catalogue.json`. Please paste this "
+            "list into a GitHub issue so the catalogue can be extended."
+        )
+        lines.append("")
+        lines.append("| Filter name | Frames (approx.) |")
+        lines.append("|---|---:|")
+        for row in unrec:
+            lines.append(f"| {row['name']} | {row['frames']} |")
+    else:
+        lines.append("None. Every filter name seen this scan resolved to a known band.")
+    lines.append("")
 
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")
 
