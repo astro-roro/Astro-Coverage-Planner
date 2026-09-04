@@ -14,6 +14,9 @@ Environment variables (all optional):
                  Default: ``<repo>/state/full_masters`` if it exists.
   MANIFEST_PATH  Where to write the manifest. Default: ``<repo>/data/manifest.json``
                  (i.e. exactly where the Coverage Planner expects it).
+  ACP_SCAN_CACHE Where the per-file header cache lives.
+                 Default: ``<repo>/data/scan_cache.json``. Delete it or pass
+                 ``--no-cache`` to force every header to be read again.
   PIPELINE_DB    Optional sqlite DB with a ``frames`` table for per-sub hours
                  (a calibration tool's job_queue.db). Missing is fine — hours
                  then come solely from master-file headers.
@@ -25,10 +28,14 @@ Then start the planner; the manifest will be picked up automatically.
 """
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
 import os
 import re
 import sys
+import tempfile
+import threading
 import time
 import traceback
 from collections import Counter, defaultdict
@@ -75,6 +82,14 @@ REPORT_DIR = MANIFEST_PATH.parent
 SUMMARY_PATH = REPORT_DIR / "archive_manifest_summary.md"
 
 EXTENSIONS = (".fit", ".fits", ".fts", ".xisf")
+
+# Per-file header cache. Repeat scans of a large archive spend nearly all of
+# their time opening headers, and almost nothing in an archive changes between
+# nightly runs, so we remember what each reader returned and skip the read when
+# path, size and mtime all still match. Override the location with
+# ACP_SCAN_CACHE; --no-cache re-reads everything.
+SCAN_CACHE_PATH = Path(os.environ.get("ACP_SCAN_CACHE") or (REPO_ROOT / "data" / "scan_cache.json"))
+SCAN_CACHE_SCHEMA = 1
 
 # Mount-name patterns that show up in the TELESCOP header instead of the scope.
 # These are NOT telescopes — they're mounts. Drop them so the coverage UI doesn't
@@ -268,6 +283,20 @@ def _catalogue_lookup(raw: str) -> tuple[str, list[str]] | None:
     return None
 
 
+# Names counted while a header read is in flight are recorded per thread as
+# well as globally, so a cached read can replay exactly the same increments a
+# real read would have made. Without this a warm scan would under-report
+# unrecognised filter names in the manifest's integrity flags.
+_UNREC_CAPTURE = threading.local()
+
+
+def _note_unrecognised_filter(name: str) -> None:
+    UNRECOGNISED_FILTER_COUNTS[name] += 1
+    sink = getattr(_UNREC_CAPTURE, "sink", None)
+    if sink is not None:
+        sink.append(name)
+
+
 def canon_filter(raw: str | None) -> str | None:
     if raw is None:
         return None
@@ -286,7 +315,7 @@ def canon_filter(raw: str | None) -> str | None:
     catalogue_hit = _catalogue_lookup(str(raw))
     if catalogue_hit is not None:
         return catalogue_hit[0]
-    UNRECOGNISED_FILTER_COUNTS[str(raw).strip()] += 1
+    _note_unrecognised_filter(str(raw).strip())
     return str(raw).strip()
 
 
@@ -961,7 +990,12 @@ def read_xisf_meta(path: Path) -> dict:
 
 
 def glob_archive(roots, extensions, log=print):
-    """Glob all matching files under roots; return list of Path with stat."""
+    """Glob all matching files under roots.
+
+    Returns a list of ``(Path, size_bytes, mtime)``. The mtime comes from the
+    same stat call as the size so the scan cache can key on it without a second
+    stat per file, which matters on a NAS where stat is a network round trip.
+    """
     files = []
     for root in roots:
         if not root.exists():
@@ -972,12 +1006,139 @@ def glob_archive(roots, extensions, log=print):
         for ext in extensions:
             for p in root.rglob(f"*{ext}"):
                 try:
-                    sz = p.stat().st_size
+                    st = p.stat()
+                    sz, mtime = st.st_size, st.st_mtime
                 except Exception:
-                    sz = 0
-                files.append((p, sz))
+                    sz, mtime = 0, 0.0
+                files.append((p, sz, mtime))
         log(f"  scan {root}: {len(files)} files so far ({time.time()-t0:.1f}s)")
     return files
+
+
+def scan_cache_key(path) -> str:
+    """Cache key for a scanned path.
+
+    Backslashes are folded to forward slashes so the same file keys the same
+    way whether it was reached as ``D:\\Astro\\x.fit`` or ``D:/Astro/x.fit``.
+    The key is otherwise the path exactly as scanned: if a NAS is remapped to a
+    different drive letter every key misses and the run is simply a cold scan,
+    which is correct rather than a silent mismatch.
+    """
+    return str(path).replace("\\", "/")
+
+
+def _mtime_token(mtime) -> float:
+    """mtime rounded to microseconds so a JSON round trip compares equal.
+
+    Windows and SMB report coarser mtimes than Linux, and some filesystems
+    (FAT, some NAS exports) only resolve to two seconds. Rounding is safe for
+    all of them: it never makes two different mtimes look equal at the
+    resolutions filesystems actually use.
+    """
+    try:
+        return round(float(mtime), 6)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def scan_cache_fingerprint() -> str:
+    """Identity of the code that produced the cached metadata.
+
+    Any edit to either reader changes what a header read returns, so the whole
+    cache has to be thrown away. Hashing the two function bodies plus the schema
+    version catches that automatically, with no version number to remember to
+    bump by hand.
+    """
+    h = hashlib.sha256()
+    h.update(str(SCAN_CACHE_SCHEMA).encode("utf-8"))
+    for fn in (read_fits_meta, read_xisf_meta):
+        try:
+            src = inspect.getsource(fn)
+        except (OSError, TypeError):
+            # No source available (frozen build, exec'd module): fall back to a
+            # value that is stable within a run but forces a cold scan across
+            # interpreter versions rather than trusting a stale cache.
+            src = f"{fn.__name__}:{sys.version}"
+        h.update(src.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _json_plain(value):
+    """Coerce a metadata value to something json can write, or raise."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return [_json_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_plain(v) for k, v in value.items()}
+    raise TypeError(f"not cacheable: {type(value).__name__}")
+
+
+def load_scan_cache(path: Path | None = None, fingerprint: str | None = None,
+                    log=print) -> dict:
+    """Load the header cache; anything unusable means an empty (cold) cache."""
+    path = Path(path or SCAN_CACHE_PATH)
+    fingerprint = fingerprint or scan_cache_fingerprint()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log(f"  scan cache unreadable ({type(e).__name__}), scanning cold: {path}")
+        return {}
+    if not isinstance(raw, dict):
+        log(f"  scan cache is not an object, scanning cold: {path}")
+        return {}
+    if raw.get("schema") != SCAN_CACHE_SCHEMA:
+        log(f"  scan cache schema {raw.get('schema')!r} != {SCAN_CACHE_SCHEMA}, scanning cold")
+        return {}
+    if raw.get("reader_hash") != fingerprint:
+        log("  scan cache was written by different reader code, scanning cold")
+        return {}
+    entries = raw.get("entries")
+    if not isinstance(entries, dict):
+        return {}
+    out = {}
+    for key, ent in entries.items():
+        if (isinstance(key, str) and isinstance(ent, dict)
+                and isinstance(ent.get("meta"), dict)
+                and isinstance(ent.get("size"), (int, float))
+                and isinstance(ent.get("mtime"), (int, float))):
+            out[key] = ent
+    return out
+
+
+def save_scan_cache(entries: dict, path: Path | None = None,
+                    fingerprint: str | None = None, log=print) -> None:
+    """Write the cache atomically (temp file + rename) so a kill can't corrupt it."""
+    path = Path(path or SCAN_CACHE_PATH)
+    doc = {
+        "schema": SCAN_CACHE_SCHEMA,
+        "reader_hash": fingerprint or scan_cache_fingerprint(),
+        "written": datetime.now().isoformat(),
+        "entries": entries,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(doc)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        # A cache is an optimisation. Never fail a scan that already produced a
+        # manifest just because the cache could not be written.
+        log(f"  WARNING: could not write scan cache {path}: {type(e).__name__}: {e}")
 
 
 def translate_nas_path(p: str) -> str:
@@ -1647,13 +1808,17 @@ def main():
     classified = []
     to_read = []                 # Files we will header-read
     pre_cal_count = 0
-    for p, sz in files:
+    stat_by_path: dict[str, tuple[int, float]] = {}
+    for p, sz, mtime in files:
         entry = {
             "path": str(p),
             "ext": p.suffix.lower(),
             "size_bytes": sz,
             "role": None,
         }
+        # Kept beside the entries rather than inside them: entry dicts are
+        # merged into master records, and the manifest schema is fixed.
+        stat_by_path[str(p)] = (sz, mtime)
         if prefilter_calibration(p):
             entry["role"] = "calibration"
             pre_cal_count += 1
@@ -1671,35 +1836,97 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] Pre-filtered {pre_cal_count} calibration files by name; "
           f"header-reading {len(to_read)} imaging-candidate files (own header each)")
 
-    # Step 3: header-read every imaging candidate in parallel
+    # Step 3: header-read every imaging candidate in parallel, minus whatever
+    # the scan cache can answer from a previous run.
     WORKERS = 32
 
     def _read_one(f):
         p = Path(f["path"])
-        if p.suffix.lower() == ".xisf":
-            m = read_xisf_meta(p)
-        else:
-            m = read_fits_meta(p)
-        return f["path"], m
+        _UNREC_CAPTURE.sink = []
+        try:
+            if p.suffix.lower() == ".xisf":
+                m = read_xisf_meta(p)
+            else:
+                m = read_fits_meta(p)
+            unrecognised = list(_UNREC_CAPTURE.sink)
+        finally:
+            _UNREC_CAPTURE.sink = None
+        return f["path"], m, unrecognised
+
+    def _apply_meta(entry, meta):
+        """Copy a metadata dict into its classified entry (path stays as scanned)."""
+        for k, v in meta.items():
+            if k != "path":
+                entry[k] = v
+
+    use_cache = not (_CLI_ARGS and getattr(_CLI_ARGS, "no_cache", False))
+    fingerprint = scan_cache_fingerprint()
+    old_cache = {}
+    if use_cache:
+        old_cache = load_scan_cache(
+            SCAN_CACHE_PATH, fingerprint,
+            log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
+    else:
+        print(f"[{time.time()-t0:6.1f}s]   --no-cache: re-reading every header")
+    new_cache: dict[str, dict] = {}
+    cache_hits = 0
 
     sample_meta = {}  # path → meta (one entry per imaging-candidate file)
+    cold = []         # entries whose header we actually have to open
+    for f in to_read:
+        sz, mtime = stat_by_path.get(f["path"], (None, None))
+        ent = old_cache.get(scan_cache_key(f["path"]))
+        if (ent is not None and sz is not None
+                and ent.get("size") == sz
+                and ent.get("mtime") == _mtime_token(mtime)):
+            meta = dict(ent["meta"])
+            meta["path"] = f["path"]
+            sample_meta[f["path"]] = meta
+            _apply_meta(f, meta)
+            # Replay the counter increments the skipped read would have made.
+            for name in ent.get("unrecognised") or []:
+                _note_unrecognised_filter(str(name))
+            new_cache[scan_cache_key(f["path"])] = ent
+            cache_hits += 1
+        else:
+            cold.append(f)
+
+    if cache_hits:
+        print(f"[{time.time()-t0:6.1f}s]   scan cache: {cache_hits} hit(s), "
+              f"{len(cold)} file(s) to read")
+
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        futures = {ex.submit(_read_one, f): f for f in to_read}
+        futures = {ex.submit(_read_one, f): f for f in cold}
         done = 0
         for fut in as_completed(futures):
+            entry = futures[fut]
             try:
-                path, meta = fut.result()
+                path, meta, unrecognised = fut.result()
                 sample_meta[path] = meta
                 # Copy meta into the classified entry too
-                for k, v in meta.items():
-                    if k != "path":
-                        futures[fut][k] = v
+                _apply_meta(entry, meta)
+                sz, mtime = stat_by_path.get(path, (None, None))
+                if sz is not None:
+                    try:
+                        new_cache[scan_cache_key(path)] = {
+                            "size": sz,
+                            "mtime": _mtime_token(mtime),
+                            "meta": _json_plain(
+                                {k: v for k, v in meta.items() if k != "path"}),
+                            "unrecognised": [str(n) for n in unrecognised],
+                        }
+                    except TypeError:
+                        # A reader returned something json can't hold: leave the
+                        # file out of the cache and read it again next time.
+                        pass
             except Exception as e:
-                futures[fut]["error"] = f"{type(e).__name__}: {e}"
+                entry["error"] = f"{type(e).__name__}: {e}"
             done += 1
             if done % 500 == 0:
-                print(f"[{time.time()-t0:6.1f}s]   headers read {done}/{len(to_read)}")
-    print(f"[{time.time()-t0:6.1f}s] Headers complete ({len(sample_meta)} files read)")
+                print(f"[{time.time()-t0:6.1f}s]   headers read {done}/{len(cold)}")
+    cache_dropped = len([k for k in old_cache if k not in new_cache])
+    print(f"[{time.time()-t0:6.1f}s] Headers complete ({len(sample_meta)} files, "
+          f"{len(cold)} read, {cache_hits} from cache)")
 
     # (Every imaging candidate is now header-read, so the old folder-sample
     # WCS-recovery pass is gone: a folder's WCS is captured wherever a solved
@@ -2182,6 +2409,13 @@ def main():
         )
         print(f"[{time.time()-t0:6.1f}s] Wrote sanitised copy to {out_path}")
 
+    # The cache is written whole every run, so files that have vanished from the
+    # archive simply never make it into the new document. --no-cache still
+    # refreshes it, so a forced cold scan leaves the next run warm.
+    save_scan_cache(new_cache, SCAN_CACHE_PATH, fingerprint,
+                    log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
+    print(f"[{time.time()-t0:6.1f}s] Scan cache: {len(new_cache)} entries -> {SCAN_CACHE_PATH}")
+
     # Step 8: Summary markdown
     write_summary(manifest)
     print(f"[{time.time()-t0:6.1f}s] Wrote {SUMMARY_PATH}")
@@ -2189,6 +2423,8 @@ def main():
     print(f"\n[{time.time()-t0:6.1f}s] DONE.")
     print(f"  Total files:       {len(files)}")
     print(f"  Masters:           {len(masters)}")
+    print(f"  Header cache:      {cache_hits} hits, {len(cold)} misses, "
+          f"{cache_dropped} dropped")
     print(f"  Targets (clusters): {len(targets)}")
     print(f"  Total hours (gross, all filters): {total_hours:.1f}")
     print(f"  sii==ha suspects:  {len(flagged)}")
@@ -2302,6 +2538,9 @@ def _parse_cli(argv: list[str] | None = None):
                          "(shareable) copy to this path.")
     ap.add_argument("--label", default="",
                     help="Friend-label embedded in the sanitised manifest.")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="Ignore the header cache and re-read every file's "
+                         "header. The cache is still rewritten at the end.")
     return ap.parse_args(argv)
 
 
