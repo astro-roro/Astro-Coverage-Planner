@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -134,6 +135,54 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
 app.jinja_env.auto_reload = True
+
+
+def _api_auth_token() -> str:
+    """Read fresh on every request rather than caching at import time, so
+    tests (and anyone reconfiguring the environment around a long-lived
+    process) see ACP_API_TOKEN changes take effect immediately."""
+    return (os.environ.get("ACP_API_TOKEN") or "").strip()
+
+
+if _api_auth_token():
+    logging.info("[acp] API auth: ON — /api/* requires a matching ACP_API_TOKEN bearer token")
+else:
+    logging.info("[acp] API auth: OFF — set ACP_API_TOKEN to require a bearer token on /api/*")
+
+
+@app.before_request
+def _api_gate():
+    """Bearer-token gate for /api/*, off by default (issue: NINA plugin
+    prep). The HTML page and static files are never gated — only the API
+    surface a plugin or curl would hit. OPTIONS is answered here (204,
+    no auth check) so CORS preflight from a browser-based client works
+    even when a token is required."""
+    if not request.path.startswith("/api/"):
+        return None
+    if request.method == "OPTIONS":
+        return ("", 204)
+    token = _api_auth_token()
+    if not token:
+        return None
+    auth_header = request.headers.get("Authorization", "")
+    supplied = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
+    if not hmac.compare_digest(supplied, token):
+        return jsonify({"error": "unauthorized"}), 401
+    return None
+
+
+@app.after_request
+def _api_cors(response):
+    """CORS on /api/* GETs (and the OPTIONS preflight for them) only — the
+    plugin runs as a desktop app making cross-origin-flavoured requests,
+    but this isn't meant to open up the write endpoints to arbitrary
+    origins, so POST/PUT/DELETE responses are left alone."""
+    if request.path.startswith("/api/") and request.method in ("GET", "OPTIONS"):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
 
 if not CATALOGS_PATH.exists():
     print(
