@@ -82,6 +82,12 @@ except ImportError:
 
 from gaps import candidates_in_moc, compute_gap_moc
 
+# Ceiling on a single acquired-hours report. Ten years of continuous imaging is
+# about 87,600 hours, so nothing honest comes close. It exists because progress
+# only ever raises a goal without `force`: one absurd value would write a number
+# this endpoint could never correct again.
+MAX_ACQUIRED_HOURS = 100_000.0
+
 REPO_ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
@@ -3315,9 +3321,22 @@ def _validate_progress_payload(payload) -> str | None:
     for name, cfg in filters.items():
         if not isinstance(cfg, dict):
             return f"filters[{name!r}] must be an object"
-        hours = _num(cfg.get("acquired_hours"))
+        # A JSON string is refused rather than coerced. _num would happily
+        # turn "1e6" into a million, and this value is written straight into
+        # a plan, so the caller has to mean it as a number.
+        raw_hours = cfg.get("acquired_hours")
+        if isinstance(raw_hours, bool) or not isinstance(raw_hours, (int, float)):
+            return f"filters[{name!r}].acquired_hours must be a number >= 0"
+        hours = _num(raw_hours)
         if hours is None or hours < 0:
             return f"filters[{name!r}].acquired_hours must be a number >= 0"
+        # An upper bound, because hours only ever go up without `force`: one
+        # absurd value writes a goal that can never be corrected through this
+        # endpoint again. The cap is far past any real integration time, so it
+        # rejects nonsense without ever rejecting an honest report.
+        if hours > MAX_ACQUIRED_HOURS:
+            return (f"filters[{name!r}].acquired_hours must be <= "
+                    f"{MAX_ACQUIRED_HOURS} (got {hours!r})")
         if "acquired_count" in cfg and cfg["acquired_count"] is not None:
             count = cfg["acquired_count"]
             if isinstance(count, bool) or not isinstance(count, int) or count < 0:
