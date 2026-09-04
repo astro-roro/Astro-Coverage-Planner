@@ -423,7 +423,7 @@ def load_fingerprints() -> dict:
         parsed = json.loads(FINGERPRINTS_PATH.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
             logging.warning(
-                "fingerprints file at %s is not a JSON object (got %s) — treating as empty",
+                "fingerprints file at %s is not a JSON object (got %s), treating as empty",
                 FINGERPRINTS_PATH, type(parsed).__name__)
             parsed = {"version": 1, "profiles": {}}
         parsed.setdefault("version", 1)
@@ -3186,7 +3186,7 @@ def _fingerprint_id(fp: dict) -> str:
 def _validate_fingerprint(fp) -> str | None:
     """Reject a fingerprint that can't produce a meaningful verdict.
 
-    Only `camera` and `focal_length_mm` are required — everything else is
+    Only `camera` and `focal_length_mm` are required, everything else is
     optional, because a plugin talking to a rig with no filter wheel, no
     mount driver or no site set still deserves an answer.
     """
