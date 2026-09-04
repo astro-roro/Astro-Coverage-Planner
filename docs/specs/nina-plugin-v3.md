@@ -21,6 +21,15 @@ Those values make a gear fingerprint. The plugin sends it to ACP, ACP returns th
 
 Intent, meaning which targets are for the dark site and which are for casual nights, does not need a tag. The dark site has one telescope and one camera, so a plan made for that gear routes there and nowhere else. A plan made for a wide field lens sits until that lens is under a dark sky.
 
+## Two modes, one switch
+
+Most users run one rig on one computer and want none of this in their way. The plugin's Options page has a single setting, "Which plans to load into Target Scheduler", with two values:
+
+- Everything. Every plan in ACP is synced. The fingerprint is still built and still shown in the dock, and the focal length write-back still works, but nothing is filtered. The user adjusts in TS if a plan does not suit the night. This is the default.
+- Only what fits tonight. Plans are matched against the fingerprint and only the fit ones are synced. For people with several rigs, sites or computers.
+
+Everything else in this document applies to both modes. The matching endpoint is always available; the mode decides whether the sync step uses its verdicts. A plan with no gear set is synced in both modes.
+
 ## Goals
 
 1. The plugin talks to ACP over a LAN or VPN with a bearer token, and optionally over https.
@@ -118,7 +127,7 @@ Sequencer instruction, "ACP: Sync for tonight", in the Advanced Sequencer under 
 2. Capture one frame with the instruction's exposure setting and plate solve it, using the same solver the profile uses.
 3. Build the fingerprint with the solved focal length.
 4. Write the focal length and focal ratio back to the profile if the checkbox is on.
-5. `POST /api/plans/match`, take the `fit` plans.
+5. `POST /api/plans/match`. In the everything mode take all plans; in the fit mode take only the `fit` verdicts.
 6. Run the TS sync for those plans.
 7. Report in the sequencer log: N plans loaded, M left out and why, the focal length change if any. If nothing fits, say so plainly and leave TS as it was.
 
@@ -151,3 +160,4 @@ Unchanged from the May decision: same machine needs nothing, same LAN or overlay
 1. Solve at the start of the night versus using the last solve NINA already did. Using the last solve avoids an extra exposure but can be stale from a previous session. Default: the instruction always solves; the dock button uses the last solve if it is less than an hour old and says so.
 2. Pixel scale tolerance of 15 percent. Wide enough for a reducer the user forgot, tight enough to keep a 250 mm lens off 540 mm plans. Revisit after a month of fingerprints.
 3. Whether the profile write-back should ever be automatic outside the sequencer instruction. Default: never, only the instruction with its checkbox.
+4. Whether the everything mode should still warn when a synced plan does not fit the fingerprint. Default: yes, one line in the dock and the sequencer log, no blocking.
