@@ -130,9 +130,13 @@ def sanitize_telescope(raw):
     return _TELESCOPE_CANONICAL_BY_FOLD.get(fold, s)
 
 
+# Keys are matched after upper-casing, so a mixed-case key here is dead. The
+# three that were (Ha, Halpha, H-alpha) are kept because they read as
+# documentation of the spellings handled, but each has an upper-case twin that
+# does the work. A test asserts every key has one.
 FILTER_CANON = {
     "H": "Ha", "HA": "Ha", "Ha": "Ha", "Halpha": "Ha", "H-alpha": "Ha",
-    "HALPHA": "Ha", "H_ALPHA": "Ha",
+    "HALPHA": "Ha", "H_ALPHA": "Ha", "H-ALPHA": "Ha",
     "O": "OIII", "O3": "OIII", "OIII": "OIII", "O-III": "OIII", "O_III": "OIII",
     "S": "SII", "S2": "SII", "SII": "SII", "S-II": "SII", "S_II": "SII",
     "L": "L", "LUM": "L", "LUMINANCE": "L", "LIGHT": "L", "CLEAR": "L",
