@@ -1108,6 +1108,14 @@ def _extract_gear_from_manifest() -> dict:
             if name and not _looks_truncated(name):
                 tels.setdefault(name, {"filters": set(), "pix_arcsecs": [], "fovs": [],
                                        "focal_mm": [], "aperture_mm": [], "cameras_seen": set()})
+        # Targets built from light frames alone have no per_master_fov entry,
+        # but the scanner still lists their INSTRUME on the target (issue #63).
+        for cam_name in (target.get("cameras") or []):
+            if cam_name and not _looks_truncated(cam_name):
+                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": []})
+                for f, d in (target.get("filters") or {}).items():
+                    if (d or {}).get("total_hours", 0) > 0:
+                        c["filters"].add(f)
         for m in (target.get("per_master_fov") or []):
             name = m.get("telescope")
             if not name or _looks_truncated(name):

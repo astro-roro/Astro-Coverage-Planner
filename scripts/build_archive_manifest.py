@@ -141,6 +141,22 @@ FILTER_CANON = {
     "B": "B", "BLUE": "B",
     "V": "V",
     "IDAS": "IDAS", "IR": "IR", "UV": "UV",
+    # No filter wheel, or an empty slot. Kept as its own bucket rather than
+    # guessed into L: on a mono camera it is a wide luminance, on a colour
+    # camera it is RGB at once (issue #63).
+    "NOFILTER": "NoFilter", "NO FILTER": "NoFilter", "NO_FILTER": "NoFilter",
+    "NONE": "NoFilter", "EMPTY": "NoFilter", "OPEN": "NoFilter",
+}
+
+# Dual and multi band filters used on colour cameras. The canonical spelling
+# is the maker's. Matched case-insensitively in headers and filenames so the
+# hyphen in "L-eXtreme" is never split into a bare L.
+OSC_BAND_FILTERS = {
+    "l-extreme": "L-eXtreme", "l-enhance": "L-eNhance", "l-ultimate": "L-Ultimate",
+    "l-pro": "L-Pro", "l-quad": "L-Quad", "l-quef": "L-QEF",
+    "nbz": "NBZ", "nbz uhs": "NBZ UHS", "alp-t": "ALP-T", "duo-band": "Duo-Band",
+    "duo-narrowband": "Duo-Narrowband", "quad-band": "Quad-Band",
+    "hao3": "HaO3", "ha/o3": "HaO3", "svbony sv220": "SV220", "sv220": "SV220",
 }
 
 
@@ -148,13 +164,32 @@ def canon_filter(raw: str | None) -> str | None:
     if raw is None:
         return None
     s = str(raw).strip().upper()
-    return FILTER_CANON.get(s, str(raw).strip())
+    hit = FILTER_CANON.get(s)
+    if hit is not None:
+        return hit
+    band = OSC_BAND_FILTERS.get(s.lower())
+    if band is not None:
+        return band
+    return str(raw).strip()
+
+
+def _osc_band_in(text: str) -> str | None:
+    low = text.lower()
+    for key, name in OSC_BAND_FILTERS.items():
+        if key in low:
+            return name
+    return None
 
 
 def filter_from_path(p: Path) -> str | None:
     """Cascading heuristics: header missed/absent? try filename & parent dirs."""
-    # Filename patterns: *_Ha*, *_SII*, H.xisf, S_integration.xisf, etc.
+    # Dual band names carry a hyphen ("L-eXtreme"); catch them whole before the
+    # separator split below can reduce them to a bare "L".
     stem = p.stem
+    band = _osc_band_in(stem)
+    if band:
+        return band
+    # Filename patterns: *_Ha*, *_SII*, H.xisf, S_integration.xisf, etc.
     # Exact suffix patterns (e.g., target_Ha.fit)
     for sep in ("_", ".", "-", " "):
         parts = stem.split(sep)
@@ -177,8 +212,14 @@ def filter_from_path(p: Path) -> str | None:
             if u == "V":
                 return "V"
 
-    # Parent folder name: /H/, /SII/, /OIII/, /L/, /R/, /G/, /B/, /V/
-    for part in p.parts[-5:]:
+    # Parent folder name: /H/, /SII/, /OIII/, /L/, /R/, /G/, /B/, /V/.
+    # Innermost folder first, so TARGET/DATE/LIGHT/Ha/ reads as Ha. A folder
+    # called LIGHT is NINA's image-type folder, not a luminance filter, so it
+    # is deliberately not in the L set (issue #63).
+    for part in reversed(p.parts[-5:-1]):
+        band = _osc_band_in(part)
+        if band:
+            return band
         u = part.upper()
         if u in ("H", "HA", "HALPHA"):
             return "Ha"
@@ -186,7 +227,7 @@ def filter_from_path(p: Path) -> str | None:
             return "SII"
         if u in ("O", "OIII", "O3"):
             return "OIII"
-        if u in ("L", "LUM", "LIGHT"):
+        if u in ("L", "LUM"):
             return "L"
         if u == "R":
             return "R"
@@ -282,6 +323,11 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
 
     # Explicit master naming
     if name.startswith("full_master_") or name.startswith("nightly_master_") or name.startswith("master_"):
+        return "master"
+    # WBPP writes masterLight_BIN-1_..., which the master_ prefix above misses;
+    # masterFlat/masterDark/masterBias go to calibration by IMAGETYP or the
+    # prefilter, never here.
+    if name.startswith("masterlight"):
         return "master"
     if "integration" in name or "_stack" in name or name.endswith("_stk.fit") or name.endswith("_stk.fits"):
         return "master"
@@ -1665,6 +1711,7 @@ def main():
         "date_obs": fs["date_obs"],
         "object": fs["object"],
         "telescope": fs["telescope"],
+        "camera": fs.get("camera"),
         "filter": fs["filter"],
         "exptime": fs["exptime"],
         "ncombine": fs["n_subs"],
