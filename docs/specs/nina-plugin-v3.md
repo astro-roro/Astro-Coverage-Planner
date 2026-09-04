@@ -114,13 +114,15 @@ Acceptance, in `tests/test_plan_match.py`: a plan for a 540 mm scope and an IMX5
 
 The Python extension `nina_ts_sync` stays as it is for same machine users. The plugin gains its own implementation of the push direction so it works with ACP elsewhere.
 
-- Reads the TS database path from the TS plugin's own settings for the active profile, the same way the extension finds it today.
+- Reads the TS database path the same way the extension finds it today. In practice that is a fixed location, `%LOCALAPPDATA%\NINA\SchedulerPlugin\schedulerdb.sqlite`, with an environment override for testing. Target Scheduler has no setting that moves the file, so there is no per profile path to read: the profile picks which rows are touched, not which file.
 - Uses the TS schema documented in `docs/nina-plugin-research.md`: Project, Target, ExposurePlan, ExposureTemplate. Creates or updates a Project per ACP project name, a Target per plan panel, and ExposurePlans from the plan's filter goals, deduplicating ExposureTemplates by camera and filter as the Python code does.
-- Uses the same strictest wins rule for project level fields and the same base snapshot idea so a later sync can tell ACP changes from TS changes. Port the logic, do not redesign it.
-- Retries on `database is locked` with the same backoff the extension uses. Never syncs while a TS container is running, using the TS pub/sub `ContainerStarted` and `ContainerStopped` topics to know.
-- Pull direction, meaning TS edits flowing back to ACP as plan changes, is out of v3.0. Acquired hours flowing back is Part F.
+- Checks `PRAGMA user_version` is 23 to 28 before writing anything and refuses otherwise, in the same words the extension uses.
+- Uses the same strictest wins rule for project level fields and the same base snapshot idea so a later sync can tell ACP changes from TS changes. Port the logic, do not redesign it. That includes the UUIDv5 namespace and the four name recipes the extension stamps rows with, because both tools write the same database and have to recognise each other's rows.
+- Retries on `database is locked` with 2, 4 and 8 second backoff, on top of SQLite's own ten second busy timeout.
+- Never syncs while a TS container is running. TS publishes but never subscribes and there is no `ContainerStarted` topic, so a run is inferred: `WaitStart`, `NewTargetStart` and `TargetStart` all mean one is going, and only `ContainerStopped` clears it. `TargetComplete` is one target finishing, not the container. A run with no event at all for three hours is treated as over, so a NINA killed mid-run does not refuse every sync until restart.
+- Pull direction, meaning TS edits flowing back to ACP as plan changes, is out of v3.1. Acquired hours flowing back is Part F.
 
-Acceptance: a fixture TS database in the plugin's test project; pushing three plans produces the same rows the Python extension produces for the same plans, compared field by field. The Python extension's tests provide the expected rows.
+Acceptance: fixture TS databases at 23, 25 and 28 in the plugin's test project, sharing the extension's own schema files; pushing three plans produces the same rows the Python extension produces for the same plans, compared field by field. The Python extension's tests provide the expected rows. Rows are matched by guid rather than by row Id, and foreign keys are compared as the guid of the row they point at, because the guid is the identity both tools use and neither promises a row order.
 
 ### Part E: one step start of night
 
@@ -133,8 +135,10 @@ Sequencer instruction, "ACP: Sync for tonight", in the Advanced Sequencer under 
 3. Build the fingerprint with the solved focal length.
 4. Write the focal length and focal ratio back to the profile if the checkbox is on.
 5. `POST /api/plans/match`. In the everything mode take all plans; in the fit mode take only the `fit` verdicts.
-6. Run the TS sync for those plans.
+6. Run the TS sync for those plans. Back the database up beside itself first, and write in one immediate transaction so a clash with TS is a clean retry rather than a half written project.
 7. Report in the sequencer log: N plans loaded, M left out and why, the focal length change if any. If nothing fits, say so plainly and leave TS as it was.
+
+Two things stop step 6 rather than failing the run. A TS container already running means nothing is written and the log says so, which is why the instruction belongs before the container in a sequence and not inside it. A schema version outside 23 to 28 means the same. In both cases the fingerprint is still built and the profile focal length still corrected, because those are worth having on their own.
 
 The dock gets a "Sync for tonight" button that does the same from step 2, using the current pointing.
 
@@ -150,8 +154,8 @@ Acceptance: server side in tests; plugin side by hand during a real session, the
 
 | Version | Contents | Needs NINA on Windows to test |
 |---|---|---|
-| v3.0 | Parts A, B, C, E without TS sync (Framing push only) | Yes, for B and E |
-| v3.1 | Part D, then E gains the TS step | Yes |
+| v3.0 | Parts A, B, C, E without TS sync (Framing push only) | Yes, for B and E. Built. |
+| v3.1 | Part D, then E gains the TS step | Yes. Built. |
 | v3.2 | Part F | Yes, a real night |
 
 ACP side work for v3.0 and v3.2 can be built and tested without NINA and should go first. The plugin builds from the Windows machine over SSH, so plugin work can be built and unit tested without a person present; only the NINA UI checks need someone at the screen.
