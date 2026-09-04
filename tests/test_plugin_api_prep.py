@@ -244,23 +244,32 @@ class TestApiAuth(unittest.TestCase):
 
 
 class TestApiCors(unittest.TestCase):
+    """These three used to assert that the API sent a wildcard CORS header and
+    answered a preflight. Both were removed on 2026-09-05, because granting a
+    preflight for PUT and DELETE lets any page the user visits write to their
+    ACP, which runs on the same machine as their browser. The assertions are
+    inverted rather than deleted so the change is visible to anyone reading the
+    history. The wider case lives in test_no_cross_origin_writes.py."""
+
     def setUp(self):
         _fresh_state()
         self.client = app.test_client()
 
-    def test_cors_headers_on_api_get(self):
+    def test_no_cors_header_on_api_get(self):
         r = self.client.get("/api/version")
-        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+        self.assertIsNone(r.headers.get("Access-Control-Allow-Origin"))
 
     def test_cors_headers_absent_on_index(self):
         r = self.client.get("/")
         self.assertNotIn("Access-Control-Allow-Origin", r.headers)
 
-    def test_options_preflight(self):
-        r = self.client.options("/api/plans")
-        self.assertEqual(r.status_code, 204)
-        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
-        self.assertIn("GET", r.headers.get("Access-Control-Allow-Methods", ""))
+    def test_preflight_grants_nothing(self):
+        r = self.client.options("/api/plans", headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "DELETE",
+        })
+        self.assertIsNone(r.headers.get("Access-Control-Allow-Origin"))
+        self.assertIsNone(r.headers.get("Access-Control-Allow-Methods"))
 
 
 if __name__ == "__main__":
