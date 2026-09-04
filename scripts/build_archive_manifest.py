@@ -202,7 +202,7 @@ def _load_filter_catalogue() -> dict[str, tuple[str, list[str]]]:
 
     Keys are indexed both as "brand name" (unambiguous, one row per product)
     and as bare "name" (only kept when every catalogue row sharing that bare
-    name agrees on the bands — a plain "Duo-Band" typed with no brand isn't
+    name agrees on the bands, so a plain "Duo-Band" typed with no brand isn't
     guessed at if two brands' Duo-Band filters disagree).
     """
     if not FILTER_CATALOGUE_PATH.exists():
@@ -2266,7 +2266,7 @@ def write_summary(m: dict):
     lines.append(f"_Full detail in `archive_manifest.json` (integrity_flags section)._")
     lines.append("")
 
-    # Unrecognised filter names — names the hand tables and the AstroBin
+    # Unrecognised filter names: names the hand tables and the AstroBin
     # catalogue both missed, so this archive can't tell the planner which
     # band they cover. Paste this list into a GitHub issue against
     # data/filter_catalogue.json so the next scan resolves them.
@@ -2285,7 +2285,7 @@ def write_summary(m: dict):
         for row in unrec:
             lines.append(f"| {row['name']} | {row['frames']} |")
     else:
-        lines.append("None — every filter name seen this scan resolved to a known band.")
+        lines.append("None. Every filter name seen this scan resolved to a known band.")
     lines.append("")
 
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")
