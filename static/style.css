@@ -407,6 +407,18 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
 .fp-B    { background: #8080ff; color: #fff; }
 .fp-V    { background: #b0b0b0; }
 .fp-IDAS { background: #a0ffd0; }
+.fp-other { background: #3a4356; color: #d8dde8; }
+.fp-OSC  { background: #2a3246; color: #e8ecf4; display: inline-flex; align-items: center; gap: 3px; }
+/* One shot colour: a third each of R, G and B. */
+.rgb-pie {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: conic-gradient(#ff8080 0 120deg, #80ff80 120deg 240deg, #8080ff 240deg 360deg);
+  vertical-align: -1px;
+}
+.fchip-other { color: #9aa3b5; border-style: dashed; }
+.via { color: #78839a; font-size: 10px; }
 
 .statusbar {
   /* Pin to a fixed height so growing/shrinking content (e.g. long hover
