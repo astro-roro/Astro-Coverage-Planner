@@ -62,6 +62,8 @@ Both the build script and the webapp read these environment variables. Set whate
 | `DESTINATIONS_PATH` | `./data/destinations.json` | Export destinations. |
 | `SAVED_SEARCHES_PATH` | `./data/saved_searches.json` | Saved target searches. |
 | `TARGET_OVERRIDES_PATH` | `./data/target_overrides.json` | Per-target overrides. |
+| `ACP_SCAN_CACHE` | `./data/scan_cache.json` | Where the builder caches per-file header metadata between scans. |
+| `ACP_SCAN_CRON` | unset | Cron expression for an automatic rescan run by the app itself. See below. |
 | `ACP_STATIC_MAX_AGE_S` | `3600` | Cache lifetime for static files; set `0` in development. |
 | `ACP_PUBLISH_DEST`, `ACP_PUBLISH_SSH_KEY`, `ACP_LIVE_OUT_DIR` | unset | Live-page publishing, see [sharing.md](sharing.md). |
 | `NAS_PREFIX`, `PIPELINE_DB_ALT` | unset | Manifest builder only: NAS path prefix and an alternate pipeline DB, see `scripts/build_archive_manifest.py`. |
@@ -124,6 +126,48 @@ After a new imaging session, just re-run the manifest builder:
 The webapp watches the manifest file and reloads automatically when its mtime changes. You don't need to restart `app.py` — just rebuild and refresh your browser.
 
 If you've added new gear (a new scope or camera), open Planning mode in the app and hit "Scan coverage" in the gear editor — the planner re-merges manifest-derived gear into your `data/gear.json` without overwriting your manual edits.
+
+### The scan cache
+
+Almost all of a scan is spent opening one header per file, and almost nothing in an archive changes between one night and the next. The builder therefore remembers what it read from each file in `data/scan_cache.json` and skips the header read when the file's path, size and modification time are all unchanged. The manifest comes out exactly the same either way; only the time taken changes. On a large archive with a handful of new subs a rescan finishes in seconds instead of minutes.
+
+The end of a run prints what the cache did:
+
+    Header cache:      98412 hits, 341 misses, 12 dropped
+
+Hits were served from the cache, misses were read for real (new or changed files), and drops are entries for files that are no longer in the archive, which are removed when the cache is rewritten.
+
+You never have to manage the cache by hand. It is rewritten in full at the end of every run, a missing or damaged file simply means a normal cold scan, and it is invalidated automatically when you upgrade ACP to a version whose header readers changed. Move it with `ACP_SCAN_CACHE` if `data/` is on slow or read-only storage, and pass `--no-cache` to force every header to be read again:
+
+    python scripts/build_archive_manifest.py --no-cache
+
+If you keep two archives with different `FITS_ROOTS` and run both regularly, give each its own `ACP_SCAN_CACHE` path. Sharing one is harmless but each run drops the other's entries, so neither ever gets a warm scan.
+
+### Rescanning on a schedule
+
+Set `ACP_SCAN_CRON` to a five-field cron expression and the app runs the builder for you on that schedule, in the same process, with no cron daemon or Task Scheduler entry to set up. It is off unless you set it. A nightly rescan at 03:00:
+
+    ACP_SCAN_CRON="0 3 * * *"
+
+Or in Docker, along with the roots the builder needs:
+
+    docker run -d \
+      -e FITS_ROOTS=/data/images \
+      -e ACP_SCAN_CRON="0 3 * * *" \
+      -e TZ=Australia/Sydney \
+      -v /mnt/nas/images:/data/images:ro \
+      -v acp-data:/app/data \
+      -p 5555:5555 astro-coverage-planner
+
+Times are the local time of the machine or container running ACP, so set `TZ` if you want a particular midnight. Keep `/app/data` on a volume as above, otherwise the scan cache is thrown away with the container and every scheduled run is a cold one.
+
+Each run is a separate process, so a builder that crashes leaves the web app serving the previous manifest. A scheduled scan is skipped if the previous one is still running, which matters on a big archive where a cold scan can outlast the gap between runs. `GET /api/scan/status` reports what happened:
+
+    {"cron": "0 3 * * *", "scheduled": true, "running": false,
+     "last_start": "2026-09-04T03:00:00", "last_finish": "2026-09-04T03:00:24",
+     "last_exit_code": 0, "last_trigger": "cron", "last_error": null}
+
+`last_exit_code` is 0 for a clean run. Anything else means the builder failed, and the reason is in the app's log output.
 
 ## Security and deployment notes
 
