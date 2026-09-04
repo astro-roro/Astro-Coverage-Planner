@@ -84,7 +84,12 @@ Built by the plugin from NINA's mediators at the moment of use, never cached acr
 - `focal_length_mm.solved` is derived from the most recent plate solve: `solved = pixel_size_um * 206.265 / pixel_scale_arcsec`, with the bin factor applied. When no solve has happened this session, `source` is `profile` and the profile value is used, and the dock says so.
 - `rotation_deg` is the solved camera angle, used to preset the framing rotation.
 
-Profile write-back: when a solve gives a focal length that differs from the profile by more than 2 percent, the plugin offers to write the solved value into `ActiveProfile.TelescopeSettings.FocalLength`. In the sequencer instruction this is a checkbox, default on, so it happens without a prompt. If ACP knows the aperture of the matched telescope, the plugin also writes `FocalRatio` as focal length over aperture. Both then land in the FITS headers of every frame that night, which is the win the scanner benefits from next time it reads the archive.
+Profile write-back happens in exactly two places: the ACP sequencer instruction and the dock's Sync for tonight button. No other plate solve, whether NINA's own centring, a manual solve from the imaging tab, or anything another plugin does, ever touches the profile. Decided 2026-09-04.
+
+- The solved focal length is written into `ActiveProfile.TelescopeSettings.FocalLength` only when it differs from the profile value by more than 5 percent. A RedCat that solves at 248 mm against a profile of 250 mm is left alone. A forgotten reducer at 20 to 30 percent off, or a Hyperstar at several times the native length, is corrected.
+- If ACP knows the aperture of the matched telescope, `FocalRatio` is written as focal length over aperture at the same time.
+- The user is told, in three places: the instruction's description text in the sequencer palette says it updates the profile focal length; the dock button's tooltip says the same; and every write logs one line in the NINA log and the sequencer output with the old and new values. The instruction has a checkbox to turn the write-back off, default on.
+- Both values then land in the FITS headers of every frame that night, which the scanner benefits from next time it reads the archive.
 
 Verified 2026-09-04 against the NINA SDK: camera info, filter names, the capture and solve call, and the focal length setter are all public API. The exact calls are recorded at the end of `docs/nina-plugin-research.md`. No spike is needed before building.
 
@@ -155,9 +160,9 @@ ACP side work for v3.0 and v3.2 can be built and tested without NINA and should 
 
 Unchanged from the May decision: same machine needs nothing, same LAN or overlay needs the token, Internet exposure is out of scope and the docs say not to port forward ACP. The token lives in Windows Credential Manager. Https is optional and off by default.
 
-## Open questions
+## Decisions on the open questions, 2026-09-04
 
-1. Solve at the start of the night versus using the last solve NINA already did. Using the last solve avoids an extra exposure but can be stale from a previous session. Default: the instruction always solves; the dock button uses the last solve if it is less than an hour old and says so.
-2. Pixel scale tolerance of 15 percent. Wide enough for a reducer the user forgot, tight enough to keep a 250 mm lens off 540 mm plans. Revisit after a month of fingerprints.
-3. Whether the profile write-back should ever be automatic outside the sequencer instruction. Default: never, only the instruction with its checkbox.
-4. Whether the everything mode should still warn when a synced plan does not fit the fingerprint. Default: yes, one line in the dock and the sequencer log, no blocking.
+1. Solve at the start of the night versus reusing NINA's last solve. The instruction always solves. The dock button reuses the last solve if it is under an hour old and says so, otherwise solves.
+2. Pixel scale tolerance stays at 15 percent. Wide enough for a forgotten reducer, tight enough to keep a 250 mm lens off 540 mm plans. Revisit after a month of fingerprints.
+3. Profile write-back only from the instruction and the dock button, only when the solved focal length is more than 5 percent from the profile, always announced. See Part B.
+4. In the everything mode, plans that do not fit the fingerprint are still synced, and the dock and sequencer log carry one warning line naming them. Nothing blocks.
