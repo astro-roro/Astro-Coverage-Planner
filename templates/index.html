@@ -125,6 +125,16 @@
         </div>
       </details>
 
+      <!-- Read-only summary of what each NINA install last reported to
+           /api/plans/match. Hidden until at least one has, so a stock
+           checkout with no plugin connected shows no Rigs rail at all. -->
+      <details id="railProfiles" class="rail-accordion profiles" hidden>
+        <summary>NINA rigs</summary>
+        <div class="accordion-body">
+          <div id="profilesList"></div>
+        </div>
+      </details>
+
       <!-- Hidden until at least one extension registers a manifest entry.
            Populated dynamically by loadExtensions() from /api/extensions/manifest. -->
       <details id="railExtensions" class="rail-accordion extensions" hidden>
