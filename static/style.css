@@ -1709,7 +1709,7 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 }
 .onboarding-dismiss:hover { color: #e0e4ea; border-color: #3a4458; }
 
-/* NINA rigs rail — one read-only block per NINA profile that has asked
+/* NINA rigs rail: one read-only block per NINA profile that has asked
    /api/plans/match which plans its gear can shoot. */
 .rig-row {
   padding: 5px 0;
