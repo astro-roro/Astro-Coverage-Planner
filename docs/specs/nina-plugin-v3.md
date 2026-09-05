@@ -167,6 +167,8 @@ Unchanged from the May decision: same machine needs nothing, same LAN or overlay
 ## Decisions on the open questions, 2026-09-04
 
 1. Solve at the start of the night versus reusing NINA's last solve. The instruction always solves. The dock button reuses the last solve if it is under an hour old and says so, otherwise solves.
+
+   Amended 2026-09-05 on the bench: a solve is taken only when something needs it, meaning the profile focal length update is on or the mode is Only what fits. In Everything mode with the update off, neither entry point takes a frame or needs a camera, and every plan is loaded; if ACP cannot judge the fit because the fingerprint has no sensor, the plans are loaded unjudged with one log line saying so. The instruction still never reuses an old solve when it does solve.
 2. Pixel scale tolerance stays at 15 percent. Wide enough for a forgotten reducer, tight enough to keep a 250 mm lens off 540 mm plans. Revisit after a month of fingerprints.
 3. Profile write-back only from the instruction and the dock button, only when the solved focal length is more than 5 percent from the profile, always announced. See Part B.
 4. In the everything mode, plans that do not fit the fingerprint are still synced, and the dock and sequencer log carry one warning line naming them. Nothing blocks.
