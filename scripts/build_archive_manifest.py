@@ -548,12 +548,17 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
 
     Priority:
       1. IMAGETYP (authoritative when present): LIGHT/OBJECT → sub, FLAT/DARK/BIAS → calibration.
-      2. File-size heuristic for masters (plate-solved integrations are usually >200 MB).
-      3. Path-based fallback (folder names, state/full_masters, etc.).
+      2. Evidence of an integration: a subframe count above one, or a master
+         folder. This outranks the header, since a master is a light frame.
+      3. File size, but only where the header has not called the file a single
+         light. Size alone is a poor proxy now that one drizzled sub can run to
+         400 MB.
+      4. Path-based fallback (folder names, state/full_masters, etc.).
     """
     name = p.name.lower()
     path_str = str(p).lower().replace("\\", "/")
     imagetyp = (meta.get("imagetyp") or "").strip().upper() if meta else ""
+    is_light_imagetyp = False
 
     # the calibration pipeline full_masters (plate-solved, per-object deep stacks)
     if "state/full_masters" in path_str or "\\state\\full_masters" in str(p).lower():
@@ -580,8 +585,9 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
     # Header IMAGETYP is authoritative when present
     if imagetyp:
         if imagetyp in ("LIGHT", "LIGHTFRAME", "LIGHT FRAME", "OBJECT", "SCIENCE"):
-            # Could still be a master (large or ncombine>1). Defer size check below.
-            pass
+            # Could still be a master, but only on evidence of an integration.
+            # Deferred to the checks below.
+            is_light_imagetyp = True
         elif imagetyp in ("FLAT", "FLATFIELD", "FLAT FIELD", "DOMEFLAT", "SKYFLAT"):
             return "calibration"
         elif imagetyp in ("DARK", "DARKFRAME", "DARK FRAME"):
@@ -589,11 +595,28 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
         elif imagetyp in ("BIAS", "ZERO"):
             return "calibration"
 
-    # Master heuristic: large files are probably integrations.
-    if size > 200 * 1024 * 1024 and p.suffix.lower() in (".fit", ".fits", ".xisf"):
-        # Also require some evidence of being an image (NAXIS1/2 present).
-        if (meta or {}).get("naxis1") and (meta or {}).get("naxis2"):
-            return "master"
+    # Integration evidence, which beats both the size proxy and the header.
+    # A stacked master says how many frames went into it, either in NCOMBINE or
+    # in the ImageIntegration HISTORY card that read_*_meta parses.
+    is_image = bool((meta or {}).get("naxis1") and (meta or {}).get("naxis2"))
+    # WBPP stamps IMAGETYP "Master Light" on an integration. Calibration masters
+    # never reach here: the name prefilter and the FLAT/DARK/BIAS branch above
+    # take them first.
+    if is_image and "MASTER" in imagetyp:
+        return "master"
+    if is_image and ((meta or {}).get("ncombine") or 0) > 1:
+        return "master"
+    if is_image and p.parent.name.lower() in ("master", "masters"):
+        return "master"
+
+    # Size as a last resort, and only when the header has not already said this
+    # is a single light frame. A registered 6248x4176 frame at drizzle 2x is
+    # 411 MB, so the old size line alone called 90 single subs masters, which
+    # both inflated the hours and skipped the pipeline-stage dedup that would
+    # have dropped their whole stage.
+    if (size > 200 * 1024 * 1024 and not is_light_imagetyp
+            and p.suffix.lower() in (".fit", ".fits", ".xisf") and is_image):
+        return "master"
 
     # Post-processing paths
     if "/working/" in path_str:
