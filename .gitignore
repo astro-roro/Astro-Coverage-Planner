@@ -5,13 +5,15 @@ __pycache__/
 venv/
 env/
 
-# User's private archive data — never commit
+# User's private archive data: never commit
 data/manifest.json
 data/catalogs.json
 data/gear.json
 data/plans.json
 data/target_overrides.json
 data/sites.json
+# Gear fingerprints reported by NINA. They carry the site's lat/lon.
+data/fingerprints.json
 data/exports/
 data/moc_cache/
 data/*.local.json
@@ -32,13 +34,13 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Claude Code settings — keep local, never push
+# Claude Code settings: keep local, never push
 .claude/
 
 # Private extensions (loaded at runtime from outside the repo)
 blueprints/
 
-# JS tooling (frontend test harness only — see tests/frontend/)
+# JS tooling (frontend test harness only: see tests/frontend/)
 node_modules/
 
 data/archive_manifest_summary.md

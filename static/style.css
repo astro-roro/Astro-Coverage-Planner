@@ -1709,6 +1709,22 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 }
 .onboarding-dismiss:hover { color: #e0e4ea; border-color: #3a4458; }
 
+/* NINA rigs rail: one read-only block per NINA profile that has asked
+   /api/plans/match which plans its gear can shoot. */
+.rig-row {
+  padding: 5px 0;
+  border-bottom: 1px solid #1b2230;
+}
+.rig-row:last-child { border-bottom: none; }
+.rig-name {
+  font-size: 12px;
+  color: #e0e4ea;
+}
+.rig-meta {
+  font-size: 11px;
+  color: #888;
+}
+
 /* Scan health accordion */
 .health-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 12px; }
 .health-row .num { color: #c9d1e0; }

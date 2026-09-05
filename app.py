@@ -84,6 +84,12 @@ except ImportError:
 
 from gaps import candidates_in_moc, compute_gap_moc
 
+# Ceiling on a single acquired-hours report. Ten years of continuous imaging is
+# about 87,600 hours, so nothing honest comes close. It exists because progress
+# only ever raises a goal without `force`: one absurd value would write a number
+# this endpoint could never correct again.
+MAX_ACQUIRED_HOURS = 100_000.0
+
 # No git tag or Dockerfile label carries a version today; this is the
 # first one, bumped by hand until a release process picks it up. The NINA
 # plugin polls GET /api/version to know when to refetch plans, so this
@@ -95,6 +101,9 @@ MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manif
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+# Last gear fingerprint each NINA profile reported to /api/plans/match.
+FINGERPRINTS_PATH = Path(os.environ.get(
+    "FINGERPRINTS_PATH", REPO_ROOT / "data" / "fingerprints.json"))
 # Where the live-page publisher writes shooting.json before uploading it.
 LIVE_OUT_DIR = Path(os.environ.get("ACP_LIVE_OUT_DIR", REPO_ROOT / "data" / "live"))
 SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
@@ -203,6 +212,8 @@ _gear_cache: dict | None = None
 _gear_cache_mtime: float | None = None
 _plans_cache: dict | None = None
 _plans_cache_mtime: float | None = None
+_fingerprints_cache: dict | None = None
+_fingerprints_cache_mtime: float | None = None
 _target_overrides_cache: dict | None = None
 _target_overrides_cache_mtime: float | None = None
 _sites_cache: dict | None = None
@@ -460,6 +471,41 @@ def save_plans(data: dict) -> None:
     _atomic_write_json(PLANS_PATH, data, indent=2, allow_nan=False)
     _plans_cache = data
     _plans_cache_mtime = PLANS_PATH.stat().st_mtime
+
+
+def load_fingerprints() -> dict:
+    """Last gear fingerprint reported by each NINA profile.
+
+    Same mtime-keyed cache as the other JSON stores. Absent file means no
+    NINA install has ever called /api/plans/match, which is the normal
+    state for a stock checkout, so an empty document is returned rather
+    than an error.
+    """
+    global _fingerprints_cache, _fingerprints_cache_mtime
+    if not FINGERPRINTS_PATH.exists():
+        return {"version": 1, "profiles": {}}
+    mtime = FINGERPRINTS_PATH.stat().st_mtime
+    if _fingerprints_cache is None or _fingerprints_cache_mtime != mtime:
+        parsed = json.loads(FINGERPRINTS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            logging.warning(
+                "fingerprints file at %s is not a JSON object (got %s), treating as empty",
+                FINGERPRINTS_PATH, type(parsed).__name__)
+            parsed = {"version": 1, "profiles": {}}
+        parsed.setdefault("version", 1)
+        if not isinstance(parsed.get("profiles"), dict):
+            parsed["profiles"] = {}
+        _fingerprints_cache = parsed
+        _fingerprints_cache_mtime = mtime
+    return _fingerprints_cache
+
+
+def save_fingerprints(data: dict) -> None:
+    global _fingerprints_cache, _fingerprints_cache_mtime
+    FINGERPRINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(FINGERPRINTS_PATH, data, indent=2, allow_nan=False)
+    _fingerprints_cache = data
+    _fingerprints_cache_mtime = FINGERPRINTS_PATH.stat().st_mtime
 
 
 def load_target_overrides() -> dict:
@@ -2904,19 +2950,29 @@ def _plan_panels(plan: dict, gear_data: dict) -> list[dict]:
 
 
 def _expand_plan(plan: dict, tokens: frozenset[str], gear_data: dict | None, sites_data: dict | None) -> dict:
-    """Add inline `telescope`/`camera` (expand=gear), `site` (expand=site),
-    and `panels` (expand=panels) to a shallow copy of `plan`. Unresolvable
-    ids are left off rather than set to null."""
+    """Add inline `gear` (expand=gear), `site` (expand=site) and `panels`
+    (expand=panels) to a shallow copy of `plan`.
+
+    The plugin has no way to resolve `telescope_id` / `camera_id` without a
+    second round trip to /api/gear, and it needs the mosaic panel centres to
+    drive the Framing Wizard, so both are offered inline. `gear` carries the
+    resolved telescope and camera plus the pair's field of view and pixel
+    scale. Unresolvable ids come back as null inside `gear`; an absent token
+    leaves the plan byte for byte as /api/plans always returned it."""
     out = dict(plan)
     if "gear" in tokens and gear_data is not None:
-        telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", [])}
-        cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", [])}
+        telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", []) if t.get("id")}
+        cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", []) if c.get("id")}
         telescope = telescopes_by_id.get(plan.get("telescope_id") or "")
-        if telescope is not None:
-            out["telescope"] = telescope
         camera = cameras_by_id.get(plan.get("camera_id") or "")
-        if camera is not None:
-            out["camera"] = _with_sensor_scalars(camera)
+        fov_w, fov_h = _fov_arcmin(telescope, camera)
+        scale = _plan_pixel_scale(telescope, camera)
+        out["gear"] = {
+            "telescope": telescope,
+            "camera": _with_sensor_scalars(camera) if camera else None,
+            "fov_arcmin": [fov_w, fov_h],
+            "pixel_scale_arcsec": round(scale, 4) if scale else None,
+        }
     if "site" in tokens and sites_data is not None:
         sites = sites_data.get("sites") or []
         if sites:
@@ -2989,6 +3045,516 @@ def api_plan(plan_id: str):
     plans[idx] = payload
     save_plans({"version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
+
+
+# --- NINA plugin v3: gear fingerprint matching --------------------------
+#
+# The companion NINA plugin posts a "fingerprint" of whatever gear is
+# connected right now (camera, filter wheel, mount, site, solved focal
+# length) and asks which of your plans that rig can actually shoot. The
+# matching rules live here rather than in the plugin so both sides can't
+# drift, and so the same verdicts show up in ACP's own UI.
+#
+# Three tests, in order of how often they matter:
+#   1. pixel scale within PIXEL_SCALE_TOL of the plan's own pixel scale
+#   2. field of view at least FOV_FIT of the plan's field in BOTH axes
+#      (bigger is always fine; between FOV_WARN and FOV_FIT is a warning;
+#      below FOV_WARN is a miss)
+#   3. every filter the plan has a goal for is reachable from the
+#      connected filter list, using the scanner's own canonicalisation so
+#      "Antlia Ha" and "Ha" are the same filter here and in the manifest
+#
+# All verdicts are returned. The plugin decides whether to show only the
+# fits or everything; `mode` is echoed back and stored with the
+# fingerprint, it never changes a verdict.
+
+PIXEL_SCALE_TOL = 0.15
+FOV_FIT = 0.90
+FOV_WARN = 0.80
+ARCSEC_PER_RAD_MM = 206.265  # arcsec/px = 206.265 x pixel_um / focal_mm
+
+_scanner_filters = None
+
+
+def _filter_helpers():
+    """Lazily import the scanner's filter vocabulary.
+
+    Same trick shooting_publish.py uses: scripts/ isn't a package, so it
+    goes on sys.path first. Imported on first use rather than at module
+    scope because the scanner pulls in numpy/astropy and nothing else in
+    the request path needs it.
+    """
+    global _scanner_filters
+    if _scanner_filters is None:
+        scripts_dir = str(REPO_ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from build_archive_manifest import bands_for, canon_filter
+        _scanner_filters = (canon_filter, bands_for)
+    return _scanner_filters
+
+
+def _num(value):
+    """float(value) when it is a real finite number, else None."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _plan_pixel_scale(telescope: dict | None, camera: dict | None) -> float | None:
+    """arcsec/px for a plan's telescope + camera pair, or None when either
+    is missing or unusable. Unbinned, to match _fov_arcmin."""
+    if not telescope or not camera:
+        return None
+    fl = _num(telescope.get("focal_length_mm"))
+    px_um = _num(camera.get("pixel_size_um"))
+    if not fl or fl <= 0 or not px_um or px_um <= 0:
+        return None
+    return ARCSEC_PER_RAD_MM * px_um / fl
+
+
+def _fingerprint_focal_length(fp: dict) -> float | None:
+    """Solved focal length wins over the profile's nominal value: a focal
+    reducer, a different back-focus or simply a wrong profile entry all
+    show up in the plate solve and nowhere else."""
+    fl = fp.get("focal_length_mm")
+    if isinstance(fl, dict):
+        return _num(fl.get("solved")) or _num(fl.get("profile"))
+    return _num(fl)
+
+
+def _fingerprint_optics(fp: dict) -> dict:
+    """Connected pixel scale and field of view derived from the fingerprint.
+
+    Returns {pixel_scale_arcsec, fov_arcmin: [w, h], focal_length_mm} with
+    None / zeros where the fingerprint didn't carry enough to compute them.
+    The plugin sends `pixel_scale_arcsec` when NINA knows it; we derive it
+    from pixel size, bin and focal length otherwise so an older plugin
+    build still matches.
+    """
+    camera = fp.get("camera") or {}
+    fl = _fingerprint_focal_length(fp)
+    bin_v = _num(camera.get("bin")) or 1.0
+    if bin_v < 1:
+        bin_v = 1.0
+    px_um = _num(camera.get("pixel_size_um"))
+    scale = _num(fp.get("pixel_scale_arcsec"))
+    if scale is None and px_um and fl and fl > 0:
+        scale = ARCSEC_PER_RAD_MM * px_um * bin_v / fl
+    fov = [0.0, 0.0]
+    sensor = camera.get("sensor_px")
+    if scale and isinstance(sensor, (list, tuple)) and len(sensor) == 2:
+        w_px, h_px = _num(sensor[0]), _num(sensor[1])
+        if w_px and h_px:
+            # sensor_px is the unbinned pixel count and `scale` is the
+            # binned scale, so divide by the bin factor to keep the
+            # product (the physical sensor size) right either way.
+            fov = [round(w_px / bin_v * scale / 60.0, 2),
+                   round(h_px / bin_v * scale / 60.0, 2)]
+    return {"pixel_scale_arcsec": scale, "fov_arcmin": fov, "focal_length_mm": fl}
+
+
+def _fingerprint_bands(fp: dict) -> dict[str, str]:
+    """Which coverage bands the connected filters can deliver.
+
+    Maps band -> credit kind, one of "direct" (a real single-band filter),
+    "colour" (an OSC sensor with no filter wheel, which credits R, G and B
+    at once) or "dual" (a dual or quad band filter credits Ha and OIII
+    together, which is worth a warning because the plan's per-filter hours
+    can't actually be shot independently). Canonicalisation and the band
+    map both come from the scanner, so a filter named "Antlia Ha" here
+    counts the same way it does in the manifest.
+    """
+    canon_filter, bands_for = _filter_helpers()
+    camera = fp.get("camera") or {}
+    colour = bool(camera.get("colour"))
+    names = [str(f) for f in (fp.get("filters") or []) if str(f).strip()]
+    if colour and not names:
+        # A one-shot colour camera with no filter wheel still shoots R, G
+        # and B every frame. bands_for spells that out for "NoFilter".
+        names = ["NoFilter"]
+    rank = {"direct": 3, "colour": 2, "dual": 1}
+    out: dict[str, str] = {}
+    for raw in names:
+        canon = canon_filter(raw)
+        bands = bands_for(canon, colour)
+        if len(bands) == 1:
+            kind = "direct"
+        elif set(bands) == {"R", "G", "B"}:
+            kind = "colour"
+        else:
+            kind = "dual"
+        for band in bands:
+            if rank[kind] > rank.get(out.get(band, ""), 0):
+                out[band] = kind
+    return out
+
+
+def _plan_goal_filters(plan: dict) -> list[str]:
+    """Canonical names of the filters a plan actually asks for. A goal with
+    no hours on it isn't something the rig has to be able to shoot."""
+    canon_filter, _ = _filter_helpers()
+    goals = plan.get("filter_goals") or {}
+    if not isinstance(goals, dict):
+        return []
+    out = []
+    for name, cfg in goals.items():
+        if not isinstance(cfg, dict):
+            continue
+        hours = _num(cfg.get("target_hours"))
+        if hours is not None and hours <= 0:
+            continue
+        canon = canon_filter(name) or str(name)
+        if canon not in out:
+            out.append(canon)
+    return out
+
+
+def _match_plan(plan: dict, optics: dict, bands: dict[str, str],
+                telescopes_by_id: dict, cameras_by_id: dict) -> dict:
+    """Verdict for one plan against one fingerprint. See the module comment
+    above for the rules. Every reason is collected, not just the first, so
+    the plugin can tell the user everything that's wrong in one go."""
+    telescope = telescopes_by_id.get(plan.get("telescope_id") or "")
+    camera = cameras_by_id.get(plan.get("camera_id") or "")
+    plan_scale = _plan_pixel_scale(telescope, camera)
+    plan_fov_w, plan_fov_h = _fov_arcmin(telescope, camera)
+
+    result = {
+        "verdict": "unconstrained",
+        "pixel_scale_ratio": None,
+        "fov_ratio": [None, None],
+        "filters_missing": [],
+        "reasons": [],
+    }
+
+    conn_scale = optics["pixel_scale_arcsec"]
+    conn_w, conn_h = optics["fov_arcmin"]
+    if not plan_scale or plan_fov_w <= 0 or plan_fov_h <= 0:
+        result["reasons"].append(
+            "Plan has no telescope or camera set, so there is nothing to match against.")
+        return result
+    if not conn_scale or conn_w <= 0 or conn_h <= 0:
+        result["reasons"].append(
+            "Fingerprint did not carry enough camera detail to derive a pixel scale.")
+        return result
+
+    scale_ratio = conn_scale / plan_scale
+    fov_ratio = [conn_w / plan_fov_w, conn_h / plan_fov_h]
+    result["pixel_scale_ratio"] = round(scale_ratio, 4)
+    result["fov_ratio"] = [round(fov_ratio[0], 4), round(fov_ratio[1], 4)]
+
+    hard_fail = False
+    warnings = []
+
+    if abs(scale_ratio - 1.0) > PIXEL_SCALE_TOL:
+        hard_fail = True
+        result["reasons"].append(
+            f"Pixel scale {conn_scale:.3f}\"/px is {abs(scale_ratio - 1.0) * 100:.0f}% "
+            f"off the plan's {plan_scale:.3f}\"/px.")
+
+    worst_fov = min(fov_ratio)
+    if worst_fov < FOV_WARN:
+        hard_fail = True
+        result["reasons"].append(
+            f"Field of view {conn_w:.0f}x{conn_h:.0f}' is only {worst_fov * 100:.0f}% "
+            f"of the plan's {plan_fov_w:.0f}x{plan_fov_h:.0f}'.")
+    elif worst_fov < FOV_FIT:
+        warnings.append(
+            f"Field of view is {worst_fov * 100:.0f}% of the plan's, so the framing "
+            f"will be tighter than planned.")
+
+    for filt in _plan_goal_filters(plan):
+        kind = bands.get(filt)
+        if kind is None:
+            result["filters_missing"].append(filt)
+        elif kind == "dual":
+            warnings.append(
+                f"{filt} is only available through a dual band filter, so its hours "
+                f"can't be shot independently.")
+    if result["filters_missing"]:
+        hard_fail = True
+        result["reasons"].append(
+            "No filter for " + ", ".join(result["filters_missing"]) + ".")
+
+    result["reasons"].extend(warnings)
+    if hard_fail:
+        result["verdict"] = "no_fit"
+    elif warnings:
+        result["verdict"] = "fit_with_warnings"
+    else:
+        result["verdict"] = "fit"
+    return result
+
+
+def _normalise_fingerprint(fp: dict) -> dict:
+    """The subset of a fingerprint that identifies the rig, rounded so the
+    same physical setup hashes the same way across sessions.
+
+    Rotation and site are deliberately left out: pointing the same rig at a
+    different target, or driving to a different dark site, does not make it
+    a different rig.
+    """
+    camera = fp.get("camera") or {}
+    sensor = camera.get("sensor_px")
+    canon_filter, _ = _filter_helpers()
+    fl = _fingerprint_focal_length(fp)
+    px_um = _num(camera.get("pixel_size_um"))
+    return {
+        "profile_name": str(fp.get("profile_name") or ""),
+        "camera": {
+            "name": str(camera.get("name") or ""),
+            "sensor_px": [int(_num(sensor[0]) or 0), int(_num(sensor[1]) or 0)]
+                         if isinstance(sensor, (list, tuple)) and len(sensor) == 2 else [0, 0],
+            "pixel_size_um": round(px_um, 3) if px_um else None,
+            "colour": bool(camera.get("colour")),
+            "bin": int(_num(camera.get("bin")) or 1),
+        },
+        "filters": sorted({canon_filter(str(f)) or str(f)
+                           for f in (fp.get("filters") or []) if str(f).strip()}),
+        "mount": str((fp.get("mount") or {}).get("name") or ""),
+        "focal_length_mm": round(fl, 1) if fl else None,
+    }
+
+
+def _fingerprint_id(fp: dict) -> str:
+    payload = json.dumps(_normalise_fingerprint(fp), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _validate_fingerprint(fp) -> str | None:
+    """Reject a fingerprint that can't produce a meaningful verdict.
+
+    Only `camera` and `focal_length_mm` are required, everything else is
+    optional, because a plugin talking to a rig with no filter wheel, no
+    mount driver or no site set still deserves an answer.
+    """
+    if not isinstance(fp, dict):
+        return "payload must be a JSON object"
+    mode = fp.get("mode")
+    if mode is not None and mode not in ("fit", "everything"):
+        return "mode must be 'fit' or 'everything'"
+    camera = fp.get("camera")
+    if not isinstance(camera, dict):
+        return "camera object required"
+    sensor = camera.get("sensor_px")
+    if (not isinstance(sensor, (list, tuple)) or len(sensor) != 2
+            or _num(sensor[0]) is None or _num(sensor[1]) is None):
+        return "camera.sensor_px must be [width_px, height_px]"
+    if _num(camera.get("pixel_size_um")) is None:
+        return "camera.pixel_size_um must be a finite number"
+    if "bin" in camera and (_num(camera["bin"]) is None or _num(camera["bin"]) < 1):
+        return "camera.bin must be a number >= 1"
+    if "colour" in camera and not isinstance(camera["colour"], bool):
+        return "camera.colour must be a boolean"
+    filters = fp.get("filters")
+    if filters is not None and (not isinstance(filters, list)
+                                or not all(isinstance(f, str) for f in filters)):
+        return "filters must be a list of strings"
+    fl = fp.get("focal_length_mm")
+    if isinstance(fl, dict):
+        if _num(fl.get("solved")) is None and _num(fl.get("profile")) is None:
+            return "focal_length_mm needs a finite 'solved' or 'profile' value"
+    elif _num(fl) is None:
+        return "focal_length_mm required (number, or {profile, solved})"
+    if "pixel_scale_arcsec" in fp and fp["pixel_scale_arcsec"] is not None:
+        scale = _num(fp["pixel_scale_arcsec"])
+        if scale is None or scale <= 0:
+            return "pixel_scale_arcsec must be a positive number"
+    return None
+
+
+@app.route("/api/plans/match", methods=["POST"])
+def api_plans_match():
+    """Score every plan against the gear the plugin says is connected.
+
+    Returns all verdicts, not just the fits: the caller decides what to
+    show. The fingerprint itself is stored under its profile name so ACP's
+    own planning rail can say what each NINA install last reported.
+    """
+    fp = request.get_json(silent=True) or {}
+    err = _validate_fingerprint(fp)
+    if err:
+        return jsonify({"error": err}), 400
+
+    gear = load_gear()
+    telescopes_by_id = {t["id"]: t for t in gear.get("telescopes", []) if t.get("id")}
+    cameras_by_id = {c["id"]: c for c in gear.get("cameras", []) if c.get("id")}
+
+    optics = _fingerprint_optics(fp)
+    bands = _fingerprint_bands(fp)
+    want = frozenset({"gear", "panels"})
+
+    out_plans = []
+    summary = {"fit": 0, "fit_with_warnings": 0, "no_fit": 0, "unconstrained": 0}
+    for plan in load_plans().get("plans", []):
+        if not isinstance(plan, dict):
+            continue
+        match = _match_plan(plan, optics, bands, telescopes_by_id, cameras_by_id)
+        summary[match["verdict"]] += 1
+        entry = _expand_plan(plan, want, gear, None)
+        entry["match"] = match
+        out_plans.append(entry)
+
+    fp_id = _fingerprint_id(fp)
+    mode = fp.get("mode") or "fit"
+    _store_fingerprint(fp, fp_id, mode, summary)
+    return jsonify({
+        "fingerprint_id": fp_id,
+        "mode": mode,
+        "plans": out_plans,
+        "summary": summary,
+    })
+
+
+def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
+    """Remember the last fingerprint per profile name.
+
+    Keyed by profile name because that's what the user recognises in
+    NINA's own profile switcher; a fingerprint with no profile name falls
+    back to its own hash so it still shows up rather than being dropped.
+    Write failures are logged and swallowed: failing to record telemetry
+    must never cost the caller its match results.
+    """
+    key = str(fp.get("profile_name") or "").strip() or fp_id
+    doc = load_fingerprints()
+    profiles = dict(doc.get("profiles") or {})
+    profiles[key] = {
+        "profile_name": key,
+        "fingerprint_id": fp_id,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "summary": dict(summary),
+        "fingerprint": fp,
+    }
+    try:
+        save_fingerprints({"version": doc.get("version", 1), "profiles": profiles})
+    except (OSError, ValueError) as exc:
+        logging.warning("could not write %s: %s", FINGERPRINTS_PATH, exc)
+
+
+@app.route("/api/fingerprints")
+def api_fingerprints():
+    """The last fingerprint each NINA profile reported. Read-only; the only
+    writer is /api/plans/match."""
+    doc = load_fingerprints()
+    return jsonify({"version": doc.get("version", 1), "profiles": doc.get("profiles") or {}})
+
+
+def _validate_progress_payload(payload) -> str | None:
+    """Same defence-in-depth shape as _validate_plan_payload: the numbers
+    here land straight in plans.json and feed the sync builder's
+    acquired-count arithmetic, so NaN and negatives are refused rather
+    than written."""
+    if not isinstance(payload, dict):
+        return "payload must be a JSON object"
+    filters = payload.get("filters")
+    if not isinstance(filters, dict) or not filters:
+        return "filters object required"
+    for name, cfg in filters.items():
+        if not isinstance(cfg, dict):
+            return f"filters[{name!r}] must be an object"
+        # A JSON string is refused rather than coerced. _num would happily
+        # turn "1e6" into a million, and this value is written straight into
+        # a plan, so the caller has to mean it as a number.
+        raw_hours = cfg.get("acquired_hours")
+        if isinstance(raw_hours, bool) or not isinstance(raw_hours, (int, float)):
+            return f"filters[{name!r}].acquired_hours must be a number >= 0"
+        hours = _num(raw_hours)
+        if hours is None or hours < 0:
+            return f"filters[{name!r}].acquired_hours must be a number >= 0"
+        # An upper bound, because hours only ever go up without `force`: one
+        # absurd value writes a goal that can never be corrected through this
+        # endpoint again. The cap is far past any real integration time, so it
+        # rejects nonsense without ever rejecting an honest report.
+        if hours > MAX_ACQUIRED_HOURS:
+            return (f"filters[{name!r}].acquired_hours must be <= "
+                    f"{MAX_ACQUIRED_HOURS} (got {hours!r})")
+        if "acquired_count" in cfg and cfg["acquired_count"] is not None:
+            count = cfg["acquired_count"]
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                return f"filters[{name!r}].acquired_count must be an integer >= 0"
+    if "force" in payload and not isinstance(payload["force"], bool):
+        return "force must be a boolean"
+    for field in ("source", "at"):
+        if field in payload and payload[field] is not None and not isinstance(payload[field], str):
+            return f"{field} must be a string"
+    return None
+
+
+@app.route("/api/plans/<plan_id>/progress", methods=["POST"])
+def api_plan_progress(plan_id: str):
+    """Record acquired hours against a plan's per-filter goals.
+
+    Called by the plugin after an imaging session, and by anything else
+    that knows what was actually shot. Hours only ever go up: NINA's own
+    acquired count can drop when frames are culled or a project is reset,
+    and silently rewinding a plan the user has been watching fill up is
+    worse than being one session stale. Pass `"force": true` to overwrite
+    downward on purpose.
+
+    Filters the plan has no goal for are ignored rather than invented, and
+    named in the response so the caller can tell the difference between
+    "recorded" and "quietly dropped".
+    """
+    err = _validate_progress_payload(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    payload = request.get_json(silent=True) or {}
+
+    data = load_plans()
+    plans = data.get("plans", [])
+    idx = next((i for i, p in enumerate(plans) if p.get("id") == plan_id), None)
+    if idx is None:
+        return jsonify({"error": "not found"}), 404
+    plan = plans[idx]
+
+    canon_filter, _ = _filter_helpers()
+    goals = plan.get("filter_goals")
+    if not isinstance(goals, dict):
+        goals = {}
+    # Canonical name -> the key the plan actually uses, so a plugin
+    # reporting "Antlia Ha" updates the plan's "Ha" goal.
+    by_canon = {}
+    for key in goals:
+        by_canon.setdefault(canon_filter(key) or str(key), key)
+
+    force = bool(payload.get("force"))
+    updated, unknown, not_lowered = {}, [], []
+    for name, cfg in (payload.get("filters") or {}).items():
+        key = name if name in goals else by_canon.get(canon_filter(name) or str(name))
+        if key is None:
+            unknown.append(name)
+            continue
+        goal = goals[key]
+        if not isinstance(goal, dict):
+            unknown.append(name)
+            continue
+        new_hours = _num(cfg.get("acquired_hours"))
+        current = _num(goal.get("actual_hours")) or 0.0
+        if new_hours < current and not force:
+            not_lowered.append(key)
+            continue
+        goal["actual_hours"] = new_hours
+        updated[key] = new_hours
+
+    if updated:
+        plan["filter_goals"] = goals
+        plan["updated_at"] = datetime.now(timezone.utc).isoformat()
+        plans[idx] = plan
+        save_plans({"version": data.get("version", 1), "plans": plans})
+
+    return jsonify({
+        "ok": True,
+        "plan": plan,
+        "updated": updated,
+        "unknown_filters": unknown,
+        "not_lowered": not_lowered,
+    })
 
 
 def _build_live_document() -> dict:
