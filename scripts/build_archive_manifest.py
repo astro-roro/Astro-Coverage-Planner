@@ -817,6 +817,108 @@ def read_fits_meta(path: Path) -> dict:
     return out
 
 
+# XISF property ids carrying a PixInsight astrometric solution. The solution
+# itself lives under the PCL prefix; Observation:Center is the sky position of
+# the image centre, written alongside it. Names per the XISF specification.
+_XISF_SOLUTION_PREFIX = "PCL:AstrometricSolution:"
+_XISF_CENTRE_RA_KEYS = ("Observation:Center:RA", "Observation:Center:Ra")
+_XISF_CENTRE_DEC_KEYS = ("Observation:Center:Dec", "Observation:Center:DEC")
+_XISF_MATRIX_KEYS = (
+    _XISF_SOLUTION_PREFIX + "LinearTransformationMatrix",
+    _XISF_SOLUTION_PREFIX + "LinearTransformation",
+)
+
+
+def _xisf_prop(props: dict, key: str):
+    """Raw value of one XISF property, or None.
+
+    ``get_images_metadata`` gives ``{id: {'id':…, 'type':…, 'value':…}}``, but
+    tolerate a bare value in case a writer or a future library version flattens
+    it.
+    """
+    if not props:
+        return None
+    v = props.get(key)
+    if isinstance(v, dict):
+        return v.get("value")
+    return v
+
+
+def _xisf_prop_float(props: dict, key: str):
+    """One XISF property as a float, or None when absent or unparseable."""
+    v = _xisf_prop(props, key)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def xisf_astrometric_solution(props: dict) -> dict:
+    """Pointing and pixel scale from PixInsight's XISF astrometric properties.
+
+    PixInsight stores a plate solve as XISF properties rather than as WCS FITS
+    keywords, so a master solved with ImageSolver carries no CRVAL and the FITS
+    keyword path finds nothing (issue #63). ``Observation:Center`` is already the
+    sky position of the image *centre* in degrees, which is exactly what the rest
+    of the scanner wants, so there is no CRPIX arithmetic to do here.
+
+    The centre alone is not proof of a solve: some writers fill it from the
+    mount's reported position, and treating that as solved would mark an
+    estimated footprint as exact. So ``solved`` is True only when a
+    ``PCL:AstrometricSolution:*`` property sits alongside the centre. An
+    unsolved centre still comes back as coords, at the same trust level as the
+    OBJCTRA/OBJCTDEC fallback.
+
+    Pixel scale comes from the leading 2x2 of the solution's linear
+    transformation, which is degrees per pixel in the same shape as a FITS CD
+    matrix. Callers fall back to focal length and pixel size when it is absent.
+
+    Returns ``{"ra_deg", "dec_deg", "pix_arcsec", "solved"}`` with None coords
+    when the properties carry no centre.
+    """
+    out = {"ra_deg": None, "dec_deg": None, "pix_arcsec": None, "solved": False}
+    if not props:
+        return out
+    ra = dec = None
+    for k in _XISF_CENTRE_RA_KEYS:
+        ra = _xisf_prop_float(props, k)
+        if ra is not None:
+            break
+    for k in _XISF_CENTRE_DEC_KEYS:
+        dec = _xisf_prop_float(props, k)
+        if dec is not None:
+            break
+    if ra is None or dec is None:
+        return out
+    if not (-360.0 <= ra <= 360.0 and -90.0 <= dec <= 90.0):
+        return out
+    out["ra_deg"] = ra % 360.0
+    out["dec_deg"] = dec
+    out["solved"] = any(str(k).startswith(_XISF_SOLUTION_PREFIX) for k in props)
+
+    for mk in _XISF_MATRIX_KEYS:
+        m = _xisf_prop(props, mk)
+        if m is None:
+            continue
+        try:
+            arr = np.asarray(m, dtype="float64")
+            if arr.ndim == 1 and arr.size >= 4:
+                arr = arr[:6].reshape(2, -1) if arr.size >= 6 else arr[:4].reshape(2, 2)
+            if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] < 2:
+                continue
+            cd = arr[:2, :2]
+            scales = np.sqrt(np.sum(cd ** 2, axis=0))
+            pix = float(np.mean(scales)) * 3600.0
+            if pix > 0:
+                out["pix_arcsec"] = pix
+                break
+        except Exception:
+            continue
+    return out
+
+
 def read_xisf_meta(path: Path) -> dict:
     """Read XISF header metadata (WCS + FITSKeywords) without pixel data."""
     out = {
@@ -988,10 +1090,23 @@ def read_xisf_meta(path: Path) -> dict:
                         pass
             except Exception:
                 pass
+        # PixInsight's ImageSolver writes its solution into XISF properties and
+        # not into FITS keywords, so a master solved in PixInsight reaches the
+        # CRVAL block above with nothing to read and used to look unsolved
+        # (issue #63). Try the properties before falling back to pointing.
+        props = img.get("XISFProperties") or {}
+        if not out["has_wcs"]:
+            sol = xisf_astrometric_solution(props)
+            if sol["ra_deg"] is not None:
+                out["ra_deg"] = sol["ra_deg"]
+                out["dec_deg"] = sol["dec_deg"]
+                out["has_wcs"] = sol["solved"]
+                if sol["pix_arcsec"] and out["pix_arcsec"] is None:
+                    out["pix_arcsec"] = sol["pix_arcsec"]
         # OBJCTRA/OBJCTDEC fallback (ported from the FITS path) so pointing-only
         # WBPP XISF that never got a plate solve still cluster by their fallback
         # coords instead of vanishing.
-        if not out["has_wcs"]:
+        if out["ra_deg"] is None:
             ora = fk("OBJCTRA"); odec = fk("OBJCTDEC")
             if ora and odec:
                 try:
@@ -1003,6 +1118,14 @@ def read_xisf_meta(path: Path) -> dict:
         try:
             focal = float(fk("FOCALLEN") or 0) or None
             xpsz = float(fk("XPIXSZ") or 0) or None
+            # PixInsight keeps these as properties too, and a file that went
+            # through its pipeline often has the FITS keywords stripped. Focal
+            # length is stored in metres there, pixel size in micrometres.
+            if not focal:
+                pf = _xisf_prop_float(props, "Instrument:Telescope:FocalLength")
+                focal = pf * 1000.0 if pf and pf > 0 else None
+            if not xpsz:
+                xpsz = _xisf_prop_float(props, "Instrument:Sensor:XPixelSize")
             if focal and xpsz and focal > 0 and xpsz > 0:
                 out["focallen"] = focal
                 out["xpixsz"] = xpsz
