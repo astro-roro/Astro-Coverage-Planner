@@ -43,6 +43,18 @@ class TestCanonicalMasterStem(unittest.TestCase):
         """Never strip a stem to nothing."""
         self.assertEqual(bam.canonical_master_stem("final"), "final")
 
+    def test_strips_a_numbered_variant_token(self):
+        """People number repeated versions: L_stars2 beside L_stars."""
+        self.assertEqual(bam.canonical_master_stem("L_stars2"), "L")
+        self.assertEqual(bam.canonical_master_stem("drizzle_integration_DBE2"),
+                         "drizzle_integration")
+
+    def test_a_bare_number_is_not_a_variant_token(self):
+        """Binning and filter names end in digits; those are not versions."""
+        self.assertEqual(bam.canonical_master_stem("M42_2"), "M42_2")
+        self.assertEqual(bam.canonical_master_stem("masterLight_BIN-1_FILTER-L"),
+                         "masterLight_BIN-1_FILTER-L")
+
     def test_leaves_a_plain_master_alone(self):
         self.assertEqual(bam.canonical_master_stem(BASE), BASE)
 

@@ -1580,7 +1580,7 @@ def collapse_fits_xisf_pairs(paths: list[str]) -> tuple[list[str], int]:
 # passes. Deliberately excludes "integration": that is a base name, not a
 # variant of one.
 MASTER_VARIANT_TOKENS = frozenset({
-    "starless", "stars", "starmask", "starless1", "nostars",
+    "starless", "stars", "starmask", "nostars",
     "autocrop", "crop", "cropped", "trimmed",
     "abe", "dbe", "gradient", "bg", "background",
     "denoise", "denoised", "nr", "decon", "deconvolved", "sharpened",
@@ -1591,6 +1591,20 @@ MASTER_VARIANT_TOKENS = frozenset({
 # A filesystem copy marker: ``master (1).xisf`` beside ``master.xisf``.
 _COPY_SUFFIX_RE = re.compile(r"[\s_\-]*\((\d+)\)$")
 _TRAILING_TOKEN_RE = re.compile(r"[_\-\s]([A-Za-z0-9]+)$")
+
+
+def _is_variant_token(token: str) -> bool:
+    """True for a variant token, with or without the copy number people add.
+
+    PixInsight and its users number repeated versions: ``L_stars2`` beside
+    ``L_stars``, ``_DBE2`` beside ``_DBE``. A bare number is never a token on
+    its own, since binning and filter names end in digits.
+    """
+    low = token.lower()
+    if low in MASTER_VARIANT_TOKENS:
+        return True
+    trimmed = low.rstrip("0123456789")
+    return bool(trimmed) and trimmed != low and trimmed in MASTER_VARIANT_TOKENS
 
 
 def canonical_master_stem(stem: str) -> str:
@@ -1609,7 +1623,7 @@ def canonical_master_stem(stem: str) -> str:
             out = stripped
             continue
         m = _TRAILING_TOKEN_RE.search(out)
-        if not m or m.group(1).lower() not in MASTER_VARIANT_TOKENS:
+        if not m or not _is_variant_token(m.group(1)):
             return out
         candidate = out[: m.start()]
         if not candidate:
