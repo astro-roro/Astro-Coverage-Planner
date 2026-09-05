@@ -170,3 +170,49 @@ Unchanged from the May decision: same machine needs nothing, same LAN or overlay
 2. Pixel scale tolerance stays at 15 percent. Wide enough for a forgotten reducer, tight enough to keep a 250 mm lens off 540 mm plans. Revisit after a month of fingerprints.
 3. Profile write-back only from the instruction and the dock button, only when the solved focal length is more than 5 percent from the profile, always announced. See Part B.
 4. In the everything mode, plans that do not fit the fingerprint are still synced, and the dock and sequencer log carry one warning line naming them. Nothing blocks.
+
+## Part G: what counts as progress, decided 2026-09-05
+
+Three adversarial reviews of the v3 branches on 2026-09-05 found that the push and the read back had a single number where there are really three, and that mosaics finished early. The decisions below came out of that.
+
+### Three numbers, three owners
+
+Imaged hours are what is on disk. The scanner owns this. Acquired frames are what the camera took during a Target Scheduler session. Target Scheduler owns this, always, because the camera is attached to it. Accepted frames are what a grader kept. Who owns this depends on where grading happens, and that is the only real difference between users.
+
+Grader in Target Scheduler: it owns accepted, ACP reads and never writes. Grading later in PixInsight or Siril: ACP becomes the authority, and the push carries the verdict to Target Scheduler so it stops scheduling a target that already has enough good frames. No grading anywhere: accepted equals acquired, which is exactly the convention Target Scheduler uses with its grader off.
+
+### The push rule
+
+The push never writes `acquired` on a row that exists. It writes `accepted` on an existing row only when the plan or project is marked as graded outside Target Scheduler, which is off by default. Both are still written when a row is first created. `createdate` is never written on update. A stranger who never opens a setting therefore cannot lose a frame count to a sync, which was the failure the review demonstrated.
+
+### The read back
+
+Part F brings both `acquired` and `accepted` into ACP as separate numbers rather than picking one by the grader flag. A plan's filter goal carries `actual_hours` for imaged and `accepted_hours` for graded. Each goal says which one it means, imaged by default. A goal of six hours means six imaged hours unless it says accepted, and then it means six graded hours whether the grading happened in Target Scheduler or later.
+
+### The scanner's part
+
+The scanner produces imaged and accepted hours per filter per target from evidence on disk, so the coverage map stops over-reporting for anyone who grades. The evidence, in order of strength, is in `docs/research/frame-grading-traces.md`, read from the tools' own sources. The strongest is one the scanner already parses: a master's frame count keyword, since a stack only integrates what was kept. Then Siril's sequence sidecar, which flags each frame. Then a `rejected` subfolder, which Target Scheduler writes when its move option is on and people also make by hand, corroborated rather than trusted alone. The fallback is explicit: no evidence of grading means accepted equals imaged, so a user who never grades sees no change at all.
+
+Two facts from that research shape the rest. Target Scheduler writes nothing to a frame's header, and NINA puts no quality metrics there either, so a graded archive that loses its database and its rejected folder cannot be reconstructed from the frames. And PixInsight's weight keyword is a convention rather than a default, so it is a hint, not proof.
+
+### Mosaics, per panel
+
+ACP stores a mosaic goal per panel. Six hours on a 4x4 means six hours on each of sixteen panels, and the plan's total is the per-panel target times the panel count, so 96 hours, never 6 or 16. Progress is tracked per panel: each filter goal carries a map from panel to its imaged and accepted hours, which Target Scheduler already holds since every panel is its own target there. A panel contributes up to its own target and no more, so a panel shot past its goal shows its true hours in the panel view but cannot pay for a neighbour. The plan is finished when every panel has met its target.
+
+The plan list shows the totals. A mosaic plan opens to a per-panel view that reuses the panel grid the visibility heatmap already draws, filled with progress instead. Before this, the finished check compared the plan's single stored number against the per-panel target with no panel dimension, so one finished panel marked a whole mosaic done; that predates v3 and is fixed by this.
+
+### One definition of finished
+
+The interface had two. The plan list compared a goal against the plan's own stored hours, which the plugin feeds. The sky map compared it against the manifest's hours, which the scanner feeds. From here a plan's finished state comes from the plan's own progress and nothing else. The manifest's hours are coverage, shown on the map as coverage, and never used to decide whether a plan is done.
+
+### A toggle for the hours shown
+
+One switch, global, between total and accepted hours everywhere hours appear: the map, the target panel, the plan list, the panel view. Total is the default. It reads from the same two numbers; it does not change what is stored.
+
+### Identity that cannot collide
+
+The recipe that gives a Target Scheduler row its identity joined free text names with a slash, so a project called M42 with a target called M43/NGC1977 collided with a project called M42/M43 and a target called NGC1977, and the second push reparented the first's rows. Each name component is now length prefixed so it cannot run into the next. Existing rows are migrated on first contact, inside the push's own transaction after the backup: any row whose stored identity matches the old recipe recomputed from its own names is rewritten to the new one, and anything else is left alone. An empty target name is refused at push time, and two plans in one project with the same target name are refused rather than silently merged.
+
+### What this leaves for the settings columns
+
+The push still overwrites Target Scheduler's project level settings on update, so a minimum altitude changed in its own interface goes back to ACP's value next sync. That is inherited from the Python extension and not decided here. The candidates are leaving it and saying so in the log, or a per-column rule about which side owns which setting. Deferred until there is a real night's use to judge it against.
