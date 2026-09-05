@@ -213,6 +213,16 @@ One switch, global, between total and accepted hours everywhere hours appear: th
 
 The recipe that gives a Target Scheduler row its identity joined free text names with a slash, so a project called M42 with a target called M43/NGC1977 collided with a project called M42/M43 and a target called NGC1977, and the second push reparented the first's rows. Each name component is now length prefixed so it cannot run into the next. Existing rows are migrated on first contact, inside the push's own transaction after the backup: any row whose stored identity matches the old recipe recomputed from its own names is rewritten to the new one, and anything else is left alone. An empty target name is refused at push time, and two plans in one project with the same target name are refused rather than silently merged.
 
+### Syncing from inside Target Scheduler's own event containers
+
+Target Scheduler's container exposes six places a user can drop instructions, and it waits for each before carrying on: before wait, after wait, before target, after each exposure, after target, and after all targets. Read from `TargetSchedulerContainer.cs` on 2026-09-05. The order inside its loop is what matters: after a target completes it runs the after target container, waits for it, and only then re-plans by reading the database.
+
+So an ACP sync placed in after target runs in a guaranteed quiet moment, with nothing imaging and nothing writing, and the next planning decision reflects whatever the sync wrote. That is strictly better than a pause: no new mechanism, Target Scheduler calls us at the safe point itself, and there is nothing to infer.
+
+The sync instruction gains one behaviour to make this work. When it finds itself parented inside a Target Scheduler event container, it treats the running guard as satisfied, because the guard exists to avoid writing under a live session and here the session has handed control to us. It detects this by walking up the sequence tree rather than by a checkbox, so a user cannot set it wrong. Outside such a container the guard applies as before, and the three hour staleness window stays as the fallback for people who never use the event containers.
+
+The instruction's description and the docs say where to put it: in the Target Scheduler container's after target slot for a sync at every target change, or after all targets for one at the end of the night. The solve is optional there, since the fingerprint from the start of the night still holds.
+
 ### What this leaves for the settings columns
 
 The push still overwrites Target Scheduler's project level settings on update, so a minimum altitude changed in its own interface goes back to ACP's value next sync. That is inherited from the Python extension and not decided here. The candidates are leaving it and saying so in the log, or a per-column rule about which side owns which setting. Deferred until there is a real night's use to judge it against.
