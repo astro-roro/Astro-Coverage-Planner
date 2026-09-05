@@ -1,4 +1,4 @@
-// Astro Coverage Webapp — frontend
+// Astro Coverage Webapp, frontend
 // Uses Aladin Lite v3 for sky rendering.
 
 // HTML-escape any string interpolated into innerHTML. Manifest values originate
@@ -43,6 +43,20 @@ function chipHours(t, f) {
   if (f === RGB_CHIP) return oscHours(t);
   return t?.filters?.[f]?.total_hours || 0;
 }
+// Hours a target has towards a plan goal named f. A band name reads the band
+// total. A real filter label that is not a band (OSC, L-eXtreme) reads the
+// largest credit that label gave to any band, since one OSC hour is recorded
+// under R, G and B alike.
+function hoursForGoal(t, f) {
+  const band = t?.filters?.[f];
+  if (band) return band.total_hours || 0;
+  let best = 0;
+  for (const d of Object.values(t?.filters || {})) {
+    const v = d?.sources?.[f] || 0;
+    if (v > best) best = v;
+  }
+  return best;
+}
 function pillClass(f) {
   return FILTER_COLORS[f] ? `fp-${f}` : "fp-other";
 }
@@ -57,15 +71,15 @@ const TELESCOPE_FALLBACK = "#888";
 
 let manifest = null;
 let aladin = null;
-let overlay = null;     // main target footprints (polygons) — polygons themselves are the click/hover target now
+let overlay = null;     // main target footprints (polygons), polygons themselves are the click/hover target now
 let hoverOverlay = null; // transient highlight overlay for the polygon currently under the cursor
 let filterBadgeCat = null; // single catalog of "filter badges" (one source per target, custom draw)
-let coverageHitList = []; // [{poly, target, corners}] — mirror of overlay for hit-testing
-let planHitList = [];     // [{poly, plan, corners}] — mirror of plan overlays for hit-testing
-let tileHitList = [];     // [{poly, tile, source_id, corners}] — Inventory tile polygons (Plan 2a)
+let coverageHitList = []; // [{poly, target, corners}], mirror of overlay for hit-testing
+let planHitList = [];     // [{poly, plan, corners}], mirror of plan overlays for hit-testing
+let tileHitList = [];     // [{poly, tile, source_id, corners}], Inventory tile polygons (Plan 2a)
 let selectedTileKey = null; // "<source_id>/<tile_id>" while in tile-detail mode
 let hoveredHit = null;    // currently-hovered entry from the active hit list (null otherwise)
-let lastClickStack = null; // {ra, dec, ids: [...], cycleIdx} — for repeat-click cycling through overlapping polys
+let lastClickStack = null; // {ra, dec, ids: [...], cycleIdx}, for repeat-click cycling through overlapping polys
 let catOverlays = {};   // catalog overlays (Phase 3)
 let selectedFilters = new Set(["Ha", "SII", "OIII"]);
 let selectedTelescopes = new Set(); // populated after manifest loads
@@ -83,7 +97,7 @@ let gapSourceIds = [];     // explicit selection; empty = "all enabled"
 let gapMocLayer = null;    // live A.MOCFromURL overlay for the gap region
 // catalog name -> Set of object names that fall inside the active gap MOC.
 // When non-empty AND gapEnabled is true, drawCatalogOverlay filters each
-// catalog to just these entries — so users see "Find gaps × catalog X" by
+// catalog to just these entries, so users see "Find gaps × catalog X" by
 // simply ticking catalog X in the Catalogues rail.
 let gapNamesByCatalog = {};
 let currentSite = { lat: 19.82, lon: -155.47, height: 4205, min_alt_deg: 30 };
@@ -92,7 +106,7 @@ let activeSiteId = null;       // localStorage acp.active_site_id, applied once 
 let timeAware = false;         // localStorage acp.time_aware, default off
 let _obsIntervalId = null;     // setInterval handle for the rolling obsNow refresh
 let visibilityData = null;     // {site_id, year, targets: {<id>: [12 bins]}} | null
-let currentAlts = {};          // {<target_id>: alt_deg} from latest /api/observability — for sort=tonight
+let currentAlts = {};          // {<target_id>: alt_deg} from latest /api/observability, for sort=tonight
 let sortBy = "hours";          // "hours" | "best_month" | "up_tonight"
 let planSortBy = "priority";   // "priority" | "name" | "panels_up_now" | "peak_panels_month"
 let catalogRegistry = [];      // [{id, data_key, label, color, marker, size, ...}] from /api/catalog-registry
@@ -101,7 +115,7 @@ let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
 let completionFilter = "all"; // "all" | "finished" | "unfinished"
 let targetOverrides = {};     // target_id (string) → { finished: bool, updated_at: ... }
-let _pressInfo = null;        // {x, y, t, dragged} — last mousedown over the map. The Aladin
+let _pressInfo = null;        // {x, y, t, dragged}, last mousedown over the map. The Aladin
                               // "click" event fires on every mouseup whether the user dragged
                               // or not, so we use this to suppress pan-clicks from selecting/deselecting.
 
@@ -113,14 +127,14 @@ let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on
 let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
-let planOverlay = null;        // Aladin overlay for plan footprints (solid — plans with data)
-let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed — not-started plans)
+let planOverlay = null;        // Aladin overlay for plan footprints (solid, plans with data)
+let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed, not-started plans)
 let planCenterCat = null;      // Aladin catalog for plan center + rotation handle markers
 let dragState = null;          // { mode: "center"|"rotate", planId, start: {x,y}, origin: {...} }
 
 // --- Onboarding banner (shown when the manifest is empty) ---
 // The user has just installed but hasn't pointed ACP at their FITS archive
-// yet — show a clear "next step" overlay until they build a manifest. The
+// yet, show a clear "next step" overlay until they build a manifest. The
 // dismiss button hides it for the current session only; we don't persist
 // the dismissal because seeing the prompt on every load until a manifest
 // exists is a useful nag rather than annoying noise.
@@ -180,7 +194,7 @@ function applyUiStatePreManifest() {
   }
 
   // Gap-finder restore. The gap-finder DOM (selects, source list) hasn't been
-  // populated yet at this point — populateGapDropdowns / populateGapSources will
+  // populated yet at this point, populateGapDropdowns / populateGapSources will
   // see these state vars and pick the right values when they run.
   if (s.gap && typeof s.gap === "object") {
     if (typeof s.gap.have === "string") gapHave = s.gap.have;
@@ -217,7 +231,7 @@ function applyUiStatePreManifest() {
       if (cb) cb.checked = s.catalogs.includes(id);
     }
     // The Objects panel's type-chip set depends on which catalogues
-    // are enabled — refresh after restoring their checked state so
+    // are enabled, refresh after restoring their checked state so
     // the chips show the right categories on first paint.
     if (typeof refreshObjectFilterPanel === "function") {
       refreshObjectFilterPanel();
@@ -490,7 +504,7 @@ function saveUiState() {
       extToggles: extToggleState,
     };
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
-  } catch { /* localStorage full / disabled — ignore */ }
+  } catch { /* localStorage full / disabled, ignore */ }
 }
 
 // Show the search box only while browsing a top-level list (targets or plans).
@@ -627,7 +641,7 @@ function filterBadgeShape(src, ctx /*, viewParams */) {
   // Filter dots. Local +X runs along the top edge from the NW anchor (screen
   // top-right in N-up E-left) toward NE (screen top-left), so local +X is
   // screen-leftward. Draw the array in reverse local-x order so L lands at
-  // the far (screen-left) end and SII near the anchor (screen-right) — gives
+  // the far (screen-left) end and SII near the anchor (screen-right), gives
   // natural LRGBHOS reading order on the standard view.
   const filters = (src.data && src.data.filters) || {};
   for (let i = 0; i < n; i++) {
@@ -682,7 +696,7 @@ function targetMatches(t) {
   // Telescope toggle: a tagged target is visible only if its telescope is in
   // the selected set. Empty set = hide every tagged target (so the user can
   // untick all telescopes to clear the rectangles and just see overlays).
-  // Untagged targets stay visible regardless — they have nothing to filter on.
+  // Untagged targets stay visible regardless, they have nothing to filter on.
   const tel = telescopeOf(t);
   if (tel && !selectedTelescopes.has(tel)) return false;
 
@@ -718,7 +732,7 @@ function planGoalsMet(plan) {
   const filterNames = Object.keys(goals);
   if (filterNames.length === 0) return false;
   const target = manifest?.targets?.find(x => String(x.target_id) === String(plan.target?.target_id));
-  const actualHrs = f => target?.filters?.[f]?.total_hours || 0;
+  const actualHrs = f => hoursForGoal(target, f);
   return filterNames.every(f => {
     const tgt = parseFloat(goals[f]?.target_hours || 0);
     return tgt > 0 && actualHrs(f) >= tgt;
@@ -744,13 +758,13 @@ function goUpOneLevel() {
 function planIsDirty() {
   if (!editingPlan) return false;
   const orig = plans.find(p => p.id === editingPlan.id);
-  if (!orig) return true; // detached — treat as dirty so we don't silently lose work
+  if (!orig) return true; // detached, treat as dirty so we don't silently lose work
   return JSON.stringify(editingPlan) !== JSON.stringify(orig);
 }
 
 // Pre-flight for any "leave plan-edit" navigation. If the user has unsaved
 // edits, prompt; otherwise (or after they choose) call `then()` to actually
-// navigate. Discard mirrors the existing Cancel-button logic — scratch plans
+// navigate. Discard mirrors the existing Cancel-button logic, scratch plans
 // without a guid get pulled back out of `plans[]`.
 function requestNavigateAwayFromPlanEdit(then) {
   if (!planIsDirty()) {
@@ -931,7 +945,7 @@ function renderTargetPanel(t) {
   selectedTargetId = t.target_id;
   saveUiState();
   const panel = document.getElementById("panelBody");
-  // LRGBHOS order everywhere — header pills, coverage rows. Extras (non-canonical
+  // LRGBHOS order everywhere, header pills, coverage rows. Extras (non-canonical
   // filters present in the manifest) are dropped for now per the same rule
   // we apply to the sky-map filter chips.
   // LRGBHOS first, then any other band the manifest carries (IR, sodium, ...)
@@ -964,14 +978,14 @@ function renderTargetPanel(t) {
       <td><span class="filter-pill ${pillClass(f)}">${esc(f)}</span>${viaText(f, d)}</td>
       <td class="num">${(d.total_hours || 0).toFixed(2)}h</td>
       <td class="num">${d.files || 0}</td>
-      <td class="num">${d.db_sub_hours ? (d.db_sub_hours).toFixed(1) + "h" : "—"}</td>
+      <td class="num">${d.db_sub_hours ? (d.db_sub_hours).toFixed(1) + "h" : ", "}</td>
     </tr>`).join("");
 
-  const telescopes = esc((t.telescopes || []).join(", ") || "—");
-  const cameras = esc((t.cameras || []).join(", ") || "—");
+  const telescopes = esc((t.telescopes || []).join(", ") || ", ");
+  const cameras = esc((t.cameras || []).join(", ") || ", ");
   const objs = esc((t.objects && t.objects.length) ? t.objects.join(" / ") : "(no OBJECT tag)");
-  const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : "—";
-  const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : "—";
+  const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : ", ";
+  const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : ", ";
 
   const finished = isTargetFinished(t);
   const overrideKey = String(t.target_id);
@@ -979,7 +993,7 @@ function renderTargetPanel(t) {
   const hasPlans = plans.some(p => String(p.target?.target_id) === overrideKey);
   const statusText = finished
     ? (hasOverride ? "Marked finished manually." : "All plan goals met.")
-    : (hasPlans ? "Plan goals not yet met." : "No plan set — treated as unfinished.");
+    : (hasPlans ? "Plan goals not yet met." : "No plan set, treated as unfinished.");
   const primaryBtn = finished
     ? `<button id="markUnfinishedBtn">Mark in-progress</button>`
     : `<button id="markFinishedBtn">Mark finished</button>`;
@@ -987,7 +1001,7 @@ function renderTargetPanel(t) {
     ? `<button id="clearOverrideBtn" title="Remove manual override; fall back to plan-derived status">Clear override</button>`
     : "";
 
-  // Visibility section — only renders when time-aware data is available.
+  // Visibility section, only renders when time-aware data is available.
   // The CSS rule on .vis-section keeps it hidden if the user toggles off.
   const visBins = binsForTarget(t.target_id);
   let visHtml = "";
@@ -1010,7 +1024,7 @@ function renderTargetPanel(t) {
     // even before the first observability ping populates `nowLine`.
     visHtml = `
       <div class="vis-section">
-        <h4>Visibility — ${esc(siteName)}</h4>
+        <h4>Visibility, ${esc(siteName)}</h4>
         ${yearCurveBarHtml(t.target_id)}
         <div class="vis-meta-row">
           <span class="vis-meta">${esc(bestTxt)}</span>
@@ -1041,7 +1055,7 @@ function renderTargetPanel(t) {
       <table>
         <tr><td>RA / Dec</td><td class="num">${t.center_ra_deg.toFixed(3)}° / ${t.center_dec_deg.toFixed(3)}°</td></tr>
         <tr><td>l / b</td><td class="num">${t.center_l_deg.toFixed(2)}° / ${t.center_b_deg.toFixed(2)}°</td></tr>
-        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : '—'}</td></tr>
+        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : ', '}</td></tr>
         <tr><td>Telescope</td><td class="num">${telescopes}</td></tr>
         <tr><td>Camera</td><td class="num">${cameras}</td></tr>
         <tr><td>Date range</td><td class="num">${dateRange}</td></tr>
@@ -1162,7 +1176,7 @@ function _ptInRaDecPoly(ra, dec, corners) {
   return inside;
 }
 
-// Bounding-box area in deg² — only used to rank overlapping polygons consistently
+// Bounding-box area in deg², only used to rank overlapping polygons consistently
 // so the smallest (tightest framing) wins on click. Unwraps RA the same way
 // _ptInRaDecPoly does: without this, a polygon straddling the 0/360° seam gets
 // a ~360°-wide bbox and always loses click-disambiguation priority to smaller,
@@ -1174,7 +1188,7 @@ function _polyBBoxArea(corners) {
 
 // Find all polygons containing the given sky point, sorted smallest-first.
 // In planning mode plans are hit-testable; in viewing mode coverage. Tile
-// polygons (Inventory rail) overlay both modes — if a tile overlaps a
+// polygons (Inventory rail) overlay both modes, if a tile overlaps a
 // coverage/plan polygon, the tile is preferred so the rail shows tile
 // detail. Cycling on repeat-click visits each in turn.
 function hitPolygonsAt(ra, dec) {
@@ -1216,7 +1230,7 @@ function _hex6(hex) {
 }
 
 // Blend toward white to produce a lighter "highlighted" version of a border
-// colour — used for the hover outline so it pops against the base polygon.
+// colour, used for the hover outline so it pops against the base polygon.
 function _brighten(hex, amount) {
   const h = _hex6(hex);
   const r = parseInt(h.slice(0, 2), 16);
@@ -1245,7 +1259,7 @@ function setHoverHit(hit) {
     hoverOverlay.removeAll();
     if (hit) {
       // Use the entity's own border colour and (for mosaics) the full mosaic
-      // bounds — not the individual panel — so hover reads as "this whole rig
+      // bounds, not the individual panel, so hover reads as "this whole rig
       // is what you're about to select."
       let color = "#ffffff", outline = hit.corners;
       if (hit.target) {
@@ -1267,7 +1281,7 @@ function setHoverHit(hit) {
   if (tip) {
     if (hit?.target) {
       const t = hit.target;
-      tip.textContent = `#${t.target_id} ${t.objects?.[0] || ""} — ${summariseFilters(t)}`;
+      tip.textContent = `#${t.target_id} ${t.objects?.[0] || ""}, ${summariseFilters(t)}`;
     } else if (hit?.plan) {
       const pl = hit.plan;
       const panels = (planPanelCorners(pl) || []).length;
@@ -1314,7 +1328,7 @@ function onMapPolyClick(ra, dec) {
 
   if (hits.length > 1) {
     const tip = document.getElementById("tooltip");
-    if (tip) tip.textContent = `${idx + 1} of ${hits.length} overlapping here — click again to cycle`;
+    if (tip) tip.textContent = `${idx + 1} of ${hits.length} overlapping here, click again to cycle`;
   }
 }
 
@@ -1363,7 +1377,7 @@ function redrawFootprints() {
     overlay.add(poly);
     coverageHitList.push({ poly, target: t, corners: t.corners_icrs });
 
-    // Filter badge: anchor at corners_icrs[1] (the NW corner — on standard N-up
+    // Filter badge: anchor at corners_icrs[1] (the NW corner, on standard N-up
     // E-left sky renders, NW is the top-right of the FOV on screen). Store the
     // adjacent top-edge corner (corners_icrs[2], NE = screen top-left) AND the
     // opposite-along-the-side corner (corners_icrs[0], SW = screen bottom-right)
@@ -1403,7 +1417,7 @@ function _registryToCfg(entry) {
     label: entry.label || entry.id,
     color: entry.color || "#888",
     marker: entry.marker || "circle",
-    // Aladin's default-shape prelude errors at sourceSize < 8 — clamp here so
+    // Aladin's default-shape prelude errors at sourceSize < 8, clamp here so
     // a registry typo can't bring the whole catalogue rail down.
     size: Math.max(8, Number(entry.size) || 8),
   };
@@ -1435,13 +1449,13 @@ async function setupCatalogOverlays() {
     cb.addEventListener("change", () => {
       drawCatalogOverlay(cfg, cb.checked);
       // Enabling/disabling a catalogue shifts which categories +
-      // known_tags exist — refresh the cross-catalogue Objects panel
+      // known_tags exist, refresh the cross-catalogue Objects panel
       // so chips appear/disappear in lockstep.
       refreshObjectFilterPanel();
       saveUiState();
     });
   }
-  // Initial paint of the Objects panel — it stays hidden until at
+  // Initial paint of the Objects panel, it stays hidden until at
   // least one categorised catalogue is enabled, but we still need to
   // pick up any default_filter from sources whose enable_default is
   // already on at boot.
@@ -1548,7 +1562,7 @@ function _saveObjectsFilterState() {
       text: catObjectsFilterText,
     };
     localStorage.setItem(UI_STATE_KEY, JSON.stringify(s));
-  } catch (_) { /* quota — non-fatal */ }
+  } catch (_) { /* quota, non-fatal */ }
 }
 
 function _enabledCatalogEntries() {
@@ -1651,7 +1665,7 @@ function refreshObjectFilterPanel() {
   }
   typesRow.hidden = sortedTypes.length === 0;
 
-  // Filter input — wire once, idempotently (avoid stacking handlers
+  // Filter input, wire once, idempotently (avoid stacking handlers
   // on every refresh).
   if (!filterInput.dataset.wired) {
     filterInput.dataset.wired = "1";
@@ -1664,7 +1678,7 @@ function refreshObjectFilterPanel() {
     });
   }
 
-  // Known-tags hint line — surfaces extension-declared tag vocabulary
+  // Known-tags hint line, surfaces extension-declared tag vocabulary
   // so the user knows what's available in `tag:` / `-tag:`.
   if (hint) {
     const sortedTags = Array.from(knownTags).sort();
@@ -1680,7 +1694,7 @@ function refreshObjectFilterPanel() {
 
 // Palette for source swatches when a source's metadata.color is empty.
 // Fixed cycle so each source gets a stable color across reloads (the
-// list ordering on /api/sources is stable too — manifest first, then
+// list ordering on /api/sources is stable too, manifest first, then
 // extensions in registration order).
 const SOURCE_PALETTE = ["#7aa2ff", "#ff8a3d", "#65c275", "#c87aff", "#ffc857", "#44d9d3"];
 // Hydrated from localStorage at script-load so any saveUiState() that fires
@@ -1695,7 +1709,7 @@ let sourcesEnabled = (() => {
 // Same script-load hydration for extension toggle state (keyed
 // `${extension}.${action_id}`), used by loadExtensions() to restore which
 // auto-runners (e.g. nina_ts_sync's "Live progress from NINA") were on at
-// last reload — so the user doesn't have to re-tick after every refresh.
+// last reload, so the user doesn't have to re-tick after every refresh.
 let extToggleState = (() => {
   try { return JSON.parse(localStorage.getItem(UI_STATE_KEY) || "{}").extToggles || {}; }
   catch { return {}; }
@@ -1720,7 +1734,7 @@ function mocToggleOn(sourceId, color, checkbox) {
     lineWidth: 1,
     opacity: 0.25,
   }, undefined, () => {
-    // errorCallback — fetch or wasm parse failed.
+    // errorCallback, fetch or wasm parse failed.
     console.warn(`MOC source ${sourceId} failed to load`);
     if (checkbox) checkbox.checked = false;
     sourcesEnabled[sourceId] = false;
@@ -1756,7 +1770,7 @@ function populateGapDropdowns() {
   const missing = document.getElementById("gapMissing");
   if (!have || !missing) return;
   const names = manifestFilterNames();
-  // Empty manifest fallback — keep the selects populated with the persisted
+  // Empty manifest fallback, keep the selects populated with the persisted
   // values so the user can still type/submit.
   if (names.length === 0) names.push(gapHave, gapMissing);
   const opts = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
@@ -1842,7 +1856,7 @@ async function loadGaps() {
     return;
   }
   if (resp.status === 503) {
-    if (stats) stats.textContent = "(mocpy not installed — gap-finder unavailable)";
+    if (stats) stats.textContent = "(mocpy not installed, gap-finder unavailable)";
     return;
   }
   if (!resp.ok) {
@@ -1854,12 +1868,12 @@ async function loadGaps() {
   }
   const data = await resp.json();
 
-  // Drop the previous overlays before mounting the new ones — Aladin doesn't
+  // Drop the previous overlays before mounting the new ones, Aladin doesn't
   // de-dupe by name, layered ghosts tank FPS at high MOC orders.
   clearGapOverlays();
 
   if (data.moc_url) {
-    // Same perimeter+fill recipe as mocToggleOn — explicitly off `edge` mode
+    // Same perimeter+fill recipe as mocToggleOn, explicitly off `edge` mode
     // (per-cell borders), which is the FPS killer at order 11+.
     gapMocLayer = A.MOCFromURL(data.moc_url, {
       name: "gap_moc",
@@ -1962,7 +1976,7 @@ async function loadSources() {
 //
 //   1. Buttons with ``replaces: "<core-id>"`` swap the corresponding core
 //      button in place (handler + label come from the extension). The
-//      REPLACEABLE_BUTTONS map below is core ACP's published contract — it
+//      REPLACEABLE_BUTTONS map below is core ACP's published contract, it
 //      maps stable manifest ids to in-DOM selectors that the renderer mutates.
 //
 //   2. Buttons without ``replaces`` are rendered into the Extensions rail
@@ -1996,7 +2010,7 @@ const liveProgressTimers = new Map(); // action-id → setInterval handle
 const liveProgressState = new Map();  // action-id → {failures, lastIso}
 
 // Wire a single replaceable button to either its extension replacement or the
-// core default. Idempotent — clones the existing node first to drop any prior
+// core default. Idempotent, clones the existing node first to drop any prior
 // listeners so calling this repeatedly leaves the button with exactly one
 // click handler. Safe to call before extensionsManifest is populated (empty
 // manifest = falls through to the core default).
@@ -2083,7 +2097,7 @@ async function loadExtensions() {
   }
   // Show the rail accordion only if there's at least one button/toggle in
   // it. Swapped core buttons live in their original slot (e.g. the planner
-  // toolbar) — no need to advertise them here.
+  // toolbar), no need to advertise them here.
   panel.hidden = !railHasContent;
 }
 
@@ -2093,9 +2107,9 @@ async function loadExtensions() {
 // step-history stack so Back can pop the user to the previous step. The
 // ModalCtx wrapper owns:
 //   - the primary action button at the bottom-right (Next / Apply /
-//     extension-customised label) — rebound per step
-//   - the Back button at the bottom-left — auto-hidden on first step
-//   - the close-X in the header — confirms before close if a dirtyCheck
+//     extension-customised label), rebound per step
+//   - the Back button at the bottom-left, auto-hidden on first step
+//   - the close-X in the header, confirms before close if a dirtyCheck
 //     callback signals state would be lost
 //   - the step transitions themselves, including a per-step onBack hook
 //     so an in-flight fetch / SSE reader can be cancelled when the user
@@ -2175,7 +2189,7 @@ function _ctxSetPrimary(ctx, { label, handler, enabled } = {}) {
     if (enabled !== undefined) cur.primary.enabled = enabled;
     if (handler !== undefined) {
       cur.primary.handler = handler;
-      // Receiving a handler always unhides the button — the only way to
+      // Receiving a handler always unhides the button, the only way to
       // hide is via _ctxShowStep with primaryHandler:null.
       cur.primary.hidden = handler === null;
     }
@@ -2248,7 +2262,7 @@ async function runExtensionAction(ext, action) {
         const pr = await fetch(ext.profiles_endpoint);
         const pb = await pr.json();
         availableProfiles = pb.profiles || [];
-      } catch (_) { /* transport error — fall back to saved id */ }
+      } catch (_) { /* transport error, fall back to saved id */ }
     }
     if (availableProfiles === null) {
       profileId = savedId;  // can't validate, trust config; downstream call surfaces real error
@@ -2609,14 +2623,14 @@ async function _streamingPreview(action, payload, ctx, onProgress) {
   }
   const ctype = (r.headers.get("Content-Type") || "").toLowerCase();
   if (!ctype.startsWith("text/event-stream")) {
-    // Server returned synchronous JSON — fall through to single read.
+    // Server returned synchronous JSON, fall through to single read.
     const text = await r.text();
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 300)}`);
     try { return { preview: JSON.parse(text) }; }
     catch (_) { throw new Error(`bad JSON: ${text.slice(0, 300)}`); }
   }
   if (!r.body || !r.body.getReader) {
-    // Browser missing ReadableStream support — degrade.
+    // Browser missing ReadableStream support, degrade.
     return { preview: await r.json() };
   }
   const reader = r.body.getReader();
@@ -2675,7 +2689,7 @@ function _updateProgressBar(prog) {
   if (!wrap || !bar || !label) return;
   wrap.hidden = false;
   // The server now reports a single 0..1 fraction across the whole
-  // pipeline rather than per-pick sub-percentages — the latter were
+  // pipeline rather than per-pick sub-percentages, the latter were
   // misleading when the algorithm bailed out early on subtraction.
   let pct = 0;
   if (prog.fraction != null) {
@@ -2739,7 +2753,7 @@ async function runPreviewThenApply(ext, action, profileId, ctx, extras = {}) {
     return;
   }
   if (result.cancelled) {
-    // Back/close fired during streaming. Nothing to render — caller
+    // Back/close fired during streaming. Nothing to render, caller
     // already navigated away.
     return;
   }
@@ -2786,7 +2800,7 @@ async function runPreviewThenApply(ext, action, profileId, ctx, extras = {}) {
 // Calls /preview (push side) and /import/diff (pull side) in parallel,
 // renders both directions in one modal with arrows + per-conflict pickers,
 // then on Apply runs /sync followed by /import/resolve. The user owns the
-// resolution for every conflict — non-conflicting pull changes apply
+// resolution for every conflict, non-conflicting pull changes apply
 // automatically; ts_only_new gets per-project import checkboxes.
 async function runBidirectionalSync(ext, action, profileId, ctx, extras = {}) {
   const body = document.getElementById("extActionPreviewBody");
@@ -2848,7 +2862,7 @@ async function runBidirectionalSync(ext, action, profileId, ctx, extras = {}) {
     // (which the upcoming push will then overwrite back to TS), take_ts on
     // conflicts replaces ACP with TS, ts_only_new bootstraps brand-new plans.
     // Doing pull BEFORE push is what makes "Take ACP on an incoming change"
-    // actually work — push then sends the resolved ACP state to TS.
+    // actually work, push then sends the resolved ACP state to TS.
     let pullResult;
     try {
       setProgress("Pulling NINA edits into ACP…");
@@ -2969,7 +2983,7 @@ function renderBidiResultSummary(pushResult, pullResult) {
 function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
   const sections = [];
   // Build a (plan_id, field_path) set claimed by the pull side. Any push
-  // entry whose path matches is dropped from Outgoing — pull's section
+  // entry whose path matches is dropped from Outgoing, pull's section
   // (auto_pull or conflict) is the load-bearing display for that field
   // since the user's decision there decides what actually happens.
   const claimedByPull = new Set();
@@ -2983,7 +2997,7 @@ function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
   claimAll(pullDiff.auto_pull);
   claimAll(pullDiff.conflicts);
 
-  // OUTGOING — filter changes claimed by pull. After filtering, drop plans
+  // OUTGOING, filter changes claimed by pull. After filtering, drop plans
   // whose remaining change list is empty.
   const outgoingRaw = (pushPreview.plan_diffs || []).filter(p => p.kind === "update" || p.kind === "insert");
   const outgoing = outgoingRaw.map(p => filterOutgoingByPull(p, claimedByPull)).filter(Boolean);
@@ -2995,7 +3009,7 @@ function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
       </div>
     `);
   }
-  // INCOMING auto-pull — TS-only changes. Each gets its own Take NINA /
+  // INCOMING auto-pull, TS-only changes. Each gets its own Take NINA /
   // Keep ACP radio so the user can override the default per item.
   const autoPull = pullDiff.auto_pull || [];
   if (autoPull.length) {
@@ -3006,7 +3020,7 @@ function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
       </div>
     `);
   }
-  // CONFLICTS — per-plan pickers.
+  // CONFLICTS, per-plan pickers.
   const conflicts = pullDiff.conflicts || [];
   if (conflicts.length) {
     sections.push(`
@@ -3016,7 +3030,7 @@ function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
       </div>
     `);
   }
-  // TS-only-new — new projects in TS the user can import.
+  // TS-only-new, new projects in TS the user can import.
   const tsNew = pullDiff.ts_only_new || [];
   if (tsNew.length) {
     sections.push(`
@@ -3026,7 +3040,7 @@ function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
       </div>
     `);
   }
-  // NOTICES — non-blocking warnings (e.g. TS row deleted out from under us).
+  // NOTICES, non-blocking warnings (e.g. TS row deleted out from under us).
   const notices = pullDiff.notices || [];
   if (notices.length) {
     sections.push(`
@@ -3037,7 +3051,7 @@ function renderBidirectionalDiff(pushPreview, pullDiff, decisions, newImports) {
     `);
   }
   if (!sections.length) {
-    return `<div class="ext-meta">Nothing to sync — ACP and TS are already aligned.</div>`;
+    return `<div class="ext-meta">Nothing to sync, ACP and TS are already aligned.</div>`;
   }
   return sections.join("");
 }
@@ -3067,7 +3081,7 @@ function filterOutgoingByPull(planDiff, claimedByPull) {
 }
 
 function renderOutgoingGroups(outgoing) {
-  // Same grouping as renderDiffReport's existing logic — dedup project-level
+  // Same grouping as renderDiffReport's existing logic, dedup project-level
   // changes across plans sharing a project_name.
   const byProject = new Map();
   for (const d of outgoing) {
@@ -3106,7 +3120,7 @@ function renderIncomingAutoPull(autoPullDiffs, decisions) {
     }));
     if (!fields.length) return "";
     const rows = fields.map(f => renderChangeDirectional(f, "in")).join("");
-    // Default to "take_ts" (the recommended action — TS clearly changed,
+    // Default to "take_ts" (the recommended action, TS clearly changed,
     // ACP didn't). User can flip to "take_acp" to skip the pull and let
     // the push step overwrite TS with their LOCAL value instead.
     const decision = decisions.get(pid) || "take_ts";
@@ -3221,8 +3235,8 @@ function wireBidiInteractions(root, decisions, newImports, onChange) {
 //                              "what we'll change it TO, sourced from TS"
 function renderChangeDirectional(c, dir) {
   const u = c.unit ? esc(c.unit) : "";
-  const fromV = c.from === null || c.from === undefined ? "—" : `${esc(formatValue(c.from))}${u}`;
-  const toV   = c.to   === null || c.to   === undefined ? "—" : `${esc(formatValue(c.to))}${u}`;
+  const fromV = c.from === null || c.from === undefined ? ", " : `${esc(formatValue(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? ", " : `${esc(formatValue(c.to))}${u}`;
   if (dir === "in") {
     return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-to">${toV}</span> <span class="ext-diff-arrow ext-diff-arrow-in">←</span> <span class="ext-diff-from">${fromV}</span></div>`;
   }
@@ -3255,7 +3269,7 @@ function humanFieldLabel(path) {
 }
 
 function formatValue(v) {
-  if (v === null || v === undefined) return "—";
+  if (v === null || v === undefined) return ", ";
   if (typeof v === "number") {
     return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
   }
@@ -3310,9 +3324,9 @@ function _showResult(ctx, html) {
 }
 
 // Render a plan-grouped diff from a /preview response. Order of precedence:
-//   1. preview.preview_html — extension supplies its own pre-rendered HTML
+//   1. preview.preview_html, extension supplies its own pre-rendered HTML
 //      (extension-first opt-in for non-sync-shaped responses)
-//   2. plan_diffs array — nina_ts_sync's structured diff
+//   2. plan_diffs array, nina_ts_sync's structured diff
 //   3. report dict (falls through to renderSyncReport)
 function renderDiffReport(preview, opts = {}) {
   if (preview && typeof preview.preview_html === "string") return preview.preview_html;
@@ -3336,7 +3350,7 @@ function renderDiffReport(preview, opts = {}) {
   const total = diffs.length;
   const verb = opts.applied ? "applied to" : "queued for";
   const summary = updates.length + inserts.length === 0
-    ? `<div class="ext-meta">All ${total} plan${total === 1 ? "" : "s"} already match TS — nothing ${opts.applied ? "applied" : "to sync"}.</div>`
+    ? `<div class="ext-meta">All ${total} plan${total === 1 ? "" : "s"} already match TS, nothing ${opts.applied ? "applied" : "to sync"}.</div>`
     : `<div class="ext-meta">${updates.length + inserts.length} of ${total} plan${total === 1 ? "" : "s"} ${verb} TS · ${unchanged.length} already in sync</div>`;
 
   let changedBlock = "";
@@ -3403,8 +3417,8 @@ function renderDiffReport(preview, opts = {}) {
 
 function renderChange(c) {
   const u = c.unit ? esc(c.unit) : "";
-  const fromV = c.from === null || c.from === undefined ? "—" : `${esc(String(c.from))}${u}`;
-  const toV   = c.to   === null || c.to   === undefined ? "—" : `${esc(String(c.to))}${u}`;
+  const fromV = c.from === null || c.from === undefined ? ", " : `${esc(String(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? ", " : `${esc(String(c.to))}${u}`;
   return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-from">${fromV}</span> <span class="ext-diff-arrow">→</span> <span class="ext-diff-to">${toV}</span></div>`;
 }
 
@@ -3497,7 +3511,7 @@ async function startLiveAction(ext, action) {
       const updated = body.updated_filter_goals ?? body.updated ?? 0;
       setLiveStatus(statusKey, `Last refresh just now · ${updated} goal${updated === 1 ? "" : "s"} updated`, "running");
       // Server rewrote plans.json with the new actual_hours. Reload the
-      // in-memory `plans` array and repaint the rail if we're on it — without
+      // in-memory `plans` array and repaint the rail if we're on it, without
       // this the user has to F5 to see the bumped "h left".
       if (updated > 0) {
         try {
@@ -3587,11 +3601,11 @@ function setLiveStatus(stateKey, text, kind, opts = {}) {
 
 // --- Inventory rail (Plan 4b) -------------------------------------------
 // Hidden by default. Activates only when /api/tile-sources returns at
-// least one entry — i.e. when an extension has registered a
+// least one entry, i.e. when an extension has registered a
 // PrioritisedTilesSource. Per-source state (enabled, filters) lives in
 // localStorage under acp.inv_state so it survives reloads.
 let tileSources = [];        // [{id, label, color, n_tiles, max_priority_level, categories, bands, ...}]
-let tileData = {};           // {<source_id>: [tile, ...]} — fetched lazily on enable
+let tileData = {};           // {<source_id>: [tile, ...]}, fetched lazily on enable
 let invState = {};           // {<source_id>: {enabled, openRail, priorities: Set, missing: Set, categories: Set}}
 
 function _loadInvState() {
@@ -3690,6 +3704,109 @@ function applySavedSearch(sourceId, search) {
   // restored state, then redraw tiles.
   renderInventoryRail();
   renderTileOverlay(sourceId);
+}
+
+// --- NINA rigs rail -----------------------------------------------------
+//
+// Every time the companion plugin asks /api/plans/match which plans the
+// connected gear can shoot, ACP stores that fingerprint under the NINA
+// profile name. This block reports what each install last said, so the
+// question "why does my laptop show 3 fits and the obsy NUC shows 30?"
+// is answerable without opening a terminal. Read-only: the only writer
+// is the match endpoint itself.
+
+function _agoLabel(iso) {
+  const then = Date.parse(iso || "");
+  if (!isFinite(then)) return "unknown";
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
+}
+
+async function initProfiles() {
+  const accordion = document.getElementById("railProfiles");
+  const host = document.getElementById("profilesList");
+  if (!accordion || !host) return;
+  let profiles = {};
+  try {
+    const r = await fetch("/api/fingerprints");
+    const d = await r.json();
+    if (d && typeof d.profiles === "object" && d.profiles) profiles = d.profiles;
+  } catch (e) {
+    console.warn("fingerprints unavailable:", e);
+  }
+  const entries = Object.values(profiles).sort(
+    (a, b) => String(b.received_at || "").localeCompare(String(a.received_at || "")));
+  if (!entries.length) {
+    accordion.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  accordion.hidden = false;
+  host.innerHTML = entries.map(e => {
+    const fp = e.fingerprint || {};
+    const cam = (fp.camera || {}).name || "unknown camera";
+    // The solved focal length is the one that matched; fall back to the
+    // profile's nominal value when NINA never plate solved.
+    const fl = fp.focal_length_mm || {};
+    const mm = Number(fl.solved ?? fl.profile ?? fl);
+    const flLabel = isFinite(mm) && mm > 0 ? `${Math.round(mm)} mm` : "no focal length";
+    const fits = Number((e.summary || {}).fit || 0);
+    return `<div class="rig-row">
+        <div class="rig-name">${esc(e.profile_name || "(unnamed profile)")}</div>
+        <div class="rig-meta">${esc(cam)} · ${esc(flLabel)}</div>
+        <div class="rig-meta">${fits} fit${fits === 1 ? "" : "s"} · ${esc(_agoLabel(e.received_at))}</div>
+      </div>`;
+  }).join("");
+}
+
+// Scan health: the scanner's integrity flags, shown in the rail so nobody has
+// to open the summary markdown. Hidden when the manifest predates the flags.
+const ACP_ISSUES_URL = "https://github.com/astro-roro/Astro-Coverage-Planner/issues/new";
+function renderScanHealth(h) {
+  const acc = document.getElementById("railHealth");
+  const host = document.getElementById("scanHealthBody");
+  if (!acc || !host) return;
+  if (!h) { acc.hidden = true; return; }
+  acc.hidden = false;
+  const unrec = Array.isArray(h.unrecognised_filters) ? h.unrecognised_filters : [];
+  const rows = [
+    ["Masters without a plate solve", h.masters_missing_wcs || 0,
+     "Stacked masters with no WCS in the header. They still count through their lights, but only a solved master draws its own footprint."],
+    ["Masters with no filter found", h.masters_ambiguous_filter || 0,
+     "Neither the header nor the path said which filter these were shot through."],
+    ["SII and Ha look identical", h.sii_ha_suspects || 0,
+     "Targets whose SII and Ha hours match exactly, which usually means one filter was mislabelled."],
+    ["Hours removed as duplicates", (h.dedup_hours_dropped || 0).toFixed(1) + "h",
+     "The same frames seen at more than one processing stage were counted once."],
+  ];
+  const stat = ([label, value, title]) =>
+    `<div class="health-row" title="${esc(title)}"><span>${esc(label)}</span><span class="num">${esc(String(value))}</span></div>`;
+  let html = rows.map(stat).join("");
+  if (unrec.length) {
+    html += `<div class="health-sub">Filter names the scanner could not place</div>`;
+    html += `<table class="health-table"><tbody>` + unrec.slice(0, 20).map(r =>
+      `<tr><td>${esc(r.name)}</td><td class="num">${esc(String(r.frames))} frames</td></tr>`).join("") + `</tbody></table>`;
+    const body = [
+      "The scanner could not map these filter names to a band. Please add them to the catalogue.",
+      "",
+      "| Filter name | Frames |", "|---|---:|",
+      ...unrec.map(r => `| ${r.name} | ${r.frames} |`),
+      "",
+      "Camera and capture software: (fill in)",
+    ].join("\n");
+    const url = `${ACP_ISSUES_URL}?title=${encodeURIComponent("Unrecognised filter names: " + unrec.slice(0, 3).map(r => r.name).join(", "))}&body=${encodeURIComponent(body)}`;
+    html += `<a class="health-report" href="${url}" target="_blank" rel="noopener">Report these filters</a>`;
+  } else {
+    html += `<div class="health-sub">Every filter name resolved to a band.</div>`;
+  }
+  host.innerHTML = html;
+  const bad = (h.masters_missing_wcs || 0) + (h.masters_ambiguous_filter || 0) + (h.sii_ha_suspects || 0) + unrec.length;
+  const badge = document.getElementById("scanHealthBadge");
+  if (badge) { badge.textContent = bad ? String(bad) : ""; badge.hidden = !bad; }
 }
 
 async function initInventory() {
@@ -3827,7 +3944,7 @@ function renderInventoryRail() {
       </div>`;
     host.appendChild(block);
 
-    // Wire enabled toggle (also collapses the body when off — clicking the
+    // Wire enabled toggle (also collapses the body when off, clicking the
     // header label toggles open/closed, but only when not clicking the
     // checkbox itself).
     const enabledCb = block.querySelector("input[data-enabled]");
@@ -3836,7 +3953,7 @@ function renderInventoryRail() {
       _saveInvState();
       block.querySelector("[data-count]").textContent = st.enabled ? `${s.n_tiles} tiles` : "off";
       if (st.enabled) ensureTilesLoaded(s.id);
-      renderTileOverlay(s.id);  // Plan 4c — no-op until that's wired up.
+      renderTileOverlay(s.id);  // Plan 4c, no-op until that's wired up.
     });
     block.querySelector(".inv-source-head .label").addEventListener("click", () => {
       st.openRail = !st.openRail;
@@ -3946,7 +4063,7 @@ async function ensureTilesLoaded(sourceId) {
 //   never-up:   |φ - δ| > 90       → δ outside [φ-90, φ+90]
 //   below-min:  |φ - δ| > 90-minAlt → δ outside [φ-(90-min), φ+(90-min)]
 // Shading the corresponding dec bands gives an instant visual of "what's
-// reachable from this site at this min-alt setting" — the rest of the
+// reachable from this site at this min-alt setting", the rest of the
 // map stays clear so coverage and tiles still read crisply.
 let _horizonOverlay = null;
 
@@ -4086,7 +4203,7 @@ function tilePlanInfo(tile, cornersCache) {
   return { plan: null, state: "none" };
 }
 
-// Completion ratio drives fill alpha — 0% complete = bright (~55%), 100% =
+// Completion ratio drives fill alpha, 0% complete = bright (~55%), 100% =
 // nearly invisible (~5%), so the map literally "crosses off" tiles as the
 // user fills them in.
 function _tileFillAlphaHex(perBand) {
@@ -4158,7 +4275,7 @@ function _tilePassesFilters(tile, st, getPlanInfo) {
 
 function _tileTooltip(tile) {
   const parts = [tile.id ? `Tile ${tile.id}` : null,
-                 `Priority ${tile.priority_level ?? "—"}`];
+                 `Priority ${tile.priority_level ?? ", "}`];
   if (tile.score != null) parts.push(`Score ${tile.score}`);
   const pb = tile.per_band || {};
   const missing = Object.keys(pb).filter(k => !pb[k]?.covered);
@@ -4175,7 +4292,7 @@ function renderTileOverlay(sourceId) {
   const st = invState[sourceId];
   if (!st) return;
   let ovr = _tileOverlays[sourceId];
-  // Drop any stale hits for this source — rebuilt below.
+  // Drop any stale hits for this source, rebuilt below.
   tileHitList = tileHitList.filter(h => h.source_id !== sourceId);
   if (!st.enabled) {
     if (ovr) ovr.removeAll();
@@ -4184,7 +4301,7 @@ function renderTileOverlay(sourceId) {
   const tiles = tileData[sourceId];
   if (!tiles) return;       // still loading; ensureTilesLoaded will recall this
   if (!ovr) {
-    // lineWidth 0.01 keeps the outline invisible on filled tiles — the
+    // lineWidth 0.01 keeps the outline invisible on filled tiles, the
     // colour reads from the fill alone, otherwise heavy borders dominate
     // the map at zoomed-out projections.
     ovr = A.graphicOverlay({ color: "#ffffff", lineWidth: 0.5, name: `inv_${sourceId}` });
@@ -4249,13 +4366,13 @@ function renderTilePanel(tile, sourceId) {
 
   const fov = Array.isArray(tile.fov_arcmin) && tile.fov_arcmin.length === 2
     ? `${Number(tile.fov_arcmin[0]).toFixed(1)}' × ${Number(tile.fov_arcmin[1]).toFixed(1)}'`
-    : "—";
+    : ", ";
 
-  // Per-band coverage table — band, covered marker, source label, hours if present.
+  // Per-band coverage table, band, covered marker, source label, hours if present.
   const pb = tile.per_band || {};
   const bandRows = Object.entries(pb).map(([band, info]) => {
     const cov = info?.covered;
-    const mark = cov ? "<span style='color:#6fcc52'>✓</span>" : "<span style='color:#888'>—</span>";
+    const mark = cov ? "<span style='color:#6fcc52'>✓</span>" : "<span style='color:#888'>, </span>";
     const src = info?.source ? esc(info.source) : "<span style='color:#666'>none</span>";
     const hrs = (info && typeof info.hours === "number") ? `${info.hours.toFixed(1)}h` : "";
     return `<tr><td>${esc(band)}</td><td>${mark}</td><td class="num">${src}</td><td class="num">${esc(hrs)}</td></tr>`;
@@ -4316,7 +4433,7 @@ function renderTilePanel(tile, sourceId) {
       <table>
         <tr><td>RA / Dec</td><td class="num">${Number(tile.ra_deg).toFixed(3)}° / ${Number(tile.dec_deg).toFixed(3)}°</td></tr>
         <tr><td>FOV</td><td class="num">${fov}</td></tr>
-        <tr><td>Priority</td><td class="num">P${tile.priority_level ?? "—"}</td></tr>
+        <tr><td>Priority</td><td class="num">P${tile.priority_level ?? ", "}</td></tr>
         ${tile.score != null ? `<tr><td>Score</td><td class="num">${tile.score}</td></tr>` : ""}
       </table>
 
@@ -4355,7 +4472,7 @@ function renderTilePanel(tile, sourceId) {
 }
 
 // Build sparkline + Now/Trend chips against an arbitrary {ra, dec} point by
-// reusing the same renderers that drive the target detail panel — they read
+// reusing the same renderers that drive the target detail panel, they read
 // `visibilityData` for site metadata, then take the bin list from a
 // `_pointBins` cache keyed by the tile.
 const _pointVisCache = new Map();   // "<lat>,<lon>,<min>,<ra>,<dec>" → bins[]
@@ -4406,7 +4523,7 @@ async function loadTileVisibility(tile) {
         ? `Never reaches min altitude during dark (year-best peak ${best.peak_alt_deg}°).`
         : "Below horizon during dark all year.");
   sec.innerHTML = `
-    <h4>Visibility — ${esc(siteName)}</h4>
+    <h4>Visibility, ${esc(siteName)}</h4>
     ${bar}
     <div class="vis-meta-row">
       <span class="vis-meta">${esc(bestTxt)}</span>
@@ -4418,7 +4535,7 @@ async function loadTileVisibility(tile) {
     </div>`;
 }
 
-// Plan visibility — aggregated per-month {panels_visible, total_panels} for
+// Plan visibility, aggregated per-month {panels_visible, total_panels} for
 // a mosaic, plus per-panel bins for the heatmap. Cached by plan id +
 // geometry hash so editing the centre / mosaic shape / gear FOV invalidates
 // correctly. Pending fetches are tracked so the UI can show a faded/spinner
@@ -4479,7 +4596,7 @@ async function loadPlanVisibility(plan) {
 }
 
 // Background-fetch any uncached plans, updating the active panel in place
-// as each resolves. Safe to call on every panel render — already-cached
+// as each resolves. Safe to call on every panel render, already-cached
 // plans short-circuit instantly and pending ones don't double-fetch.
 async function loadAllPlanVisibility() {
   if (!timeAware || !plans?.length) return;
@@ -4499,7 +4616,7 @@ function planVisCellHtml(plan, { compact = true } = {}) {
   const data = _planVisCache.get(planVisCacheKey(plan));
   if (!data) {
     // Render 12 empty cells so the sparkline keeps its grid width while
-    // loading — without them the inline-grid collapses to 0 and the row
+    // loading, without them the inline-grid collapses to 0 and the row
     // looks like nothing's there.
     const cls = compact ? "yc-sparkline yc-loading" : "yc-bar yc-loading";
     const placeholder = `<span class="yc-cell vc-not_visible"></span>`.repeat(12);
@@ -4557,7 +4674,7 @@ function planVisMetaText(data) {
   }
   if (best.panels_visible === 0) return "No panel above min altitude any month.";
   const pct = Math.round((best.panels_visible / best.total_panels) * 100);
-  return `Peak: ${_MONTH_LABELS[best.month-1]} — ${best.panels_visible}/${best.total_panels} panels (${pct}%)`;
+  return `Peak: ${_MONTH_LABELS[best.month-1]}, ${best.panels_visible}/${best.total_panels} panels (${pct}%)`;
 }
 
 function planVisHeatmapHtml(data) {
@@ -4603,7 +4720,7 @@ function schedulePlanVisRefresh() {
 
 // Sort metrics derived from the cached visibility payload. Plans without
 // data yet sort to the end (Infinity sentinel) so they don't disrupt the
-// stable order — they shuffle into place once their fetch resolves and
+// stable order, they shuffle into place once their fetch resolves and
 // loadAllPlanVisibility re-renders.
 function planPanelsUpNow(plan) {
   const data = _planVisCache.get(planVisCacheKey(plan));
@@ -4628,12 +4745,12 @@ function planPeakPanelsMonth(plan) {
 // Promotes a tile to a new plan (Plan 2d). Switches into planning mode if
 // not already there, builds an empty plan with the tile's centre + a name
 // derived from the source label + tile id, and opens the editor. FOV is
-// owned by the gear preset (per design decision 2d) — left to the user
+// owned by the gear preset (per design decision 2d), left to the user
 // to pick when they choose telescope/camera in the editor.
 function promotePlanFromTile(tile, sourceMeta) {
   if (!planningMode) setPlanningMode(true);
   const p = newEmptyPlan();
-  // newEmptyPlan reads the current Aladin centre — overwrite with the tile's
+  // newEmptyPlan reads the current Aladin centre, overwrite with the tile's
   // own centre so the editor opens framed on the right spot regardless of
   // where the user happened to be panned.
   p.target.center_ra_deg = Number(tile.ra_deg);
@@ -4680,7 +4797,7 @@ function updateCatalogStatusHint() {
     note.style.display = "none";
   } else {
     note.style.display = "";
-    note.textContent = "(no catalogs loaded — run scripts/fetch_catalogs.py)";
+    note.textContent = "(no catalogs loaded, run scripts/fetch_catalogs.py)";
     note.title = "Catalog overlays need data/catalogs.json. "
       + "Run `python scripts/fetch_catalogs.py` once (network I/O, ~30s) and reload.";
   }
@@ -4856,7 +4973,7 @@ async function initSites() {
     sites = [];
   }
   if (!sites.length) {
-    // Backend always seeds defaults, so this should never fire — but degrade
+    // Backend always seeds defaults, so this should never fire, but degrade
     // gracefully with a Mauna Kea fallback if it does.
     sites = [{id: "mauna_kea", name: "Mauna Kea, Hawaii", lat: 19.82, lon: -155.47, elev_m: 4205, min_alt_deg: 30}];
   }
@@ -4900,7 +5017,7 @@ function openSiteModal(siteId) {
   document.getElementById("siteFElev").value   = editing?.elev_m ?? "";
   document.getElementById("siteFMinAlt").value = editing?.min_alt_deg ?? 30;
   const delBtn = document.getElementById("siteFDelete");
-  // Don't allow deleting the last remaining site — the topbar dropdown
+  // Don't allow deleting the last remaining site, the topbar dropdown
   // would be unusable and the visibility code assumes at least one site.
   delBtn.hidden = !editing || sites.length <= 1;
   delBtn.dataset.siteId = editing?.id ?? "";
@@ -5039,7 +5156,7 @@ async function updateObsNow() {
       `@${currentSite.lat},${currentSite.lon}: ${n_above30} targets >30° alt, ${n_above60} >60° alt (UTC ${now.slice(11,16)})`;
     // Refresh whichever panel is showing so the new altitudes (and the
     // "Now: …°" line in the detail panel, and the up-tonight sort) reflect
-    // the latest fetch — particularly important right after a site change.
+    // the latest fetch, particularly important right after a site change.
     rerenderActivePanel();
   } catch (e) {
     document.getElementById("obsNow").textContent = "(observability offline)";
@@ -5075,7 +5192,7 @@ const _LABEL_PRETTY = {
 
 // "Not visible" splits into two real states the user cares about: target
 // genuinely never rises (peak < 0°) vs target rises but doesn't clear the
-// site's min-altitude (0° ≤ peak < min). Same bin label internally — only
+// site's min-altitude (0° ≤ peak < min). Same bin label internally, only
 // the display copy changes.
 function prettyLabel(label, peak_alt_deg) {
   if (label !== "not_visible") return _LABEL_PRETTY[label];
@@ -5104,9 +5221,9 @@ function bestBinFor(bins) {
 }
 
 function _cellTooltip(b) {
-  // 3-line tooltip — \n renders as a real linebreak in browser title tooltips.
+  // 3-line tooltip, \n renders as a real linebreak in browser title tooltips.
   const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
-  const peak = b.peak_alt_deg == null ? "—" : `${b.peak_alt_deg}°`;
+  const peak = b.peak_alt_deg == null ? ", " : `${b.peak_alt_deg}°`;
   return `${_MONTH_LABELS[b.month-1]}: ${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}\nAbove ${minAlt}°: ${b.hours_above_min}h`;
 }
 
@@ -5133,8 +5250,8 @@ function nowChipHtml(targetId) {
   if (!b) return "";
   const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
   const labelTxt = prettyLabelShort(b.label, b.peak_alt_deg);
-  const peak = b.peak_alt_deg == null ? "—" : `${b.peak_alt_deg}°`;
-  const tip = `Current month — ${_MONTH_LABELS[nowMonth-1]}\n${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}, ${b.hours_above_min}h above ${minAlt}°`;
+  const peak = b.peak_alt_deg == null ? ", " : `${b.peak_alt_deg}°`;
+  const tip = `Current month, ${_MONTH_LABELS[nowMonth-1]}\n${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}, ${b.hours_above_min}h above ${minAlt}°`;
   return `<span class="nn-chip nn-${b.label}" title="${tip}"><span class="nn-prefix">Now</span> ${esc(labelTxt)}</span>`;
 }
 
@@ -5146,7 +5263,7 @@ function trendChipHtml(targetId) {
   if (!nowBin) return "";
   const nowRank = _LABEL_RANK[nowBin.label] ?? 0;
 
-  // 3-month lookahead average vs current rank — simple heuristic for
+  // 3-month lookahead average vs current rank, simple heuristic for
   // "is the next quarter better/worse/the same".
   const nextRanks = [];
   for (let i = 1; i <= 3; i++) {
@@ -5166,7 +5283,7 @@ function trendChipHtml(targetId) {
   }
   // Steady. If we're currently in a poor state (rank < good=3), surface
   // when the next decent month arrives instead of the uninformative
-  // "Steady" — that's actually the more actionable signal.
+  // "Steady", that's actually the more actionable signal.
   if (nowRank < 3) {
     for (let i = 1; i <= 12; i++) {
       const m = ((nowMonth - 1 + i) % 12) + 1;
@@ -5226,7 +5343,7 @@ function applyTimeAwareState(fireImmediate) {
     if (fireImmediate) updateObsNow();
     _obsIntervalId = setInterval(updateObsNow, 60_000);
     loadVisibility();  // populates sparklines + best-month chips
-    // Plan-side fans out separately — manifest visibility is keyed by
+    // Plan-side fans out separately, manifest visibility is keyed by
     // target_id, plan visibility by panel centres, so they don't share a
     // cache or fetch.
     if (panelMode === "plan-list") {
@@ -5235,7 +5352,7 @@ function applyTimeAwareState(fireImmediate) {
       renderPlanEditor(editingPlan);
     } else {
       // Pre-warm the plan cache in the background even if the user is on
-      // the target list — they may switch panels and we want it ready.
+      // the target list, they may switch panels and we want it ready.
       loadAllPlanVisibility();
     }
   } else {
@@ -5345,7 +5462,7 @@ function init() {
     });
     aladin.addCatalog(filterBadgeCat);
 
-    // Planner overlays — always live, populated only while planningMode is true
+    // Planner overlays, always live, populated only while planningMode is true
     planOverlay = A.graphicOverlay({ color: "#66aaff", lineWidth: 2.5, name: "plans" });
     aladin.addOverlay(planOverlay);
     // Dashed overlay for not-started plans. Aladin's lineDash is set per overlay,
@@ -5356,13 +5473,13 @@ function init() {
     planCenterCat = A.catalog({ name: "plan_markers", sourceSize: 10, shape: "circle", color: "#ffffff" });
     aladin.addCatalog(planCenterCat);
 
-    // Transient hover highlight — registered LAST so it renders on top of every
+    // Transient hover highlight, registered LAST so it renders on top of every
     // other overlay (coverage + plan polygons). Otherwise plan polygons would
     // occlude the hover fill entirely in planning mode.
     hoverOverlay = A.graphicOverlay({ color: "#ffffff", lineWidth: 4, name: "hover_highlight" });
     aladin.addOverlay(hoverOverlay);
 
-    // Aladin marker click — now only fires for catalog overlays (SNRs, HII) and the
+    // Aladin marker click, now only fires for catalog overlays (SNRs, HII) and the
     // plan_rotate drag handle. Target + plan selection is handled by the map-click
     // handler below so users can click anywhere inside a FOV polygon.
     aladin.on("objectClicked", src => {
@@ -5381,7 +5498,7 @@ function init() {
       // Status-bar mirror (pre-existing behaviour).
       document.getElementById("tooltip").textContent = `${d.catalog || ""} ${d.name}`;
       // Floating near-cursor tooltip. catalog overlays carry {name, catalog, ...row}
-      // — pull up to 2 non-null extras (freq, flag_3color, etc.) for context.
+      //, pull up to 2 non-null extras (freq, flag_3color, etc.) for context.
       const extras = [];
       const skip = new Set(["name", "catalog", "ra_deg", "dec_deg"]);
       for (const k of Object.keys(d)) {
@@ -5403,11 +5520,11 @@ function init() {
       if (_suppressNextMapClick) { _suppressNextMapClick = false; return; }
       if (_pressInfo?.dragged) return; // pan, not a real click
       if (!o || o.ra == null || o.dec == null) return;
-      if (dragState) return; // belt-and-suspenders — drag still in progress
+      if (dragState) return; // belt-and-suspenders, drag still in progress
       onMapPolyClick(o.ra, o.dec);
     });
 
-    // Reset cycle state on any camera movement — previous stack indices stop making sense.
+    // Reset cycle state on any camera movement, previous stack indices stop making sense.
     aladin.on("zoomChanged", () => { lastClickStack = null; });
     aladin.on("positionChanged", () => { lastClickStack = null; });
 
@@ -5427,7 +5544,7 @@ function init() {
       } catch { /* no-op */ }
     }, 3000);
 
-    // Hover highlight — attach to the Aladin container; convert pixel → world, hit-test.
+    // Hover highlight, attach to the Aladin container; convert pixel → world, hit-test.
     const mapEl = document.getElementById("aladin-lite-div");
     if (mapEl) {
       let hoverRaf = 0;
@@ -5437,7 +5554,7 @@ function init() {
         _catCursor = { x: ev.clientX, y: ev.clientY };
         positionCatTooltip();
         // Promote the press to a "drag" once the pointer has travelled far
-        // enough — this is what suppresses pan-then-release from acting as a click.
+        // enough, this is what suppresses pan-then-release from acting as a click.
         if (_pressInfo && !_pressInfo.dragged) {
           const dx = ev.clientX - _pressInfo.x, dy = ev.clientY - _pressInfo.y;
           if (dx * dx + dy * dy >= 25) _pressInfo.dragged = true; // ≥5px
@@ -5471,7 +5588,7 @@ function init() {
     }
 
     // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
-    // Skip if focus is in a form control — Esc should keep its native blur/clear
+    // Skip if focus is in a form control, Esc should keep its native blur/clear
     // behaviour there. The dirty-edit modal handles its own Esc → cancel.
     document.addEventListener("keydown", ev => {
       if (ev.key !== "Escape") return;
@@ -5499,6 +5616,7 @@ function init() {
     // The user can dismiss it; we don't pin the dismissal across reloads
     // because seeing it every time is a useful nag until a manifest exists.
     setupOnboardingBanner(manifest);
+    renderScanHealth(manifest.scan_health);
 
     // Assign telescope colors and build toggle UI
     const { map, sorted } = assignTelescopeColors(manifest.targets);
@@ -5534,6 +5652,7 @@ function init() {
     loadCatalogs();
     loadSources();
     initInventory();
+    initProfiles();
     loadExtensions();
     initTimeAware();
 
@@ -5796,7 +5915,7 @@ function planMosaicBoundsCorners(plan) {
 
 // Compute the 4 corners of a rectangular FOV box centered on (ra, dec) with
 // given width/height in arcmin and rotation_deg (PA, degrees east of north for
-// the camera's +Y axis — NINA's convention). Returns [[ra, dec], ...] in
+// the camera's +Y axis, NINA's convention). Returns [[ra, dec], ...] in
 // order SW, NW, NE, SE so the NE corner (index 2) can host a rotation handle.
 function computePlanCorners(ra_deg, dec_deg, fov_w_arcmin, fov_h_arcmin, rot_deg) {
   const toRad = x => x * Math.PI / 180;
@@ -5965,7 +6084,7 @@ function renderPlanList() {
 // Build the list of TS-template <option> tags for a filter row.
 //
 // Returns the inner HTML for a <select>, OR null when no template UI should
-// render at all (e.g. /api/ts-templates wasn't available — caller falls
+// render at all (e.g. /api/ts-templates wasn't available, caller falls
 // back to an em-dash).
 //
 // Filtering steps:
@@ -5973,7 +6092,7 @@ function renderPlanList() {
 //   2. Then by selected camera, using a normalised-name "contains" check so
 //      a template called "Ha (ZWO ASI6200MM Pro)" matches a gear camera
 //      named "ZWO ASI6200MM Pro". If the camera-narrow returns empty, we
-//      fall back to filter-only — better to show something than nothing.
+//      fall back to filter-only, better to show something than nothing.
 //
 // Option labels: when multiple templates remain, we show only the *varying*
 // fields (gain / sub-exposure / offset / bin) instead of the full template
@@ -5982,7 +6101,7 @@ function renderPlanList() {
 // differs). When a single template remains we just show its name.
 //
 // Single-match behaviour: the lone option is rendered as `selected` so the
-// auto-persist hook in renderPlanEditor picks it up — user doesn't have to
+// auto-persist hook in renderPlanEditor picks it up, user doesn't have to
 // open the dropdown to confirm.
 function buildTsTemplateOptions(filterName, cameraObj, filtCfg) {
   if (!tsTemplates || !tsTemplates.available) return null;
@@ -5999,7 +6118,7 @@ function buildTsTemplateOptions(filterName, cameraObj, filtCfg) {
   }
   const diffs = _differingTemplateFields(matching);
   // Allow clearing an existing pick when the user wants to fall back to ACP's
-  // own derivation. Only show "(none)" when something is currently stored —
+  // own derivation. Only show "(none)" when something is currently stored , 
   // for fresh plans we don't want the empty choice cluttering the dropdown.
   const opts = [];
   if (filtCfg && filtCfg.ts_template_id) {
@@ -6022,7 +6141,7 @@ function _normalizeForMatch(s) {
 }
 
 function _differingTemplateFields(templates) {
-  // Order matters — exposure first is what users notice; gain/offset/bin
+  // Order matters, exposure first is what users notice; gain/offset/bin
   // tail off in significance. We list the differing ones in that order so
   // the option label reads naturally.
   const fields = ["default_exposure_s", "gain", "offset", "bin"];
@@ -6047,7 +6166,7 @@ function renderPlanEditor(plan) {
   const telescope = planTelescope(editingPlan);
   const camera = planCamera(editingPlan);
   const [fw, fh] = planFovArcmin(editingPlan);
-  // LRGBHOS order — keep only the canonical 7 the camera has configured;
+  // LRGBHOS order, keep only the canonical 7 the camera has configured;
   // any extras are hidden for now (same rule as the sky-map chip rail).
   const camFilters = camera?.filters ? Object.keys(camera.filters) : FILTER_DOT_ORDER;
   const filters = FILTER_DOT_ORDER.filter(f => camFilters.includes(f));
@@ -6055,10 +6174,10 @@ function renderPlanEditor(plan) {
 
   const telOpts = (gear.telescopes || []).map(t =>
     `<option value="${esc(t.id)}" ${t.id === editingPlan.telescope_id ? "selected" : ""}>${esc(t.name)} (${t.focal_length_mm}mm)</option>`
-  ).join("") || `<option value="">(no telescopes — open Edit gear)</option>`;
+  ).join("") || `<option value="">(no telescopes, open Edit gear)</option>`;
   const camOpts = (gear.cameras || []).map(c =>
     `<option value="${esc(c.id)}" ${c.id === editingPlan.camera_id ? "selected" : ""}>${esc(c.name)}</option>`
-  ).join("") || `<option value="">(no cameras — open Edit gear)</option>`;
+  ).join("") || `<option value="">(no cameras, open Edit gear)</option>`;
 
   const goalRows = filters.map(f => {
     const g = editingPlan.filter_goals[f] || {};
@@ -6074,7 +6193,7 @@ function renderPlanEditor(plan) {
       <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${esc(f)}" value="${th}" placeholder="hrs"></td>
       <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${esc(f)}" value="${sub}"></td>
       <td><span class="goal-status ${ahClass}" data-actual-filter="${esc(f)}">${ah.toFixed(1)}h</span></td>
-      <td>${tsOpts !== null ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">—</span>`}</td>
+      <td>${tsOpts !== null ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">, </span>`}</td>
     </tr>`;
   }).join("");
 
@@ -6255,8 +6374,20 @@ function renderPlanEditor(plan) {
     const f = e.target.dataset.f;
     const v = parseFloat(e.target.value);
     editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
-    if (isFinite(v) && v > 0) editingPlan.filter_goals[f].target_hours = v;
-    else delete editingPlan.filter_goals[f];
+    if (isFinite(v) && v > 0) {
+      editingPlan.filter_goals[f].target_hours = v;
+      // The sub-exposure field shows a sensible default (stored value, gear
+      // default, or 300s) whether or not the user ever touches it. Commit
+      // that displayed value here so a plan saved right after setting a
+      // target-hours goal still carries sub_exposure_s.
+      if (!editingPlan.filter_goals[f].sub_exposure_s) {
+        const subEl = panel.querySelector(`.goal-sub-s[data-f="${CSS.escape(f)}"]`);
+        const sub = parseFloat(subEl?.value);
+        if (isFinite(sub) && sub > 0) editingPlan.filter_goals[f].sub_exposure_s = sub;
+      }
+    } else {
+      delete editingPlan.filter_goals[f];
+    }
   }));
   panel.querySelectorAll(".goal-sub-s").forEach(el => el.addEventListener("input", e => {
     const f = e.target.dataset.f;
@@ -6381,7 +6512,7 @@ async function savePlan() {
   editingPlan = saved;
   const btn = document.getElementById("planSave");
   if (btn) { const orig = btn.textContent; btn.textContent = "Saved ✓"; setTimeout(() => { if (btn.textContent === "Saved ✓") btn.textContent = orig; }, 1500); }
-  // Plan list changed — refresh inventory tile rendering so the
+  // Plan list changed, refresh inventory tile rendering so the
   // planned/done fade and "Hide planned" filter pick up the new state.
   refreshAllInventoryOverlays();
   return true;
@@ -6400,7 +6531,7 @@ async function syncPlans() {
     const last = previouslySynced
       .map(p => p.last_synced_at).sort().slice(-1)[0];
     const msg = `${previouslySynced.length} of ${plans.length} plan(s) have been synced before `
-      + `(most recent: ${last}).\n\nTarget Scheduler import is append-only — re-syncing will `
+      + `(most recent: ${last}).\n\nTarget Scheduler import is append-only, re-syncing will `
       + `create duplicate projects/targets in NINA. Prune the old ones in NINA first, or cancel.\n\nContinue?`;
     if (!confirm(msg)) {
       if (holder) holder.innerHTML = `<div style="font-size:12px;color:#78839a;margin-top:8px">Sync cancelled.</div>`;
@@ -6491,7 +6622,7 @@ function redrawPlanFootprints() {
     }
 
     if (isEditing) {
-      // Centre marker — drag this to move the whole plan (mosaic moves as
+      // Centre marker, drag this to move the whole plan (mosaic moves as
       // a unit, since planMosaicBoundsCorners derives panels from the
       // centre + dims). Mouse-down handler in onMapMouseDown checks the
       // hit radius against the live centre coords, not this marker, so
@@ -6593,7 +6724,7 @@ function onMapMouseDown(evt) {
   }
 }
 
-// Shared between mousedown's offset capture and mousemove's rotation update —
+// Shared between mousedown's offset capture and mousemove's rotation update , 
 // the NE-corner angular offset in the unrotated frame, derived from the
 // current mosaic geometry.
 function _planCornerOffsetDeg(plan) {
@@ -6629,7 +6760,7 @@ function onMapMouseMove(evt) {
     const paDeg = Math.atan2(-dx, -dy) * 180 / Math.PI;
     const cornerOffsetDeg = _planCornerOffsetDeg(editingPlan);
     // Subtract the grab offset captured at mousedown so the handle tracks
-    // the cursor including the user's initial click offset — no first-move
+    // the cursor including the user's initial click offset, no first-move
     // jump.
     let newRot = paDeg - cornerOffsetDeg - (dragState.grabOffsetDeg || 0);
     newRot = Math.round(((newRot % 360) + 360) % 360);
@@ -6644,7 +6775,7 @@ function onMapMouseUp() {
   if (dragState) {
     dragState = null;
     // Aladin fires a synthetic "click" right after mouseup. By the time it
-    // reaches our click handler, dragState is already null — without this
+    // reaches our click handler, dragState is already null, without this
     // latch, releasing the rotate (or centre) handle on empty sky would
     // route through onMapPolyClick → goUpOneLevel → "unsaved plan changes"
     // modal, which is wrong: the user just rotated, didn't navigate away.
@@ -6714,7 +6845,7 @@ function renderGearEditor() {
           <input type="number" data-field="sensor_h"       value="${dims[1] ?? ""}" step="1" placeholder="h px" style="flex:1;min-width:0">
         </div>
         <details style="margin-top:4px" open>
-          <summary style="font-size:11px;color:#78839a;cursor:pointer">Filters — ${camFilterKeys.length} (sub s · gain · offset · bin)</summary>
+          <summary style="font-size:11px;color:#78839a;cursor:pointer">Filters, ${camFilterKeys.length} (sub s · gain · offset · bin)</summary>
           <table class="goals-table" style="margin-top:4px"><tbody>${filtersBody}</tbody></table>
           <div style="display:flex;gap:4px;align-items:center;margin-top:4px;font-size:11px">
             <select data-role="add-filter-preset" style="width:70px">

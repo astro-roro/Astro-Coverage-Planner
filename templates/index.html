@@ -116,12 +116,31 @@
         </div>
       </details>
 
+      <!-- Scan health: the scanner's integrity flags. Hidden when the
+           manifest predates them. Filled by renderScanHealth(). -->
+      <details id="railHealth" class="rail-accordion health" hidden>
+        <summary>Scan health <span id="scanHealthBadge" class="health-badge" hidden></span></summary>
+        <div class="accordion-body">
+          <div id="scanHealthBody"></div>
+        </div>
+      </details>
+
       <!-- Hidden until at least one PrioritisedTilesSource is registered.
            Populated dynamically by initInventory() from /api/tile-sources. -->
       <details id="railInventory" class="rail-accordion inventory" hidden>
         <summary>Inventory</summary>
         <div class="accordion-body">
           <div id="inventoryList"></div>
+        </div>
+      </details>
+
+      <!-- Read-only summary of what each NINA install last reported to
+           /api/plans/match. Hidden until at least one has, so a stock
+           checkout with no plugin connected shows no Rigs rail at all. -->
+      <details id="railProfiles" class="rail-accordion profiles" hidden>
+        <summary>NINA rigs</summary>
+        <div class="accordion-body">
+          <div id="profilesList"></div>
         </div>
       </details>
 
