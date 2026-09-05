@@ -90,5 +90,35 @@ class TestRgbMasterWcs(unittest.TestCase):
         self.assertAlmostEqual(rgb["pix_arcsec"], mono["pix_arcsec"], places=6)
 
 
+class TestWcsErrorIsRecorded(unittest.TestCase):
+    """A swallowed WCS failure must leave a message behind to report."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_unparseable_solve_records_why(self):
+        h = _solved_header()
+        del h["CTYPE1"]
+        del h["CTYPE2"]
+        del h["CD1_1"]
+        del h["CD1_2"]
+        del h["CD2_1"]
+        del h["CD2_2"]
+        p = self.tmp / "broken.fits"
+        fits.PrimaryHDU(data=np.zeros((48, 64), dtype="float32"),
+                        header=h).writeto(p, overwrite=True)
+        meta = bam.read_fits_meta(p)
+        self.assertFalse(meta["has_wcs"])
+        self.assertIsNotNone(meta["wcs_error"])
+
+    def test_clean_solve_records_no_error(self):
+        p = _write(self.tmp / "fine.fits", np.zeros((3, 48, 64), dtype="float32"))
+        meta = bam.read_fits_meta(p)
+        self.assertTrue(meta["has_wcs"])
+        self.assertIsNone(meta["wcs_error"])
+
+
 if __name__ == "__main__":
     unittest.main()

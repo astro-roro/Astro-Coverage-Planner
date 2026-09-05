@@ -681,6 +681,7 @@ def read_fits_meta(path: Path) -> dict:
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
+        "wcs_error": None,
         "date_obs": None,
         "object": None,
         "telescope": None,
@@ -791,8 +792,11 @@ def read_fits_meta(path: Path) -> dict:
                         if cdelt:
                             out["pix_arcsec"] = abs(float(cdelt)) * 3600.0
                     out["has_wcs"] = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A header that carries CRVAL but yields no solve is worth
+                    # naming: silently treating it as unsolved is what hid the
+                    # RGB axis-count bug (issue #63) for as long as it did.
+                    out["wcs_error"] = f"{type(e).__name__}: {e}"
             # OBJCTRA fallback
             if not out["has_wcs"]:
                 ora = h.get("OBJCTRA"); odec = h.get("OBJCTDEC")
@@ -958,6 +962,7 @@ def read_xisf_meta(path: Path) -> dict:
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
+        "wcs_error": None,
         "date_obs": None,
         "object": None,
         "telescope": None,
@@ -1097,8 +1102,8 @@ def read_xisf_meta(path: Path) -> dict:
                         out["pix_arcsec"] = abs(float(cdelt1)) * 3600.0
                     except Exception:
                         pass
-            except Exception:
-                pass
+            except Exception as e:
+                out["wcs_error"] = f"{type(e).__name__}: {e}"
         # PixInsight's ImageSolver writes its solution into XISF properties and
         # not into FITS keywords, so a master solved in PixInsight reaches the
         # CRVAL block above with nothing to read and used to look unsolved
@@ -2520,6 +2525,20 @@ def main():
             else:
                 ambig.append(m["path"])
     no_wcs = [m["path"] for m in masters if not m.get("has_wcs")]
+    # A file whose header carried CRVAL but produced no solve is a scanner
+    # problem, not an unsolved master, so report it apart from the plain
+    # missing-WCS list. Grouped by message: one bad header shape usually hits
+    # every file written by the same tool.
+    wcs_errors = defaultdict(list)
+    for meta in sample_meta.values():
+        err = meta.get("wcs_error")
+        if err and not meta.get("has_wcs"):
+            wcs_errors[err].append(meta.get("path"))
+    wcs_error_groups = [
+        {"error": err, "files": len(paths), "examples": [str(x) for x in paths[:5] if x]}
+        for err, paths in sorted(wcs_errors.items(), key=lambda kv: -len(kv[1]))
+    ]
+    n_wcs_errors = sum(g["files"] for g in wcs_error_groups)
 
     # Summarise totals
     total_hours = 0.0
@@ -2542,6 +2561,7 @@ def main():
         "integrity_flags": {
             "sii_ha_correlation_suspects": flagged,
             "masters_missing_wcs": no_wcs,
+            "wcs_read_errors": wcs_error_groups,
             "masters_ambiguous_filter": ambig,
             "session_dedup_drops": session_dedup_log,
             "session_dedup_hours_dropped": round(dropped_hours, 2),
@@ -2593,6 +2613,9 @@ def main():
     print(f"  Total hours (gross, all filters): {total_hours:.1f}")
     print(f"  sii==ha suspects:  {len(flagged)}")
     print(f"  Masters missing WCS: {len(no_wcs)}")
+    if n_wcs_errors:
+        print(f"  Files whose plate solve failed to parse: {n_wcs_errors} "
+              f"(see {SUMMARY_PATH})")
     if UNRECOGNISED_FILTER_COUNTS:
         print(f"  Unrecognised filter names: {len(UNRECOGNISED_FILTER_COUNTS)} "
               f"(see {SUMMARY_PATH})")
@@ -2686,6 +2709,27 @@ def write_summary(m: dict):
             lines.append(f"| {row['name']} | {row['frames']} |")
     else:
         lines.append("None. Every filter name seen this scan resolved to a known band.")
+    lines.append("")
+
+    # Headers that carried a plate solve the scanner could not parse. This is a
+    # scanner bug every time, not a user problem, so name the error and give
+    # examples: it is the report we want back in a GitHub issue.
+    wcs_errors = flags.get("wcs_read_errors", [])
+    lines.append("## Plate solves that failed to parse")
+    lines.append("")
+    if wcs_errors:
+        lines.append(
+            "These files carry a plate solve in their header that the scanner "
+            "could not read, so they are being treated as unsolved. That is a "
+            "bug in the scanner. Please paste this section into a GitHub issue."
+        )
+        lines.append("")
+        for row in wcs_errors:
+            lines.append(f"- **{row['error']}** ({row['files']} file(s))")
+            for ex in row.get("examples", []):
+                lines.append(f"  - `{Path(ex).name}`")
+    else:
+        lines.append("None. Every header carrying a plate solve parsed cleanly.")
     lines.append("")
 
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")
