@@ -1110,11 +1110,22 @@ def _extract_gear_from_manifest() -> dict:
                                        "focal_mm": [], "aperture_mm": [], "cameras_seen": set()})
         # Targets built from light frames alone have no per_master_fov entry,
         # but the scanner still lists their INSTRUME on the target (issue #63).
+        colour_cams = set(target.get("colour_cameras") or [])
         for cam_name in (target.get("cameras") or []):
             if cam_name and not _looks_truncated(cam_name):
-                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": []})
+                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": [], "colour": False})
+                if cam_name in colour_cams:
+                    c["colour"] = True
+                # Seed the real filters the user shot with, not the bands they
+                # credit: an OSC camera gets one OSC entry rather than R, G, B,
+                # and a dual band filter keeps its own name.
                 for f, d in (target.get("filters") or {}).items():
-                    if (d or {}).get("total_hours", 0) > 0:
+                    if (d or {}).get("total_hours", 0) <= 0:
+                        continue
+                    sources = (d or {}).get("sources")
+                    if isinstance(sources, dict) and sources:
+                        c["filters"].update(k for k, v in sources.items() if (v or 0) > 0)
+                    else:
                         c["filters"].add(f)
         for m in (target.get("per_master_fov") or []):
             name = m.get("telescope")
@@ -1138,7 +1149,8 @@ def _extract_gear_from_manifest() -> dict:
             cam_name = m.get("camera") or m.get("instrument")
             if cam_name and not _looks_truncated(cam_name):
                 t["cameras_seen"].add(cam_name)
-                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": []})
+                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": [], "colour": False})
+                if m.get("colour"): c["colour"] = True
                 if m.get("filter"): c["filters"].add(m["filter"])
                 if m.get("pixel_size_um"):
                     try: c["pixel_um"].append(float(m["pixel_size_um"]))
@@ -1170,6 +1182,7 @@ def _extract_gear_from_manifest() -> dict:
             "filters": sorted(info["filters"]),
             "pixel_size_um": _median(info["pixel_um"]) or 0,
             "sensor_px": info["sensor_px"][-1] if info["sensor_px"] else None,
+            "colour": bool(info.get("colour")),
         })
     return {"telescopes": telescopes, "cameras": cameras}
 
@@ -1190,7 +1203,9 @@ def _seed_gear_from_manifest() -> dict:
 
     # Default filter config for a camera seeded from observed filter names.
     def _default_filter_cfg(f):
-        is_narrow = f in ("Ha", "OIII", "SII", "NII", "OI")
+        # Broadband and colour sensor entries get a short default sub; every
+        # named narrowband, dual band or multi band filter gets a long one.
+        is_narrow = f not in ("L", "R", "G", "B", "V", "OSC", "NoFilter", "L-Pro", "L-Quad", "CLS", "UHC")
         return {
             "ts_template_id": None, "ts_template_name": None,
             "default_sub_s": 300 if is_narrow else 120,
@@ -1233,6 +1248,7 @@ def _seed_gear_from_manifest() -> dict:
             "name": info["name"],
             "pixel_size_um": info["pixel_size_um"] or 0,
             "sensor_px": info["sensor_px"] or [0, 0],
+            "colour": bool(info.get("colour")),
             "filters": {f: _default_filter_cfg(f) for f in info["filters"]},
         }))
         added_cams.append(info["name"])
@@ -1293,7 +1309,38 @@ def api_manifest():
         "total_targets": m.get("total_targets"),
         "total_integration_hours": m.get("total_integration_hours"),
         "targets": slim_targets,
+        "scan_health": _scan_health(m),
     })
+
+
+def _scan_health(m: dict) -> dict | None:
+    """Slim view of the scanner's integrity flags for the rail. None for a
+    manifest written before the flags existed."""
+    flags = m.get("integrity_flags")
+    if not isinstance(flags, dict):
+        return None
+
+    def _count(key):
+        v = flags.get(key)
+        return len(v) if isinstance(v, list) else 0
+
+    def _num(key):
+        try:
+            return float(flags.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    unrec = []
+    for row in flags.get("unrecognised_filter_names") or []:
+        if isinstance(row, dict) and row.get("name"):
+            unrec.append({"name": str(row["name"])[:64], "frames": int(row.get("frames") or 0)})
+    return {
+        "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
+        "masters_missing_wcs": _count("masters_missing_wcs"),
+        "masters_ambiguous_filter": _count("masters_ambiguous_filter"),
+        "dedup_hours_dropped": round(_num("session_dedup_hours_dropped") + _num("content_dedup_hours_dropped"), 2),
+        "unrecognised_filters": unrec,
+    }
 
 
 @app.route("/api/target/<int:target_id>")
