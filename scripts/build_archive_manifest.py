@@ -753,7 +753,16 @@ def read_fits_meta(path: Path) -> dict:
             # WCS
             if "CRVAL1" in h and "CRVAL2" in h and out["naxis1"] and out["naxis2"]:
                 try:
-                    w = WCS(h)
+                    # .celestial drops any non-sky axis. An RGB stack is a
+                    # 3-plane image, so WCS(h) builds a 3-axis projection and
+                    # pixel_to_world(x, y) then raises for want of a third
+                    # coordinate. The except below used to swallow that, which
+                    # silently marked every solved colour master as unsolved
+                    # (issue #63).
+                    # A header with no celestial pair at all leaves naxis 0 here
+                    # and still raises at pixel_to_world below, exactly where it
+                    # used to, so IMAGEW/IMAGEH is recorded first either way.
+                    w = WCS(h).celestial
                     # IMAGEW/IMAGEH: if the plate-solve ran on a downsampled
                     # frame (common with ASIAIR / astrometry.net), the WCS
                     # pixel grid is smaller than NAXIS.  Use the solved
