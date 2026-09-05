@@ -13,6 +13,9 @@ xisf>=0.9.7
 # Production WSGI server used by the Docker image (see Dockerfile) instead
 # of Flask's dev server.
 waitress>=3.0.2
+# Required only when ACP_SCAN_CRON is set: parses the cron expression for the
+# scheduled archive rescan thread in app.py. See docs/setup-archive.md.
+croniter>=6.0
 # Used by the live-page publisher (scripts/publish_shooting.py, /api/publish/shooting)
 # to upload shooting.json over SFTP. See docs/sharing.md.
 paramiko>=3.4
