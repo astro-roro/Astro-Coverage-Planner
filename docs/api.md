@@ -19,7 +19,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/catalogs` | Overlay catalogue payloads |
 | `GET /api/catalog-registry` | Declarative list of catalogues to surface in the rail |
 | `GET /api/sources` | All registered coverage sources |
-| `GET /api/moc/<source_id>` | FITS MOC blob for a survey source — lazy-fetched, cached |
+| `GET /api/moc/<source_id>` | FITS MOC blob for a survey source, lazy-fetched, cached |
 | `GET /api/tile-sources` | Metadata for every registered `PrioritisedTilesSource` |
 | `GET /api/tiles/<source_id>` | Tile list for one source (server-side filter optional) |
 | `GET /api/saved-searches`, `POST` | CRUD for saved Inventory filter bundles |
@@ -47,14 +47,23 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/publish/config` | `{"live_page_enabled": bool}`, true when `ACP_PUBLISH_DEST` is set; the plan editor shows its Public page section only then |
 | `GET /api/public/shooting` | Sanitised document of public plans for the live page at astrowithroro.com/live ([spec](specs/shooting-page.md)) |
 | `POST /api/publish/shooting` | Write that document to `data/live/` and upload it over SFTP to `ACP_PUBLISH_DEST` |
-| `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest) — drives the Extensions rail accordion and the core-button swap mechanism |
+| `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest), drives the Extensions rail accordion and the core-button swap mechanism |
 | `GET /api/ext/...` | Routes registered by [extensions](extensions.md) |
+| `GET /api/version` | `{version, plans_last_modified, manifest_last_modified}`, lets a client poll cheaply instead of refetching plans on a timer |
 
-The API is unauthenticated and binds to `127.0.0.1` by default — see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network.
+The API is unauthenticated by default and binds to `127.0.0.1`, see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network, and [Optional bearer-token auth](#optional-bearer-token-auth) below if you do.
+
+### Optional bearer-token auth
+
+Set `ACP_API_TOKEN` to require `Authorization: Bearer <token>` on every request under `/api/*`. Leave it unset (the default) and every request passes, same as before this existed, this is meant for the case where you've put ACP on a LAN or a NUC that the NINA plugin reaches over the network, not for a stock loopback install. A request to `/api/*` with a missing or wrong token gets `401 {"error": "unauthorized"}`; the token is compared with `hmac.compare_digest`, not `==`. The HTML page (`GET /`) and static files are never gated, so a browser can always load the UI, only the JSON API is behind the token. ACP logs one line at startup saying whether API auth is on.
+
+The API sends no CORS headers and grants no preflight, deliberately. It used to send `Access-Control-Allow-Origin: *` on reads and answer the preflight, on the reasoning that withholding the header from write responses kept writes closed. That is half right: it stops an attacker reading the reply, not sending the request. Since the preflight listed `PUT` and `DELETE` as allowed, any web page a user visited could delete their plans or publish one, silently, because ACP normally runs on the same machine as their browser.
+
+Nothing needs it. The NINA plugin is a desktop HTTP client and never sees CORS, and ACP's own page is same-origin. If a browser-based client is ever wanted, allow that single origin by name, never `*`, and never on a preflight for a method that writes.
 
 ## Manifest schema
 
-The manifest is the JSON file ACP reads at startup (default path `data/manifest.json`). It's produced by `scripts/build_archive_manifest.py` from your FITS/XISF archive — see [setting up your own archive](setup-archive.md) for how to build it.
+The manifest is the JSON file ACP reads at startup (default path `data/manifest.json`). It's produced by `scripts/build_archive_manifest.py` from your FITS/XISF archive, see [setting up your own archive](setup-archive.md) for how to build it.
 
 Minimal shape:
 
@@ -96,7 +105,7 @@ See `scripts/make_demo_manifest.py` for a runnable example that produces a valid
 
 The viewer can compute year-long observability for any saved site or arbitrary sky point.
 
-### Sites — `/api/sites`
+### Sites, `/api/sites`
 
 `GET /api/sites` returns the saved sites plus the active one:
 
@@ -111,7 +120,7 @@ The viewer can compute year-long observability for any saved site or arbitrary s
 
 `POST /api/sites` accepts `{"action": "create" | "update" | "delete" | "set_active", ...}` for full CRUD plus active-site selection. Sites are persisted to `data/sites.json`.
 
-### Per-target visibility — `/api/visibility`
+### Per-target visibility, `/api/visibility`
 
 `GET /api/visibility?site_id=sydney` returns a 12-month bin for every target in the manifest:
 
@@ -127,13 +136,13 @@ The viewer can compute year-long observability for any saved site or arbitrary s
 
 Each `monthly` array has 12 entries (one per month, January first), each one of `not_visible`, `partial`, `fair`, `good`, `great`. Computation runs astropy `AltAz` against a sun-darkness mask; results are cached per (site, manifest mtime).
 
-### Arbitrary point — `/api/visibility/point`
+### Arbitrary point, `/api/visibility/point`
 
-`GET /api/visibility/point?ra=161.26&dec=-59.68&site_id=sydney` returns the same 12-month bin shape for one (RA, Dec) point — useful for the Inventory tile-detail panel.
+`GET /api/visibility/point?ra=161.26&dec=-59.68&site_id=sydney` returns the same 12-month bin shape for one (RA, Dec) point, useful for the Inventory tile-detail panel.
 
 ## Coverage sources, tiles, catalogues
 
-ACP's plugin platform lets extensions publish coverage data in three flavours, each with its own endpoint. The data contracts are defined as PEP 544 Protocols in `sources.py` — see [extensions](extensions.md) for how to author them.
+ACP's plugin platform lets extensions publish coverage data in three flavours, each with its own endpoint. The data contracts are defined as PEP 544 Protocols in `sources.py`, see [extensions](extensions.md) for how to author them.
 
 ### `/api/sources`
 
@@ -167,7 +176,7 @@ ACP lets you sketch imaging plans against the sky map, then export them as a NIN
 
 `GET /api/plans` returns `{version, plans: [...]}`. `POST /api/plans` creates or replaces a plan (matched by `id`); `PUT /api/plans/<id>` and `DELETE /api/plans/<id>` operate on one plan. A plan's `target.center_ra_deg` is normalised into `[0, 360)` (so -0.5 becomes 359.5 and 360.0 becomes 0.0, matching Aladin seam-drag and manual entry) rather than rejected; `target.center_dec_deg` must be in `[-90, 90]`. Every numeric field (RA, Dec, rotation, mosaic overlap, filter goal hours and exposures) must be finite: NaN and Infinity are rejected with a 400 rather than being written to `plans.json`. A `plans.json` written before this healing existed and containing legacy NaN/Infinity values is healed on load (the poisoned fields become `null`, logged as a warning) rather than 500ing every subsequent write.
 
-`GET /api/plans?expand=gear,panels` is an opt-in enrichment for the NINA plugin: `gear` resolves `telescope_id` / `camera_id` against `gear.json` and adds the pair's `fov_arcmin` and `pixel_scale_arcsec`, and `panels` is the mosaic's per-panel centres. Either name can be given on its own. Without the parameter the response is unchanged.
+`GET /api/plans?expand=gear,site,panels` is an opt-in enrichment for the NINA plugin: `gear` resolves `telescope_id` / `camera_id` against `gear.json` and adds the pair's `fov_arcmin` and `pixel_scale_arcsec`, `site` is the observing site (the plan's `site_id` if it has one, otherwise the first site), and `panels` is the mosaic's per-panel centres. Any subset of the names can be given. Without the parameter the response is unchanged. The response always carries a `Last-Modified` header taken from `plans.json`, so a client can poll cheaply.
 
 A plan's optional `state` field controls whether it's eligible for sync. `state: "draft"` marks a plan as still being worked on, and draft plans are excluded from `/api/sync` (see below). Plans with no `state` field at all (anything written before this field existed) are treated as committed and keep syncing.
 
@@ -295,16 +304,16 @@ Serves a zip previously built by `/api/sync` from `ZIP_OUTPUT_DIR`. `filename` m
 
 ## Gap-finder
 
-When planning narrowband sessions you usually want to know where one filter has been imaged but another hasn't yet — so a follow-up session adds new data instead of duplicating coverage. ACP unions every coverage source you've enabled (your manifest, friend manifests, public-survey MOCs), intersects that union with public catalogue candidates, and gives you a CSV you can paste into NINA.
+When planning narrowband sessions you usually want to know where one filter has been imaged but another hasn't yet, so a follow-up session adds new data instead of duplicating coverage. ACP unions every coverage source you've enabled (your manifest, friend manifests, public-survey MOCs), intersects that union with public catalogue candidates, and gives you a CSV you can paste into NINA.
 
 ### How to use it from the UI
 
 The control lives in the **Catalogues** rail:
 
-- **Have** / **Missing** dropdowns — pick the two filters. Defaults to `Hα` and `SII`.
-- **Two hour thresholds** — `≥ N h` for the *have* side (a region only counts as covered if at least one source has stacked at least this many hours), `< N h` for the *missing* side. Defaults: `1.0` and `0.5`.
-- **Use sources** — checkbox per registered source. All checked by default.
-- **Find gaps** — fetches `/api/gaps`, mounts a yellow MOC over the gap region on the map, scatters catalogue candidates that fall inside it, and writes a one-line summary (`sky 0.84% • 1808 candidates • from manifest, iphas_ha`) under the buttons. Click again to hide.
+- **Have** / **Missing** dropdowns, pick the two filters. Defaults to `Hα` and `SII`.
+- **Two hour thresholds**, `≥ N h` for the *have* side (a region only counts as covered if at least one source has stacked at least this many hours), `< N h` for the *missing* side. Defaults: `1.0` and `0.5`.
+- **Use sources**, checkbox per registered source. All checked by default.
+- **Find gaps**, fetches `/api/gaps`, mounts a yellow MOC over the gap region on the map, scatters catalogue candidates that fall inside it, and writes a one-line summary (`sky 0.84% • 1808 candidates • from manifest, iphas_ha`) under the buttons. Click again to hide.
 
 ### API endpoints
 
@@ -313,12 +322,12 @@ GET /api/gaps?have=Ha&missing=SII&sources=manifest,iphas_ha&min_have_hours=1&max
 GET /api/gaps/moc.fits?<same query>
 ```
 
-The JSON response carries `gap_sky_fraction`, `candidates`, the resolved `have_sources` / `missing_sources` lists, any sources skipped (with reasons), and a `moc_url` pointing at the FITS MOC for the same query. The FITS endpoint serves raw bytes — useful if you'd rather load the gap into Aladin desktop or `mocpy` directly.
+The JSON response carries `gap_sky_fraction`, `candidates`, the resolved `have_sources` / `missing_sources` lists, any sources skipped (with reasons), and a `moc_url` pointing at the FITS MOC for the same query. The FITS endpoint serves raw bytes, useful if you'd rather load the gap into Aladin desktop or `mocpy` directly.
 
 ### Legacy CSV route
 
-The legacy `/api/export/priority` CSV route stays for backwards compatibility — same shape and headers as before, hardcoded to "Hα but no SII over the manifest source only". The new gap-finder doesn't replace it; pick whichever fits your workflow.
+The legacy `/api/export/priority` CSV route stays for backwards compatibility, same shape and headers as before, hardcoded to "Hα but no SII over the manifest source only". The new gap-finder doesn't replace it; pick whichever fits your workflow.
 
 ### Without `mocpy`
 
-`/api/gaps` and `/api/gaps/moc.fits` return `503` (MOC algebra is the whole point of these routes). `/api/export/priority` still works — it falls back to the original inline implementation. `pip install mocpy` to enable the full gap-finder UI.
+`/api/gaps` and `/api/gaps/moc.fits` return `503` (MOC algebra is the whole point of these routes). `/api/export/priority` still works, it falls back to the original inline implementation. `pip install mocpy` to enable the full gap-finder UI.
