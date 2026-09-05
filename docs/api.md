@@ -36,6 +36,9 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `POST /api/gear/seed` | Merge manifest-derived gear into `gear.json` |
 | `GET /api/plans`, `POST` | Session plan CRUD |
 | `GET /api/plans/<id>`, `PUT`, `DELETE` | Single-plan operations |
+| `POST /api/plans/match` | Score every plan against a connected rig's gear fingerprint |
+| `POST /api/plans/<id>/progress` | Record acquired hours against a plan's filter goals |
+| `GET /api/fingerprints` | Last gear fingerprint each NINA profile reported |
 | `GET /api/target-overrides`, `POST` | Per-target metadata overrides |
 | `GET /api/destinations`, `POST` | CRUD for multi-rig sync destinations |
 | `GET /api/ts-templates` | NINA TS plugin's exposure templates (if installed) |
@@ -173,23 +176,82 @@ ACP lets you sketch imaging plans against the sky map, then export them as a NIN
 
 `GET /api/plans` returns `{version, plans: [...]}`. `POST /api/plans` creates or replaces a plan (matched by `id`); `PUT /api/plans/<id>` and `DELETE /api/plans/<id>` operate on one plan. A plan's `target.center_ra_deg` is normalised into `[0, 360)` (so -0.5 becomes 359.5 and 360.0 becomes 0.0, matching Aladin seam-drag and manual entry) rather than rejected; `target.center_dec_deg` must be in `[-90, 90]`. Every numeric field (RA, Dec, rotation, mosaic overlap, filter goal hours and exposures) must be finite: NaN and Infinity are rejected with a 400 rather than being written to `plans.json`. A `plans.json` written before this healing existed and containing legacy NaN/Infinity values is healed on load (the poisoned fields become `null`, logged as a warning) rather than 500ing every subsequent write.
 
+`GET /api/plans?expand=gear,site,panels` is an opt-in enrichment for the NINA plugin: `gear` resolves `telescope_id` / `camera_id` against `gear.json` and adds the pair's `fov_arcmin` and `pixel_scale_arcsec`, `site` is the observing site (the plan's `site_id` if it has one, otherwise the first site), and `panels` is the mosaic's per-panel centres. Any subset of the names can be given. Without the parameter the response is unchanged. The response always carries a `Last-Modified` header taken from `plans.json`, so a client can poll cheaply.
+
 A plan's optional `state` field controls whether it's eligible for sync. `state: "draft"` marks a plan as still being worked on, and draft plans are excluded from `/api/sync` (see below). Plans with no `state` field at all (anything written before this field existed) are treated as committed and keep syncing.
 
-`filter_goals.<filter>.sub_exposure_s` is persisted as supplied, the value a client POSTs or PUTs on a plan is what a later GET returns. Sync-time consumers (`/api/sync`, and the same math the plugin does client-side for desired sub counts) fall back to `cameras[].filters.<filter>.default_sub_s` from `/api/gear`, then to 300s, only when a plan has no stored value at all.
+### Matching plans to connected gear: `POST /api/plans/match`
 
-### Polling for changes: `GET /api/version`
+The companion NINA plugin posts a *fingerprint* of whatever gear is connected right now and gets back every plan with a verdict on whether that rig can shoot it. The rules live here rather than in the plugin so the two can't drift, and so ACP's own UI can show the same answers.
 
-`GET /api/version` returns `{"version": "1.0.0", "plans_last_modified": "2026-09-04T10:00:00+00:00", "manifest_last_modified": "2026-09-04T09:00:00+00:00"}`. Both timestamps are the UTC mtime of the underlying file, ISO 8601, or `null` when the file doesn't exist yet. A client (the NINA plugin, in particular) can poll this cheaply and only refetch `/api/plans` when `plans_last_modified` changes, instead of refetching on a fixed timer regardless of whether anything moved.
+```json
+{
+  "profile_name": "Travel rig",
+  "mode": "fit",
+  "camera": {"name": "QHY268M", "sensor_px": [6252, 4176], "pixel_size_um": 3.76, "colour": false, "bin": 1},
+  "filters": ["L", "R", "G", "B", "Ha", "OIII", "SII"],
+  "mount": {"name": "EQ6-R Pro"},
+  "site": {"lat": -33.87, "lon": 151.21, "elev_m": 40},
+  "focal_length_mm": {"profile": 250.0, "solved": 540.4, "source": "solved"},
+  "pixel_scale_arcsec": 1.436,
+  "rotation_deg": 12.3,
+  "nina_version": "3.3.0.1041"
+}
+```
 
-### Enriched plans: `?expand=` on `GET /api/plans`
+Only `camera` (with `sensor_px` and `pixel_size_um`) and `focal_length_mm` are required: a rig with no filter wheel, no mount driver and no site set still gets an answer. `focal_length_mm` can be a plain number or the `{profile, solved}` pair, in which case the solved value wins, because a reducer, a different back focus or simply a stale profile entry all show up in the plate solve and nowhere else. `pixel_scale_arcsec` is used when given and derived from pixel size, bin and focal length otherwise. `mode` is `"fit"` or `"everything"`; it is echoed back and stored with the fingerprint but never changes a verdict, since all verdicts are returned and the caller decides what to show.
 
-`GET /api/plans` on its own returns exactly what it always has, byte for byte, `expand` is opt-in so existing callers are unaffected. `GET /api/plans?expand=gear,site,panels` adds, to each plan:
+The response wraps each plan (in the same shape as `GET /api/plans?expand=gear,panels`) with a `match` block:
 
-- `gear`, `telescope` and `camera`, the full objects from `/api/gear` resolved by the plan's `telescope_id` / `camera_id` (absent, not null, when the id doesn't resolve).
-- `site`, the first site from `/api/sites`, since a plan has no site of its own today. Absent when no sites are configured.
-- `panels`, the computed mosaic panel list, `[{row, col, ra_deg, dec_deg}, ...]`, using the same geometry `/api/sync` uses to expand a mosaic into per-panel TS targets. A single-panel plan (`rows=1, cols=1`) still gets a one-element list.
+```json
+{
+  "fingerprint_id": "8f1c...",
+  "mode": "fit",
+  "plans": [
+    {"id": "m42-ha", "...": "...",
+     "match": {"verdict": "fit_with_warnings", "pixel_scale_ratio": 1.02,
+               "fov_ratio": [1.1, 0.85], "filters_missing": [],
+               "reasons": ["Field of view is 85% of the plan's, ..."]}}
+  ],
+  "summary": {"fit": 12, "fit_with_warnings": 2, "no_fit": 30, "unconstrained": 3}
+}
+```
 
-Any `expand` token other than `gear`, `site`, `panels` is ignored rather than rejected. The response also carries a `Last-Modified` header set from `plans.json`'s mtime, whether or not `expand` is used.
+The verdict is one of:
+
+- `unconstrained`: the plan has no telescope or camera set (or points at gear no longer in `gear.json`), so there is nothing to match against.
+- `no_fit`: the connected pixel scale is more than 15% off the plan's own pixel scale, or the field of view is below 80% of the plan's in either axis, or the plan has a goal for a filter the rig can't produce. Missing filters are listed in `filters_missing`.
+- `fit_with_warnings`: the pixel scale is within 15% and nothing is missing, but the field of view is between 80% and 90% of the plan's (the framing will be tighter than planned), or a filter is only reachable through a dual band filter (so its hours can't be shot independently). One string per warning in `reasons`.
+- `fit`: all three tests pass. A larger field of view than the plan's is always fine.
+
+`pixel_scale_ratio` is connected divided by plan, and `fov_ratio` is the same ratio per axis. Both are `null` on an `unconstrained` plan.
+
+Filter names are canonicalised with the same rules the archive scanner uses, so "Antlia Ha" and "Ha" are the same filter here and in the manifest, a colour camera with no filter wheel credits R, G and B, and a dual band filter credits Ha and OIII (a quad band adds SII). A plan goal with `target_hours` of zero is not something the rig has to be able to shoot.
+
+### Reported rigs: `GET /api/fingerprints`
+
+Every call to `/api/plans/match` stores the fingerprint in `data/fingerprints.json` under its `profile_name` (falling back to the fingerprint id when the profile has no name), along with the id, the time it arrived, the `mode` and the summary counts. `GET /api/fingerprints` returns `{version, profiles: {...}}`. The endpoint is read-only; `/api/plans/match` is the only writer, and a failed write is logged rather than costing the caller its match results. The file carries your observing site's latitude and longitude, so it is gitignored along with the rest of the private data under `data/`.
+
+The Planning rail shows a read-only "NINA rigs" accordion built from this endpoint: one line per profile with its camera, solved focal length, fit count and when it last reported. The accordion stays hidden until at least one NINA install has reported.
+
+### Progress: `POST /api/plans/<id>/progress`
+
+Records what a session actually acquired against a plan's per-filter goals:
+
+```json
+{"filters": {"Ha": {"acquired_hours": 1.5, "acquired_count": 18}}, "source": "ts", "at": "2026-09-04T11:00:00+00:00"}
+```
+
+Each entry updates `filter_goals.<f>.actual_hours`. Hours only ever go up: NINA's own acquired count drops legitimately when frames are culled or a project is reset, and silently rewinding a plan the user has watched fill up is worse than being one session stale. Pass `"force": true` to overwrite downward on purpose. Filter names are canonicalised, so a plugin reporting "Antlia Ha" updates the plan's `Ha` goal.
+
+`acquired_count` is validated but not stored: the plan schema carries hours, and `/api/sync` derives the acquired sub count from hours and sub exposure. Filters the plan has no goal for are ignored rather than invented.
+
+```json
+{"ok": true, "plan": {"...": "the updated plan"},
+ "updated": {"Ha": 1.5}, "unknown_filters": ["SII"], "not_lowered": []}
+```
+
+`updated` is what changed, `unknown_filters` is what was dropped, and `not_lowered` names goals whose stored value was higher than what was reported and `force` was not set. An unknown plan id is a 404; a bad payload is a 400 and nothing is written.
 
 ### Destinations: `/api/destinations`
 

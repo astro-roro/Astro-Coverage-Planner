@@ -120,16 +120,17 @@ class TestPlansExpand(unittest.TestCase):
         r = self.client.get("/api/plans")
         self.assertEqual(r.get_json(), baseline)
         plan = r.get_json()["plans"][0]
-        self.assertNotIn("telescope", plan)
-        self.assertNotIn("camera", plan)
+        self.assertNotIn("gear", plan)
         self.assertNotIn("site", plan)
         self.assertNotIn("panels", plan)
 
     def test_expand_gear(self):
         r = self.client.get("/api/plans?expand=gear")
         plan = r.get_json()["plans"][0]
-        self.assertEqual(plan["telescope"]["id"], "tel-1")
-        self.assertEqual(plan["camera"]["id"], "cam-1")
+        self.assertEqual(plan["gear"]["telescope"]["id"], "tel-1")
+        self.assertEqual(plan["gear"]["camera"]["id"], "cam-1")
+        self.assertEqual(len(plan["gear"]["fov_arcmin"]), 2)
+        self.assertIsNotNone(plan["gear"]["pixel_scale_arcsec"])
         self.assertNotIn("site", plan)
         self.assertNotIn("panels", plan)
 
@@ -151,8 +152,7 @@ class TestPlansExpand(unittest.TestCase):
     def test_expand_multiple_tokens(self):
         r = self.client.get("/api/plans?expand=gear,site,panels")
         plan = r.get_json()["plans"][0]
-        self.assertIn("telescope", plan)
-        self.assertIn("camera", plan)
+        self.assertIn("gear", plan)
         self.assertIn("site", plan)
         self.assertIn("panels", plan)
 
@@ -160,7 +160,7 @@ class TestPlansExpand(unittest.TestCase):
         r = self.client.get("/api/plans?expand=bogus")
         self.assertEqual(r.status_code, 200)
         plan = r.get_json()["plans"][0]
-        self.assertNotIn("telescope", plan)
+        self.assertNotIn("gear", plan)
         self.assertNotIn("site", plan)
         self.assertNotIn("panels", plan)
 
