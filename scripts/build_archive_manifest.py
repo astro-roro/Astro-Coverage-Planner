@@ -548,12 +548,17 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
 
     Priority:
       1. IMAGETYP (authoritative when present): LIGHT/OBJECT → sub, FLAT/DARK/BIAS → calibration.
-      2. File-size heuristic for masters (plate-solved integrations are usually >200 MB).
-      3. Path-based fallback (folder names, state/full_masters, etc.).
+      2. Evidence of an integration: a subframe count above one, or a master
+         folder. This outranks the header, since a master is a light frame.
+      3. File size, but only where the header has not called the file a single
+         light. Size alone is a poor proxy now that one drizzled sub can run to
+         400 MB.
+      4. Path-based fallback (folder names, state/full_masters, etc.).
     """
     name = p.name.lower()
     path_str = str(p).lower().replace("\\", "/")
     imagetyp = (meta.get("imagetyp") or "").strip().upper() if meta else ""
+    is_light_imagetyp = False
 
     # the calibration pipeline full_masters (plate-solved, per-object deep stacks)
     if "state/full_masters" in path_str or "\\state\\full_masters" in str(p).lower():
@@ -580,8 +585,9 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
     # Header IMAGETYP is authoritative when present
     if imagetyp:
         if imagetyp in ("LIGHT", "LIGHTFRAME", "LIGHT FRAME", "OBJECT", "SCIENCE"):
-            # Could still be a master (large or ncombine>1). Defer size check below.
-            pass
+            # Could still be a master, but only on evidence of an integration.
+            # Deferred to the checks below.
+            is_light_imagetyp = True
         elif imagetyp in ("FLAT", "FLATFIELD", "FLAT FIELD", "DOMEFLAT", "SKYFLAT"):
             return "calibration"
         elif imagetyp in ("DARK", "DARKFRAME", "DARK FRAME"):
@@ -589,11 +595,28 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
         elif imagetyp in ("BIAS", "ZERO"):
             return "calibration"
 
-    # Master heuristic: large files are probably integrations.
-    if size > 200 * 1024 * 1024 and p.suffix.lower() in (".fit", ".fits", ".xisf"):
-        # Also require some evidence of being an image (NAXIS1/2 present).
-        if (meta or {}).get("naxis1") and (meta or {}).get("naxis2"):
-            return "master"
+    # Integration evidence, which beats both the size proxy and the header.
+    # A stacked master says how many frames went into it, either in NCOMBINE or
+    # in the ImageIntegration HISTORY card that read_*_meta parses.
+    is_image = bool((meta or {}).get("naxis1") and (meta or {}).get("naxis2"))
+    # WBPP stamps IMAGETYP "Master Light" on an integration. Calibration masters
+    # never reach here: the name prefilter and the FLAT/DARK/BIAS branch above
+    # take them first.
+    if is_image and "MASTER" in imagetyp:
+        return "master"
+    if is_image and ((meta or {}).get("ncombine") or 0) > 1:
+        return "master"
+    if is_image and p.parent.name.lower() in ("master", "masters"):
+        return "master"
+
+    # Size as a last resort, and only when the header has not already said this
+    # is a single light frame. A registered 6248x4176 frame at drizzle 2x is
+    # 411 MB, so the old size line alone called 90 single subs masters, which
+    # both inflated the hours and skipped the pipeline-stage dedup that would
+    # have dropped their whole stage.
+    if (size > 200 * 1024 * 1024 and not is_light_imagetyp
+            and p.suffix.lower() in (".fit", ".fits", ".xisf") and is_image):
+        return "master"
 
     # Post-processing paths
     if "/working/" in path_str:
@@ -681,6 +704,7 @@ def read_fits_meta(path: Path) -> dict:
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
+        "wcs_error": None,
         "date_obs": None,
         "object": None,
         "telescope": None,
@@ -709,6 +733,8 @@ def read_fits_meta(path: Path) -> dict:
                         break
                     except Exception:
                         pass
+            if out["ncombine"] is None:
+                out["ncombine"] = ncombine_from_history(h.get("HISTORY") or ())
             out["naxis1"] = int(h.get("NAXIS1") or 0) or None
             out["naxis2"] = int(h.get("NAXIS2") or 0) or None
             out["date_obs"] = (h.get("DATE-OBS") or "")[:19] or None
@@ -753,7 +779,16 @@ def read_fits_meta(path: Path) -> dict:
             # WCS
             if "CRVAL1" in h and "CRVAL2" in h and out["naxis1"] and out["naxis2"]:
                 try:
-                    w = WCS(h)
+                    # .celestial drops any non-sky axis. An RGB stack is a
+                    # 3-plane image, so WCS(h) builds a 3-axis projection and
+                    # pixel_to_world(x, y) then raises for want of a third
+                    # coordinate. The except below used to swallow that, which
+                    # silently marked every solved colour master as unsolved
+                    # (issue #63).
+                    # A header with no celestial pair at all leaves naxis 0 here
+                    # and still raises at pixel_to_world below, exactly where it
+                    # used to, so IMAGEW/IMAGEH is recorded first either way.
+                    w = WCS(h).celestial
                     # IMAGEW/IMAGEH: if the plate-solve ran on a downsampled
                     # frame (common with ASIAIR / astrometry.net), the WCS
                     # pixel grid is smaller than NAXIS.  Use the solved
@@ -782,8 +817,11 @@ def read_fits_meta(path: Path) -> dict:
                         if cdelt:
                             out["pix_arcsec"] = abs(float(cdelt)) * 3600.0
                     out["has_wcs"] = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A header that carries CRVAL but yields no solve is worth
+                    # naming: silently treating it as unsolved is what hid the
+                    # RGB axis-count bug (issue #63) for as long as it did.
+                    out["wcs_error"] = f"{type(e).__name__}: {e}"
             # OBJCTRA fallback
             if not out["has_wcs"]:
                 ora = h.get("OBJCTRA"); odec = h.get("OBJCTDEC")
@@ -817,6 +855,137 @@ def read_fits_meta(path: Path) -> dict:
     return out
 
 
+# XISF property ids carrying a PixInsight astrometric solution. The solution
+# itself lives under the PCL prefix; Observation:Center is the sky position of
+# the image centre, written alongside it. Names per the XISF specification.
+_XISF_SOLUTION_PREFIX = "PCL:AstrometricSolution:"
+_XISF_CENTRE_RA_KEYS = ("Observation:Center:RA", "Observation:Center:Ra")
+_XISF_CENTRE_DEC_KEYS = ("Observation:Center:Dec", "Observation:Center:DEC")
+_XISF_MATRIX_KEYS = (
+    _XISF_SOLUTION_PREFIX + "LinearTransformationMatrix",
+    _XISF_SOLUTION_PREFIX + "LinearTransformation",
+)
+
+
+def _xisf_prop(props: dict, key: str):
+    """Raw value of one XISF property, or None.
+
+    ``get_images_metadata`` gives ``{id: {'id':…, 'type':…, 'value':…}}``, but
+    tolerate a bare value in case a writer or a future library version flattens
+    it.
+    """
+    if not props:
+        return None
+    v = props.get(key)
+    if isinstance(v, dict):
+        return v.get("value")
+    return v
+
+
+def _xisf_prop_float(props: dict, key: str):
+    """One XISF property as a float, or None when absent or unparseable."""
+    v = _xisf_prop(props, key)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def xisf_astrometric_solution(props: dict) -> dict:
+    """Pointing and pixel scale from PixInsight's XISF astrometric properties.
+
+    PixInsight stores a plate solve as XISF properties rather than as WCS FITS
+    keywords, so a master solved with ImageSolver carries no CRVAL and the FITS
+    keyword path finds nothing (issue #63). ``Observation:Center`` is already the
+    sky position of the image *centre* in degrees, which is exactly what the rest
+    of the scanner wants, so there is no CRPIX arithmetic to do here.
+
+    The centre alone is not proof of a solve: some writers fill it from the
+    mount's reported position, and treating that as solved would mark an
+    estimated footprint as exact. So ``solved`` is True only when a
+    ``PCL:AstrometricSolution:*`` property sits alongside the centre. An
+    unsolved centre still comes back as coords, at the same trust level as the
+    OBJCTRA/OBJCTDEC fallback.
+
+    Pixel scale comes from the leading 2x2 of the solution's linear
+    transformation, which is degrees per pixel in the same shape as a FITS CD
+    matrix. Callers fall back to focal length and pixel size when it is absent.
+
+    Returns ``{"ra_deg", "dec_deg", "pix_arcsec", "solved"}`` with None coords
+    when the properties carry no centre.
+    """
+    out = {"ra_deg": None, "dec_deg": None, "pix_arcsec": None, "solved": False}
+    if not props:
+        return out
+    ra = dec = None
+    for k in _XISF_CENTRE_RA_KEYS:
+        ra = _xisf_prop_float(props, k)
+        if ra is not None:
+            break
+    for k in _XISF_CENTRE_DEC_KEYS:
+        dec = _xisf_prop_float(props, k)
+        if dec is not None:
+            break
+    if ra is None or dec is None:
+        return out
+    if not (-360.0 <= ra <= 360.0 and -90.0 <= dec <= 90.0):
+        return out
+    out["ra_deg"] = ra % 360.0
+    out["dec_deg"] = dec
+    out["solved"] = any(str(k).startswith(_XISF_SOLUTION_PREFIX) for k in props)
+
+    for mk in _XISF_MATRIX_KEYS:
+        m = _xisf_prop(props, mk)
+        if m is None:
+            continue
+        try:
+            arr = np.asarray(m, dtype="float64")
+            if arr.ndim == 1 and arr.size >= 4:
+                arr = arr[:6].reshape(2, -1) if arr.size >= 6 else arr[:4].reshape(2, 2)
+            if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] < 2:
+                continue
+            cd = arr[:2, :2]
+            scales = np.sqrt(np.sum(cd ** 2, axis=0))
+            pix = float(np.mean(scales)) * 3600.0
+            if pix > 0:
+                out["pix_arcsec"] = pix
+                break
+        except Exception:
+            continue
+    return out
+
+
+# WBPP writes no NCOMBINE onto a stacked master. The subframe count it used is
+# recorded in a HISTORY card instead, so without reading it a master counts as a
+# single exposure and an archive built from masters alone under-reports its
+# integration time by the stack depth.
+_NCOMBINE_HISTORY_RE = re.compile(
+    r"(?:ImageIntegration\.numberOfImages|NumberOfImages|numberOfImages)\s*[:=]\s*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def ncombine_from_history(lines) -> int | None:
+    """Subframe count parsed out of a master's HISTORY cards, or None.
+
+    Takes any iterable of strings. The last match wins, since a file that was
+    integrated more than once carries the later run's count last.
+    """
+    found = None
+    for line in lines or ():
+        m = _NCOMBINE_HISTORY_RE.search(str(line))
+        if m:
+            try:
+                n = int(m.group(1))
+            except ValueError:
+                continue
+            if n > 0:
+                found = n
+    return found
+
+
 def read_xisf_meta(path: Path) -> dict:
     """Read XISF header metadata (WCS + FITSKeywords) without pixel data."""
     out = {
@@ -847,6 +1016,7 @@ def read_xisf_meta(path: Path) -> dict:
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
+        "wcs_error": None,
         "date_obs": None,
         "object": None,
         "telescope": None,
@@ -892,6 +1062,13 @@ def read_xisf_meta(path: Path) -> dict:
                     out["ncombine"] = int(v); break
                 except Exception:
                     pass
+        if out["ncombine"] is None:
+            # The xisf library puts a HISTORY card's text in its comment field
+            # and leaves the value empty, so read both.
+            out["ncombine"] = ncombine_from_history(
+                f"{e.get('value') or ''} {e.get('comment') or ''}"
+                for e in (fits_kw.get("HISTORY") or [])
+                if isinstance(e, dict))
         out["date_obs"] = str(fk("DATE-OBS") or "")[:19] or None
         out["object"] = str(fk("OBJECT") or "").strip() or None
         if out["object"] is None:
@@ -986,12 +1163,25 @@ def read_xisf_meta(path: Path) -> dict:
                         out["pix_arcsec"] = abs(float(cdelt1)) * 3600.0
                     except Exception:
                         pass
-            except Exception:
-                pass
+            except Exception as e:
+                out["wcs_error"] = f"{type(e).__name__}: {e}"
+        # PixInsight's ImageSolver writes its solution into XISF properties and
+        # not into FITS keywords, so a master solved in PixInsight reaches the
+        # CRVAL block above with nothing to read and used to look unsolved
+        # (issue #63). Try the properties before falling back to pointing.
+        props = img.get("XISFProperties") or {}
+        if not out["has_wcs"]:
+            sol = xisf_astrometric_solution(props)
+            if sol["ra_deg"] is not None:
+                out["ra_deg"] = sol["ra_deg"]
+                out["dec_deg"] = sol["dec_deg"]
+                out["has_wcs"] = sol["solved"]
+                if sol["pix_arcsec"] and out["pix_arcsec"] is None:
+                    out["pix_arcsec"] = sol["pix_arcsec"]
         # OBJCTRA/OBJCTDEC fallback (ported from the FITS path) so pointing-only
         # WBPP XISF that never got a plate solve still cluster by their fallback
         # coords instead of vanishing.
-        if not out["has_wcs"]:
+        if out["ra_deg"] is None:
             ora = fk("OBJCTRA"); odec = fk("OBJCTDEC")
             if ora and odec:
                 try:
@@ -1003,6 +1193,14 @@ def read_xisf_meta(path: Path) -> dict:
         try:
             focal = float(fk("FOCALLEN") or 0) or None
             xpsz = float(fk("XPIXSZ") or 0) or None
+            # PixInsight keeps these as properties too, and a file that went
+            # through its pipeline often has the FITS keywords stripped. Focal
+            # length is stored in metres there, pixel size in micrometres.
+            if not focal:
+                pf = _xisf_prop_float(props, "Instrument:Telescope:FocalLength")
+                focal = pf * 1000.0 if pf and pf > 0 else None
+            if not xpsz:
+                xpsz = _xisf_prop_float(props, "Instrument:Sensor:XPixelSize")
             if focal and xpsz and focal > 0 and xpsz > 0:
                 out["focallen"] = focal
                 out["xpixsz"] = xpsz
@@ -1394,6 +1592,145 @@ def collapse_fits_xisf_pairs(paths: list[str]) -> tuple[list[str], int]:
         xisf_members = [m for m in members if Path(m).suffix.lower() == ".xisf"]
         collapsed.append(xisf_members[0] if xisf_members else members[0])
     return collapsed, len(collapsed)
+
+
+# Trailing tokens PixInsight and WBPP append when they write another version of
+# a master that is already on disk. One master folder can hold
+# ``masterLight_..._mono``, ``..._mono_autocrop``, ``..._mono_drizzle_2x`` and
+# ``..._mono_drizzle_2x_autocrop``, all of them the same integration and the
+# same hours, so counting each one multiplies the archive's integration time.
+# Trailing-anchored and stripped repeatedly, so ``_DBE_DBE`` reduces in two
+# passes. Deliberately excludes "integration": that is a base name, not a
+# variant of one.
+MASTER_VARIANT_TOKENS = frozenset({
+    "starless", "stars", "starmask", "nostars",
+    "autocrop", "crop", "cropped", "trimmed",
+    "abe", "dbe", "gradient", "bg", "background",
+    "denoise", "denoised", "nr", "decon", "deconvolved", "sharpened",
+    "stretched", "nonlinear", "linear", "ht", "stf",
+    "final", "processed", "edit", "edited", "clone", "copy", "preview",
+    "drizzle", "drz", "1x", "2x", "3x", "4x",
+})
+# A filesystem copy marker: ``master (1).xisf`` beside ``master.xisf``.
+_COPY_SUFFIX_RE = re.compile(r"[\s_\-]*\((\d+)\)$")
+_TRAILING_TOKEN_RE = re.compile(r"[_\-\s]([A-Za-z0-9]+)$")
+
+
+def _is_variant_token(token: str) -> bool:
+    """True for a variant token, with or without the copy number people add.
+
+    PixInsight and its users number repeated versions: ``L_stars2`` beside
+    ``L_stars``, ``_DBE2`` beside ``_DBE``. A bare number is never a token on
+    its own, since binning and filter names end in digits.
+    """
+    low = token.lower()
+    if low in MASTER_VARIANT_TOKENS:
+        return True
+    trimmed = low.rstrip("0123456789")
+    return bool(trimmed) and trimmed != low and trimmed in MASTER_VARIANT_TOKENS
+
+
+def canonical_master_stem(stem: str) -> str:
+    """A master's stem with its trailing variant tokens stripped.
+
+    ``masterLight_..._mono_drizzle_2x_autocrop`` and ``masterLight_..._mono``
+    both reduce to ``masterLight_..._mono``, which is what groups the variants
+    of one integration together. Only trailing tokens in
+    ``MASTER_VARIANT_TOKENS`` are removed, and never the whole stem, so a file
+    named only ``final.xisf`` keeps its name.
+    """
+    out = stem
+    while True:
+        stripped = _COPY_SUFFIX_RE.sub("", out)
+        if stripped and stripped != out:
+            out = stripped
+            continue
+        m = _TRAILING_TOKEN_RE.search(out)
+        if not m or not _is_variant_token(m.group(1)):
+            return out
+        candidate = out[: m.start()]
+        if not candidate:
+            return out
+        out = candidate
+
+
+def _coords_agree(members: list[dict], tol_arcmin: float = 2.0) -> bool:
+    """True when every member carrying coords points at the same place.
+
+    Members with no coords are ignored: they cannot contradict anything. A
+    disagreement means the shared stem grouped two different fields, so the
+    caller must not collapse them.
+    """
+    known = [(m["ra_deg"], m["dec_deg"]) for m in members
+             if m.get("ra_deg") is not None and m.get("dec_deg") is not None]
+    if len(known) < 2:
+        return True
+    ras = np.array([k[0] for k in known])
+    decs = np.array([k[1] for k in known])
+    ra0, dec0 = ras[0], decs[0]
+    d_dec = decs - dec0
+    d_ra = ((ras - ra0 + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec0))
+    sep_arcmin = np.sqrt(d_ra ** 2 + d_dec ** 2) * 60.0
+    return bool(np.all(sep_arcmin <= tol_arcmin))
+
+
+def _master_rank(m: dict) -> tuple:
+    """Sort key choosing which member of a variant group to keep.
+
+    Prefers a plate-solved file, then the one representing the most subframes,
+    then the longest exposure, then the shortest name, which is the original
+    rather than something appended to it. The path breaks remaining ties so the
+    choice does not depend on directory listing order.
+    """
+    return (
+        0 if m.get("has_wcs") else 1,
+        -(m.get("ncombine") or 0),
+        -(m.get("exptime") or 0.0),
+        len(Path(m["path"]).stem),
+        m["path"],
+    )
+
+
+def collapse_master_variants(masters: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Keep one master per group of versions of the same integration.
+
+    Groups by parent folder plus the stem left after stripping variant tokens,
+    so a FITS and XISF pair of one master collapse too (they share a stem).
+    Two safety valves stop an over-eager strip from merging genuinely different
+    data: a group holding more than one filter is left intact, and so is a group
+    whose members point more than two arcminutes apart.
+
+    Returns ``(kept, dropped)``, where each dropped entry names the file, the
+    file kept in its place, and why.
+    """
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for m in masters:
+        pp = Path(m["path"])
+        groups[(str(pp.parent).lower(),
+                canonical_master_stem(pp.stem).lower())].append(m)
+
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for members in groups.values():
+        if len(members) == 1:
+            kept.append(members[0])
+            continue
+        filters = {m.get("filter") for m in members if m.get("filter")}
+        if len(filters) > 1 or not _coords_agree(members):
+            kept.extend(members)
+            continue
+        members = sorted(members, key=_master_rank)
+        primary = members[0]
+        kept.append(primary)
+        for m in members[1:]:
+            dropped.append({
+                "path": m["path"],
+                "kept": primary["path"],
+                "filter": m.get("filter"),
+                "reason": "variant of the same master",
+            })
+    kept.sort(key=lambda m: m["path"])
+    return kept, dropped
 
 
 _ORIGINALS_FOLDER_RE = re.compile(r"^originals?(?:[_\-].*)?$")
@@ -2001,6 +2338,15 @@ def main():
             m["path"] = entry["path"]
             masters.append(m)
 
+    # One integration can sit on disk as half a dozen files: a FITS and an XISF
+    # of the same master, plus autocrop, drizzle, DBE and starless versions.
+    # Each one claims the integration's hours, so without this the archive's
+    # total climbs with every version the user saves.
+    masters, master_variant_drops = collapse_master_variants(masters)
+    if master_variant_drops:
+        print(f"[{time.time()-t0:6.1f}s] Collapsed {len(master_variant_drops)} "
+              f"master variant(s) into {len(masters)} distinct master(s)")
+
     # Bucket all light/sub/calibrated_sub files by parent folder — each bucket = a sub-session.
     light_classes = {"sub", "calibrated_sub"}
     session_buckets: dict[str, list[str]] = defaultdict(list)
@@ -2388,6 +2734,20 @@ def main():
             else:
                 ambig.append(m["path"])
     no_wcs = [m["path"] for m in masters if not m.get("has_wcs")]
+    # A file whose header carried CRVAL but produced no solve is a scanner
+    # problem, not an unsolved master, so report it apart from the plain
+    # missing-WCS list. Grouped by message: one bad header shape usually hits
+    # every file written by the same tool.
+    wcs_errors = defaultdict(list)
+    for meta in sample_meta.values():
+        err = meta.get("wcs_error")
+        if err and not meta.get("has_wcs"):
+            wcs_errors[err].append(meta.get("path"))
+    wcs_error_groups = [
+        {"error": err, "files": len(paths), "examples": [str(x) for x in paths[:5] if x]}
+        for err, paths in sorted(wcs_errors.items(), key=lambda kv: -len(kv[1]))
+    ]
+    n_wcs_errors = sum(g["files"] for g in wcs_error_groups)
 
     # Summarise totals
     total_hours = 0.0
@@ -2410,6 +2770,8 @@ def main():
         "integrity_flags": {
             "sii_ha_correlation_suspects": flagged,
             "masters_missing_wcs": no_wcs,
+            "master_variant_drops": master_variant_drops,
+            "wcs_read_errors": wcs_error_groups,
             "masters_ambiguous_filter": ambig,
             "session_dedup_drops": session_dedup_log,
             "session_dedup_hours_dropped": round(dropped_hours, 2),
@@ -2461,6 +2823,9 @@ def main():
     print(f"  Total hours (gross, all filters): {total_hours:.1f}")
     print(f"  sii==ha suspects:  {len(flagged)}")
     print(f"  Masters missing WCS: {len(no_wcs)}")
+    if n_wcs_errors:
+        print(f"  Files whose plate solve failed to parse: {n_wcs_errors} "
+              f"(see {SUMMARY_PATH})")
     if UNRECOGNISED_FILTER_COUNTS:
         print(f"  Unrecognised filter names: {len(UNRECOGNISED_FILTER_COUNTS)} "
               f"(see {SUMMARY_PATH})")
@@ -2554,6 +2919,27 @@ def write_summary(m: dict):
             lines.append(f"| {row['name']} | {row['frames']} |")
     else:
         lines.append("None. Every filter name seen this scan resolved to a known band.")
+    lines.append("")
+
+    # Headers that carried a plate solve the scanner could not parse. This is a
+    # scanner bug every time, not a user problem, so name the error and give
+    # examples: it is the report we want back in a GitHub issue.
+    wcs_errors = flags.get("wcs_read_errors", [])
+    lines.append("## Plate solves that failed to parse")
+    lines.append("")
+    if wcs_errors:
+        lines.append(
+            "These files carry a plate solve in their header that the scanner "
+            "could not read, so they are being treated as unsolved. That is a "
+            "bug in the scanner. Please paste this section into a GitHub issue."
+        )
+        lines.append("")
+        for row in wcs_errors:
+            lines.append(f"- **{row['error']}** ({row['files']} file(s))")
+            for ex in row.get("examples", []):
+                lines.append(f"  - `{Path(ex).name}`")
+    else:
+        lines.append("None. Every header carrying a plate solve parsed cleanly.")
     lines.append("")
 
     SUMMARY_PATH.write_text("\n".join(lines), encoding="utf-8")

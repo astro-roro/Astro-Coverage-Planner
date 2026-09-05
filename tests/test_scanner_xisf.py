@@ -231,3 +231,121 @@ class TestXisfOffCenterCrpix(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _fake_xisf_with_props(meta_kw: dict, props: dict, *, naxis1: int, naxis2: int):
+    """Fake XISF carrying both FITS keywords and XISF properties."""
+    class _FakeXISF:
+        def __init__(self, path):
+            self._path = path
+
+        def get_images_metadata(self):
+            return [{
+                "geometry": (naxis1, naxis2, 1),
+                "FITSKeywords": _fits_keywords(meta_kw),
+                "XISFProperties": {k: {"id": k, "value": v} for k, v in props.items()},
+            }]
+    return _FakeXISF
+
+
+class TestXisfAstrometricProperties(unittest.TestCase):
+    """PixInsight writes its plate solve as XISF properties, not FITS keywords."""
+
+    def test_solution_properties_read_as_solved(self):
+        sol = bam.xisf_astrometric_solution({
+            "Observation:Center:RA": {"value": 311.41},
+            "Observation:Center:Dec": {"value": 30.72},
+            "PCL:AstrometricSolution:ProjectionSystem": {"value": "Gnomonic"},
+            "PCL:AstrometricSolution:LinearTransformationMatrix": {
+                "value": [[-0.000583, 0.0], [0.0, 0.000583]]},
+        })
+        self.assertTrue(sol["solved"])
+        self.assertAlmostEqual(sol["ra_deg"], 311.41, places=3)
+        self.assertAlmostEqual(sol["dec_deg"], 30.72, places=3)
+        self.assertAlmostEqual(sol["pix_arcsec"], 2.099, places=2)
+
+    def test_centre_without_solution_is_not_solved(self):
+        """Observation:Center alone can come from the mount, not a solve."""
+        sol = bam.xisf_astrometric_solution({
+            "Observation:Center:RA": {"value": 10.0},
+            "Observation:Center:Dec": {"value": -20.0},
+        })
+        self.assertFalse(sol["solved"])
+        self.assertAlmostEqual(sol["ra_deg"], 10.0)
+        self.assertAlmostEqual(sol["dec_deg"], -20.0)
+
+    def test_no_properties_returns_no_coords(self):
+        sol = bam.xisf_astrometric_solution({})
+        self.assertIsNone(sol["ra_deg"])
+        self.assertFalse(sol["solved"])
+
+    def test_out_of_range_values_rejected(self):
+        sol = bam.xisf_astrometric_solution({
+            "Observation:Center:RA": {"value": 999.0},
+            "Observation:Center:Dec": {"value": 120.0},
+        })
+        self.assertIsNone(sol["ra_deg"])
+
+    def test_flat_six_element_matrix(self):
+        """Some writers flatten the 2x3 transformation into one vector."""
+        sol = bam.xisf_astrometric_solution({
+            "Observation:Center:RA": {"value": 100.0},
+            "Observation:Center:Dec": {"value": 5.0},
+            "PCL:AstrometricSolution:LinearTransformationMatrix": {
+                "value": [-0.000583, 0.0, 12.0, 0.0, 0.000583, 34.0]},
+        })
+        self.assertAlmostEqual(sol["pix_arcsec"], 2.099, places=2)
+
+    def test_solved_master_gets_has_wcs(self):
+        """End to end: a PixInsight master with no CRVAL still reads as solved."""
+        kw = {"FILTER": "L", "EXPTIME": 300.0, "IMAGETYP": "Light",
+              "OBJECT": "NGC 7000", "NCOMBINE": 40}
+        props = {
+            "Observation:Center:RA": 311.41,
+            "Observation:Center:Dec": 30.72,
+            "PCL:AstrometricSolution:ProjectionSystem": "Gnomonic",
+            "PCL:AstrometricSolution:LinearTransformationMatrix":
+                [[-0.000583, 0.0], [0.0, 0.000583]],
+        }
+        with mock.patch.dict("sys.modules", {"xisf": mock.MagicMock(
+                XISF=_fake_xisf_with_props(kw, props, naxis1=4656, naxis2=3520))}):
+            meta = bam.read_xisf_meta(Path("masterLight.xisf"))
+        self.assertTrue(meta["ok"])
+        self.assertTrue(meta["has_wcs"])
+        self.assertAlmostEqual(meta["ra_deg"], 311.41, places=2)
+        self.assertAlmostEqual(meta["pix_arcsec"], 2.099, places=2)
+
+    def test_unsolved_centre_keeps_has_wcs_false(self):
+        kw = {"FILTER": "L", "EXPTIME": 300.0, "IMAGETYP": "Light",
+              "OBJECT": "NGC 7000"}
+        props = {"Observation:Center:RA": 311.41, "Observation:Center:Dec": 30.72}
+        with mock.patch.dict("sys.modules", {"xisf": mock.MagicMock(
+                XISF=_fake_xisf_with_props(kw, props, naxis1=4656, naxis2=3520))}):
+            meta = bam.read_xisf_meta(Path("masterLight.xisf"))
+        self.assertFalse(meta["has_wcs"])
+        self.assertAlmostEqual(meta["ra_deg"], 311.41, places=2)
+
+    def test_fits_crval_still_wins_over_properties(self):
+        kw = {"FILTER": "L", "EXPTIME": 300.0, "IMAGETYP": "Light",
+              "CRVAL1": 50.0, "CRVAL2": 10.0, "CRPIX1": 2328.0, "CRPIX2": 1760.0,
+              "CD1_1": -0.000583, "CD1_2": 0.0, "CD2_1": 0.0, "CD2_2": 0.000583}
+        props = {"Observation:Center:RA": 311.41, "Observation:Center:Dec": 30.72,
+                 "PCL:AstrometricSolution:ProjectionSystem": "Gnomonic"}
+        with mock.patch.dict("sys.modules", {"xisf": mock.MagicMock(
+                XISF=_fake_xisf_with_props(kw, props, naxis1=4656, naxis2=3520))}):
+            meta = bam.read_xisf_meta(Path("masterLight.xisf"))
+        self.assertTrue(meta["has_wcs"])
+        self.assertAlmostEqual(meta["ra_deg"], 50.0, places=1)
+
+    def test_instrument_properties_backfill_focal_and_pixel_size(self):
+        """PixInsight keeps focal length in metres and pixel size in microns."""
+        kw = {"FILTER": "L", "EXPTIME": 300.0, "IMAGETYP": "Light"}
+        props = {"Observation:Center:RA": 311.41, "Observation:Center:Dec": 30.72,
+                 "Instrument:Telescope:FocalLength": 0.334,
+                 "Instrument:Sensor:XPixelSize": 3.8}
+        with mock.patch.dict("sys.modules", {"xisf": mock.MagicMock(
+                XISF=_fake_xisf_with_props(kw, props, naxis1=4656, naxis2=3520))}):
+            meta = bam.read_xisf_meta(Path("masterLight.xisf"))
+        self.assertAlmostEqual(meta["focallen"], 334.0, places=1)
+        self.assertAlmostEqual(meta["xpixsz"], 3.8, places=2)
+        self.assertAlmostEqual(meta["pix_arcsec_focal"], 206.265 * 3.8 / 334.0, places=3)
