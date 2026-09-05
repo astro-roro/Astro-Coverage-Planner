@@ -710,6 +710,8 @@ def read_fits_meta(path: Path) -> dict:
                         break
                     except Exception:
                         pass
+            if out["ncombine"] is None:
+                out["ncombine"] = ncombine_from_history(h.get("HISTORY") or ())
             out["naxis1"] = int(h.get("NAXIS1") or 0) or None
             out["naxis2"] = int(h.get("NAXIS2") or 0) or None
             out["date_obs"] = (h.get("DATE-OBS") or "")[:19] or None
@@ -932,6 +934,35 @@ def xisf_astrometric_solution(props: dict) -> dict:
     return out
 
 
+# WBPP writes no NCOMBINE onto a stacked master. The subframe count it used is
+# recorded in a HISTORY card instead, so without reading it a master counts as a
+# single exposure and an archive built from masters alone under-reports its
+# integration time by the stack depth.
+_NCOMBINE_HISTORY_RE = re.compile(
+    r"(?:ImageIntegration\.numberOfImages|NumberOfImages|numberOfImages)\s*[:=]\s*(\d+)",
+    re.IGNORECASE,
+)
+
+
+def ncombine_from_history(lines) -> int | None:
+    """Subframe count parsed out of a master's HISTORY cards, or None.
+
+    Takes any iterable of strings. The last match wins, since a file that was
+    integrated more than once carries the later run's count last.
+    """
+    found = None
+    for line in lines or ():
+        m = _NCOMBINE_HISTORY_RE.search(str(line))
+        if m:
+            try:
+                n = int(m.group(1))
+            except ValueError:
+                continue
+            if n > 0:
+                found = n
+    return found
+
+
 def read_xisf_meta(path: Path) -> dict:
     """Read XISF header metadata (WCS + FITSKeywords) without pixel data."""
     out = {
@@ -1008,6 +1039,13 @@ def read_xisf_meta(path: Path) -> dict:
                     out["ncombine"] = int(v); break
                 except Exception:
                     pass
+        if out["ncombine"] is None:
+            # The xisf library puts a HISTORY card's text in its comment field
+            # and leaves the value empty, so read both.
+            out["ncombine"] = ncombine_from_history(
+                f"{e.get('value') or ''} {e.get('comment') or ''}"
+                for e in (fits_kw.get("HISTORY") or [])
+                if isinstance(e, dict))
         out["date_obs"] = str(fk("DATE-OBS") or "")[:19] or None
         out["object"] = str(fk("OBJECT") or "").strip() or None
         if out["object"] is None:
@@ -1531,6 +1569,131 @@ def collapse_fits_xisf_pairs(paths: list[str]) -> tuple[list[str], int]:
         xisf_members = [m for m in members if Path(m).suffix.lower() == ".xisf"]
         collapsed.append(xisf_members[0] if xisf_members else members[0])
     return collapsed, len(collapsed)
+
+
+# Trailing tokens PixInsight and WBPP append when they write another version of
+# a master that is already on disk. One master folder can hold
+# ``masterLight_..._mono``, ``..._mono_autocrop``, ``..._mono_drizzle_2x`` and
+# ``..._mono_drizzle_2x_autocrop``, all of them the same integration and the
+# same hours, so counting each one multiplies the archive's integration time.
+# Trailing-anchored and stripped repeatedly, so ``_DBE_DBE`` reduces in two
+# passes. Deliberately excludes "integration": that is a base name, not a
+# variant of one.
+MASTER_VARIANT_TOKENS = frozenset({
+    "starless", "stars", "starmask", "starless1", "nostars",
+    "autocrop", "crop", "cropped", "trimmed",
+    "abe", "dbe", "gradient", "bg", "background",
+    "denoise", "denoised", "nr", "decon", "deconvolved", "sharpened",
+    "stretched", "nonlinear", "linear", "ht", "stf",
+    "final", "processed", "edit", "edited", "clone", "copy", "preview",
+    "drizzle", "drz", "1x", "2x", "3x", "4x",
+})
+# A filesystem copy marker: ``master (1).xisf`` beside ``master.xisf``.
+_COPY_SUFFIX_RE = re.compile(r"[\s_\-]*\((\d+)\)$")
+_TRAILING_TOKEN_RE = re.compile(r"[_\-\s]([A-Za-z0-9]+)$")
+
+
+def canonical_master_stem(stem: str) -> str:
+    """A master's stem with its trailing variant tokens stripped.
+
+    ``masterLight_..._mono_drizzle_2x_autocrop`` and ``masterLight_..._mono``
+    both reduce to ``masterLight_..._mono``, which is what groups the variants
+    of one integration together. Only trailing tokens in
+    ``MASTER_VARIANT_TOKENS`` are removed, and never the whole stem, so a file
+    named only ``final.xisf`` keeps its name.
+    """
+    out = stem
+    while True:
+        stripped = _COPY_SUFFIX_RE.sub("", out)
+        if stripped and stripped != out:
+            out = stripped
+            continue
+        m = _TRAILING_TOKEN_RE.search(out)
+        if not m or m.group(1).lower() not in MASTER_VARIANT_TOKENS:
+            return out
+        candidate = out[: m.start()]
+        if not candidate:
+            return out
+        out = candidate
+
+
+def _coords_agree(members: list[dict], tol_arcmin: float = 2.0) -> bool:
+    """True when every member carrying coords points at the same place.
+
+    Members with no coords are ignored: they cannot contradict anything. A
+    disagreement means the shared stem grouped two different fields, so the
+    caller must not collapse them.
+    """
+    known = [(m["ra_deg"], m["dec_deg"]) for m in members
+             if m.get("ra_deg") is not None and m.get("dec_deg") is not None]
+    if len(known) < 2:
+        return True
+    ras = np.array([k[0] for k in known])
+    decs = np.array([k[1] for k in known])
+    ra0, dec0 = ras[0], decs[0]
+    d_dec = decs - dec0
+    d_ra = ((ras - ra0 + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec0))
+    sep_arcmin = np.sqrt(d_ra ** 2 + d_dec ** 2) * 60.0
+    return bool(np.all(sep_arcmin <= tol_arcmin))
+
+
+def _master_rank(m: dict) -> tuple:
+    """Sort key choosing which member of a variant group to keep.
+
+    Prefers a plate-solved file, then the one representing the most subframes,
+    then the longest exposure, then the shortest name, which is the original
+    rather than something appended to it. The path breaks remaining ties so the
+    choice does not depend on directory listing order.
+    """
+    return (
+        0 if m.get("has_wcs") else 1,
+        -(m.get("ncombine") or 0),
+        -(m.get("exptime") or 0.0),
+        len(Path(m["path"]).stem),
+        m["path"],
+    )
+
+
+def collapse_master_variants(masters: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Keep one master per group of versions of the same integration.
+
+    Groups by parent folder plus the stem left after stripping variant tokens,
+    so a FITS and XISF pair of one master collapse too (they share a stem).
+    Two safety valves stop an over-eager strip from merging genuinely different
+    data: a group holding more than one filter is left intact, and so is a group
+    whose members point more than two arcminutes apart.
+
+    Returns ``(kept, dropped)``, where each dropped entry names the file, the
+    file kept in its place, and why.
+    """
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for m in masters:
+        pp = Path(m["path"])
+        groups[(str(pp.parent).lower(),
+                canonical_master_stem(pp.stem).lower())].append(m)
+
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for members in groups.values():
+        if len(members) == 1:
+            kept.append(members[0])
+            continue
+        filters = {m.get("filter") for m in members if m.get("filter")}
+        if len(filters) > 1 or not _coords_agree(members):
+            kept.extend(members)
+            continue
+        members = sorted(members, key=_master_rank)
+        primary = members[0]
+        kept.append(primary)
+        for m in members[1:]:
+            dropped.append({
+                "path": m["path"],
+                "kept": primary["path"],
+                "filter": m.get("filter"),
+                "reason": "variant of the same master",
+            })
+    kept.sort(key=lambda m: m["path"])
+    return kept, dropped
 
 
 _ORIGINALS_FOLDER_RE = re.compile(r"^originals?(?:[_\-].*)?$")
@@ -2138,6 +2301,15 @@ def main():
             m["path"] = entry["path"]
             masters.append(m)
 
+    # One integration can sit on disk as half a dozen files: a FITS and an XISF
+    # of the same master, plus autocrop, drizzle, DBE and starless versions.
+    # Each one claims the integration's hours, so without this the archive's
+    # total climbs with every version the user saves.
+    masters, master_variant_drops = collapse_master_variants(masters)
+    if master_variant_drops:
+        print(f"[{time.time()-t0:6.1f}s] Collapsed {len(master_variant_drops)} "
+              f"master variant(s) into {len(masters)} distinct master(s)")
+
     # Bucket all light/sub/calibrated_sub files by parent folder — each bucket = a sub-session.
     light_classes = {"sub", "calibrated_sub"}
     session_buckets: dict[str, list[str]] = defaultdict(list)
@@ -2561,6 +2733,7 @@ def main():
         "integrity_flags": {
             "sii_ha_correlation_suspects": flagged,
             "masters_missing_wcs": no_wcs,
+            "master_variant_drops": master_variant_drops,
             "wcs_read_errors": wcs_error_groups,
             "masters_ambiguous_filter": ambig,
             "session_dedup_drops": session_dedup_log,
