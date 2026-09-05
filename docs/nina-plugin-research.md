@@ -303,3 +303,23 @@ If we ever want ACP to run on a separate machine from NINA (NAS-hosted, home-ser
 4. **TS REST API at `localhost:{port}/ts/v0/`** is a useful backup data source but not load-bearing for our design.
 5. **Mirror NINA's rotation convention** at the Framing boundary: `Rectangle.TotalRotation = 360 - rotationDeg`. Verify our TS export's `Rotation` field uses the matching convention before v1.0.
 6. **Schema version pinning is the right safety mechanism.** Don't add a "force write" override. Force users to update the extension when TS bumps schema.
+
+## Verified 2026-09-04: the three calls the v3 spec depends on
+
+Checked by reflection against the NINA.Plugin SDK package 3.1.2.9001 on a machine running NINA 3.3.0.1041, with the plugin building clean on .NET 9. Everything the v3 gear fingerprint needs is public API.
+
+Camera. `ICameraMediator.GetInfo()` returns `CameraInfo` with `Name`, `XSize`, `YSize`, `PixelSize`, `BinX`, `SensorType` (an enum; anything other than Monochrome means a Bayer matrix), `BayerOffsetX`, `BayerOffsetY` and `Connected`.
+
+Filters. `IFilterWheelMediator.GetInfo()` returns `FilterWheelInfo` with `Name`, `Connected` and `SelectedFilter`. The full slot list is on the profile: `IProfileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters`, a collection of `FilterInfo` with `Name` and `Position`.
+
+Mount and site. `TelescopeInfo` carries `Name`, `Connected`, `SiteLatitude`, `SiteLongitude` and `SiteElevation`. The profile has the same under `AstrometrySettings.Latitude`, `Longitude` and `Elevation`.
+
+Focal length write-back. `IProfileService.ActiveProfile.TelescopeSettings` exposes `Name`, `FocalLength` and `FocalRatio`, all with public setters. Setting them from a plugin is the same call the Options page uses.
+
+Plate solve from a plugin. `IPlateSolverFactory.GetCaptureSolver(plateSolver, blindSolver, imagingMediator, filterWheelMediator)` returns an `ICaptureSolver` whose `Solve(CaptureSequence, CaptureSolverParameter, progress, status, token)` captures a frame and solves it. `CaptureSolverParameter` takes `FocalLength`, `PixelSize`, `Binning`, `SearchRadius`, `Attempts`, `Coordinates` and `BlindFailoverEnabled`. The result is `PlateSolveResult` with `Success`, `Coordinates`, `Pixscale` in arcseconds per pixel, `PositionAngle`, `Radius` and `Flipped`. The solved focal length is `PixelSize * Binning * 206.265 / Pixscale`. This is the same path NINA's own Center instruction uses.
+
+Sequencer instruction. Subclass `NINA.Sequencer.SequenceItem.SequenceItem`, override `Execute(IProgress<ApplicationStatus>, CancellationToken)` and `Clone()`, set `Category` for the instruction palette.
+
+Pub/sub. `IMessageBroker.Subscribe(topic, ISubscriber)` with `ISubscriber.OnMessageReceived(IMessage)`; `IMessage` carries `Topic`, `Content`, `Sender`, `SentAt` and `CorrelationId`. Target Scheduler's topics are listed earlier in this document.
+
+Two names to get right: the mediators live in `NINA.Equipment.Interfaces.Mediator`, and `GetInfo()` comes from the generic device mediator base, so it does not show on the interface itself under reflection.
