@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Astro Coverage Planner — Flask server.
+"""Astro Coverage Planner: Flask server.
 
 Serves an Aladin Lite viewer over a sky-coverage manifest describing which
 targets you've imaged, in what filters, for how long. See README.md for the
@@ -26,6 +26,7 @@ Endpoints:
 - GET /api/gaps                  multi-source gap-finder (JSON)
 - GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
 - GET /api/scan/status           state of the scheduled archive rescan
+- GET /api/version               app version + plans/manifest mtimes, for the NINA plugin's poll loop
 
 Env:
 - MANIFEST_PATH   path to archive manifest JSON  (default: ./data/manifest.json)
@@ -41,6 +42,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -79,17 +81,32 @@ try:
 except ImportError:
     _MOCPY_AVAILABLE = False
     logging.warning(
-        "mocpy is not installed — MOC overlays disabled. "
+        "mocpy is not installed: MOC overlays disabled. "
         "Install with `pip install mocpy>=0.13` to enable /api/moc/<id>."
     )
 
 from gaps import candidates_in_moc, compute_gap_moc
+
+# Ceiling on a single acquired-hours report. Ten years of continuous imaging is
+# about 87,600 hours, so nothing honest comes close. It exists because progress
+# only ever raises a goal without `force`: one absurd value would write a number
+# this endpoint could never correct again.
+MAX_ACQUIRED_HOURS = 100_000.0
+
+# No git tag or Dockerfile label carries a version today; this is the
+# first one, bumped by hand until a release process picks it up. The NINA
+# plugin polls GET /api/version to know when to refetch plans, so this
+# constant matters more for cache-busting than for human version pride.
+VERSION = "1.0.0"
 
 REPO_ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
 CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
 GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
 PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+# Last gear fingerprint each NINA profile reported to /api/plans/match.
+FINGERPRINTS_PATH = Path(os.environ.get(
+    "FINGERPRINTS_PATH", REPO_ROOT / "data" / "fingerprints.json"))
 # Where the live-page publisher writes shooting.json before uploading it.
 LIVE_OUT_DIR = Path(os.environ.get("ACP_LIVE_OUT_DIR", REPO_ROOT / "data" / "live"))
 SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
@@ -112,7 +129,7 @@ SCAN_SCRIPT_PATH = REPO_ROOT / "scripts" / "build_archive_manifest.py"
 
 # Hostname allowlist for MOC fetches. Both entries point at the same CDS
 # infrastructure: alasky.u-strasbg.fr is the legacy hostname kept alive for
-# backward compat. New entries should be reviewed in PR — this is the trust
+# backward compat. New entries should be reviewed in PR: this is the trust
 # boundary for the only ACP feature that fetches over the network at runtime.
 _MOC_ALLOWED_HOSTS = frozenset({"alasky.cds.unistra.fr", "alasky.u-strasbg.fr"})
 _MOC_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -132,6 +149,58 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
 app.jinja_env.auto_reload = True
 
+
+def _api_auth_token() -> str:
+    """Read fresh on every request rather than caching at import time, so
+    tests (and anyone reconfiguring the environment around a long-lived
+    process) see ACP_API_TOKEN changes take effect immediately."""
+    return (os.environ.get("ACP_API_TOKEN") or "").strip()
+
+
+if _api_auth_token():
+    logging.info("[acp] API auth: ON: /api/* requires a matching ACP_API_TOKEN bearer token")
+else:
+    logging.info("[acp] API auth: OFF: set ACP_API_TOKEN to require a bearer token on /api/*")
+
+
+@app.before_request
+def _api_gate():
+    """Bearer-token gate for /api/*, off by default (issue: NINA plugin
+    prep). The HTML page and static files are never gated: only the API
+    surface a plugin or curl would hit.
+
+    OPTIONS used to be answered here with a 204 and no auth check, to serve
+    a CORS preflight. The preflight is gone (see the note below where the
+    CORS headers used to be), so OPTIONS is now treated like any other
+    method and Flask answers it. That removes an unauthenticated path
+    through the gate for no loss."""
+    if not request.path.startswith("/api/"):
+        return None
+    token = _api_auth_token()
+    if not token:
+        return None
+    auth_header = request.headers.get("Authorization", "")
+    supplied = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
+    if not hmac.compare_digest(supplied, token):
+        return jsonify({"error": "unauthorized"}), 401
+    return None
+
+
+# There is deliberately no CORS here. An earlier version of this file sent
+# `Access-Control-Allow-Origin: *` on API reads and on the preflight, reasoning
+# that withholding it from write responses kept writes closed. That is half
+# right: it stops an attacker reading the reply, not sending the request. The
+# preflight was answering 204 and listing PUT and DELETE as allowed, so any web
+# page the user happened to visit could delete their plans or flip one public
+# and publish it, silently, with no LAN access needed, because the browser runs
+# on the same machine as ACP. Proved end to end on 2026-09-05.
+#
+# Nothing needs the header. The NINA plugin is a desktop HTTP client and CORS is
+# a browser mechanism it never sees; ACP's own page is same-origin. If a
+# browser-based client is ever wanted, allow that one origin by name, never "*",
+# and never on a preflight for a method that writes.
+
+
 if not CATALOGS_PATH.exists():
     print(
         f"[acp] WARN: catalogs file not found at {CATALOGS_PATH} -- "
@@ -147,6 +216,8 @@ _gear_cache: dict | None = None
 _gear_cache_mtime: float | None = None
 _plans_cache: dict | None = None
 _plans_cache_mtime: float | None = None
+_fingerprints_cache: dict | None = None
+_fingerprints_cache_mtime: float | None = None
 _target_overrides_cache: dict | None = None
 _target_overrides_cache_mtime: float | None = None
 _sites_cache: dict | None = None
@@ -167,7 +238,7 @@ def _atomic_write_json(path: Path, data: dict, **dumps_kwargs) -> None:
 
     A plain ``write_text`` truncates the target file before writing, so a
     crash or kill mid-write (OOM, power loss, container kill) leaves a
-    half-written, unparseable file — the next ``load_*`` call then throws
+    half-written, unparseable file: the next ``load_*`` call then throws
     and every endpoint touching that store 500s until someone manually
     repairs the file. Writing to a sibling temp file first and renaming
     over the target means the target is only ever replaced by a complete,
@@ -214,7 +285,7 @@ DEFAULT_SITES = {
 
 def load_manifest() -> dict | None:
     """Load the archive manifest from disk. Returns None if the file is
-    missing OR malformed (JSON parse error) — callers already handle
+    missing OR malformed (JSON parse error): callers already handle
     None as "no manifest", so an unparseable file degrades to the same
     code path instead of bubbling a JSONDecodeError up the stack and
     crashing every endpoint that touches the manifest with a 500.
@@ -231,7 +302,7 @@ def load_manifest() -> dict | None:
             _manifest_cache = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             logging.warning(
-                "manifest at %s is malformed (%s) — treating as missing",
+                "manifest at %s is malformed (%s): treating as missing",
                 MANIFEST_PATH, exc,
             )
             _manifest_cache = None
@@ -243,11 +314,11 @@ def load_manifest() -> dict | None:
 
 def load_catalogs() -> dict:
     """Read data/catalogs.json. Returns an empty dict if the file is
-    missing OR malformed — same graceful-degradation contract as
+    missing OR malformed: same graceful-degradation contract as
     load_manifest. A partially-bad fetch_catalogs.py output should
     NOT take every catalogue-touching endpoint down with it.
 
-    Per-entry validation is the caller's responsibility — this
+    Per-entry validation is the caller's responsibility: this
     function only guarantees the top-level structure is a dict.
     """
     global _catalogs_cache, _catalogs_cache_mtime
@@ -261,7 +332,7 @@ def load_catalogs() -> dict:
             parsed = json.loads(CATALOGS_PATH.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             logging.warning(
-                "catalogs file at %s is malformed (%s) — treating as empty",
+                "catalogs file at %s is malformed (%s): treating as empty",
                 CATALOGS_PATH, exc,
             )
             _catalogs_cache = {}
@@ -271,7 +342,7 @@ def load_catalogs() -> dict:
         # Anything else is treated as empty (graceful degradation).
         if not isinstance(parsed, dict):
             logging.warning(
-                "catalogs file at %s is not a JSON object (got %s) — treating as empty",
+                "catalogs file at %s is not a JSON object (got %s): treating as empty",
                 CATALOGS_PATH, type(parsed).__name__,
             )
             _catalogs_cache = {}
@@ -384,7 +455,7 @@ def _maybe_backfill_plan_destinations() -> None:
         if not p.get("destination_id"):
             p["destination_id"] = default_id
             changed = True
-    # Mark the migration done either way — once destinations exist, future
+    # Mark the migration done either way: once destinations exist, future
     # plans must get an explicit destination_id from the UI; we don't want
     # to silently re-assign every plan on every load.
     dests_doc["backfilled_at"] = datetime.now(timezone.utc).isoformat()
@@ -404,6 +475,41 @@ def save_plans(data: dict) -> None:
     _atomic_write_json(PLANS_PATH, data, indent=2, allow_nan=False)
     _plans_cache = data
     _plans_cache_mtime = PLANS_PATH.stat().st_mtime
+
+
+def load_fingerprints() -> dict:
+    """Last gear fingerprint reported by each NINA profile.
+
+    Same mtime-keyed cache as the other JSON stores. Absent file means no
+    NINA install has ever called /api/plans/match, which is the normal
+    state for a stock checkout, so an empty document is returned rather
+    than an error.
+    """
+    global _fingerprints_cache, _fingerprints_cache_mtime
+    if not FINGERPRINTS_PATH.exists():
+        return {"version": 1, "profiles": {}}
+    mtime = FINGERPRINTS_PATH.stat().st_mtime
+    if _fingerprints_cache is None or _fingerprints_cache_mtime != mtime:
+        parsed = json.loads(FINGERPRINTS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            logging.warning(
+                "fingerprints file at %s is not a JSON object (got %s), treating as empty",
+                FINGERPRINTS_PATH, type(parsed).__name__)
+            parsed = {"version": 1, "profiles": {}}
+        parsed.setdefault("version", 1)
+        if not isinstance(parsed.get("profiles"), dict):
+            parsed["profiles"] = {}
+        _fingerprints_cache = parsed
+        _fingerprints_cache_mtime = mtime
+    return _fingerprints_cache
+
+
+def save_fingerprints(data: dict) -> None:
+    global _fingerprints_cache, _fingerprints_cache_mtime
+    FINGERPRINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(FINGERPRINTS_PATH, data, indent=2, allow_nan=False)
+    _fingerprints_cache = data
+    _fingerprints_cache_mtime = FINGERPRINTS_PATH.stat().st_mtime
 
 
 def load_target_overrides() -> dict:
@@ -446,7 +552,7 @@ def save_sites(data: dict) -> None:
 
 def load_destinations() -> dict:
     """Read data/destinations.json. Returns the empty default ({version: 1,
-    destinations: []}) when the file is absent — keeps single-rig users on
+    destinations: []}) when the file is absent: keeps single-rig users on
     the legacy nina_ts_sync single-DB flow with no destination concept
     exposed in the UI.
 
@@ -454,9 +560,9 @@ def load_destinations() -> dict:
       id              str  (stable key)
       label           str  (user-visible)
       kind            "local_db" | "shared_file"
-      ts_db_path      str  (for kind=local_db) — direct write target
-      export_path     str  (for kind=shared_file) — file written by sync
-      acquired_path   str  (for kind=shared_file, optional) — file the NUC
+      ts_db_path      str  (for kind=local_db): direct write target
+      export_path     str  (for kind=shared_file): file written by sync
+      acquired_path   str  (for kind=shared_file, optional): file the NUC
                             daemon writes back; ACP polls it for live progress
       notes           str  (optional, free-form)
     """
@@ -521,7 +627,7 @@ class JsonManifestSource:
 
     Drives both the user's own archive (path = MANIFEST_PATH) and any
     sanitised friend manifests configured via ACP_FRIEND_MANIFESTS. The
-    manifest shape is identical for both — the only difference is the
+    manifest shape is identical for both: the only difference is the
     surfaced metadata (label, kind, attribution).
     """
 
@@ -659,7 +765,7 @@ def FriendManifestSource(*, source_id: str, label: str, color: str,
 def _validate_moc_url(moc_url: str) -> None:
     """HTTPS-only, hostname-allowlisted. Raises ValueError on rejection.
 
-    Run at config-load time (registration) and again before every fetch — the
+    Run at config-load time (registration) and again before every fetch: the
     on-fetch check defends against an attacker who can swap in a registered
     source's URL between boot and first hit.
     """
@@ -684,7 +790,7 @@ def _fetch_moc_bytes(moc_url: str) -> bytes:
 
     Refuses Content-Length headers above the cap up front, and aborts mid-read
     if a server with no/wrong Content-Length tries to feed us more than the
-    cap. The bytes returned are the raw FITS payload — the caller is
+    cap. The bytes returned are the raw FITS payload: the caller is
     responsible for handing them to MOC.from_fits for validation.
     """
     _validate_moc_url(moc_url)
@@ -723,7 +829,7 @@ class MocCoverageSource:
     Lazy fetch on first hit to /api/moc/<id>; cached on disk under
     data/moc_cache/<id>.fits with a 30-day TTL sidecar. The Phase 3 frontend
     consumes the FITS bytes directly via Aladin Lite and never needs the
-    coverage() iterator — see comment in coverage() for Phase 4 plans.
+    coverage() iterator: see comment in coverage() for Phase 4 plans.
     """
 
     def __init__(self, *, source_id: str, label: str, color: str,
@@ -758,7 +864,7 @@ class MocCoverageSource:
 
     def coverage(self):
         # Phase 4's gap-finder will need real region yielding from MOC
-        # union/intersection. For Phase 3 we leave this empty — the frontend
+        # union/intersection. For Phase 3 we leave this empty: the frontend
         # consumes /api/moc/<id> directly, not coverage().
         return iter(())
 
@@ -818,7 +924,7 @@ class MocCoverageSource:
         """
         if not _MOCPY_AVAILABLE:
             # Caller (the route) checks this first; re-checking here keeps the
-            # invariant local — no half-fetched bytes hit disk without mocpy.
+            # invariant local: no half-fetched bytes hit disk without mocpy.
             raise _MocFetchError("mocpy not available")
         fits_path, meta_path = self._cache_paths()
         with self._lock:
@@ -828,7 +934,7 @@ class MocCoverageSource:
             try:
                 MOC.from_fits(BytesIO(data))
             except Exception as exc:
-                # Don't write malformed bytes to disk — next hit refetches.
+                # Don't write malformed bytes to disk: next hit refetches.
                 raise _MocFetchError(f"invalid MOC FITS: {exc}") from exc
             self._cache_dir.mkdir(parents=True, exist_ok=True)
             fits_path.write_bytes(data)
@@ -851,7 +957,7 @@ _FRIEND_MAX_POLYGONS = 64
 def _validate_friend_manifest(data: object, source_label: str) -> None:
     """Reject any sanitised manifest that fails the safety checks.
 
-    Raises ValueError on the first failure. The caller logs and skips —
+    Raises ValueError on the first failure. The caller logs and skips , 
     a bad friend manifest must not block the app from starting.
     """
     if not isinstance(data, dict):
@@ -860,7 +966,7 @@ def _validate_friend_manifest(data: object, source_label: str) -> None:
     # If a user accidentally points ACP_FRIEND_MANIFESTS at their own raw
     # manifest, their filesystem paths would surface in the public UI.
     if not data.get("sanitised"):
-        raise ValueError("missing 'sanitised: true' flag — refusing to load "
+        raise ValueError("missing 'sanitised: true' flag: refusing to load "
                          "(probably an unsanitised manifest)")
     targets = data.get("targets")
     if not isinstance(targets, list):
@@ -898,7 +1004,7 @@ def _validate_friend_manifest(data: object, source_label: str) -> None:
                     f"targets[{i}] polygon {j} has {len(poly)} vertices "
                     f"(cap {_FRIEND_MAX_VERTICES})"
                 )
-    # Final safety net — scan the entire object for path-shaped strings.
+    # Final safety net: scan the entire object for path-shaped strings.
     # Imported lazily so app startup doesn't pay the cost when the env var
     # is unset.
     _scripts_dir = str(REPO_ROOT / "scripts")
@@ -919,7 +1025,7 @@ if MANIFEST_PATH.exists():
     app.coverage_sources.append(ManifestCoverageSource())
 # Out-of-tree extensions can append catalogue registry entries here at
 # `register(app)` time. Same shape as `data/catalog_registry.json` entries.
-# Defaults to an empty list — extensions add to it, never replace it.
+# Defaults to an empty list: extensions add to it, never replace it.
 app.extra_catalogues: list[dict] = []
 # PrioritisedTilesSource registry. Empty by default; extensions append via
 # `app.tile_sources.append(...)` in their register() callback. Each source
@@ -935,7 +1041,7 @@ app.catalog_sources: list = []
 app.extensions_manifest: list[dict] = []
 
 
-# Friend manifests — semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
+# Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
 # is validated (sanitised flag + caps + path-leak scan) before joining the
 # registry; failures log a warning and skip without crashing the app.
 _friend_paths = os.environ.get("ACP_FRIEND_MANIFESTS", "").strip()
@@ -955,7 +1061,7 @@ if _friend_paths:
             _validate_friend_manifest(data, source_label=p.stem)
         except (OSError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
             logging.warning(
-                "ACP_FRIEND_MANIFESTS: skipping %s — %s", p, exc
+                "ACP_FRIEND_MANIFESTS: skipping %s: %s", p, exc
             )
             continue
         label = (data.get("friend_label") or p.stem) or "Friend"
@@ -975,13 +1081,13 @@ if _friend_paths:
         logging.info("Loaded friend manifest: %s (%s)", label, p)
 
 
-# Survey MOC sources — declarative registry committed at data/surveys.json (or
+# Survey MOC sources: declarative registry committed at data/surveys.json (or
 # ACP_SURVEYS_PATH). The file is intentionally tracked: PRs welcome to add
 # more surveys. Per-entry validation failures log a warning and skip; bad
 # entries must not block app boot.
 def _load_surveys_registry() -> list[dict]:
     if not SURVEYS_PATH.exists():
-        logging.info("Surveys registry not found at %s — no MOC sources", SURVEYS_PATH)
+        logging.info("Surveys registry not found at %s: no MOC sources", SURVEYS_PATH)
         return []
     try:
         data = json.loads(SURVEYS_PATH.read_text(encoding="utf-8"))
@@ -1016,7 +1122,7 @@ for _entry in _load_surveys_registry():
         logging.warning("Skipping MOC source %s: %s", _eid, exc)
 
 
-# Optional extensions — load any user-supplied modules from the directory
+# Optional extensions: load any user-supplied modules from the directory
 # named by ACP_EXTENSIONS_DIR. No-op when the env var is unset or the loader
 # is absent, so a stock checkout runs unchanged. Loaded after the built-in
 # source registers so extensions can read or extend `app.coverage_sources`.
@@ -1101,7 +1207,7 @@ def _extract_gear_from_manifest() -> dict:
     data. Pulls whatever the manifest exposes today (telescope names, filters per
     telescope, pix_arcsec, fov_arcmin) and also looks for richer FITS-derived
     fields (camera, focal_length_mm, pixel_size_um, aperture_mm) if the upstream
-    manifest builder has started surfacing them — safe if absent."""
+    manifest builder has started surfacing them: safe if absent."""
     manifest = load_manifest()
     if not manifest:
         return {"telescopes": [], "cameras": []}
@@ -1114,11 +1220,22 @@ def _extract_gear_from_manifest() -> dict:
                                        "focal_mm": [], "aperture_mm": [], "cameras_seen": set()})
         # Targets built from light frames alone have no per_master_fov entry,
         # but the scanner still lists their INSTRUME on the target (issue #63).
+        colour_cams = set(target.get("colour_cameras") or [])
         for cam_name in (target.get("cameras") or []):
             if cam_name and not _looks_truncated(cam_name):
-                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": []})
+                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": [], "colour": False})
+                if cam_name in colour_cams:
+                    c["colour"] = True
+                # Seed the real filters the user shot with, not the bands they
+                # credit: an OSC camera gets one OSC entry rather than R, G, B,
+                # and a dual band filter keeps its own name.
                 for f, d in (target.get("filters") or {}).items():
-                    if (d or {}).get("total_hours", 0) > 0:
+                    if (d or {}).get("total_hours", 0) <= 0:
+                        continue
+                    sources = (d or {}).get("sources")
+                    if isinstance(sources, dict) and sources:
+                        c["filters"].update(k for k, v in sources.items() if (v or 0) > 0)
+                    else:
                         c["filters"].add(f)
         for m in (target.get("per_master_fov") or []):
             name = m.get("telescope")
@@ -1142,7 +1259,8 @@ def _extract_gear_from_manifest() -> dict:
             cam_name = m.get("camera") or m.get("instrument")
             if cam_name and not _looks_truncated(cam_name):
                 t["cameras_seen"].add(cam_name)
-                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": []})
+                c = cams.setdefault(cam_name, {"filters": set(), "pixel_um": [], "sensor_px": [], "colour": False})
+                if m.get("colour"): c["colour"] = True
                 if m.get("filter"): c["filters"].add(m["filter"])
                 if m.get("pixel_size_um"):
                     try: c["pixel_um"].append(float(m["pixel_size_um"]))
@@ -1174,6 +1292,7 @@ def _extract_gear_from_manifest() -> dict:
             "filters": sorted(info["filters"]),
             "pixel_size_um": _median(info["pixel_um"]) or 0,
             "sensor_px": info["sensor_px"][-1] if info["sensor_px"] else None,
+            "colour": bool(info.get("colour")),
         })
     return {"telescopes": telescopes, "cameras": cameras}
 
@@ -1194,7 +1313,9 @@ def _seed_gear_from_manifest() -> dict:
 
     # Default filter config for a camera seeded from observed filter names.
     def _default_filter_cfg(f):
-        is_narrow = f in ("Ha", "OIII", "SII", "NII", "OI")
+        # Broadband and colour sensor entries get a short default sub; every
+        # named narrowband, dual band or multi band filter gets a long one.
+        is_narrow = f not in ("L", "R", "G", "B", "V", "OSC", "NoFilter", "L-Pro", "L-Quad", "CLS", "UHC")
         return {
             "ts_template_id": None, "ts_template_name": None,
             "default_sub_s": 300 if is_narrow else 120,
@@ -1237,6 +1358,7 @@ def _seed_gear_from_manifest() -> dict:
             "name": info["name"],
             "pixel_size_um": info["pixel_size_um"] or 0,
             "sensor_px": info["sensor_px"] or [0, 0],
+            "colour": bool(info.get("colour")),
             "filters": {f: _default_filter_cfg(f) for f in info["filters"]},
         }))
         added_cams.append(info["name"])
@@ -1259,9 +1381,27 @@ def api_gear_seed():
     return jsonify(_seed_gear_from_manifest())
 
 
+def _iso_mtime(path: Path) -> str | None:
+    """UTC ISO 8601 mtime of `path`, or None when it doesn't exist."""
+    if not path.exists():
+        return None
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+@app.route("/api/version")
+def api_version():
+    """Lets the NINA plugin poll cheaply for plan/manifest changes instead of
+    refetching /api/plans on a timer regardless of whether anything moved."""
+    return jsonify({
+        "version": VERSION,
+        "plans_last_modified": _iso_mtime(PLANS_PATH),
+        "manifest_last_modified": _iso_mtime(MANIFEST_PATH),
+    })
+
+
 @app.route("/")
 def index():
-    # Render the page even when no manifest exists yet — a fresh-install
+    # Render the page even when no manifest exists yet: a fresh-install
     # user lands here, the frontend fetches /api/manifest, sees an empty
     # targets list, and shows the onboarding banner directing them at the
     # archive setup guide. Erroring out here would just give them a
@@ -1279,7 +1419,7 @@ def index():
 def api_manifest():
     m = load_manifest()
     if m is None:
-        # Empty manifest rather than 404 — the frontend's onboarding
+        # Empty manifest rather than 404: the frontend's onboarding
         # banner triggers on targets.length === 0, so a clean empty
         # response is exactly what we want here.
         return jsonify({
@@ -1297,7 +1437,38 @@ def api_manifest():
         "total_targets": m.get("total_targets"),
         "total_integration_hours": m.get("total_integration_hours"),
         "targets": slim_targets,
+        "scan_health": _scan_health(m),
     })
+
+
+def _scan_health(m: dict) -> dict | None:
+    """Slim view of the scanner's integrity flags for the rail. None for a
+    manifest written before the flags existed."""
+    flags = m.get("integrity_flags")
+    if not isinstance(flags, dict):
+        return None
+
+    def _count(key):
+        v = flags.get(key)
+        return len(v) if isinstance(v, list) else 0
+
+    def _num(key):
+        try:
+            return float(flags.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    unrec = []
+    for row in flags.get("unrecognised_filter_names") or []:
+        if isinstance(row, dict) and row.get("name"):
+            unrec.append({"name": str(row["name"])[:64], "frames": int(row.get("frames") or 0)})
+    return {
+        "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
+        "masters_missing_wcs": _count("masters_missing_wcs"),
+        "masters_ambiguous_filter": _count("masters_ambiguous_filter"),
+        "dedup_hours_dropped": round(_num("session_dedup_hours_dropped") + _num("content_dedup_hours_dropped"), 2),
+        "unrecognised_filters": unrec,
+    }
 
 
 @app.route("/api/target/<int:target_id>")
@@ -1334,8 +1505,8 @@ def api_catalogs():
         except Exception as exc:
             logging.warning("catalog source %r objects() raised: %s", src_id, exc)
             continue
-        # Out-of-tree sources win on key collisions — same precedence as the
-        # registry merge — so an extension can deliberately override a
+        # Out-of-tree sources win on key collisions: same precedence as the
+        # registry merge: so an extension can deliberately override a
         # file-loaded catalogue with a richer per-class build.
         out[src_id] = objs
     return jsonify(out)
@@ -1368,11 +1539,11 @@ def _entry_from_catalog_source(src) -> dict | None:
         "enabled_default": bool(meta.get("enabled_default")),
         "categories": cats,
         # Cross-catalogue Object-filter fields (all optional).
-        # `default_visible_categories` — categories ticked on first load
+        # `default_visible_categories`: categories ticked on first load
         # in the Objects panel; absent ⇒ all visible.
-        # `known_tags` — tag values to render chips for up-front,
+        # `known_tags`: tag values to render chips for up-front,
         # before any objects load.
-        # `default_filter` — initial search-box expression.
+        # `default_filter`: initial search-box expression.
         "default_visible_categories": list(meta.get("default_visible_categories") or []),
         "known_tags": list(meta.get("known_tags") or []),
         "default_filter": str(meta.get("default_filter") or ""),
@@ -1380,7 +1551,7 @@ def _entry_from_catalog_source(src) -> dict | None:
 
 
 # --- Tile sources (Plan 4) -----------------------------------------------
-# A "tile source" is anything implementing sources.PrioritisedTilesSource —
+# A "tile source" is anything implementing sources.PrioritisedTilesSource , 
 # a curated, ranked list of sky cells with per-band coverage. In-tree code
 # does not ship one; out-of-tree extensions register via
 # `app.tile_sources.append(...)`. The Inventory rail surfaces whichever
@@ -1498,7 +1669,7 @@ def api_tile_sources():
 def api_tiles(source_id: str):
     """Return all tiles for one source.
 
-    No server-side filtering for v1 — payloads are small enough (~100KB
+    No server-side filtering for v1: payloads are small enough (~100KB
     for a few thousand tiles) that the frontend can filter live as the
     user toggles chips. Add `?priority=1,2&missing=Ha,SII` later if a
     payload grows past comfort.
@@ -1668,7 +1839,7 @@ def api_moc(source_id: str):
 
     Lazy-fetches on first hit. Returns 404 for unknown ids or non-MOC sources,
     503 when mocpy is missing, 502 when the upstream fetch or validation
-    fails. Successful responses are application/octet-stream — Aladin Lite's
+    fails. Successful responses are application/octet-stream: Aladin Lite's
     FITS MOC loader takes the bytes directly.
     """
     src = next(
@@ -1861,7 +2032,7 @@ def _safe_log(value) -> str:
     """Strip CR/LF and truncate so user-supplied values can't forge log lines.
 
     `%r` already escapes control chars, but CodeQL's taint tracker doesn't
-    model that — wrap user input through here at the log-call boundary to
+    model that: wrap user input through here at the log-call boundary to
     keep the log-injection rule quiet.
     """
     return str(value).replace("\r", "").replace("\n", "")[:200]
@@ -2216,7 +2387,7 @@ def api_destinations():
     """Read/write the full destinations list. GET returns
     ``{version, destinations: [...]}``; the list is empty when no
     destinations.json exists (single-rig users never see the concept).
-    POST replaces the full list — partial updates not supported (low
+    POST replaces the full list: partial updates not supported (low
     cardinality, simpler UI).
     """
     if request.method == "GET":
@@ -2251,7 +2422,7 @@ def api_destinations():
         if isinstance(notes, str) and notes.strip():
             out["notes"] = notes.strip()
         cleaned.append(out)
-    # Preserve any existing backfilled_at flag — it's metadata about
+    # Preserve any existing backfilled_at flag: it's metadata about
     # whether the one-shot plan-backfill migration has run, not user
     # data the editor should clobber.
     prev = load_destinations()
@@ -2296,7 +2467,7 @@ def _source_passes_threshold(src, filter_name: str, min_hours: float) -> bool:
 
     Returns True for sources without per-region hours (MOC sources): the
     threshold is meaningless there, so they always qualify if their declared
-    filter matches — that match is enforced separately by compute_gap_moc.
+    filter matches: that match is enforced separately by compute_gap_moc.
     """
     coverage = getattr(src, "coverage", None)
     if coverage is None:
@@ -2346,7 +2517,7 @@ def _select_gap_sources(have: str, missing: str, source_ids: list[str] | None,
 
 @app.route("/api/gaps")
 def api_gaps():
-    """Multi-source gap finder — where `have` is covered but `missing` isn't.
+    """Multi-source gap finder: where `have` is covered but `missing` isn't.
 
     Returns 503 when mocpy isn't installed (MOC algebra is the whole point of
     this route; CSV consumers fall back via /api/export/priority instead).
@@ -2383,7 +2554,7 @@ def api_gaps():
 
     cands = candidates_in_moc(result.gap_moc, load_catalogs())
     # moc_url echoes the same query string so a frontend can fetch the FITS
-    # without re-parsing — keep the param order stable for cache-friendliness.
+    # without re-parsing: keep the param order stable for cache-friendliness.
     qs = urllib.parse.urlencode({
         "have": params["have"],
         "missing": params["missing"],
@@ -2467,7 +2638,7 @@ def api_export_priority():
 
     With mocpy installed: thin wrapper over compute_gap_moc against the user's
     own manifest. CSV-shaped per-target overlap fields (galactic l/b, target id,
-    filter hours) are re-derived here — they're export-shape, not gap-math, so
+    filter hours) are re-derived here: they're export-shape, not gap-math, so
     they don't belong inside gaps.py.
 
     Without mocpy: falls back to the original inline implementation so the CSV
@@ -2593,7 +2764,7 @@ def api_export_priority():
 # outside the legitimate astrophoto filter-name shape on the way in,
 # so a poisoned gear.json can never enter the system in the first place.
 # Real filter names are short alphanumeric tokens (Ha, SII, OIII, L, R,
-# G, B, V, IDAS, U, NII, Hb, etc.) — < and " have no place here.
+# G, B, V, IDAS, U, NII, Hb, etc.): < and " have no place here.
 _FILTER_NAME_RE = re.compile(r"^[A-Za-z0-9_+\-]{1,32}$")
 
 
@@ -2610,7 +2781,7 @@ def _validate_gear_payload(payload: dict) -> str | None:
         for fname in filters.keys():
             if not isinstance(fname, str) or not _FILTER_NAME_RE.match(fname):
                 return (f"cameras[{i}].filters has invalid filter name "
-                        f"{fname!r} — must match {_FILTER_NAME_RE.pattern}")
+                        f"{fname!r}: must match {_FILTER_NAME_RE.pattern}")
     return None
 
 
@@ -2759,11 +2930,84 @@ def _validate_plan_payload(payload: dict) -> str | None:
     return None
 
 
+_PLAN_EXPAND_TOKENS = frozenset({"gear", "site", "panels"})
+
+
+def _plan_panels(plan: dict, gear_data: dict) -> list[dict]:
+    """Mosaic panel centers for one plan, using the same geometry
+    /api/sync expands a mosaic with. Collapses to a single "panel" when
+    the plan isn't a mosaic, or when gear doesn't resolve to a FOV."""
+    tg = plan.get("target") or {}
+    ra_deg = float(tg.get("center_ra_deg") or 0) % 360.0
+    dec_deg = float(tg.get("center_dec_deg") or 0)
+    rot_deg = float(tg.get("rotation_deg") or 0)
+    telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", [])}
+    cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", [])}
+    telescope = telescopes_by_id.get(plan.get("telescope_id") or "")
+    camera = cameras_by_id.get(plan.get("camera_id") or "")
+    fov_w, fov_h = _fov_arcmin(telescope, camera)
+    mosaic = tg.get("mosaic") or {"rows": 1, "cols": 1, "overlap_pct": 0}
+    rows = max(1, int(mosaic.get("rows") or 1))
+    cols = max(1, int(mosaic.get("cols") or 1))
+    overlap = float(mosaic.get("overlap_pct") or 0)
+    return _mosaic_panel_centers(ra_deg, dec_deg, fov_w, fov_h, rot_deg, rows, cols, overlap)
+
+
+def _expand_plan(plan: dict, tokens: frozenset[str], gear_data: dict | None, sites_data: dict | None) -> dict:
+    """Add inline `gear` (expand=gear), `site` (expand=site) and `panels`
+    (expand=panels) to a shallow copy of `plan`.
+
+    The plugin has no way to resolve `telescope_id` / `camera_id` without a
+    second round trip to /api/gear, and it needs the mosaic panel centres to
+    drive the Framing Wizard, so both are offered inline. `gear` carries the
+    resolved telescope and camera plus the pair's field of view and pixel
+    scale. Unresolvable ids come back as null inside `gear`; an absent token
+    leaves the plan byte for byte as /api/plans always returned it."""
+    out = dict(plan)
+    if "gear" in tokens and gear_data is not None:
+        telescopes_by_id = {t["id"]: t for t in gear_data.get("telescopes", []) if t.get("id")}
+        cameras_by_id = {c["id"]: c for c in gear_data.get("cameras", []) if c.get("id")}
+        telescope = telescopes_by_id.get(plan.get("telescope_id") or "")
+        camera = cameras_by_id.get(plan.get("camera_id") or "")
+        fov_w, fov_h = _fov_arcmin(telescope, camera)
+        scale = _plan_pixel_scale(telescope, camera)
+        out["gear"] = {
+            "telescope": telescope,
+            "camera": _with_sensor_scalars(camera) if camera else None,
+            "fov_arcmin": [fov_w, fov_h],
+            "pixel_scale_arcsec": round(scale, 4) if scale else None,
+        }
+    if "site" in tokens and sites_data is not None:
+        sites = sites_data.get("sites") or []
+        if sites:
+            # Plans do not carry a site today, so the first site is the
+            # observing site. A plan that does name one wins if it exists.
+            wanted = plan.get("site_id")
+            out["site"] = next((s for s in sites if wanted and s.get("id") == wanted), sites[0])
+    if "panels" in tokens and gear_data is not None:
+        out["panels"] = _plan_panels(plan, gear_data)
+    return out
+
+
 @app.route("/api/plans", methods=["GET", "POST"])
 def api_plans():
     data = load_plans()
     if request.method == "GET":
-        return jsonify(data)
+        tokens = _PLAN_EXPAND_TOKENS.intersection(
+            t.strip() for t in (request.args.get("expand") or "").split(",")
+        )
+        if tokens:
+            gear_data = load_gear() if ("gear" in tokens or "panels" in tokens) else None
+            sites_data = load_sites() if "site" in tokens else None
+            resp = jsonify({
+                "version": data.get("version", 1),
+                "plans": [_expand_plan(p, tokens, gear_data, sites_data) for p in data.get("plans", [])],
+            })
+        else:
+            resp = jsonify(data)
+        if PLANS_PATH.exists():
+            resp.last_modified = datetime.fromtimestamp(PLANS_PATH.stat().st_mtime, tz=timezone.utc)
+        return resp
     payload = request.get_json(silent=True) or {}
     err = _validate_plan_payload(payload)
     if err:
@@ -2805,6 +3049,516 @@ def api_plan(plan_id: str):
     plans[idx] = payload
     save_plans({"version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
+
+
+# --- NINA plugin v3: gear fingerprint matching --------------------------
+#
+# The companion NINA plugin posts a "fingerprint" of whatever gear is
+# connected right now (camera, filter wheel, mount, site, solved focal
+# length) and asks which of your plans that rig can actually shoot. The
+# matching rules live here rather than in the plugin so both sides can't
+# drift, and so the same verdicts show up in ACP's own UI.
+#
+# Three tests, in order of how often they matter:
+#   1. pixel scale within PIXEL_SCALE_TOL of the plan's own pixel scale
+#   2. field of view at least FOV_FIT of the plan's field in BOTH axes
+#      (bigger is always fine; between FOV_WARN and FOV_FIT is a warning;
+#      below FOV_WARN is a miss)
+#   3. every filter the plan has a goal for is reachable from the
+#      connected filter list, using the scanner's own canonicalisation so
+#      "Antlia Ha" and "Ha" are the same filter here and in the manifest
+#
+# All verdicts are returned. The plugin decides whether to show only the
+# fits or everything; `mode` is echoed back and stored with the
+# fingerprint, it never changes a verdict.
+
+PIXEL_SCALE_TOL = 0.15
+FOV_FIT = 0.90
+FOV_WARN = 0.80
+ARCSEC_PER_RAD_MM = 206.265  # arcsec/px = 206.265 x pixel_um / focal_mm
+
+_scanner_filters = None
+
+
+def _filter_helpers():
+    """Lazily import the scanner's filter vocabulary.
+
+    Same trick shooting_publish.py uses: scripts/ isn't a package, so it
+    goes on sys.path first. Imported on first use rather than at module
+    scope because the scanner pulls in numpy/astropy and nothing else in
+    the request path needs it.
+    """
+    global _scanner_filters
+    if _scanner_filters is None:
+        scripts_dir = str(REPO_ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from build_archive_manifest import bands_for, canon_filter
+        _scanner_filters = (canon_filter, bands_for)
+    return _scanner_filters
+
+
+def _num(value):
+    """float(value) when it is a real finite number, else None."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _plan_pixel_scale(telescope: dict | None, camera: dict | None) -> float | None:
+    """arcsec/px for a plan's telescope + camera pair, or None when either
+    is missing or unusable. Unbinned, to match _fov_arcmin."""
+    if not telescope or not camera:
+        return None
+    fl = _num(telescope.get("focal_length_mm"))
+    px_um = _num(camera.get("pixel_size_um"))
+    if not fl or fl <= 0 or not px_um or px_um <= 0:
+        return None
+    return ARCSEC_PER_RAD_MM * px_um / fl
+
+
+def _fingerprint_focal_length(fp: dict) -> float | None:
+    """Solved focal length wins over the profile's nominal value: a focal
+    reducer, a different back-focus or simply a wrong profile entry all
+    show up in the plate solve and nowhere else."""
+    fl = fp.get("focal_length_mm")
+    if isinstance(fl, dict):
+        return _num(fl.get("solved")) or _num(fl.get("profile"))
+    return _num(fl)
+
+
+def _fingerprint_optics(fp: dict) -> dict:
+    """Connected pixel scale and field of view derived from the fingerprint.
+
+    Returns {pixel_scale_arcsec, fov_arcmin: [w, h], focal_length_mm} with
+    None / zeros where the fingerprint didn't carry enough to compute them.
+    The plugin sends `pixel_scale_arcsec` when NINA knows it; we derive it
+    from pixel size, bin and focal length otherwise so an older plugin
+    build still matches.
+    """
+    camera = fp.get("camera") or {}
+    fl = _fingerprint_focal_length(fp)
+    bin_v = _num(camera.get("bin")) or 1.0
+    if bin_v < 1:
+        bin_v = 1.0
+    px_um = _num(camera.get("pixel_size_um"))
+    scale = _num(fp.get("pixel_scale_arcsec"))
+    if scale is None and px_um and fl and fl > 0:
+        scale = ARCSEC_PER_RAD_MM * px_um * bin_v / fl
+    fov = [0.0, 0.0]
+    sensor = camera.get("sensor_px")
+    if scale and isinstance(sensor, (list, tuple)) and len(sensor) == 2:
+        w_px, h_px = _num(sensor[0]), _num(sensor[1])
+        if w_px and h_px:
+            # sensor_px is the unbinned pixel count and `scale` is the
+            # binned scale, so divide by the bin factor to keep the
+            # product (the physical sensor size) right either way.
+            fov = [round(w_px / bin_v * scale / 60.0, 2),
+                   round(h_px / bin_v * scale / 60.0, 2)]
+    return {"pixel_scale_arcsec": scale, "fov_arcmin": fov, "focal_length_mm": fl}
+
+
+def _fingerprint_bands(fp: dict) -> dict[str, str]:
+    """Which coverage bands the connected filters can deliver.
+
+    Maps band -> credit kind, one of "direct" (a real single-band filter),
+    "colour" (an OSC sensor with no filter wheel, which credits R, G and B
+    at once) or "dual" (a dual or quad band filter credits Ha and OIII
+    together, which is worth a warning because the plan's per-filter hours
+    can't actually be shot independently). Canonicalisation and the band
+    map both come from the scanner, so a filter named "Antlia Ha" here
+    counts the same way it does in the manifest.
+    """
+    canon_filter, bands_for = _filter_helpers()
+    camera = fp.get("camera") or {}
+    colour = bool(camera.get("colour"))
+    names = [str(f) for f in (fp.get("filters") or []) if str(f).strip()]
+    if colour and not names:
+        # A one-shot colour camera with no filter wheel still shoots R, G
+        # and B every frame. bands_for spells that out for "NoFilter".
+        names = ["NoFilter"]
+    rank = {"direct": 3, "colour": 2, "dual": 1}
+    out: dict[str, str] = {}
+    for raw in names:
+        canon = canon_filter(raw)
+        bands = bands_for(canon, colour)
+        if len(bands) == 1:
+            kind = "direct"
+        elif set(bands) == {"R", "G", "B"}:
+            kind = "colour"
+        else:
+            kind = "dual"
+        for band in bands:
+            if rank[kind] > rank.get(out.get(band, ""), 0):
+                out[band] = kind
+    return out
+
+
+def _plan_goal_filters(plan: dict) -> list[str]:
+    """Canonical names of the filters a plan actually asks for. A goal with
+    no hours on it isn't something the rig has to be able to shoot."""
+    canon_filter, _ = _filter_helpers()
+    goals = plan.get("filter_goals") or {}
+    if not isinstance(goals, dict):
+        return []
+    out = []
+    for name, cfg in goals.items():
+        if not isinstance(cfg, dict):
+            continue
+        hours = _num(cfg.get("target_hours"))
+        if hours is not None and hours <= 0:
+            continue
+        canon = canon_filter(name) or str(name)
+        if canon not in out:
+            out.append(canon)
+    return out
+
+
+def _match_plan(plan: dict, optics: dict, bands: dict[str, str],
+                telescopes_by_id: dict, cameras_by_id: dict) -> dict:
+    """Verdict for one plan against one fingerprint. See the module comment
+    above for the rules. Every reason is collected, not just the first, so
+    the plugin can tell the user everything that's wrong in one go."""
+    telescope = telescopes_by_id.get(plan.get("telescope_id") or "")
+    camera = cameras_by_id.get(plan.get("camera_id") or "")
+    plan_scale = _plan_pixel_scale(telescope, camera)
+    plan_fov_w, plan_fov_h = _fov_arcmin(telescope, camera)
+
+    result = {
+        "verdict": "unconstrained",
+        "pixel_scale_ratio": None,
+        "fov_ratio": [None, None],
+        "filters_missing": [],
+        "reasons": [],
+    }
+
+    conn_scale = optics["pixel_scale_arcsec"]
+    conn_w, conn_h = optics["fov_arcmin"]
+    if not plan_scale or plan_fov_w <= 0 or plan_fov_h <= 0:
+        result["reasons"].append(
+            "Plan has no telescope or camera set, so there is nothing to match against.")
+        return result
+    if not conn_scale or conn_w <= 0 or conn_h <= 0:
+        result["reasons"].append(
+            "Fingerprint did not carry enough camera detail to derive a pixel scale.")
+        return result
+
+    scale_ratio = conn_scale / plan_scale
+    fov_ratio = [conn_w / plan_fov_w, conn_h / plan_fov_h]
+    result["pixel_scale_ratio"] = round(scale_ratio, 4)
+    result["fov_ratio"] = [round(fov_ratio[0], 4), round(fov_ratio[1], 4)]
+
+    hard_fail = False
+    warnings = []
+
+    if abs(scale_ratio - 1.0) > PIXEL_SCALE_TOL:
+        hard_fail = True
+        result["reasons"].append(
+            f"Pixel scale {conn_scale:.3f}\"/px is {abs(scale_ratio - 1.0) * 100:.0f}% "
+            f"off the plan's {plan_scale:.3f}\"/px.")
+
+    worst_fov = min(fov_ratio)
+    if worst_fov < FOV_WARN:
+        hard_fail = True
+        result["reasons"].append(
+            f"Field of view {conn_w:.0f}x{conn_h:.0f}' is only {worst_fov * 100:.0f}% "
+            f"of the plan's {plan_fov_w:.0f}x{plan_fov_h:.0f}'.")
+    elif worst_fov < FOV_FIT:
+        warnings.append(
+            f"Field of view is {worst_fov * 100:.0f}% of the plan's, so the framing "
+            f"will be tighter than planned.")
+
+    for filt in _plan_goal_filters(plan):
+        kind = bands.get(filt)
+        if kind is None:
+            result["filters_missing"].append(filt)
+        elif kind == "dual":
+            warnings.append(
+                f"{filt} is only available through a dual band filter, so its hours "
+                f"can't be shot independently.")
+    if result["filters_missing"]:
+        hard_fail = True
+        result["reasons"].append(
+            "No filter for " + ", ".join(result["filters_missing"]) + ".")
+
+    result["reasons"].extend(warnings)
+    if hard_fail:
+        result["verdict"] = "no_fit"
+    elif warnings:
+        result["verdict"] = "fit_with_warnings"
+    else:
+        result["verdict"] = "fit"
+    return result
+
+
+def _normalise_fingerprint(fp: dict) -> dict:
+    """The subset of a fingerprint that identifies the rig, rounded so the
+    same physical setup hashes the same way across sessions.
+
+    Rotation and site are deliberately left out: pointing the same rig at a
+    different target, or driving to a different dark site, does not make it
+    a different rig.
+    """
+    camera = fp.get("camera") or {}
+    sensor = camera.get("sensor_px")
+    canon_filter, _ = _filter_helpers()
+    fl = _fingerprint_focal_length(fp)
+    px_um = _num(camera.get("pixel_size_um"))
+    return {
+        "profile_name": str(fp.get("profile_name") or ""),
+        "camera": {
+            "name": str(camera.get("name") or ""),
+            "sensor_px": [int(_num(sensor[0]) or 0), int(_num(sensor[1]) or 0)]
+                         if isinstance(sensor, (list, tuple)) and len(sensor) == 2 else [0, 0],
+            "pixel_size_um": round(px_um, 3) if px_um else None,
+            "colour": bool(camera.get("colour")),
+            "bin": int(_num(camera.get("bin")) or 1),
+        },
+        "filters": sorted({canon_filter(str(f)) or str(f)
+                           for f in (fp.get("filters") or []) if str(f).strip()}),
+        "mount": str((fp.get("mount") or {}).get("name") or ""),
+        "focal_length_mm": round(fl, 1) if fl else None,
+    }
+
+
+def _fingerprint_id(fp: dict) -> str:
+    payload = json.dumps(_normalise_fingerprint(fp), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _validate_fingerprint(fp) -> str | None:
+    """Reject a fingerprint that can't produce a meaningful verdict.
+
+    Only `camera` and `focal_length_mm` are required, everything else is
+    optional, because a plugin talking to a rig with no filter wheel, no
+    mount driver or no site set still deserves an answer.
+    """
+    if not isinstance(fp, dict):
+        return "payload must be a JSON object"
+    mode = fp.get("mode")
+    if mode is not None and mode not in ("fit", "everything"):
+        return "mode must be 'fit' or 'everything'"
+    camera = fp.get("camera")
+    if not isinstance(camera, dict):
+        return "camera object required"
+    sensor = camera.get("sensor_px")
+    if (not isinstance(sensor, (list, tuple)) or len(sensor) != 2
+            or _num(sensor[0]) is None or _num(sensor[1]) is None):
+        return "camera.sensor_px must be [width_px, height_px]"
+    if _num(camera.get("pixel_size_um")) is None:
+        return "camera.pixel_size_um must be a finite number"
+    if "bin" in camera and (_num(camera["bin"]) is None or _num(camera["bin"]) < 1):
+        return "camera.bin must be a number >= 1"
+    if "colour" in camera and not isinstance(camera["colour"], bool):
+        return "camera.colour must be a boolean"
+    filters = fp.get("filters")
+    if filters is not None and (not isinstance(filters, list)
+                                or not all(isinstance(f, str) for f in filters)):
+        return "filters must be a list of strings"
+    fl = fp.get("focal_length_mm")
+    if isinstance(fl, dict):
+        if _num(fl.get("solved")) is None and _num(fl.get("profile")) is None:
+            return "focal_length_mm needs a finite 'solved' or 'profile' value"
+    elif _num(fl) is None:
+        return "focal_length_mm required (number, or {profile, solved})"
+    if "pixel_scale_arcsec" in fp and fp["pixel_scale_arcsec"] is not None:
+        scale = _num(fp["pixel_scale_arcsec"])
+        if scale is None or scale <= 0:
+            return "pixel_scale_arcsec must be a positive number"
+    return None
+
+
+@app.route("/api/plans/match", methods=["POST"])
+def api_plans_match():
+    """Score every plan against the gear the plugin says is connected.
+
+    Returns all verdicts, not just the fits: the caller decides what to
+    show. The fingerprint itself is stored under its profile name so ACP's
+    own planning rail can say what each NINA install last reported.
+    """
+    fp = request.get_json(silent=True) or {}
+    err = _validate_fingerprint(fp)
+    if err:
+        return jsonify({"error": err}), 400
+
+    gear = load_gear()
+    telescopes_by_id = {t["id"]: t for t in gear.get("telescopes", []) if t.get("id")}
+    cameras_by_id = {c["id"]: c for c in gear.get("cameras", []) if c.get("id")}
+
+    optics = _fingerprint_optics(fp)
+    bands = _fingerprint_bands(fp)
+    want = frozenset({"gear", "panels"})
+
+    out_plans = []
+    summary = {"fit": 0, "fit_with_warnings": 0, "no_fit": 0, "unconstrained": 0}
+    for plan in load_plans().get("plans", []):
+        if not isinstance(plan, dict):
+            continue
+        match = _match_plan(plan, optics, bands, telescopes_by_id, cameras_by_id)
+        summary[match["verdict"]] += 1
+        entry = _expand_plan(plan, want, gear, None)
+        entry["match"] = match
+        out_plans.append(entry)
+
+    fp_id = _fingerprint_id(fp)
+    mode = fp.get("mode") or "fit"
+    _store_fingerprint(fp, fp_id, mode, summary)
+    return jsonify({
+        "fingerprint_id": fp_id,
+        "mode": mode,
+        "plans": out_plans,
+        "summary": summary,
+    })
+
+
+def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
+    """Remember the last fingerprint per profile name.
+
+    Keyed by profile name because that's what the user recognises in
+    NINA's own profile switcher; a fingerprint with no profile name falls
+    back to its own hash so it still shows up rather than being dropped.
+    Write failures are logged and swallowed: failing to record telemetry
+    must never cost the caller its match results.
+    """
+    key = str(fp.get("profile_name") or "").strip() or fp_id
+    doc = load_fingerprints()
+    profiles = dict(doc.get("profiles") or {})
+    profiles[key] = {
+        "profile_name": key,
+        "fingerprint_id": fp_id,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "summary": dict(summary),
+        "fingerprint": fp,
+    }
+    try:
+        save_fingerprints({"version": doc.get("version", 1), "profiles": profiles})
+    except (OSError, ValueError) as exc:
+        logging.warning("could not write %s: %s", FINGERPRINTS_PATH, exc)
+
+
+@app.route("/api/fingerprints")
+def api_fingerprints():
+    """The last fingerprint each NINA profile reported. Read-only; the only
+    writer is /api/plans/match."""
+    doc = load_fingerprints()
+    return jsonify({"version": doc.get("version", 1), "profiles": doc.get("profiles") or {}})
+
+
+def _validate_progress_payload(payload) -> str | None:
+    """Same defence-in-depth shape as _validate_plan_payload: the numbers
+    here land straight in plans.json and feed the sync builder's
+    acquired-count arithmetic, so NaN and negatives are refused rather
+    than written."""
+    if not isinstance(payload, dict):
+        return "payload must be a JSON object"
+    filters = payload.get("filters")
+    if not isinstance(filters, dict) or not filters:
+        return "filters object required"
+    for name, cfg in filters.items():
+        if not isinstance(cfg, dict):
+            return f"filters[{name!r}] must be an object"
+        # A JSON string is refused rather than coerced. _num would happily
+        # turn "1e6" into a million, and this value is written straight into
+        # a plan, so the caller has to mean it as a number.
+        raw_hours = cfg.get("acquired_hours")
+        if isinstance(raw_hours, bool) or not isinstance(raw_hours, (int, float)):
+            return f"filters[{name!r}].acquired_hours must be a number >= 0"
+        hours = _num(raw_hours)
+        if hours is None or hours < 0:
+            return f"filters[{name!r}].acquired_hours must be a number >= 0"
+        # An upper bound, because hours only ever go up without `force`: one
+        # absurd value writes a goal that can never be corrected through this
+        # endpoint again. The cap is far past any real integration time, so it
+        # rejects nonsense without ever rejecting an honest report.
+        if hours > MAX_ACQUIRED_HOURS:
+            return (f"filters[{name!r}].acquired_hours must be <= "
+                    f"{MAX_ACQUIRED_HOURS} (got {hours!r})")
+        if "acquired_count" in cfg and cfg["acquired_count"] is not None:
+            count = cfg["acquired_count"]
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                return f"filters[{name!r}].acquired_count must be an integer >= 0"
+    if "force" in payload and not isinstance(payload["force"], bool):
+        return "force must be a boolean"
+    for field in ("source", "at"):
+        if field in payload and payload[field] is not None and not isinstance(payload[field], str):
+            return f"{field} must be a string"
+    return None
+
+
+@app.route("/api/plans/<plan_id>/progress", methods=["POST"])
+def api_plan_progress(plan_id: str):
+    """Record acquired hours against a plan's per-filter goals.
+
+    Called by the plugin after an imaging session, and by anything else
+    that knows what was actually shot. Hours only ever go up: NINA's own
+    acquired count can drop when frames are culled or a project is reset,
+    and silently rewinding a plan the user has been watching fill up is
+    worse than being one session stale. Pass `"force": true` to overwrite
+    downward on purpose.
+
+    Filters the plan has no goal for are ignored rather than invented, and
+    named in the response so the caller can tell the difference between
+    "recorded" and "quietly dropped".
+    """
+    err = _validate_progress_payload(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    payload = request.get_json(silent=True) or {}
+
+    data = load_plans()
+    plans = data.get("plans", [])
+    idx = next((i for i, p in enumerate(plans) if p.get("id") == plan_id), None)
+    if idx is None:
+        return jsonify({"error": "not found"}), 404
+    plan = plans[idx]
+
+    canon_filter, _ = _filter_helpers()
+    goals = plan.get("filter_goals")
+    if not isinstance(goals, dict):
+        goals = {}
+    # Canonical name -> the key the plan actually uses, so a plugin
+    # reporting "Antlia Ha" updates the plan's "Ha" goal.
+    by_canon = {}
+    for key in goals:
+        by_canon.setdefault(canon_filter(key) or str(key), key)
+
+    force = bool(payload.get("force"))
+    updated, unknown, not_lowered = {}, [], []
+    for name, cfg in (payload.get("filters") or {}).items():
+        key = name if name in goals else by_canon.get(canon_filter(name) or str(name))
+        if key is None:
+            unknown.append(name)
+            continue
+        goal = goals[key]
+        if not isinstance(goal, dict):
+            unknown.append(name)
+            continue
+        new_hours = _num(cfg.get("acquired_hours"))
+        current = _num(goal.get("actual_hours")) or 0.0
+        if new_hours < current and not force:
+            not_lowered.append(key)
+            continue
+        goal["actual_hours"] = new_hours
+        updated[key] = new_hours
+
+    if updated:
+        plan["filter_goals"] = goals
+        plan["updated_at"] = datetime.now(timezone.utc).isoformat()
+        plans[idx] = plan
+        save_plans({"version": data.get("version", 1), "plans": plans})
+
+    return jsonify({
+        "ok": True,
+        "plan": plan,
+        "updated": updated,
+        "unknown_filters": unknown,
+        "not_lowered": not_lowered,
+    })
 
 
 def _build_live_document() -> dict:
@@ -2856,7 +3610,7 @@ def api_publish_shooting():
 
 @app.route("/api/target-overrides", methods=["GET", "POST"])
 def api_target_overrides():
-    """Per-target state the user sets manually — primarily the finished flag for
+    """Per-target state the user sets manually: primarily the finished flag for
     targets that have no plan but should still be treated as done. Keyed by
     target_id (string) to survive JSON round-trips cleanly."""
     data = load_target_overrides()
@@ -2872,7 +3626,7 @@ def api_target_overrides():
     key = str(tid)
     overrides = dict(data.get("overrides", {}))
     # A null/missing "finished" deletes the override so the target falls back to
-    # plan-derived status — this is how the frontend clears a manual mark.
+    # plan-derived status: this is how the frontend clears a manual mark.
     if "finished" not in payload or payload["finished"] is None:
         overrides.pop(key, None)
     else:
@@ -2980,7 +3734,7 @@ def _mosaic_panel_centers(ra_c: float, dec_c: float, fov_w_arcmin: float, fov_h_
             # Camera-frame offset: row 0 at top (+camy = north when rot=0), col 0 at left
             cx = (j - (cols - 1) / 2.0) * stride_w
             cy = ((rows - 1) / 2.0 - i) * stride_h
-            # Rotate into sky (east, north) — camera-Y sits at PA east-of-north
+            # Rotate into sky (east, north): camera-Y sits at PA east-of-north
             de =  cx * cosR + cy * sinR
             dn = -cx * sinR + cy * cosR
             panels.append({
@@ -3007,7 +3761,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
 
     # Group plans into TS Projects. When the user sets `project_name` we
     # honour that as the grouping key. When it's blank, each plan becomes
-    # its own Project named after the plan's target — TS docs explicitly
+    # its own Project named after the plan's target: TS docs explicitly
     # call out that "many projects will have only a single target", so
     # giving every untagged plan its own Project is idiomatic and avoids
     # the previous "Unassigned" catch-all dump.
@@ -3055,7 +3809,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
 
     for pname, group in projects_by_name.items():
         # Reserve the project id up front so each Target can carry it as
-        # ProjectId — TS's importer remaps target.ProjectId via
+        # ProjectId: TS's importer remaps target.ProjectId via
         # projectsIdMap.GetValueOrDefault(); leaving it at 0 produces an
         # orphan target that TS surfaces under an "Unassigned" node.
         proj_id = _next_project_id()
@@ -3105,7 +3859,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                 sub_s = int(goal.get("sub_exposure_s") or 300)
                 desired = max(1, int(math.ceil(th * 3600.0 / max(1, sub_s))))
                 acquired = int(round(float(goal.get("actual_hours") or 0) * 3600.0 / max(1, sub_s)))
-                # Dedupe ExposureTemplate by (camera_id, filter) — gain/offset/etc live on the camera.
+                # Dedupe ExposureTemplate by (camera_id, filter): gain/offset/etc live on the camera.
                 key = (pl.get("camera_id") or "", fname)
                 if key not in template_seen:
                     filt_cfg = (camera or {}).get("filters", {}).get(fname, {}) if camera else {}
@@ -3113,7 +3867,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                         f"{fname} ({camera['name']})" if camera else fname
                     )
                     tpl = {
-                        # Synthetic ID — TS's importer rewrites these through
+                        # Synthetic ID: TS's importer rewrites these through
                         # exposureTemplateIdMap. Only needs to be unique within
                         # this payload so ExposurePlan.ExposureTemplateId can
                         # reference the right template before remapping.
@@ -3304,7 +4058,7 @@ def api_sync():
         "ExportedProfileId": str(uuid.uuid4()),
     }
 
-    # profilePreference.json intentionally omitted — TS skips the import
+    # profilePreference.json intentionally omitted: TS skips the import
     # step when the file is absent, which preserves the user's existing
     # profile preferences and avoids EF validation on a default shell.
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -3328,7 +4082,7 @@ def api_sync():
         "zip_filename": zip_path.name,
         "download_url": download_url,
         "warnings": warnings,
-        "conflicts": warnings,  # alias — the UI inspects this to offer renames
+        "conflicts": warnings,  # alias: the UI inspects this to offer renames
     })
 
 

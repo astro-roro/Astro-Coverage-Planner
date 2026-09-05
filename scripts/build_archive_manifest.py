@@ -145,9 +145,13 @@ def sanitize_telescope(raw):
     return _TELESCOPE_CANONICAL_BY_FOLD.get(fold, s)
 
 
+# Keys are matched after upper-casing, so a mixed-case key here is dead. The
+# three that were (Ha, Halpha, H-alpha) are kept because they read as
+# documentation of the spellings handled, but each has an upper-case twin that
+# does the work. A test asserts every key has one.
 FILTER_CANON = {
     "H": "Ha", "HA": "Ha", "Ha": "Ha", "Halpha": "Ha", "H-alpha": "Ha",
-    "HALPHA": "Ha", "H_ALPHA": "Ha",
+    "HALPHA": "Ha", "H_ALPHA": "Ha", "H-ALPHA": "Ha",
     "O": "OIII", "O3": "OIII", "OIII": "OIII", "O-III": "OIII", "O_III": "OIII",
     "S": "SII", "S2": "SII", "SII": "SII", "S-II": "SII", "S_II": "SII",
     "L": "L", "LUM": "L", "LUMINANCE": "L", "LIGHT": "L", "CLEAR": "L",
@@ -619,6 +623,27 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
     return "unknown"
 
 
+_CAM_COLOUR_RE = re.compile(r"(?:\d|[-\s])(MC|C)(?:[-\s]|$)", re.IGNORECASE)
+_CAM_MONO_RE = re.compile(r"(?:\d|[-\s])(MM|M)(?:[-\s]|$)", re.IGNORECASE)
+
+
+def _camera_name_is_colour(name: str | None) -> bool | None:
+    """True for a colour camera, False for mono, None when the name does not say.
+
+    Astro cameras almost always carry it in the model suffix: 268C, 2600MC,
+    Poseidon-C are colour; 268M, 2600MM, Poseidon-M are mono. Used only as a
+    fallback when the header has no Bayer keyword, which happens on debayered
+    masters.
+    """
+    if not name:
+        return None
+    if _CAM_COLOUR_RE.search(name):
+        return True
+    if _CAM_MONO_RE.search(name):
+        return False
+    return None
+
+
 def read_fits_meta(path: Path) -> dict:
     """Read FITS header, extract WCS center, pixel scale, exposure, filter, date, imagetyp."""
     out = {
@@ -701,6 +726,8 @@ def read_fits_meta(path: Path) -> dict:
             # has NAXIS3 == 3 instead.
             out["colour"] = bool(str(h.get("BAYERPAT") or h.get("COLORTYP") or "").strip()) \
                 or int(h.get("NAXIS3") or 0) == 3
+            if not out["colour"] and _camera_name_is_colour(out["camera"]):
+                out["colour"] = True
             # Sensor/exposure settings useful for TS template seeding.
             for src_key, dst_key, caster in (
                 ("GAIN", "gain", float), ("OFFSET", "offset", float),
@@ -850,6 +877,8 @@ def read_xisf_meta(path: Path) -> dict:
         out["colour"] = bool(str(fk("BAYERPAT") or fk("COLORTYP") or "").strip()) \
             or (bool(geom) and len(geom) >= 3 and int(geom[2]) == 3) \
             or str(img.get("colorSpace") or "").upper() == "RGB"
+        if not out["colour"] and _camera_name_is_colour(out["camera"]):
+            out["colour"] = True
         out["filter"] = canon_filter(fk("FILTER") or fk("FILTRE"))
         try:
             exp = fk("EXPTIME") or fk("EXPOSURE")
@@ -2233,6 +2262,7 @@ def main():
                         entry[k_out] = v
                 if mm.get("naxis1") and mm.get("naxis2"):
                     entry["sensor_px"] = [int(mm["naxis1"]), int(mm["naxis2"])]
+                entry["colour"] = bool(mm.get("colour"))
                 per_master_fov.append(entry)
         fov_arcmin = None
         pix_arcsec = None
@@ -2298,6 +2328,8 @@ def main():
             "master_files": [m["path"] for m in members if m.get("role") != "folder_sub"],
             "telescopes": sorted({m.get("telescope") for m in members if m.get("telescope")}),
             "cameras": sorted({m.get("camera") for m in members if m.get("camera")}),
+            "colour_cameras": sorted({m.get("camera") for m in members
+                                      if m.get("camera") and m.get("colour")}),
             "date_range": date_range,
             "n_masters": sum(1 for m in members if m.get("role") != "folder_sub"),
             "n_sub_folders": sum(1 for m in members if m.get("role") == "folder_sub"),
