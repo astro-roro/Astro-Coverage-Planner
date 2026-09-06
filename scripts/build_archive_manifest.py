@@ -29,6 +29,7 @@ Then start the planner; the manifest will be picked up automatically.
 from __future__ import annotations
 
 import hashlib
+import html
 import inspect
 import json
 import os
@@ -424,11 +425,23 @@ def build_filters_data(members: list[dict]) -> dict:
     return dict(filters_data)
 
 
+_FILTER_TOKEN_RE = re.compile(r"FILTER[-_]([A-Za-z0-9]+)", re.IGNORECASE)
+
+
 def filter_from_path(p: Path) -> str | None:
     """Cascading heuristics: header missed/absent? try filename & parent dirs."""
     # Dual band names carry a hyphen ("L-eXtreme"); catch them whole before the
     # separator split below can reduce them to a bare "L".
     stem = p.stem
+    # WBPP writes the filter into the name as FILTER-<name>, and that is the
+    # only record left in a master whose keywords another tool has stripped.
+    # Read it before the separator splits below, which break FILTER-Ha into
+    # pieces that match nothing.
+    m = _FILTER_TOKEN_RE.search(stem)
+    if m:
+        named = canon_filter(m.group(1))
+        if named:
+            return named
     band = _osc_band_in(stem)
     if band:
         return band
@@ -893,6 +906,15 @@ def _xisf_prop_float(props: dict, key: str):
         return None
 
 
+def _xisf_prop_str(props: dict, key: str):
+    """One XISF property as a trimmed string, or None when absent or empty."""
+    v = _xisf_prop(props, key)
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
 def xisf_astrometric_solution(props: dict) -> dict:
     """Pointing and pixel scale from PixInsight's XISF astrometric properties.
 
@@ -986,6 +1008,37 @@ def ncombine_from_history(lines) -> int | None:
     return found
 
 
+_PI_HISTORY_NUM_RE = re.compile(
+    r'<parameter\s+id="numberOfImages"\s+value="(\d+)"', re.IGNORECASE)
+
+
+def ncombine_from_pixinsight_history(raw) -> int | None:
+    """Subframe count out of PixInsight's ProcessingHistory property, or None.
+
+    WBPP does not always leave a HISTORY card behind, but it always records
+    the whole pipeline as escaped XML in ``PixInsight:ProcessingHistory``.
+    Stephen2615's masters (issue #63) had no HISTORY at all, so every one of
+    them counted a single exposure instead of the fifty-nine it held.
+
+    The last ImageIntegration in the record wins, matching the HISTORY reader.
+    """
+    if not raw:
+        return None
+    try:
+        text = html.unescape(str(raw))
+    except Exception:
+        return None
+    found = None
+    for m in _PI_HISTORY_NUM_RE.finditer(text):
+        try:
+            n = int(m.group(1))
+        except ValueError:
+            continue
+        if n > 0:
+            found = n
+    return found
+
+
 def read_xisf_meta(path: Path) -> dict:
     """Read XISF header metadata (WCS + FITSKeywords) without pixel data."""
     out = {
@@ -1069,6 +1122,10 @@ def read_xisf_meta(path: Path) -> dict:
                 f"{e.get('value') or ''} {e.get('comment') or ''}"
                 for e in (fits_kw.get("HISTORY") or [])
                 if isinstance(e, dict))
+        if out["ncombine"] is None:
+            out["ncombine"] = ncombine_from_pixinsight_history(
+                _xisf_prop(img.get("XISFProperties") or {},
+                           "PixInsight:ProcessingHistory"))
         out["date_obs"] = str(fk("DATE-OBS") or "")[:19] or None
         out["object"] = str(fk("OBJECT") or "").strip() or None
         if out["object"] is None:
@@ -1190,6 +1247,34 @@ def read_xisf_meta(path: Path) -> dict:
                     out["dec_deg"] = float(sc.dec.deg)
                 except Exception:
                     pass
+        # A file that has been through another tool can come back with almost
+        # all its FITS keywords gone. Stephen2615's M17 Ha master (issue #63)
+        # kept 17 of them after Blind Solve 2000 rewrote it, so it had no
+        # filter, no exposure and no camera, and its hours went nowhere. All of
+        # it was still in the XISF properties, which PixInsight treats as the
+        # real record and the FITS keywords as a courtesy copy.
+        if out["filter"] is None:
+            out["filter"] = canon_filter(_xisf_prop_str(props, "Instrument:Filter:Name"))
+        if out["exptime"] is None:
+            exp = _xisf_prop_float(props, "Instrument:FrameExposureTime")
+            if exp and exp > 0:
+                out["exptime"] = exp
+        if out["camera"] is None:
+            out["camera"] = _xisf_prop_str(props, "Instrument:Camera:Name")
+            if out["camera"] and not out["colour"] and _camera_name_is_colour(out["camera"]):
+                out["colour"] = True
+        if out["telescope"] is None:
+            out["telescope"] = sanitize_telescope(
+                _xisf_prop_str(props, "Instrument:Telescope:Name"))
+        if out["xbinning"] is None:
+            xb = _xisf_prop_float(props, "Instrument:Camera:XBinning")
+            if xb and xb > 0:
+                out["xbinning"] = int(xb)
+        if out["date_obs"] is None:
+            out["date_obs"] = (_xisf_prop_str(props, "Observation:Time:Start") or "")[:19] or None
+        obj = _xisf_prop_str(props, "Observation:Object:Name")
+        if obj and (out["object"] is None or out["object"] == object_from_filename(Path(path).stem)):
+            out["object"] = obj
         try:
             focal = float(fk("FOCALLEN") or 0) or None
             xpsz = float(fk("XPIXSZ") or 0) or None
