@@ -1729,6 +1729,8 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .health-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 12px; }
 .health-row .num { color: #c9d1e0; }
 .health-sub { color: #78839a; font-size: 11px; margin: 6px 0 2px; }
+.health-paths { margin: 0 0 6px 8px; }
+.health-path { color: #78839a; font-size: 10px; line-height: 1.4; direction: rtl; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .health-table { width: 100%; font-size: 11px; border-collapse: collapse; }
 .health-table td { padding: 1px 0; }
 .health-table td.num { text-align: right; color: #9aa3b5; white-space: nowrap; }
