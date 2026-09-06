@@ -3785,7 +3785,22 @@ function renderScanHealth(h) {
   ];
   const stat = ([label, value, title]) =>
     `<div class="health-row" title="${esc(title)}"><span>${esc(label)}</span><span class="num">${esc(String(value))}</span></div>`;
-  let html = rows.map(stat).join("");
+  // A count on its own is not actionable: you cannot go and look at the file
+  // it means. List the first few paths under each row that has any.
+  const examples = (key) => {
+    const v = h[key];
+    return Array.isArray(v) ? v : [];
+  };
+  const withExamples = ([label, value, title], key) => {
+    const paths = examples(key);
+    if (!paths.length) return stat([label, value, title]);
+    return stat([label, value, title]) +
+      `<div class="health-paths">` + paths.map(pth =>
+        `<div class="health-path" title="${esc(pth)}">${esc(pth)}</div>`).join("") + `</div>`;
+  };
+  let html = withExamples(rows[0], "masters_missing_wcs_examples") +
+    withExamples(rows[1], "masters_ambiguous_filter_examples") +
+    rows.slice(2).map(stat).join("");
   if (unrec.length) {
     html += `<div class="health-sub">Filter names the scanner could not place</div>`;
     html += `<table class="health-table"><tbody>` + unrec.slice(0, 20).map(r =>
