@@ -1733,6 +1733,65 @@ def collapse_master_variants(masters: list[dict]) -> tuple[list[dict], list[dict
     return kept, dropped
 
 
+def _metadata_poverty(m: dict) -> int:
+    """How many instrument fields this master is missing. Lower is richer."""
+    return sum(1 for k in ("camera", "focallen", "xpixsz", "telescope")
+               if not m.get(k))
+
+
+def collapse_cluster_duplicate_masters(members: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Keep one master per integration when copies sit in different folders.
+
+    ``collapse_master_variants`` groups by parent folder, so it catches
+    ``masterLight_..._autocrop.xisf`` beside ``masterLight_....xisf`` but not
+    the processed copy saved one level up. That copy then counts its hours a
+    second time (issue #76).
+
+    Two masters in the same clustered target that share filter, exposure and
+    subframe count are the same integration. A different subframe count means
+    genuinely different data, so nothing legitimate merges. Where either file
+    has no subframe count there is nothing to compare on, and both are left
+    alone rather than guessed at.
+
+    Returns ``(kept, dropped)``. Folder-sub blocks pass through untouched.
+    """
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    passthrough: list[dict] = []
+    for m in members:
+        ncombine = m.get("ncombine")
+        exptime = m.get("exptime")
+        if (m.get("role") == "folder_sub" or not ncombine or ncombine < 2
+                or not exptime or not m.get("filter")):
+            passthrough.append(m)
+            continue
+        groups[(str(m["filter"]).upper(), round(float(exptime), 2), int(ncombine))].append(m)
+
+    kept = list(passthrough)
+    dropped: list[dict] = []
+    for group in groups.values():
+        if len(group) == 1:
+            kept.append(group[0])
+            continue
+        # Prefer the copy that still carries its instrument keywords. A
+        # PixInsight round trip often strips camera and focal length, and the
+        # kept file is the one the target's field of view and gear seeding
+        # are read from, so losing them here would cost a footprint.
+        group = sorted(group, key=lambda m: (_metadata_poverty(m), _master_rank(m)))
+        primary = group[0]
+        kept.append(primary)
+        for m in group[1:]:
+            dropped.append({
+                "path": m["path"],
+                "kept": primary["path"],
+                "filter": m.get("filter"),
+                "ncombine": m.get("ncombine"),
+                "exptime": m.get("exptime"),
+                "reason": "same integration saved in another folder",
+            })
+    kept.sort(key=lambda m: m["path"])
+    return kept, dropped
+
+
 _ORIGINALS_FOLDER_RE = re.compile(r"^originals?(?:[_\-].*)?$")
 
 
@@ -2579,8 +2638,17 @@ def main():
 
     # Build target records
     targets = []
+    cluster_dedup_log = []
+    cluster_dropped_hours = 0.0
     for i, idxs in enumerate(clusters):
         members = [cluster_members[k] for k in idxs]
+        # A processed copy of a master saved outside the master folder escapes
+        # the per-folder variant collapse, so drop it here where every copy of
+        # one integration is finally in the same list (issue #76).
+        members, cross_folder_drops = collapse_cluster_duplicate_masters(members)
+        for d in cross_folder_drops:
+            cluster_dropped_hours += (d["exptime"] or 0) * (d["ncombine"] or 0) / 3600.0
+        cluster_dedup_log.extend(cross_folder_drops)
         ras = np.array([m["ra_deg"] for m in members])
         decs = np.array([m["dec_deg"] for m in members])
         # RA centre via circular MEDIAN: unwrap about the circular mean (so a
@@ -2707,6 +2775,10 @@ def main():
             "n_sub_folders": sum(1 for m in members if m.get("role") == "folder_sub"),
         })
 
+    if cluster_dedup_log:
+        print(f"[{time.time()-t0:6.1f}s] Dropped {len(cluster_dedup_log)} master(s) "
+              f"duplicated across folders, {cluster_dropped_hours:.1f}h double counted")
+
     # Enrich targets with DB sub hours by fuzzy object-name matching
     # For each target, find DB (object, filter) rows whose object name looks similar to any of target.objects
     print(f"[{time.time()-t0:6.1f}s] Step 5b: Attaching DB sub hours")
@@ -2799,6 +2871,8 @@ def main():
             "master_variant_drops": master_variant_drops,
             "wcs_read_errors": wcs_error_groups,
             "masters_ambiguous_filter": ambig,
+            "cluster_dedup_drops": cluster_dedup_log,
+            "cluster_dedup_hours_dropped": round(cluster_dropped_hours, 2),
             "session_dedup_drops": session_dedup_log,
             "session_dedup_hours_dropped": round(dropped_hours, 2),
             "session_dedup_buckets_dropped": len(session_dedup_log),
@@ -2923,6 +2997,13 @@ def write_summary(m: dict):
         lines.append(f"  - `{pth}`")
     if len(no_wcs) > 20:
         lines.append(f"  - ... and {len(no_wcs) - 20} more, listed in `archive_manifest.json`")
+    xdup = flags.get("cluster_dedup_drops", [])
+    lines.append(f"- **Masters duplicated across folders**: {len(xdup)} "
+                 f"({flags.get('cluster_dedup_hours_dropped', 0)}h counted once)")
+    for d in xdup[:20]:
+        lines.append(f"  - `{d['path']}` counted under `{d['kept']}`")
+    if len(xdup) > 20:
+        lines.append(f"  - ... and {len(xdup) - 20} more, listed in `archive_manifest.json`")
     amb = flags.get("masters_ambiguous_filter", [])
     lines.append(f"- **Masters with ambiguous filter**: {len(amb)}")
     for pth in amb[:20]:
