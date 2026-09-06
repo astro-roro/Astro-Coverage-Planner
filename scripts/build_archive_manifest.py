@@ -1926,12 +1926,40 @@ def cluster_by_coords(items, radius_arcmin=30.0):
     return clusters
 
 
+def load_image_plane(path):
+    """Return a 2D float array of pixel data, or None if it cannot be read.
+
+    Dispatches on extension because XISF is not a FITS file and astropy
+    refuses it with "No SIMPLE card found" (issue #63). Colour data is
+    collapsed to one plane by averaging the channels so a mono file and a
+    three-channel file of the same field stay comparable.
+    """
+    suffix = Path(path).suffix.lower()
+    if suffix == ".xisf":
+        from xisf import XISF
+        data = XISF(str(path)).read_image(0)
+    else:
+        from astropy.io import fits as _fits
+        with _fits.open(path, memmap=True) as hdul:
+            hdu = next((h for h in hdul if getattr(h, "data", None) is not None), None)
+            data = None if hdu is None else np.asarray(hdu.data)
+    if data is None:
+        return None
+    data = np.asarray(data)
+    if data.ndim == 3:
+        # FITS writes channel-first, XISF writes channel-last.
+        axis = 0 if data.shape[0] <= 4 else 2
+        data = data.mean(axis=axis)
+    if data.ndim != 2:
+        return None
+    return data
+
+
 def detect_sii_ha_correlation(cluster_files, log=print) -> list:
     """For masters in a cluster, compare Ha master vs SII master pixel values.
 
     Returns list of flags for suspected copy-bug files.
     """
-    from astropy.io import fits as _fits
     flagged = []
     # Bucket master paths by filter
     by_filter = defaultdict(list)
@@ -1948,10 +1976,8 @@ def detect_sii_ha_correlation(cluster_files, log=print) -> list:
             if ha_dir != sii_dir:
                 continue
             try:
-                with _fits.open(ha_path, memmap=True) as h_hdu:
-                    ha = h_hdu[0].data
-                with _fits.open(sii_path, memmap=True) as s_hdu:
-                    sii = s_hdu[0].data
+                ha = load_image_plane(ha_path)
+                sii = load_image_plane(sii_path)
                 if ha is None or sii is None:
                     continue
                 if ha.shape != sii.shape:
@@ -2893,8 +2919,16 @@ def write_summary(m: dict):
         lines.append(f"  - r={s['correlation']:.3f} — `{Path(s['ha_path']).name}` vs `{Path(s['sii_path']).name}` (target {s['target_id']}: {', '.join(s.get('objects', []))})")
     no_wcs = flags.get("masters_missing_wcs", [])
     lines.append(f"- **Masters missing WCS**: {len(no_wcs)}")
+    for pth in no_wcs[:20]:
+        lines.append(f"  - `{pth}`")
+    if len(no_wcs) > 20:
+        lines.append(f"  - ... and {len(no_wcs) - 20} more, listed in `archive_manifest.json`")
     amb = flags.get("masters_ambiguous_filter", [])
     lines.append(f"- **Masters with ambiguous filter**: {len(amb)}")
+    for pth in amb[:20]:
+        lines.append(f"  - `{pth}`")
+    if len(amb) > 20:
+        lines.append(f"  - ... and {len(amb) - 20} more, listed in `archive_manifest.json`")
     lines.append("")
     lines.append(f"_Full detail in `archive_manifest.json` (integrity_flags section)._")
     lines.append("")

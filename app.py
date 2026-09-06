@@ -1458,6 +1458,17 @@ def _scan_health(m: dict) -> dict | None:
         except (TypeError, ValueError):
             return 0.0
 
+    def _examples(key, limit=10):
+        """First few offending paths, so the rail can name the file.
+
+        Stephen could see the count but had no way to find which master it
+        meant without opening the summary markdown by hand (issue #63).
+        """
+        v = flags.get(key)
+        if not isinstance(v, list):
+            return []
+        return [str(x)[:400] for x in v[:limit] if isinstance(x, str)]
+
     unrec = []
     for row in flags.get("unrecognised_filter_names") or []:
         if isinstance(row, dict) and row.get("name"):
@@ -1466,6 +1477,8 @@ def _scan_health(m: dict) -> dict | None:
         "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
         "masters_missing_wcs": _count("masters_missing_wcs"),
         "masters_ambiguous_filter": _count("masters_ambiguous_filter"),
+        "masters_missing_wcs_examples": _examples("masters_missing_wcs"),
+        "masters_ambiguous_filter_examples": _examples("masters_ambiguous_filter"),
         "dedup_hours_dropped": round(_num("session_dedup_hours_dropped") + _num("content_dedup_hours_dropped"), 2),
         "unrecognised_filters": unrec,
     }
