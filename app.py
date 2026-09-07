@@ -147,6 +147,28 @@ mimetypes.add_type("text/javascript", ".js")
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
+
+# Every write endpoint takes a small JSON document. The largest legitimate
+# body is a 400-panel mosaic sent to /api/visibility/panels, around 25 KB,
+# and a full gear document, around 10 KB. One megabyte leaves room for an
+# archive far larger than any reported and still refuses the case that
+# prompted this: an unauthenticated caller posting megabytes that
+# /api/plans/match then wrote to disk and kept forever.
+MAX_BODY_BYTES = int(os.environ.get("ACP_MAX_BODY_BYTES", 1024 * 1024))
+app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
+
+# NINA profiles that have reported a fingerprint. A real user has a handful.
+# The key is caller-supplied, so without a ceiling anyone on the LAN can grow
+# the file without limit.
+MAX_FINGERPRINT_PROFILES = int(os.environ.get("ACP_MAX_FINGERPRINT_PROFILES", 50))
+
+
+@app.errorhandler(413)
+def _body_too_large(_exc):
+    """JSON, not Flask's HTML page. The NINA plugin parses every response it
+    gets from ACP, so an HTML error body reads to it as a broken server."""
+    return jsonify({"error": f"request body larger than {MAX_BODY_BYTES} bytes",
+                    "max_bytes": MAX_BODY_BYTES}), 413
 app.jinja_env.auto_reload = True
 
 
@@ -3474,6 +3496,12 @@ def api_plans_match():
     })
 
 
+# Kept alongside the normalised rig because they help diagnose a report and
+# say nothing about where the user lives. Deliberately excludes `site` and
+# `rotation_deg`.
+_FINGERPRINT_EXTRA_KEYS = ("nina_version", "pixel_scale_arcsec")
+
+
 def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
     """Remember the last fingerprint per profile name.
 
@@ -3492,8 +3520,26 @@ def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
         "received_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
         "summary": dict(summary),
-        "fingerprint": fp,
+        # The normalised rig plus a short allowlist, not the raw body.
+        # Storing the body verbatim let an unknown key a caller invented
+        # reach disk, and it also wrote the user's observing site
+        # coordinates into a file /api/fingerprints then served to anyone
+        # who could reach the port. The store has no use for the site, the
+        # rotation, or anything else the caller chose to send.
+        "fingerprint": {**_normalise_fingerprint(fp),
+                        **{k: fp[k] for k in _FINGERPRINT_EXTRA_KEYS
+                           if isinstance(fp.get(k), (str, int, float))}},
     }
+    if len(profiles) > MAX_FINGERPRINT_PROFILES:
+        # Oldest report out first. An entry with no timestamp sorts first and
+        # so goes first, which is the right call for a record we cannot age.
+        keep = sorted(profiles.items(),
+                      key=lambda kv: str((kv[1] or {}).get("received_at") or ""),
+                      reverse=True)[:MAX_FINGERPRINT_PROFILES]
+        dropped = len(profiles) - len(keep)
+        profiles = dict(keep)
+        logging.info("fingerprint store at its ceiling of %d profiles; dropped %d oldest",
+                     MAX_FINGERPRINT_PROFILES, dropped)
     try:
         save_fingerprints({"version": doc.get("version", 1), "profiles": profiles})
     except (OSError, ValueError) as exc:
