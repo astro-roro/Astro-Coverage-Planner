@@ -1415,6 +1415,50 @@ def index():
     )
 
 
+_ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
+
+
+def _shorten_archive_path(s: str, roots: list[str]) -> str:
+    """One absolute path, cut down so it still names the file but no longer
+    names the machine.
+
+    A path under a scan root becomes root-relative. A path under no known root
+    keeps its last two segments. Either way the username, the mount point and
+    the folder layout above the archive stop crossing the wire.
+    """
+    folded = s.replace("\\", "/")
+    low = folded.lower()
+    for root in roots:
+        r = str(root).replace("\\", "/").rstrip("/")
+        if not r:
+            continue
+        rl = r.lower()
+        if low == rl:
+            return r.rsplit("/", 1)[-1] or folded
+        if low.startswith(rl + "/"):
+            return folded[len(r) + 1:]
+    parts = [seg for seg in folded.split("/") if seg]
+    return "/".join(parts[-2:]) if parts else folded
+
+
+def _without_archive_paths(obj, roots: list[str]):
+    """Recursively shorten every absolute path in a manifest payload.
+
+    Deliberately structural rather than a list of key names. `api_manifest`
+    used to strip the one key called `paths`, which read as if it prevented
+    this, while `master_files`, `per_master_fov[].path` and three fields
+    inside every `folder_sub_buckets` entry carried the real layout through.
+    Walking the whole payload means a key added later is covered too.
+    """
+    if isinstance(obj, str):
+        return _shorten_archive_path(obj, roots) if _ABS_PATH_RE.match(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _without_archive_paths(v, roots) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_without_archive_paths(v, roots) for v in obj]
+    return obj
+
+
 @app.route("/api/manifest")
 def api_manifest():
     m = load_manifest()
@@ -1428,17 +1472,18 @@ def api_manifest():
             "total_integration_hours": 0,
             "targets": [],
         })
+    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
     slim_targets = []
     for t in m["targets"]:
         ft = {f: {k: v for k, v in d.items() if k != "paths"} for f, d in t["filters"].items()}
         slim_targets.append({**t, "filters": ft})
-    return jsonify({
+    return jsonify(_without_archive_paths({
         "scan_date": m.get("scan_date"),
         "total_targets": m.get("total_targets"),
         "total_integration_hours": m.get("total_integration_hours"),
         "targets": slim_targets,
         "scan_health": _scan_health(m),
-    })
+    }, roots))
 
 
 def _scan_health(m: dict) -> dict | None:
@@ -1489,9 +1534,10 @@ def api_target(target_id: int):
     m = load_manifest()
     if m is None:
         return jsonify({"error": "manifest not found"}), 404
+    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
     for t in m["targets"]:
         if t["target_id"] == target_id:
-            return jsonify(t)
+            return jsonify(_without_archive_paths(t, roots))
     return jsonify({"error": "not found"}), 404
 
 
