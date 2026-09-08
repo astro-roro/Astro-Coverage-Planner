@@ -4264,6 +4264,7 @@ _scan_state = {
     "last_exit_code": None,
     "last_trigger": None,
     "last_error": None,
+    "last_error_kind": None,
 }
 _scan_scheduler_thread: threading.Thread | None = None
 _scan_scheduler_stop = threading.Event()
@@ -4279,6 +4280,49 @@ def scan_status() -> dict:
     return state
 
 
+# What a failed scan is told to the caller as. The scanner's own stderr goes
+# to the log and no further: the last line of a Python traceback is the
+# exception message, and for the common failures that message is a path.
+# /api/scan/status has no authentication in the stock configuration.
+_SCAN_ERROR_KINDS = (
+    ("no valid roots", "no_archive_roots"),
+    ("permission denied", "permission_denied"),
+    ("no such file", "path_not_found"),
+    ("memoryerror", "out_of_memory"),
+    ("no space left", "disk_full"),
+)
+_SCAN_ERROR_MESSAGES = {
+    "no_archive_roots": "the scan found no archive roots to read; check FITS_ROOTS",
+    "permission_denied": "the scan could not read part of the archive",
+    "path_not_found": "the scan could not find part of the archive",
+    "out_of_memory": "the scan ran out of memory",
+    "disk_full": "the scan ran out of disk space",
+    "crashed": "the scan failed; see the server log for the reason",
+    "could_not_start": "the scan could not be started; see the server log",
+}
+
+
+def _classify_scan_error(text: str) -> str:
+    low = (text or "").lower()
+    for needle, kind in _SCAN_ERROR_KINDS:
+        if needle in low:
+            return kind
+    return "crashed"
+
+
+def _record_scan_error(text: str | None, kind: str | None = None) -> None:
+    """Keep the shape of the failure, discard its wording."""
+    with SCAN_STATE_LOCK:
+        if text is None and kind is None:
+            _scan_state["last_error_kind"] = None
+            _scan_state["last_error"] = None
+            return
+        k = kind or _classify_scan_error(text or "")
+        _scan_state["last_error_kind"] = k
+        _scan_state["last_error"] = _SCAN_ERROR_MESSAGES.get(
+            k, _SCAN_ERROR_MESSAGES["crashed"])
+
+
 def _run_scan_subprocess(args: list[str]) -> int:
     """Run the builder and return its exit code. Overridden in tests."""
     proc = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True, text=True)
@@ -4286,11 +4330,9 @@ def _run_scan_subprocess(args: list[str]) -> int:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
         logging.error("scheduled scan failed (exit %s):\n%s",
                       proc.returncode, "\n".join(tail))
-        with SCAN_STATE_LOCK:
-            _scan_state["last_error"] = tail[-1] if tail else None
+        _record_scan_error("\n".join(tail))
     else:
-        with SCAN_STATE_LOCK:
-            _scan_state["last_error"] = None
+        _record_scan_error(None)
     return proc.returncode
 
 
@@ -4315,8 +4357,7 @@ def run_scan_now(trigger: str = "cron") -> bool:
         code = _run_scan_subprocess([sys.executable, str(SCAN_SCRIPT_PATH)])
     except Exception as e:
         logging.error("scheduled scan could not start: %s: %s", type(e).__name__, e)
-        with SCAN_STATE_LOCK:
-            _scan_state["last_error"] = f"{type(e).__name__}: {e}"
+        _record_scan_error(f"{type(e).__name__}: {e}", kind="could_not_start")
     finally:
         with SCAN_STATE_LOCK:
             _scan_state["running"] = False
