@@ -96,6 +96,8 @@ A prebuilt image is published to `ghcr.io/astro-roro/astro-coverage-planner:late
 
 Bind the port mapping to `127.0.0.1` like the example above unless you actually want the app reachable from other machines on your network. The container listens on `0.0.0.0` inside itself (so Docker's port mapping works at all), and ACP has no authentication of its own. Change it to `-p 5555:5555` only if you deliberately want LAN access.
 
+The container runs as an unprivileged user (uid 10001) rather than root. A named volume like the example above just works. If you bind-mount a host directory at `/app/data` instead, that directory has to be writable by uid 10001, so on Linux you may need `chown -R 10001 /your/data/dir` once.
+
 ### Companion NINA plugin (beta)
 
 There's now an official **[ACP NINA plugin](https://github.com/astro-roro/ACP.NINA.Plugin)** that brings the planner directly into NINA. It adds a dock panel in the Imaging tab that lists every plan from your running ACP instance, with a one-click **Push to Framing** button that loads the target into NINA's Framing Wizard — coordinates, rotation, mosaic geometry, camera dimensions, focal length all set automatically. From there you save the framing as a sequencer target and image it however you like (Simple Sequencer, Advanced Sequencer, manual capture). **No Target Scheduler required.**
