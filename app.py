@@ -146,6 +146,7 @@ mimetypes.add_type("text/javascript", ".js")
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
 
 # Every write endpoint takes a small JSON document. The largest legitimate
@@ -169,7 +170,7 @@ def _body_too_large(_exc):
     gets from ACP, so an HTML error body reads to it as a broken server."""
     return jsonify({"error": f"request body larger than {MAX_BODY_BYTES} bytes",
                     "max_bytes": MAX_BODY_BYTES}), 413
-app.jinja_env.auto_reload = True
+
 
 
 def _api_auth_token() -> str:
@@ -179,8 +180,42 @@ def _api_auth_token() -> str:
     return (os.environ.get("ACP_API_TOKEN") or "").strip()
 
 
+def _token_matches(supplied: str, token: str) -> bool:
+    """Constant-time comparison of a bearer token that may not be ASCII.
+
+    Comparing the two as str raised TypeError on any non-ASCII token, which
+    turned every request into a 500 whether the token was right or wrong.
+
+    WSGI hands a header value over already decoded as latin-1, one character
+    per byte, so encoding it back with latin-1 recovers the bytes the client
+    actually sent. HTTP clients disagree about how to put a non-ASCII token
+    on the wire: curl sends UTF-8, some .NET and Java clients send latin-1.
+    Both encodings of the configured token are accepted, since both derive
+    from the same secret and refusing one would just look like a broken
+    server to whoever picked that client.
+    """
+    on_the_wire = supplied.encode("latin-1", "replace")
+    candidates = {token.encode("utf-8")}
+    try:
+        # Strict, not "replace": a lossy encoding would let a caller sending
+        # a question mark where a character does not fit latin-1 through.
+        candidates.add(token.encode("latin-1"))
+    except UnicodeEncodeError:
+        pass
+    return any(hmac.compare_digest(on_the_wire, c) for c in candidates)
+
+
 if _api_auth_token():
     logging.info("[acp] API auth: ON: /api/* requires a matching ACP_API_TOKEN bearer token")
+    if not _api_auth_token().isascii():
+        logging.warning(
+            "[acp] ACP_API_TOKEN contains non-ASCII characters. It works here, but "
+            "HTTP clients disagree about how to encode such a header, so a plugin "
+            "or curl on another machine may fail to authenticate. ASCII is safer.")
+    if len(_api_auth_token()) < 16:
+        logging.warning(
+            "[acp] ACP_API_TOKEN is shorter than 16 characters. It is the only thing "
+            "standing between your archive and anyone who can reach the port.")
 else:
     logging.info("[acp] API auth: OFF: set ACP_API_TOKEN to require a bearer token on /api/*")
 
@@ -203,7 +238,7 @@ def _api_gate():
         return None
     auth_header = request.headers.get("Authorization", "")
     supplied = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
-    if not hmac.compare_digest(supplied, token):
+    if not _token_matches(supplied, token):
         return jsonify({"error": "unauthorized"}), 401
     return None
 
