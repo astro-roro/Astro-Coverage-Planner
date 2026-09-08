@@ -21,11 +21,13 @@ accident.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import app as app_module  # noqa: E402
 from app import app  # noqa: E402
 
 EVIL = "https://evil.example"
@@ -84,6 +86,65 @@ class TestOrdinaryUseIsUnaffected(unittest.TestCase):
     def test_a_desktop_client_is_unaffected_by_any_of_this(self):
         """No Origin header at all, which is what a non-browser sends."""
         self.assertEqual(self.client.get("/api/version").status_code, 200)
+
+
+class TestPreflightFreeWritesParseNothing(unittest.TestCase):
+    """The preflight is only half the story.
+
+    A cross-origin POST carrying one of the three CORS-safelisted content
+    types, text/plain, application/x-www-form-urlencoded or
+    multipart/form-data, is a simple request: the browser sends it without
+    asking permission first and only withholds the reply. So the preflight
+    tests above prove nothing about POST. What actually keeps those writes
+    shut is that every write endpoint reads its body with request.get_json,
+    which returns None unless the content type is application/json, and
+    application/json is not safelisted.
+
+    That protection is real but incidental. Adding force=True to one
+    get_json call would reopen the whole write surface without touching
+    anything that looks like security. Confirmed in a real browser on
+    2026-09-07: a page on another origin sent these and every one was
+    refused with a 400.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        td = Path(self._td.name)
+        for name in ("SITES_PATH", "GEAR_PATH", "PLANS_PATH", "DESTINATIONS_PATH",
+                     "TARGET_OVERRIDES_PATH", "SAVED_SEARCHES_PATH",
+                     "FINGERPRINTS_PATH"):
+            setattr(app_module, name, td / f"{name.lower()}.json")
+        for cache in ("_sites_cache", "_gear_cache", "_plans_cache",
+                      "_destinations_cache", "_fingerprints_cache"):
+            if hasattr(app_module, cache):
+                setattr(app_module, cache, None)
+                setattr(app_module, cache + "_mtime", None)
+        self.client = app.test_client()
+
+    SAFELISTED = ("text/plain", "application/x-www-form-urlencoded",
+                  "multipart/form-data")
+    WRITE_PATHS = ("/api/sites", "/api/gear", "/api/plans", "/api/destinations",
+                   "/api/target-overrides", "/api/saved-searches",
+                   "/api/plans/match")
+
+    def test_a_simple_post_is_never_parsed_as_a_body(self):
+        body = '{"sites": [{"id": "x", "name": "pwned", "lat": 0, "lon": 0}], '\
+               '"telescopes": [], "cameras": [], "id": "pwned", "target_id": "t1", '\
+               '"name": "pwned", "destinations": []}'
+        for path in self.WRITE_PATHS:
+            for ctype in self.SAFELISTED:
+                with self.subTest(path=path, content_type=ctype):
+                    r = self.client.post(path, data=body,
+                                         content_type=ctype,
+                                         headers={"Origin": EVIL})
+                    self.assertEqual(r.status_code, 400, f"{ctype} {path}")
+
+    def test_the_same_body_as_json_is_accepted(self):
+        """The refusal above is about the content type, not the body."""
+        r = self.client.post("/api/sites", json={
+            "sites": [{"id": "x", "name": "ok", "lat": 0, "lon": 0}]})
+        self.assertEqual(r.status_code, 200)
 
 
 if __name__ == "__main__":
