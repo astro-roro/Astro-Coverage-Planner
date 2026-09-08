@@ -63,7 +63,8 @@ from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import (Flask, Response, jsonify, redirect, render_template, request,
+                   send_from_directory)
 
 # Reconfigure stdout/stderr to UTF-8 so non-ASCII characters in log/print
 # output don't crash on Windows where the default console codec (cp1252)
@@ -220,27 +221,132 @@ else:
     logging.info("[acp] API auth: OFF: set ACP_API_TOKEN to require a bearer token on /api/*")
 
 
+SESSION_COOKIE_NAME = "acp_session"
+# Thirty days. Long enough that a home user signs in once and forgets about
+# it, short enough that a browser left on a machine that changes hands does
+# not stay signed in forever.
+SESSION_COOKIE_MAX_AGE_S = 30 * 24 * 3600
+
+
+def _session_cookie_value(token: str) -> str:
+    """The cookie that stands in for the token in a browser.
+
+    Derived from the token rather than being the token, so the value in the
+    cookie jar is not the thing the user pastes into their NINA plugin. It is
+    still credential-equivalent, which is why the cookie is HttpOnly: it does
+    not need to be reachable from page JavaScript, and the page never reads
+    it.
+    """
+    return hmac.new(token.encode("utf-8"), b"acp-browser-session",
+                    hashlib.sha256).hexdigest()
+
+
+def _request_is_https() -> bool:
+    return request.is_secure or (
+        request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() == "https")
+
+
+def _wants_html() -> bool:
+    """A browser navigating, rather than the plugin or curl calling.
+
+    Checked against the Accept header alone. A plugin that asks for JSON, or
+    sends no Accept at all, keeps getting 401 JSON rather than a login page
+    it cannot read.
+    """
+    accept = request.headers.get("Accept", "")
+    return "text/html" in accept
+
+
+# Paths that answer before any credential exists. The login form itself, and
+# the favicon, so a signed-out tab is not a broken-image icon.
+_UNGATED_PATHS = ("/login", "/favicon.ico")
+
+
 @app.before_request
 def _api_gate():
-    """Bearer-token gate for /api/*, off by default (issue: NINA plugin
-    prep). The HTML page and static files are never gated: only the API
-    surface a plugin or curl would hit.
+    """Access gate for the whole app, off by default.
+
+    This used to cover /api/* only, on the reasoning that the API is the
+    surface a plugin or curl would hit. The effect was that setting
+    ACP_API_TOKEN served the page shell and then 401d every fetch it made,
+    so the browser UI was dead and nobody would turn the token on. The token
+    is the only thing that closes the LAN exposure, so it has to be usable.
+
+    Every path is gated now. A browser navigating in with no credential gets
+    a login form, which exchanges the token for a session cookie once. The
+    plugin and curl keep sending Authorization: Bearer and never see the
+    form.
 
     OPTIONS used to be answered here with a 204 and no auth check, to serve
     a CORS preflight. The preflight is gone (see the note below where the
     CORS headers used to be), so OPTIONS is now treated like any other
     method and Flask answers it. That removes an unauthenticated path
     through the gate for no loss."""
-    if not request.path.startswith("/api/"):
-        return None
     token = _api_auth_token()
     if not token:
         return None
+    if request.path in _UNGATED_PATHS:
+        return None
+
     auth_header = request.headers.get("Authorization", "")
     supplied = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
+    if supplied and _token_matches(supplied, token):
+        return None
+
+    cookie = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if cookie and hmac.compare_digest(cookie, _session_cookie_value(token)):
+        return None
+
+    if _wants_html() and request.method == "GET":
+        # Rendered in place rather than redirected to, so the address bar
+        # keeps the URL the user asked for and signing in lands them there.
+        return render_template("login.html", next_path=request.full_path), 401
+    return jsonify({"error": "unauthorized"}), 401
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Exchange the access token for a session cookie.
+
+    A GET here when no token is configured, or when the caller already has a
+    valid cookie, just goes to the app: there is nothing to sign in to.
+    """
+    token = _api_auth_token()
+    if not token:
+        return redirect("/")
+    if request.method == "GET":
+        return render_template("login.html", next_path="/"), 200
+
+    supplied = (request.form.get("token") or "").strip()
     if not _token_matches(supplied, token):
-        return jsonify({"error": "unauthorized"}), 401
-    return None
+        logging.warning("[acp] failed sign-in attempt from %s", request.remote_addr)
+        return render_template("login.html", next_path=request.form.get("next") or "/",
+                               error="That token was not accepted."), 401
+
+    target = request.form.get("next") or "/"
+    # Only ever back into this app, never to a host an attacker put in the
+    # form: a bare path, no scheme, no protocol-relative "//host" form.
+    if not target.startswith("/") or target.startswith("//"):
+        target = "/"
+    resp = redirect(target)
+    resp.set_cookie(
+        SESSION_COOKIE_NAME, _session_cookie_value(token),
+        max_age=SESSION_COOKIE_MAX_AGE_S,
+        httponly=True,
+        # Strict, not Lax. Lax would send the cookie on a top-level
+        # navigation from another site, which is exactly the cross-origin
+        # write path commit 55b9841 closed by removing CORS.
+        samesite="Strict",
+        secure=_request_is_https(),
+    )
+    return resp
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    resp = redirect("/login")
+    resp.delete_cookie(SESSION_COOKIE_NAME)
+    return resp
 
 
 # There is deliberately no CORS here. An earlier version of this file sent

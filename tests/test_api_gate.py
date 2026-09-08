@@ -84,6 +84,100 @@ class TestAccentedToken(TokenCase):
         self.assertEqual(r.status_code, 401)
 
 
+class TestTheWholeAppIsGated(TokenCase):
+    """The gate used to cover /api/* only, so setting the token served the
+    page shell and then 401d every fetch it made. Nobody would turn on the
+    one thing that closes the LAN exposure. Confirmed on a running instance:
+    GET / returned 200, GET /static/app.js returned 200, and every /api/ call
+    returned 401."""
+
+    def test_the_app_shell_is_not_served_without_a_credential(self):
+        r = self.client.get("/", headers={"Accept": "text/html"})
+        self.assertEqual(r.status_code, 401)
+        body = r.get_data(as_text=True)
+        self.assertIn("Access token", body)
+        self.assertNotIn("<div id=\"map\"", body)
+
+    def test_static_files_are_not_served_without_a_credential(self):
+        self.assertEqual(self.client.get("/static/app.js").status_code, 401)
+
+    def test_a_json_client_gets_json_not_a_login_page(self):
+        r = self.client.get("/api/manifest", headers={"Accept": "application/json"})
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.get_json(), {"error": "unauthorized"})
+
+    def test_a_client_sending_no_accept_header_gets_json(self):
+        r = self.client.get("/api/manifest")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.get_json(), {"error": "unauthorized"})
+
+    def test_the_login_page_itself_is_reachable(self):
+        self.assertEqual(self.client.get("/login").status_code, 200)
+
+    def test_the_bearer_token_still_works_everywhere(self):
+        h = {"Authorization": "Bearer " + ASCII_TOKEN}
+        self.assertEqual(self.client.get("/api/version", headers=h).status_code, 200)
+        self.assertEqual(self.client.get("/", headers=h).status_code, 200)
+
+
+class TestSigningIn(TokenCase):
+
+    def sign_in(self, token=ASCII_TOKEN, next_path="/"):
+        return self.client.post("/login", data={"token": token, "next": next_path})
+
+    def test_the_right_token_sets_a_cookie_and_redirects(self):
+        r = self.sign_in()
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/", r.headers["Location"])
+        self.assertTrue(self.client.get_cookie(app_session_name()))
+
+    def test_the_cookie_then_opens_the_whole_app(self):
+        self.sign_in()
+        self.assertEqual(self.client.get("/api/manifest").status_code, 200)
+        self.assertEqual(self.client.get("/static/app.js").status_code, 200)
+        self.assertEqual(
+            self.client.get("/", headers={"Accept": "text/html"}).status_code, 200)
+
+    def test_the_cookie_is_httponly_and_samesite_strict(self):
+        r = self.sign_in()
+        header = r.headers["Set-Cookie"]
+        self.assertIn("HttpOnly", header)
+        self.assertIn("SameSite=Strict", header)
+
+    def test_the_cookie_is_not_the_token(self):
+        r = self.sign_in()
+        self.assertNotIn(ASCII_TOKEN, r.headers["Set-Cookie"])
+
+    def test_a_wrong_token_sets_no_cookie(self):
+        r = self.sign_in(token="not-the-token")
+        self.assertEqual(r.status_code, 401)
+        self.assertNotIn("Set-Cookie", r.headers)
+        self.assertIn("not accepted", r.get_data(as_text=True))
+
+    def test_a_forged_cookie_is_refused(self):
+        self.client.set_cookie(app_session_name(), "deadbeef", domain="localhost")
+        self.assertEqual(self.client.get("/api/manifest").status_code, 401)
+
+    def test_signing_in_returns_to_the_page_that_was_asked_for(self):
+        r = self.sign_in(next_path="/?target=42")
+        self.assertTrue(r.headers["Location"].endswith("/?target=42"))
+
+    def test_an_offsite_next_is_refused(self):
+        for hostile in ("https://evil.example/", "//evil.example/"):
+            r = self.sign_in(next_path=hostile)
+            self.assertNotIn("evil.example", r.headers["Location"], hostile)
+
+    def test_logging_out_clears_the_cookie(self):
+        self.sign_in()
+        self.client.post("/logout")
+        self.assertEqual(self.client.get("/api/manifest").status_code, 401)
+
+
+def app_session_name():
+    import app as m
+    return m.SESSION_COOKIE_NAME
+
+
 class TestTokenOff(unittest.TestCase):
 
     def setUp(self):
@@ -94,6 +188,15 @@ class TestTokenOff(unittest.TestCase):
 
     def test_everything_is_open_when_no_token_is_set(self):
         self.assertEqual(self.client.get("/api/version").status_code, 200)
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.get("/static/app.js").status_code, 200)
+
+    def test_no_login_page_is_shown_when_no_token_is_set(self):
+        r = self.client.get("/", headers={"Accept": "text/html"})
+        self.assertNotIn("Access token", r.get_data(as_text=True))
+
+    def test_visiting_login_goes_straight_to_the_app(self):
+        self.assertEqual(self.client.get("/login").status_code, 302)
 
 
 if __name__ == "__main__":
