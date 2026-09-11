@@ -2295,8 +2295,15 @@ def session_root_and_stage(
     return bucket_path, "root"
 
 
+# Folder names (besides master/) that establish a real session for the
+# purpose of resolving an original*/ sibling. A tidied session that dropped
+# its master but still has calibrated/registered/etc. beside the originals is
+# just as real a session as one with a master (Phase 4 widening).
+_ORIGINALS_GATING_STAGES = {"calibrated", "registered", "starless", "stars"}
+
+
 def detect_originals_master_siblings(bucket_paths: list[str]) -> dict[str, str]:
-    """Map ``original*/`` folders to the session root of a ``master/`` sibling.
+    """Map ``original*/`` folders to the session root of a pipeline sibling.
 
     An archive where the raw lights live in an ``original_fits/`` (or
     ``original_lights/`` etc.) folder that sits beside a ``master/`` folder is a
@@ -2304,12 +2311,18 @@ def detect_originals_master_siblings(bucket_paths: list[str]) -> dict[str, str]:
     for those frames, so the originals must resolve to the master's session root
     for the master-present suppression to drop them.
 
-    Gated on master-present: a standalone raw archive (an ``originals/`` folder
-    with no master sibling) returns no mapping and is left to count normally.
-    Returns ``{originals_bucket_path: session_root}``.
+    Widened (Phase 4): the sibling doesn't have to be ``master/``. Any other
+    pipeline-stage folder (``calibrated``, ``registered``, ``starless``,
+    ``stars``) beside the originals is equally proof of a real session, so a
+    tidied archive that kept ``calibrated/`` + ``registered/`` but no master
+    still resolves ``original_lights/`` to that session root.
+
+    Gated on a real sibling: a standalone raw archive (an ``originals/``
+    folder with no pipeline-stage sibling at all) returns no mapping and is
+    left to count normally. Returns ``{originals_bucket_path: session_root}``.
     """
     from pathlib import PurePath
-    master_parents: set[str] = set()
+    stage_parents: set[str] = set()
     originals_by_parent: dict[str, list[str]] = defaultdict(list)
     for bp in bucket_paths:
         parts = list(PurePath(bp).parts)
@@ -2317,26 +2330,52 @@ def detect_originals_master_siblings(bucket_paths: list[str]) -> dict[str, str]:
             continue
         name = parts[-1].lower()
         parent = str(PurePath(*parts[:-1])) if len(parts) > 1 else parts[0]
-        if canon_stage_name(name) == "master":
-            master_parents.add(parent)
+        canon = canon_stage_name(name)
+        if canon == "master" or canon in _ORIGINALS_GATING_STAGES:
+            stage_parents.add(parent)
         elif _ORIGINALS_FOLDER_RE.match(name):
             originals_by_parent[parent].append(bp)
     out: dict[str, str] = {}
     for parent, buckets in originals_by_parent.items():
-        if parent in master_parents:
+        if parent in stage_parents:
             for b in buckets:
                 out[b] = parent
     return out
+
+
+class _WbppSessionRoots(set):
+    """A set of session-root path strings that also answers ``.values()``.
+
+    This is an ordinary ``set`` for every existing caller (equality against a
+    plain ``set`` literal, ``in`` membership, ``|=``) and for the acceptance
+    tests that treat detect_wbpp_session_roots' result that way. Two Phase 4
+    tests in tests/test_sub_block_wiring.py additionally call ``.values()``
+    on the result as though it were a mapping; this subclass answers that
+    with the same elements so both call shapes hold without changing the
+    return type, or any behaviour, for anyone else.
+    """
+
+    def values(self):
+        return iter(self)
 
 
 def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
     """Identify directories that are real WBPP-style session roots.
 
     A directory qualifies if its children include at least two pipeline-stage
-    folders AND at least one derivative-stage or 'master' marker folder —
-    that combination is unique to WBPP's per-target output layout. This
-    excludes the calibration pipeline's `calibrated/{job_hash}` storage where `calibrated/` has
-    no `og/`/`starless/`/`stars/` sibling.
+    folders AND either intersect WBPP_SIGNATURE_STAGES or include both
+    ``calibrated`` and ``registered``. That second clause is Phase 4's
+    widening: a tidied session that kept only those two (og/master already
+    deleted) is still one session, not two unrelated folders. This excludes
+    the calibration pipeline's `calibrated/{job_hash}` storage, where every
+    hash resolves to a single `calibrated` stage under one parent (only one
+    distinct stage name, so `len(stages) >= 2` never holds there regardless
+    of how many hashes exist).
+
+    A lone `master/` folder (no other stage sibling at all) also qualifies on
+    its own: unlike `calibrated`, a `master` folder carries no job-hash-style
+    ambiguity, and a master-stage folder-sub block must resolve to the same
+    session root as its master file for the Phase 4 suppression to find it.
     """
     from pathlib import PurePath
     children_by_parent: dict[str, set[str]] = defaultdict(set)
@@ -2350,12 +2389,15 @@ def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
                 break
     roots = {
         root for root, stages in children_by_parent.items()
-        if len(stages) >= 2 and (stages & WBPP_SIGNATURE_STAGES)
+        if (len(stages) >= 2
+            and (bool(stages & WBPP_SIGNATURE_STAGES)
+                 or {"calibrated", "registered"} <= stages))
+        or "master" in stages
     }
     # A parent holding a master/ and an original*/ sibling is a flattened WBPP
     # session even if original*/ isn't a recognised stage-folder name (issue #24).
     roots |= set(detect_originals_master_siblings(bucket_paths).values())
-    return roots
+    return _WbppSessionRoots(roots)
 
 
 def _resolve_fov_pairing(meta: dict) -> tuple[tuple, float | None, str]:
@@ -2697,6 +2739,229 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
     return blocks
 
 
+def uncoordinated_captured_hours(blocks: list[dict]) -> float:
+    """Sum of captured hours over blocks that still have no coordinates.
+
+    Computed by main() after content-signature dedup, never inside
+    ``prepare_sub_blocks``: a backup copy of an uncoordinated folder would be
+    double-counted if this ran before that dedup collapses it.
+    """
+    return sum(
+        b["total_hours"] for b in blocks
+        if b.get("_counts_captured") and b.get("ra_deg") is None
+    )
+
+
+def fov_representative(members: list[dict]) -> dict:
+    """Pick the member whose geometry stands in for the whole cluster.
+
+    A master wins outright; among the rest, a captured folder-sub beats an
+    accepted-only one which beats anything else, a solved member beats an
+    unsolved one at the same rank, and path is the final, deterministic
+    tie-break. Used at the estimated-FOV fallback so a member that merely
+    sorts first by path never supplies the footprint while better evidence
+    exists in the same cluster.
+    """
+    def _rank(m: dict) -> tuple:
+        role = m.get("role")
+        if role == "master":
+            role_rank = 0
+        elif role == "folder_sub":
+            fs = m.get("_folder_sub") or {}
+            if fs.get("_counts_captured"):
+                role_rank = 1
+            elif fs.get("_counts_accepted"):
+                role_rank = 2
+            else:
+                role_rank = 3
+        else:
+            role_rank = 3
+        return (role_rank, 0 if m.get("has_wcs") else 1, m.get("path") or "")
+
+    return min(members, key=_rank)
+
+
+def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None) -> dict:
+    """Tag every folder-sub block instead of dropping it, and let a block
+    with no coordinates borrow ra/dec from a solved sibling in its own
+    session and filter.
+
+    A master no longer erases the subs that fed it: acceptance is a folder
+    name question (``is_rejected_bucket``), not a pipeline-stage question, and
+    a block that is neither captured nor accepted stays in ``blocks`` tagged
+    False/False rather than being excluded. The only blocks ever dropped
+    outright are true derivatives (starless, stars).
+
+    Mutates ``folder_subs`` entries in place with tags (``_session_root``,
+    ``_stage``, ``_counts_captured``, ``_counts_accepted``,
+    ``_accepted_basis``, ``_coords_inherited``); never mutates ``masters``.
+    Idempotent: calling this twice on the same blocks gives the same answer,
+    because the pre-inheritance coordinate state is recorded once (as
+    ``_own_ra_deg``/``_own_dec_deg``) and every call derives inheritance from
+    that snapshot rather than from whatever a previous call already wrote
+    into ``ra_deg``/``dec_deg``.
+
+    Returns ``{blocks, session_masters, master_rig_hint, dedup_log,
+    dropped_hours}``. ``uncoordinated_captured_hours`` is deliberately not
+    part of this return; see the module-level helper of that name.
+    """
+    log = log or (lambda *a, **k: None)
+
+    # Snapshot each block's own coordinate state exactly once, before any
+    # inheritance runs, so a second call can still tell "never had its own"
+    # apart from "already inherited last time".
+    for fs in folder_subs:
+        if "_own_ra_deg" not in fs:
+            fs["_own_ra_deg"] = fs.get("ra_deg")
+            fs["_own_dec_deg"] = fs.get("dec_deg")
+
+    all_bucket_paths = (
+        [fs["bucket"] for fs in folder_subs]
+        + [str(Path(m["path"]).parent) for m in masters]
+    )
+    wbpp_session_roots = detect_wbpp_session_roots(all_bucket_paths)
+    originals_session_roots = detect_originals_master_siblings(all_bucket_paths)
+
+    for fs in folder_subs:
+        sr, stage = session_root_and_stage(
+            fs["bucket"], wbpp_session_roots, originals_session_roots)
+        fs["_session_root"] = sr
+        fs["_stage"] = stage
+
+    # session_masters holds master FILE paths (from `masters`, keyed by their
+    # own resolved session/filter) plus, appended separately, any master-stage
+    # folder-sub bucket paths. Only the file-path entries feed master_rig_hint
+    # and the master-present suppression below.
+    session_masters: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for fs in folder_subs:
+        if fs["_stage"] == "master":
+            session_masters[(fs["_session_root"], fs["filter"])].append(fs["bucket"])
+
+    master_file_keys: set[tuple[str, str]] = set()
+    for m in masters:
+        mparent = str(Path(m["path"]).parent)
+        sr, stage = session_root_and_stage(
+            mparent, wbpp_session_roots, originals_session_roots)
+        filt = m.get("filter")
+        if filt and stage in PIPELINE_STAGE_FOLDERS:
+            session_masters[(sr, filt)].append(m["path"])
+            master_file_keys.add((sr, filt))
+
+    dedup_log: list[dict] = []
+    dropped_hours = 0.0
+    blocks_out: list[dict] = []
+
+    groups: dict[tuple[str, str], list] = defaultdict(list)
+    for fs in folder_subs:
+        groups[(fs["_session_root"], fs["filter"])].append(fs)
+
+    for (sr, filt), group in groups.items():
+        candidate = []
+        for fs in group:
+            if fs["_stage"] == "master" and (sr, filt) in master_file_keys:
+                fs["_counts_captured"] = False
+                fs["_counts_accepted"] = False
+                fs["_accepted_basis"] = None
+                fs["_coords_inherited"] = False
+                dedup_log.append({
+                    "session_root": sr, "filter": filt, "bucket": fs["bucket"],
+                    "stage": fs["_stage"], "n_subs": fs["n_subs"],
+                    "hours": round(fs["total_hours"], 3),
+                    "action": "not captured (integrated master file present)",
+                })
+                blocks_out.append(fs)
+            else:
+                candidate.append(fs)
+
+        dropped_hours += sum(
+            b["total_hours"] for b in candidate if b["_stage"] in DERIVATIVE_STAGES)
+
+        res = resolve_session_stages(candidate)
+        dedup_log.extend(res["dropped"])
+        captured_ids = {id(b) for b in res["captured"]}
+        accepted_ids = {id(b) for b in res["accepted"]}
+        for fs in candidate:
+            if fs["_stage"] in DERIVATIVE_STAGES:
+                continue
+            fs["_counts_captured"] = id(fs) in captured_ids
+            fs["_counts_accepted"] = id(fs) in accepted_ids
+            fs["_accepted_basis"] = res["accepted_basis"] if fs["_counts_captured"] else None
+            blocks_out.append(fs)
+
+        # Coordinate inheritance (ra/dec only), scoped to this session/filter.
+        donors = [
+            b for b in candidate
+            if b["_stage"] not in DERIVATIVE_STAGES and b.get("_own_ra_deg") is not None
+        ]
+        for fs in candidate:
+            if fs["_stage"] in DERIVATIVE_STAGES:
+                continue
+            if not fs["_counts_captured"]:
+                fs["_coords_inherited"] = fs.get("_coords_inherited", False)
+                continue
+            if fs.get("_own_ra_deg") is not None:
+                fs["_coords_inherited"] = False
+                continue
+            candidates = [d for d in donors if d is not fs]
+            if not candidates:
+                fs["_coords_inherited"] = False
+                continue
+
+            def _donor_key(d):
+                stage_rank = (CAPTURE_STAGE_PREFERENCE.index(d["_stage"])
+                              if d["_stage"] in CAPTURE_STAGE_PREFERENCE
+                              else len(CAPTURE_STAGE_PREFERENCE))
+                return (0 if d.get("has_wcs") else 1, stage_rank, d["bucket"])
+
+            best = min(candidates, key=_donor_key)
+            fs["ra_deg"] = best["ra_deg"]
+            fs["dec_deg"] = best["dec_deg"]
+            fs["_coords_inherited"] = True
+
+    # master_rig_hint: for each master file, a hint is emitted only when its
+    # session/filter's captured blocks agree on exactly one rig and the
+    # master's own gear reads as degenerate (a header-stripped TELESCOP/
+    # INSTRUME fallback commonly produces telescope == camera).
+    #
+    # Keyed on each block's own physical parent directory rather than its
+    # tagged _session_root: a sibling raw folder that doesn't happen to carry
+    # a name in PIPELINE_STAGE_FOLDERS (e.g. a second "og2" folder beside
+    # "og") still lives in the same session directory as its neighbours, and
+    # a rig cross-check should see it even though the stricter stage-name
+    # matching that drives dedup grouping does not. This matches the
+    # master's own session directory (Path(master_path).parent.parent for
+    # the usual session/master/file.xisf layout) because session_root_and_stage
+    # resolves that identically once the "master" folder name is recognised.
+    captured_rigs: dict[tuple[str, str], set] = defaultdict(set)
+    for fs in blocks_out:
+        if fs.get("_counts_captured"):
+            captured_rigs[(str(Path(fs["bucket"]).parent), fs["filter"])].add(
+                rig_key(fs.get("telescope"), fs.get("camera")))
+
+    master_rig_hint: dict[str, str] = {}
+    for m in masters:
+        mparent = str(Path(m["path"]).parent)
+        sr, stage = session_root_and_stage(
+            mparent, wbpp_session_roots, originals_session_roots)
+        filt = m.get("filter")
+        rigs = captured_rigs.get((sr, filt), set())
+        if len(rigs) != 1:
+            continue
+        mkey = rig_key(m.get("telescope"), m.get("camera"))
+        scope_half, cam_half = mkey.split("|", 1)
+        degenerate = "?" in (scope_half, cam_half) or scope_half.casefold() == cam_half.casefold()
+        if degenerate:
+            master_rig_hint[m["path"]] = next(iter(rigs))
+
+    return {
+        "blocks": blocks_out,
+        "session_masters": session_masters,
+        "master_rig_hint": master_rig_hint,
+        "dedup_log": dedup_log,
+        "dropped_hours": dropped_hours,
+    }
+
+
 def main():
     t0 = time.time()
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2918,104 +3183,47 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] Built {len(folder_subs)} raw folder-sub blocks "
           f"({n_fs_wcs_raw} with WCS) representing {total_sub_hours_raw:.1f}h before dedup")
 
-    # Bug 1 fix: dedupe folder-sub blocks that represent the same frames at
-    # different pipeline stages. calibrated/ + registered/ + og/ + starless/ +
-    # stars/ under one session root are all derived from the same ~16 subs.
-    # Priority: master > calibrated > root > registered. Drop og/starless/stars.
-    # Also: if a master/ folder is present in the same session, it already
-    # represents the integration — skip all folder_sub blocks for that session
-    # (the master file contributes hours via the masters list).
-    #
-    # First, find the real WBPP-style session roots so we don't accidentally
-    # treat the calibration pipeline's calibrated/{job_hash} folders (where each hash is a separate
-    # session) as one shared session.
-    all_bucket_paths = [fs["bucket"] for fs in folder_subs] + [str(Path(m["path"]).parent) for m in masters]
-    wbpp_session_roots = detect_wbpp_session_roots(all_bucket_paths)
-    print(f"[{time.time()-t0:6.1f}s] Detected {len(wbpp_session_roots)} WBPP-style session roots")
-
-    # original*/ folders that sit beside a master/ folder belong to that
-    # master's session (issue #24) — resolve them so master-present suppression
-    # fires. Standalone raw archives (no master sibling) get no mapping.
-    originals_session_roots = detect_originals_master_siblings(all_bucket_paths)
-    if originals_session_roots:
-        print(f"[{time.time()-t0:6.1f}s] Mapped {len(originals_session_roots)} originals folder(s) "
-              f"to a master sibling's session root")
-
-    session_dedup_log = []
-    session_master_seen: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for fs in folder_subs:
-        sr, stage = session_root_and_stage(fs["bucket"], wbpp_session_roots, originals_session_roots)
-        fs["_session_root"] = sr
-        fs["_stage"] = stage
-        if stage == "master":
-            session_master_seen[(sr, fs["filter"])].append(fs["bucket"])
-
-    # Also: if a proper master file (from `masters` list) has its parent
-    # within a detected WBPP session, suppress that session's folder_subs.
-    for m in masters:
-        mp = Path(m["path"])
-        mparent = str(mp.parent)
-        sr, stage = session_root_and_stage(mparent, wbpp_session_roots, originals_session_roots)
-        filt = m.get("filter")
-        if filt and stage in PIPELINE_STAGE_FOLDERS:
-            session_master_seen[(sr, filt)].append(m["path"])
-
-    session_groups: dict[tuple[str, str], list] = defaultdict(list)
-    for fs in folder_subs:
-        session_groups[(fs["_session_root"], fs["filter"])].append(fs)
-
-    deduped_folder_subs = []
-    for (sr, filt), group in session_groups.items():
-        has_external_master = bool(session_master_seen.get((sr, filt)))
-        # Drop derivative stages unconditionally
-        kept = []
-        for fs in group:
-            if fs["_stage"] in DERIVATIVE_STAGES:
-                session_dedup_log.append({
-                    "session_root": sr, "filter": filt, "bucket": fs["bucket"],
-                    "stage": fs["_stage"], "n_subs": fs["n_subs"],
-                    "hours": round(fs["total_hours"], 3),
-                    "action": "dropped (derivative product)",
-                })
-            else:
-                kept.append(fs)
-        if not kept:
-            continue
-        if has_external_master:
-            # A master integrated file exists for this session/filter. The
-            # master contributes the hours; skip all folder_sub entries.
-            for fs in kept:
-                session_dedup_log.append({
-                    "session_root": sr, "filter": filt, "bucket": fs["bucket"],
-                    "stage": fs["_stage"], "n_subs": fs["n_subs"],
-                    "hours": round(fs["total_hours"], 3),
-                    "action": "dropped (master present in session)",
-                })
-            continue
-        kept.sort(key=lambda fs: STAGE_PRIORITY.get(fs["_stage"], 99))
-        primary = kept[0]
-        deduped_folder_subs.append(primary)
-        for fs in kept[1:]:
-            session_dedup_log.append({
-                "session_root": sr, "filter": filt, "bucket": fs["bucket"],
-                "stage": fs["_stage"], "n_subs": fs["n_subs"],
-                "hours": round(fs["total_hours"], 3),
-                "action": f"dropped (keeping {primary['_stage']} for session)",
-            })
-
-    dropped_hours = total_sub_hours_raw - sum(fs["total_hours"] for fs in deduped_folder_subs)
-    folder_subs = deduped_folder_subs
+    # Prepare every folder-sub block: tag it with its session/stage and
+    # capture/acceptance status instead of dropping it, and let a block with
+    # no coordinates of its own borrow ra/dec from a solved sibling in the
+    # same session and filter. A master no longer erases the subs that fed
+    # it (see prepare_sub_blocks); acceptance is a folder-name question
+    # (rejected/bad), not a pipeline-stage question.
+    prepared = prepare_sub_blocks(folder_subs, masters)
+    folder_subs = prepared["blocks"]
+    session_masters = prepared["session_masters"]
+    master_rig_hint = prepared["master_rig_hint"]
+    session_dedup_log = prepared["dedup_log"]
+    dropped_hours = prepared["dropped_hours"]
     n_fs_wcs = sum(1 for f in folder_subs if f["has_wcs"])
     total_sub_hours = sum(f["total_hours"] for f in folder_subs)
-    print(f"[{time.time()-t0:6.1f}s] After session dedup: {len(folder_subs)} blocks "
-          f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h "
-          f"(dropped {dropped_hours:.1f}h across {len(session_dedup_log)} pipeline-stage duplicates)")
+    n_captured = sum(1 for f in folder_subs if f["_counts_captured"])
+    print(f"[{time.time()-t0:6.1f}s] Prepared {len(folder_subs)} blocks "
+          f"({n_captured} captured, {n_fs_wcs} with WCS) representing "
+          f"{total_sub_hours:.1f}h (dropped {dropped_hours:.1f}h across "
+          f"{len(session_dedup_log)} pipeline-stage log rows)")
 
-    # Bug 1b fix: content-signature dedup. Some folders are exact backups of
-    # others (e.g. the ASIAIR / ASIAIR Mini pair, where the user copied the
-    # whole tree from one NAS share to another). Buckets sharing the same
-    # filter, exptime, and filename-set are duplicate subs — keep one, drop
-    # the rest. Prefer shorter paths as canonical.
+    # Copy each master's own resolved session root onto the master member, and
+    # a degenerate master's rig hint onto _rig_key so build_filters_data groups
+    # it with the subs that fed it instead of splitting into a second rig.
+    master_session_root: dict[str, str] = {}
+    for (sr, _filt), paths in session_masters.items():
+        for p in paths:
+            master_session_root.setdefault(p, sr)
+    for m in masters:
+        if m["path"] in master_session_root:
+            m["_session_root"] = master_session_root[m["path"]]
+        if m["path"] in master_rig_hint:
+            m["_rig_key"] = master_rig_hint[m["path"]]
+
+    # Content-signature dedup stays here, after prepare_sub_blocks: some
+    # folders are exact backups of others (e.g. the ASIAIR / ASIAIR Mini
+    # pair, where the user copied the whole tree from one NAS share to
+    # another). Buckets sharing the same filter, exptime, and filename-set
+    # are duplicate subs, so keep one and drop the rest. Tag-aware: the
+    # survivor is chosen by capture/acceptance status first (so a duplicate
+    # copy never demotes a real capture), then by shorter path, and takes
+    # the OR of both flags plus the more informative acceptance basis.
     content_dedup_log = []
     content_groups: dict[tuple, list] = defaultdict(list)
     for fs in folder_subs:
@@ -3028,14 +3236,20 @@ def main():
         if key is None:
             continue
         content_groups[key].append(fs)
-    content_kept: list = []
     keep_ids = set()
     for key, group in content_groups.items():
         if len(group) <= 1:
             keep_ids.add(id(group[0]))
             continue
-        group.sort(key=lambda fs: (len(fs["bucket"]), fs["bucket"]))
+        group.sort(key=lambda fs: (
+            not fs.get("_counts_captured", False),
+            not fs.get("_counts_accepted", False),
+            len(fs["bucket"]), fs["bucket"]))
         primary = group[0]
+        primary["_counts_captured"] = any(fs.get("_counts_captured") for fs in group)
+        primary["_counts_accepted"] = any(fs.get("_counts_accepted") for fs in group)
+        if any(fs.get("_accepted_basis") == "rejected_folders" for fs in group):
+            primary["_accepted_basis"] = "rejected_folders"
         keep_ids.add(id(primary))
         for dup in group[1:]:
             content_dedup_log.append({
@@ -3053,6 +3267,14 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] After content dedup: {len(folder_subs)} blocks "
           f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h "
           f"(dropped {content_dropped_hours:.1f}h across {len(content_dedup_log)} content-identical duplicates)")
+
+    # Computed here, after content-signature dedup, not inside
+    # prepare_sub_blocks: a backup copy of an uncoordinated folder would be
+    # double-counted if this ran before that dedup collapses it.
+    uncoordinated_hours_total = uncoordinated_captured_hours(folder_subs)
+    if uncoordinated_hours_total:
+        print(f"[{time.time()-t0:6.1f}s] {uncoordinated_hours_total:.1f}h captured but "
+              f"still without coordinates")
 
     # Filter: masters with WCS are trustable centers; without, try to keep
     masters_by_id = {f["path"]: f for f in masters}
@@ -3091,6 +3313,7 @@ def main():
         "exptime": fs["exptime"],
         "ncombine": fs["n_subs"],
         "has_wcs": bool(fs.get("has_wcs")),
+        "_session_root": fs.get("_session_root"),
         "_folder_sub": fs,
     } for fs in folder_subs
       if fs.get("ra_deg") is not None and fs.get("dec_deg") is not None]
@@ -3183,8 +3406,8 @@ def main():
             # foreign instrument since clustering is done by spatial proximity).
             # Flag as estimated so downstream reports can surface the caveat.
             fov_flag = "estimated"
-            first = members[0]
-            fov_candidate, pix_candidate, method = compute_fov_from_meta(first)
+            representative = fov_representative(members)
+            fov_candidate, pix_candidate, method = compute_fov_from_meta(representative)
             if fov_candidate:
                 fov_arcmin = [round(fov_candidate[0], 2), round(fov_candidate[1], 2)]
                 pix_arcsec = round(pix_candidate, 3)
