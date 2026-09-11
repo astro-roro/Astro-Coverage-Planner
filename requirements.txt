@@ -18,4 +18,4 @@ waitress>=3.0.2
 croniter>=6.2.4
 # Used by the live-page publisher (scripts/publish_shooting.py, /api/publish/shooting)
 # to upload shooting.json over SFTP. See docs/sharing.md.
-paramiko>=3.4
+paramiko>=5.0.0
