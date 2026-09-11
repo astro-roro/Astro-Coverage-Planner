@@ -839,6 +839,151 @@ def build_filters_data(members: list[dict]) -> dict:
     return filters_data
 
 
+_EMIT_BAND_ROUND_KEYS = (
+    "total_hours", "captured_hours", "accepted_hours", "integrated_hours",
+    "headline_hours", "stale_excess_hours",
+)
+_EMIT_RIG_ROUND_KEYS = (
+    "captured_hours", "accepted_hours", "integrated_hours", "headline_hours",
+    "stale_excess_hours",
+)
+
+
+def emit_filters_data(filters_data: dict) -> dict:
+    """Round build_filters_data()'s unrounded floats for the manifest surface.
+
+    Pure: the argument is never mutated. A band value is round(sum of the
+    unrounded rig values, 2), not the sum of the rounded rig values, so a
+    rounded rig row may fail to sum exactly to the band value by up to
+    0.01 x n_rigs, and that is expected, not a bug. Also applies today's
+    caps (paths[:10], folder_sub_buckets[:10]) and seeds
+    captured_unattributed_hours = 0.0, which apply_db_captured_floor() may
+    later raise.
+    """
+    out = {}
+    for band, d in filters_data.items():
+        band_out = dict(d)
+        for key in _EMIT_BAND_ROUND_KEYS:
+            if key in band_out:
+                band_out[key] = round(band_out[key], 2)
+        band_out["paths"] = list(d.get("paths", []))[:10]
+        band_out["folder_sub_buckets"] = list(d.get("folder_sub_buckets", []))[:10]
+        band_out["sources"] = {k: round(v, 2) for k, v in d.get("sources", {}).items()}
+        rigs_out = {}
+        for rig_key_, row in d.get("rigs", {}).items():
+            row_out = dict(row)
+            for key in _EMIT_RIG_ROUND_KEYS:
+                if key in row_out:
+                    row_out[key] = round(row_out[key], 2)
+            rigs_out[rig_key_] = row_out
+        band_out["rigs"] = rigs_out
+        band_out["captured_unattributed_hours"] = 0.0
+        out[band] = band_out
+    return out
+
+
+def apply_db_captured_floor(band: dict, db_hours) -> None:
+    """Raise a band's captured hours to a pipeline-DB figure when it is
+    larger than what the files on disk gave us. Mutates ``band`` in place.
+
+    Schema-1 fallback, restored: a band with no ``captured_hours`` key
+    behaves exactly as the guarded line this replaces (fill total_hours
+    from the DB figure only when it is still 0.0), because without that
+    guard a smaller DB count destroys a real master-derived total. That is
+    a live regression the last round shipped.
+
+    Otherwise: captured_hours becomes max(existing, db_hours), never a
+    sum, because the two are different views of the same physical frames.
+    The gap goes to captured_unattributed_hours (never attributed to a
+    rig), and an "integrated" or "mixed" headline is never moved by the
+    floor. Every value this function writes is rounded to 2 dp.
+    """
+    if "captured_hours" not in band:
+        if band.get("total_hours") == 0.0:
+            band["total_hours"] = round(db_hours or 0.0, 2)
+        return
+
+    sum_of_rig_captured = band["captured_hours"]
+    db_val = db_hours or 0.0
+    captured = max(sum_of_rig_captured, db_val)
+    band["captured_hours"] = round(captured, 2)
+    band["captured_unattributed_hours"] = round(
+        max(0.0, captured - sum_of_rig_captured), 2)
+
+    basis = band.get("headline_basis")
+    if basis in ("captured", "none"):
+        band["headline_hours"] = round(captured, 2)
+        band["total_hours"] = round(captured, 2)
+        band["headline_basis"] = "captured" if captured > 0 else "none"
+
+
+def total_hours_across(targets: list[dict], key: str) -> float:
+    """Gross sum of one hours field across every band of every target.
+
+    A band from a schema-1 manifest missing ``key`` contributes zero rather
+    than raising. Used for the manifest-root totals, which combine rigs
+    (the one place standing decision 2 allows that).
+    """
+    total = 0.0
+    for t in targets:
+        for d in (t.get("filters") or {}).values():
+            if isinstance(d, dict) and key in d:
+                try:
+                    total += float(d[key])
+                except (TypeError, ValueError):
+                    continue
+    return round(total, 1)
+
+
+def build_integrity_hour_flags(targets: list[dict], *,
+                                uncoordinated_captured_hours: float) -> dict:
+    """Assemble the stale-master and integration-anomaly rows for the
+    manifest's integrity_flags, one row per flagged rig.
+
+    reference_hours is defined per row type: the rig's accepted_hours on a
+    stale row (the number the staleness rule compared against), the rig's
+    captured_hours on an anomaly row (the number integration exceeded).
+    accepted_known_fraction is gone: acceptance is always known now.
+    """
+    stale_masters = []
+    integration_anomalies = []
+    for t in targets:
+        tid = t.get("target_id")
+        for band, d in (t.get("filters") or {}).items():
+            if not isinstance(d, dict):
+                continue
+            for rig, row in (d.get("rigs") or {}).items():
+                if not isinstance(row, dict):
+                    continue
+                if row.get("stale_master"):
+                    stale_masters.append({
+                        "target_id": tid,
+                        "band": band,
+                        "rig": rig,
+                        "integrated_hours": row.get("integrated_hours", 0.0),
+                        "reference_hours": row.get("accepted_hours", 0.0),
+                        "excess_hours": row.get("stale_excess_hours", 0.0),
+                        "basis": "accepted",
+                    })
+                if row.get("integration_anomaly"):
+                    integrated = row.get("integrated_hours", 0.0)
+                    captured = row.get("captured_hours", 0.0)
+                    integration_anomalies.append({
+                        "target_id": tid,
+                        "band": band,
+                        "rig": rig,
+                        "integrated_hours": integrated,
+                        "reference_hours": captured,
+                        "excess_hours": round(integrated - captured, 2),
+                        "basis": "captured",
+                    })
+    return {
+        "stale_masters": stale_masters,
+        "integration_anomalies": integration_anomalies,
+        "uncoordinated_captured_hours": uncoordinated_captured_hours,
+    }
+
+
 _FILTER_TOKEN_RE = re.compile(r"FILTER[-_]([A-Za-z0-9]+)", re.IGNORECASE)
 
 
@@ -3557,18 +3702,7 @@ def main():
             "pix_arcsec": pix_arcsec,
             "corners_icrs": corners_icrs,
             "corners_galactic": corners_gal,
-            "filters": {
-                f: {
-                    "total_hours": round(d["total_hours"], 2),
-                    "files": d["files"],
-                    "paths": d["paths"][:10],  # cap for JSON size
-                    "sub_folders": d.get("sub_folders", 0),
-                    "n_subs": d.get("n_subs", 0),
-                    "folder_sub_buckets": d.get("folder_sub_buckets", [])[:10],
-                    "sources": d.get("sources", {}),
-                }
-                for f, d in filters_data.items()
-            },
+            "filters": emit_filters_data(filters_data),
             "master_files": [m["path"] for m in members if m.get("role") != "folder_sub"],
             "telescopes": sorted({m.get("telescope") for m in members if m.get("telescope")}),
             "cameras": sorted({m.get("camera") for m in members if m.get("camera")}),
@@ -3598,12 +3732,22 @@ def main():
             db_unmatched += 1
             continue
         t = targets[ti]
-        f_entry = t["filters"].setdefault(filt, {"total_hours": 0.0, "files": 0, "paths": []})
+        f_entry = t["filters"].setdefault(filt, {
+            "total_hours": 0.0, "files": 0, "paths": [], "sub_folders": 0,
+            "n_subs": 0, "folder_sub_buckets": [], "sources": {},
+            "captured_hours": 0.0, "accepted_hours": 0.0,
+            "accepted_basis": None, "integrated_hours": 0.0,
+            "headline_hours": 0.0, "headline_basis": "none",
+            "master_depth_unknown": False, "stale_master": False,
+            "stale_excess_hours": 0.0, "captured_unattributed_hours": 0.0,
+            "rigs": {},
+        })
         f_entry["db_sub_hours"] = f_entry.get("db_sub_hours", 0.0) + agg["hours"]
         f_entry["db_sub_count"] = f_entry.get("db_sub_count", 0) + agg["n_subs"]
-        # Use db hours as authoritative total if no master-derived hours
-        if f_entry["total_hours"] == 0.0:
-            f_entry["total_hours"] = round(agg["hours"], 2)
+        # Raise captured (and, when the headline isn't integrated, the
+        # headline) to the DB figure when it is the larger view. Schema-1
+        # bands keep their old zero-guard inside apply_db_captured_floor.
+        apply_db_captured_floor(f_entry, f_entry["db_sub_hours"])
     print(f"[{time.time()-t0:6.1f}s] {db_unmatched} DB (object,filter) rows unmatched to target clusters")
 
     # Step 6: Integrity checks
@@ -3659,6 +3803,8 @@ def main():
 
     # Step 7: Write manifest
     print(f"[{time.time()-t0:6.1f}s] Step 7: Writing manifest")
+    hour_flags = build_integrity_hour_flags(
+        targets, uncoordinated_captured_hours=uncoordinated_hours_total)
     manifest = {
         "scan_date": datetime.now().isoformat(),
         "scan_duration_sec": round(time.time() - t0, 1),
@@ -3668,6 +3814,9 @@ def main():
         "total_targets": len(targets),
         "total_masters_with_wcs": n_wcs,
         "total_integration_hours": round(total_hours, 1),
+        "manifest_schema": 2,
+        "total_captured_hours": total_hours_across(targets, "captured_hours"),
+        "total_integrated_hours": total_hours_across(targets, "integrated_hours"),
         "targets": targets,
         "integrity_flags": {
             "sii_ha_correlation_suspects": flagged,
@@ -3689,6 +3838,9 @@ def main():
                     UNRECOGNISED_FILTER_COUNTS.items(), key=lambda kv: -kv[1]
                 )
             ],
+            "stale_masters": hour_flags["stale_masters"],
+            "integration_anomalies": hour_flags["integration_anomalies"],
+            "uncoordinated_captured_hours": hour_flags["uncoordinated_captured_hours"],
         },
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -3745,6 +3897,8 @@ def write_summary(m: dict):
     lines.append(f"- **Unique targets** (spatial clusters, 30′): {m['total_targets']}")
     lines.append(f"- **Masters with WCS**: {m['total_masters_with_wcs']}")
     lines.append(f"- **Total integration (gross, all filters)**: {m['total_integration_hours']} h")
+    lines.append(f"- **Total captured (gross, all filters)**: {m.get('total_captured_hours', 0)} h")
+    lines.append(f"- **Total integrated (gross, all filters)**: {m.get('total_integrated_hours', 0)} h")
     lines.append("")
     lines.append("## File role counts")
     lines.append("")
@@ -3761,8 +3915,8 @@ def write_summary(m: dict):
     for t in m["targets"]:
         for f, d in t["filters"].items():
             per_filter[f]["targets"] += 1
-            per_filter[f]["hours"] += d["total_hours"]
-            per_filter[f]["masters"] += d["files"]
+            per_filter[f]["hours"] += d.get("total_hours", 0.0)
+            per_filter[f]["masters"] += d.get("files", 0)
     lines.append("| Filter | #targets | #masters | hours |")
     lines.append("|---|---:|---:|---:|")
     for f in ("Ha", "SII", "OIII", "L", "R", "G", "B", "V", "IDAS", "IR", "Unknown"):
@@ -3779,11 +3933,11 @@ def write_summary(m: dict):
     lines.append("")
     lines.append("| Target (objects) | l | b | filters | hours |")
     lines.append("|---|---:|---:|---|---:|")
-    tgts = sorted(m["targets"], key=lambda t: -sum(d["total_hours"] for d in t["filters"].values()))[:15]
+    tgts = sorted(m["targets"], key=lambda t: -sum(d.get("total_hours", 0.0) for d in t["filters"].values()))[:15]
     for t in tgts:
         objs = ", ".join(t["objects"][:2]) + (f" (+{len(t['objects'])-2})" if len(t["objects"]) > 2 else "")
-        flist = ", ".join(f"{f}={d['total_hours']:.1f}h" for f, d in sorted(t["filters"].items(), key=lambda x: -x[1]["total_hours"]) if d["total_hours"] > 0)
-        total = sum(d["total_hours"] for d in t["filters"].values())
+        flist = ", ".join(f"{f}={d.get('total_hours', 0.0):.1f}h" for f, d in sorted(t["filters"].items(), key=lambda x: -x[1].get("total_hours", 0.0)) if d.get("total_hours", 0.0) > 0)
+        total = sum(d.get("total_hours", 0.0) for d in t["filters"].values())
         lines.append(f"| {objs or '(unknown)'} | {t['center_l_deg']:.2f} | {t['center_b_deg']:+.2f} | {flist} | {total:.1f} |")
     lines.append("")
 
