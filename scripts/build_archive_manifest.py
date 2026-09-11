@@ -1441,12 +1441,13 @@ def save_scan_cache(entries: dict, path: Path | None = None,
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             os.replace(tmp_name, path)
-        except BaseException:
+        finally:
+            # After a successful replace the temp name is gone and unlink
+            # raises FileNotFoundError, which is the OSError swallowed here.
             try:
                 os.unlink(tmp_name)
             except OSError:
                 pass
-            raise
     except Exception as e:
         # A cache is an optimisation. Never fail a scan that already produced a
         # manifest just because the cache could not be written.
