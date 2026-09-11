@@ -465,7 +465,10 @@ _SINGLE_BAND_NAMES = set(FILTER_CANON.values()) - {"NoFilter"}
 def bands_for(filt: str | None, colour: bool) -> list[str]:
     """Coverage bands a frame credits, given its canonical filter and sensor type."""
     if not filt:
-        return ["Unknown"]
+        # A colour camera with no filter recorded at all (common: OSC capture
+        # apps often leave the field blank rather than writing "NoFilter")
+        # is still full-colour data, same as an explicit NoFilter.
+        return ["R", "G", "B"] if colour else ["Unknown"]
     if filt in _BROADBAND_LIKE_NOFILTER:
         return ["R", "G", "B"] if colour else ["L"]
     if filt in _MULTI_BAND:
@@ -481,59 +484,252 @@ def bands_for(filt: str | None, colour: bool) -> list[str]:
 def filter_label(filt: str | None, colour: bool) -> str:
     """Display name for the real filter behind a band credit."""
     if not filt:
-        return "Unknown"
+        return "OSC" if colour else "Unknown"
     if filt == "NoFilter" and colour:
         return "OSC"
     return filt
 
 
-def build_filters_data(members: list[dict]) -> dict:
-    """Per-band hours for one target from its cluster members.
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-    Masters contribute NCOMBINE x EXPTIME when available, else EXPTIME. Folder
-    sub blocks contribute n_subs x exptime (their exptime and ncombine already
-    encode this). Each member credits every band its filter maps to, and each
-    band records which real filters fed it under ``sources``.
+
+def _date_only(date_obs):
+    """First 10 characters of a date_obs string when they look like a date.
+
+    ``None`` for a missing value or one that doesn't match ``YYYY-MM-DD`` in
+    its first 10 characters, so a malformed value never survives as a mangled
+    prefix.
     """
-    filters_data = defaultdict(lambda: {
-        "total_hours": 0.0, "files": 0, "paths": [],
-        "sub_folders": 0, "n_subs": 0, "folder_sub_buckets": [],
-        "sources": defaultdict(float),
-    })
+    if not date_obs:
+        return None
+    s = str(date_obs)[:10]
+    return s if _DATE_ONLY_RE.match(s) else None
+
+
+def _folder_sub_hours(m):
+    """Hours for a folder-sub member: the block's own total when it has one.
+
+    ``_folder_sub['total_hours']`` is the exact per-file EXPTIME sum, so a
+    mixed-exposure session survives; fall back to exptime x ncombine (or
+    exptime alone) only when the block carries no total of its own.
+    """
+    fs = m.get("_folder_sub") or {}
+    total = fs.get("total_hours")
+    if total:
+        return total
+    if m.get("exptime") and m.get("ncombine"):
+        return m["exptime"] * m["ncombine"] / 3600.0
+    if m.get("exptime"):
+        return m["exptime"] / 3600.0
+    return 0.0
+
+
+def _master_hours_and_depth(m):
+    """(hours, depth_known) for a master member.
+
+    Depth is known only when both exptime and ncombine are present (ncombine
+    > 0, since a falsy ncombine takes the exptime-alone branch). A
+    depth-unknown master still counts one exposure so a headline is never
+    zero beside frames actually on disk.
+    """
+    exptime = m.get("exptime")
+    ncombine = m.get("ncombine")
+    if exptime and ncombine:
+        return exptime * ncombine / 3600.0, True
+    if exptime:
+        return exptime / 3600.0, False
+    return 0.0, False
+
+
+def build_filters_data(members: list[dict]) -> dict:
+    """Per-band, per-rig hours for one target from its cluster members.
+
+    Three numbers per band and per rig: captured (subs shot), accepted
+    (captured minus rejected folders, standing decision 4) and integrated
+    (master stacks). The headline is integrated when a master with a known
+    subframe count exists for that band and rig (standing decision 3), else
+    captured. Band rows sum their rigs; only the archive total above this
+    function combines rigs across bands (standing decision 2).
+
+    Every value returned is an unrounded float; emit_filters_data() rounds
+    for the manifest surface.
+    """
+    # band -> casefolded rig key -> raw per-rig evidence, before the headline
+    # decision is made. Kept separate from the finished row so `sources` can
+    # be built from whichever evidence the rig's own headline basis credits.
+    raw = defaultdict(lambda: defaultdict(lambda: {
+        "spellings": set(), "masters": [], "captured_blocks": [],
+    }))
+    band_paths = defaultdict(list)
+    band_buckets = defaultdict(list)
+
     for m in members:
         colour = bool(m.get("colour"))
-        label = filter_label(m.get("filter"), colour)
+        filt = m.get("filter")
+        label = filter_label(filt, colour)
         is_folder_sub = m.get("role") == "folder_sub"
-        if m.get("exptime") and m.get("ncombine"):
-            hours = m["exptime"] * m["ncombine"] / 3600.0
-        elif m.get("exptime"):
-            hours = m["exptime"] / 3600.0
+        rig = m.get("_rig_key") or rig_key(m.get("telescope"), m.get("camera"))
+        cf_rig = rig.casefold()
+
+        if is_folder_sub:
+            fs = m.get("_folder_sub") or {}
+            hours = _folder_sub_hours(m)
+            captured = counts_captured(m)
+            block = {
+                "hours": hours,
+                "accepted": counts_accepted(m),
+                "rejected": accepted_basis_of(m) == "rejected_folders",
+                "n_subs": fs.get("n_subs") or 0,
+                "first": _date_only(fs.get("first_date_obs") or m.get("date_obs")),
+                "last": _date_only(fs.get("last_date_obs") or m.get("date_obs")),
+                "label": label,
+            }
         else:
-            hours = 0.0
-        for band in bands_for(m.get("filter"), colour):
-            d = filters_data[band]
-            if not is_folder_sub:
-                d["paths"].append(m["path"])
-                d["files"] += 1
+            hours, depth_known = _master_hours_and_depth(m)
+            entry = {
+                "path": m.get("path"),
+                "hours": hours,
+                "depth_known": depth_known,
+                "date": _date_only(m.get("date_obs")),
+                "label": label,
+            }
+
+        for band in bands_for(filt, colour):
+            rd = raw[band][cf_rig]
+            rd["spellings"].add(rig)
+            if is_folder_sub:
+                if captured:
+                    rd["captured_blocks"].append(block)
+                    band_buckets[band].append({
+                        "bucket": fs.get("bucket"),
+                        "n_subs": fs.get("n_subs"),
+                        "exptime": fs.get("exptime"),
+                        "hours": round((fs.get("exptime") or 0) * (fs.get("n_subs") or 0) / 3600.0, 2),
+                        "stage": fs.get("_stage"),
+                        "session_root": session_root_of(m),
+                        "sample_path": fs.get("sample_path"),
+                        "telescope": fs.get("telescope"),
+                    })
             else:
-                d["sub_folders"] += 1
-                d["n_subs"] += m.get("ncombine") or 0
-                fs = m.get("_folder_sub") or {}
-                d["folder_sub_buckets"].append({
-                    "bucket": fs.get("bucket"),
-                    "n_subs": fs.get("n_subs"),
-                    "exptime": fs.get("exptime"),
-                    "hours": round((fs.get("exptime") or 0) * (fs.get("n_subs") or 0) / 3600.0, 2),
-                    "stage": fs.get("_stage"),
-                    "session_root": fs.get("_session_root"),
-                    "sample_path": fs.get("sample_path"),
-                    "telescope": fs.get("telescope"),
-                })
-            d["total_hours"] += hours
-            d["sources"][label] += hours
-    for d in filters_data.values():
-        d["sources"] = {k: round(v, 2) for k, v in d["sources"].items()}
-    return dict(filters_data)
+                rd["masters"].append(entry)
+                band_paths[band].append(m.get("path"))
+
+    filters_data = {}
+    for band, rig_groups in raw.items():
+        rig_rows = {}
+        band_captured = band_accepted = band_integrated = band_headline = 0.0
+        band_depth_unknown = False
+        contributing_bases = set()
+        accepted_bases = set()
+        sources = defaultdict(float)
+
+        for cf_rig, rd in rig_groups.items():
+            emitted_key = min(rd["spellings"])
+            scope_half, _, cam_half = emitted_key.partition("|")
+            telescope = None if scope_half == "?" else scope_half
+            camera = None if cam_half == "?" else cam_half
+
+            integrated_hours = sum(x["hours"] for x in rd["masters"])
+            known_depth_masters = sum(1 for x in rd["masters"] if x["depth_known"])
+            master_depth_unknown = any(not x["depth_known"] for x in rd["masters"])
+
+            captured_hours = sum(x["hours"] for x in rd["captured_blocks"])
+            accepted_hours = sum(
+                x["hours"] for x in rd["captured_blocks"] if x["accepted"])
+
+            if rd["captured_blocks"]:
+                accepted_basis = ("rejected_folders"
+                                   if any(x["rejected"] for x in rd["captured_blocks"])
+                                   else "no_rejects")
+            else:
+                accepted_basis = None
+
+            if known_depth_masters > 0 and integrated_hours > 0:
+                headline_basis, headline_hours = "integrated", integrated_hours
+            elif captured_hours > 0:
+                headline_basis, headline_hours = "captured", captured_hours
+            else:
+                headline_basis, headline_hours = "none", 0.0
+
+            first_dates = [x["first"] for x in rd["captured_blocks"] if x["first"]]
+            last_dates = [x["last"] for x in rd["captured_blocks"] if x["last"]]
+            master_dates = [x["date"] for x in rd["masters"] if x["date"]]
+
+            rig_rows[emitted_key] = {
+                "telescope": telescope,
+                "camera": camera,
+                "captured_hours": captured_hours,
+                "accepted_hours": accepted_hours,
+                "accepted_basis": accepted_basis,
+                "integrated_hours": integrated_hours,
+                "headline_hours": headline_hours,
+                "headline_basis": headline_basis,
+                "master_depth_unknown": master_depth_unknown,
+                "n_masters": len(rd["masters"]),
+                "n_captured_blocks": len(rd["captured_blocks"]),
+                "n_subs": sum(x["n_subs"] for x in rd["captured_blocks"]),
+                "first_sub_date": min(first_dates) if first_dates else None,
+                "last_sub_date": max(last_dates) if last_dates else None,
+                "last_master_date": max(master_dates) if master_dates else None,
+                "master_files": [x["path"] for x in rd["masters"]][:10],
+            }
+
+            band_captured += captured_hours
+            band_accepted += accepted_hours
+            band_integrated += integrated_hours
+            band_headline += headline_hours
+            if master_depth_unknown:
+                band_depth_unknown = True
+            if headline_hours > 0:
+                contributing_bases.add(headline_basis)
+            if accepted_basis is not None:
+                accepted_bases.add(accepted_basis)
+
+            if headline_basis == "integrated":
+                for x in rd["masters"]:
+                    sources[x["label"]] += x["hours"]
+            elif headline_basis == "captured":
+                for x in rd["captured_blocks"]:
+                    sources[x["label"]] += x["hours"]
+
+        if not contributing_bases:
+            band_basis = "none"
+        elif contributing_bases == {"integrated"}:
+            band_basis = "integrated"
+        elif contributing_bases == {"captured"}:
+            band_basis = "captured"
+        else:
+            band_basis = "mixed"
+
+        if not accepted_bases:
+            band_accepted_basis = None
+        elif "rejected_folders" in accepted_bases:
+            band_accepted_basis = "rejected_folders"
+        else:
+            band_accepted_basis = "no_rejects"
+
+        paths = band_paths.get(band, [])
+        buckets = band_buckets.get(band, [])
+
+        filters_data[band] = {
+            "total_hours": band_headline,
+            "files": len(paths),
+            "paths": list(paths),
+            "sub_folders": len(buckets),
+            "n_subs": sum(b.get("n_subs") or 0 for b in buckets),
+            "folder_sub_buckets": buckets,
+            "sources": dict(sources),
+            "captured_hours": band_captured,
+            "accepted_hours": band_accepted,
+            "accepted_basis": band_accepted_basis,
+            "integrated_hours": band_integrated,
+            "headline_hours": band_headline,
+            "headline_basis": band_basis,
+            "master_depth_unknown": band_depth_unknown,
+            "rigs": dict(sorted(rig_rows.items())),
+        }
+
+    return filters_data
 
 
 _FILTER_TOKEN_RE = re.compile(r"FILTER[-_]([A-Za-z0-9]+)", re.IGNORECASE)
