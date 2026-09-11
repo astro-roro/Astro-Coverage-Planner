@@ -3739,16 +3739,30 @@ def main():
             "accepted_basis": None, "integrated_hours": 0.0,
             "headline_hours": 0.0, "headline_basis": "none",
             "master_depth_unknown": False, "stale_master": False,
-            "stale_excess_hours": 0.0, "captured_unattributed_hours": 0.0,
+            "stale_excess_hours": 0.0, "stale_basis": None,
+            "captured_unattributed_hours": 0.0,
+            "integration_anomaly": False, "masters_without_subs": False,
+            "multi_master": False,
             "rigs": {},
         })
         f_entry["db_sub_hours"] = f_entry.get("db_sub_hours", 0.0) + agg["hours"]
         f_entry["db_sub_count"] = f_entry.get("db_sub_count", 0) + agg["n_subs"]
-        # Raise captured (and, when the headline isn't integrated, the
-        # headline) to the DB figure when it is the larger view. Schema-1
-        # bands keep their old zero-guard inside apply_db_captured_floor.
-        apply_db_captured_floor(f_entry, f_entry["db_sub_hours"])
     print(f"[{time.time()-t0:6.1f}s] {db_unmatched} DB (object,filter) rows unmatched to target clusters")
+
+    # Raise captured (and, when the headline isn't integrated, the headline)
+    # to the DB figure when it is the larger view, once per band, after
+    # every DB row for it has been folded into db_sub_hours above. A
+    # cluster with more than one object-name alias (e.g. M31 / NGC 224)
+    # touches the same band via more than one db_aggs row, so the floor
+    # must run once on the final accumulated total rather than once per
+    # alias -- calling it per row would compound: the second call would
+    # read back the already-raised captured_hours as its baseline instead
+    # of the true rig-measured figure. Schema-1 bands keep their old
+    # zero-guard inside apply_db_captured_floor.
+    for t in targets:
+        for f_entry in t["filters"].values():
+            if "db_sub_hours" in f_entry:
+                apply_db_captured_floor(f_entry, f_entry["db_sub_hours"])
 
     # Step 6: Integrity checks
     print(f"[{time.time()-t0:6.1f}s] Step 6: Integrity checks (sii vs ha correlation)")
