@@ -1591,9 +1591,77 @@ STAGE_FOLDER_ALIASES = {
 }
 _CANON_STAGE_FOLDERS = {"calibrated", "registered", "master", "og", "starless", "stars"}
 PIPELINE_STAGE_FOLDERS = _CANON_STAGE_FOLDERS | set(STAGE_FOLDER_ALIASES)
-DERIVATIVE_STAGES = {"og", "starless", "stars"}
+DERIVATIVE_STAGES = {"starless", "stars"}
 WBPP_SIGNATURE_STAGES = {"og", "starless", "stars", "master"}  # markers of WBPP-style session
 STAGE_PRIORITY = {"master": 0, "calibrated": 1, "root": 2, "registered": 3}
+
+# The capture stage is whichever of these is present, earliest wins. This is
+# deliberately the reverse intent of STAGE_PRIORITY above: that dict picks the
+# stage main()'s inline dedup keeps today, this tuple is what the settled
+# three-number model uses instead (see resolve_session_stages below).
+CAPTURE_STAGE_PREFERENCE = ("og", "root", "calibrated", "registered", "master")
+
+
+def resolve_session_stages(blocks):
+    """Resolve one session/filter group's stage folders into capture and
+    acceptance sets.
+
+    `blocks` is every folder-sub block sharing one (session_root, filter),
+    each carrying `_stage`, `_session_root`, `filter`, `bucket`, `n_subs` and
+    `total_hours`. Pure: never mutates its input, and every returned block is
+    the same object identity as the corresponding input.
+
+    Derivative stages (starless, stars) are dropped unconditionally. Of what
+    remains, the first stage present in CAPTURE_STAGE_PREFERENCE is the
+    capture; every block at that stage is captured, every block at any other
+    remaining stage is logged as not captured. Acceptance (standing decision
+    4) is the captured set minus blocks whose bucket is a rejected folder;
+    there is no stage-based acceptance any more.
+    """
+    dropped = []
+    remaining = []
+    for b in blocks:
+        if b["_stage"] in DERIVATIVE_STAGES:
+            dropped.append({
+                "session_root": b["_session_root"], "filter": b["filter"],
+                "bucket": b["bucket"], "stage": b["_stage"], "n_subs": b["n_subs"],
+                "hours": round(b["total_hours"], 3),
+                "action": "dropped (derivative product)",
+            })
+        else:
+            remaining.append(b)
+
+    captured = []
+    if remaining:
+        present_stages = {b["_stage"] for b in remaining}
+        winning_stage = next(
+            (s for s in CAPTURE_STAGE_PREFERENCE if s in present_stages), None
+        )
+        for b in remaining:
+            if b["_stage"] == winning_stage:
+                captured.append(b)
+            else:
+                dropped.append({
+                    "session_root": b["_session_root"], "filter": b["filter"],
+                    "bucket": b["bucket"], "stage": b["_stage"],
+                    "n_subs": b["n_subs"], "hours": round(b["total_hours"], 3),
+                    "action": f"not captured (wider stage {winning_stage} present)",
+                })
+
+    accepted = [b for b in captured if not is_rejected_bucket(b["bucket"])]
+    if not captured:
+        accepted_basis = None
+    elif len(accepted) < len(captured):
+        accepted_basis = "rejected_folders"
+    else:
+        accepted_basis = "no_rejects"
+
+    return {
+        "captured": captured,
+        "accepted": accepted,
+        "accepted_basis": accepted_basis,
+        "dropped": dropped,
+    }
 
 # WBPP appends stage suffixes to frame stems as it processes them, always in
 # the fixed pipeline order:
