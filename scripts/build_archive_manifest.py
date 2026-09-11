@@ -801,7 +801,11 @@ def read_fits_meta(path: Path) -> dict:
                     # A header with no celestial pair at all leaves naxis 0 here
                     # and still raises at pixel_to_world below, exactly where it
                     # used to, so IMAGEW/IMAGEH is recorded first either way.
-                    w = WCS(h).celestial
+                    # naxis=2 keeps only the first two axes before wcslib sees
+                    # the header. With a SIP solve (CTYPE 'RA---TAN-SIP' and
+                    # A_ORDER, as ASIAIR and Siril write) a third axis makes
+                    # WCS(h) itself raise, before .celestial gets a chance.
+                    w = WCS(h, naxis=2).celestial
                     # IMAGEW/IMAGEH: if the plate-solve ran on a downsampled
                     # frame (common with ASIAIR / astrometry.net), the WCS
                     # pixel grid is smaller than NAXIS.  Use the solved
