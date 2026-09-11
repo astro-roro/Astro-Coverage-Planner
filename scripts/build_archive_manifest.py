@@ -541,6 +541,35 @@ def _master_hours_and_depth(m):
     return 0.0, False
 
 
+# Stale-master rule (product owner, 2026-09-11): a master is stale when
+# accepted hours exceed integrated hours by more than the SMALLER of 20
+# percent of integrated hours and 2.0 hours.
+STALE_RELATIVE_TOLERANCE = 0.20
+STALE_ABSOLUTE_CAP_HOURS = 2.0
+
+# Integration-anomaly rule: integrated hours may exceed captured hours by up
+# to 5 percent plus a 0.1 h floor (for tiny stacks) before it is flagged.
+# Gated off whenever masters_without_subs is True, so a tidied archive with
+# deleted subs reports missing subs rather than an integrity failure.
+INTEGRATION_ANOMALY_RELATIVE_TOLERANCE = 0.05
+INTEGRATION_ANOMALY_FLOOR_HOURS = 0.1
+
+
+def _bucket_parts(bucket):
+    """Path segments of a bucket, or None for a missing bucket."""
+    if not bucket:
+        return None
+    return [p for p in re.split(r"[\\/]+", str(bucket)) if p not in ("", ".")]
+
+
+def _is_nested_bucket(child_parts, parent_parts):
+    """True when child_parts is a proper descendant of parent_parts."""
+    if child_parts is None or parent_parts is None:
+        return False
+    return (len(child_parts) > len(parent_parts)
+            and child_parts[:len(parent_parts)] == parent_parts)
+
+
 def build_filters_data(members: list[dict]) -> dict:
     """Per-band, per-rig hours for one target from its cluster members.
 
@@ -583,6 +612,8 @@ def build_filters_data(members: list[dict]) -> dict:
                 "first": _date_only(fs.get("first_date_obs") or m.get("date_obs")),
                 "last": _date_only(fs.get("last_date_obs") or m.get("date_obs")),
                 "label": label,
+                "session_root": session_root_of(m),
+                "bucket": fs.get("bucket"),
             }
         else:
             hours, depth_known = _master_hours_and_depth(m)
@@ -592,6 +623,7 @@ def build_filters_data(members: list[dict]) -> dict:
                 "depth_known": depth_known,
                 "date": _date_only(m.get("date_obs")),
                 "label": label,
+                "session_root": session_root_of(m),
             }
 
         for band in bands_for(filt, colour):
@@ -622,6 +654,11 @@ def build_filters_data(members: list[dict]) -> dict:
         contributing_bases = set()
         accepted_bases = set()
         sources = defaultdict(float)
+        band_stale_master = False
+        band_stale_excess_hours = 0.0
+        band_integration_anomaly = False
+        band_masters_without_subs = False
+        band_multi_master = False
 
         for cf_rig, rd in rig_groups.items():
             emitted_key = min(rd["spellings"])
@@ -636,6 +673,20 @@ def build_filters_data(members: list[dict]) -> dict:
             captured_hours = sum(x["hours"] for x in rd["captured_blocks"])
             accepted_hours = sum(
                 x["hours"] for x in rd["captured_blocks"] if x["accepted"])
+            # A rejected block whose bucket is a nested subfolder of another
+            # captured block (e.g. "og/rejected" under "og") represents subs
+            # already counted in that parent's total, moved aside rather than
+            # a distinct capture, so its hours come back out of accepted. A
+            # rejected block at the SAME bucket as its sibling (a synthetic or
+            # flat layout) is a separate, additional group of subs and is
+            # simply excluded, not subtracted again.
+            all_bucket_parts = [_bucket_parts(x["bucket"]) for x in rd["captured_blocks"]]
+            for x, x_parts in zip(rd["captured_blocks"], all_bucket_parts):
+                if x["accepted"]:
+                    continue
+                if any(_is_nested_bucket(x_parts, other_parts)
+                       for other_parts in all_bucket_parts):
+                    accepted_hours -= x["hours"]
 
             if rd["captured_blocks"]:
                 accepted_basis = ("rejected_folders"
@@ -655,6 +706,40 @@ def build_filters_data(members: list[dict]) -> dict:
             last_dates = [x["last"] for x in rd["captured_blocks"] if x["last"]]
             master_dates = [x["date"] for x in rd["masters"] if x["date"]]
 
+            captured_session_roots = {
+                x["session_root"] for x in rd["captured_blocks"]
+                if x["session_root"] is not None
+            }
+            masters_without_subs = any(
+                x["session_root"] is None
+                or x["session_root"] not in captured_session_roots
+                for x in rd["masters"]
+            )
+            multi_master = len(rd["masters"]) > 1
+
+            stale_threshold = min(
+                STALE_RELATIVE_TOLERANCE * integrated_hours,
+                STALE_ABSOLUTE_CAP_HOURS,
+            )
+            stale_master = (
+                len(rd["masters"]) > 0
+                and integrated_hours > 0
+                and (accepted_hours - integrated_hours) > stale_threshold
+            )
+            stale_excess_hours = (
+                accepted_hours - integrated_hours if stale_master else 0.0
+            )
+            stale_basis = "accepted" if stale_master else None
+
+            integration_anomaly = (
+                captured_hours > 0
+                and not masters_without_subs
+                and integrated_hours > (
+                    captured_hours * (1 + INTEGRATION_ANOMALY_RELATIVE_TOLERANCE)
+                    + INTEGRATION_ANOMALY_FLOOR_HOURS
+                )
+            )
+
             rig_rows[emitted_key] = {
                 "telescope": telescope,
                 "camera": camera,
@@ -672,6 +757,12 @@ def build_filters_data(members: list[dict]) -> dict:
                 "last_sub_date": max(last_dates) if last_dates else None,
                 "last_master_date": max(master_dates) if master_dates else None,
                 "master_files": [x["path"] for x in rd["masters"]][:10],
+                "stale_master": stale_master,
+                "stale_excess_hours": stale_excess_hours,
+                "stale_basis": stale_basis,
+                "integration_anomaly": integration_anomaly,
+                "masters_without_subs": masters_without_subs,
+                "multi_master": multi_master,
             }
 
             band_captured += captured_hours
@@ -691,6 +782,16 @@ def build_filters_data(members: list[dict]) -> dict:
             elif headline_basis == "captured":
                 for x in rd["captured_blocks"]:
                     sources[x["label"]] += x["hours"]
+
+            if stale_master:
+                band_stale_master = True
+            band_stale_excess_hours += stale_excess_hours
+            if integration_anomaly:
+                band_integration_anomaly = True
+            if masters_without_subs:
+                band_masters_without_subs = True
+            if multi_master:
+                band_multi_master = True
 
         if not contributing_bases:
             band_basis = "none"
@@ -727,6 +828,12 @@ def build_filters_data(members: list[dict]) -> dict:
             "headline_basis": band_basis,
             "master_depth_unknown": band_depth_unknown,
             "rigs": dict(sorted(rig_rows.items())),
+            "stale_master": band_stale_master,
+            "stale_excess_hours": band_stale_excess_hours,
+            "stale_basis": "accepted" if band_stale_master else None,
+            "integration_anomaly": band_integration_anomaly,
+            "masters_without_subs": band_masters_without_subs,
+            "multi_master": band_multi_master,
         }
 
     return filters_data
@@ -2277,8 +2384,8 @@ def session_root_and_stage(
     `originals_session_roots` maps an ``original*/`` folder bucket path to the
     session root it shares with a ``master/`` sibling (see
     `detect_originals_master_siblings`). When the bucket is such a folder it
-    resolves to that session root with the derivative ``og`` stage, so the
-    master-present suppression fires. Checked first because these folders carry
+    resolves to that session root with the ``og`` stage, treating it as the
+    capture source for that session. Checked first because these folders carry
     names (e.g. ``original_lights/``) that are not in PIPELINE_STAGE_FOLDERS.
     """
     from pathlib import PurePath
@@ -2688,7 +2795,7 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
         # early, so a later raise leaves ok=False with real-looking partial
         # fields. Counting those would leak corrupt reads into blocks/hours (the
         # old pipeline excluded them with `if not meta.get("ok"): continue`).
-        if not meta.get("ok"):
+        if meta.get("ok") is False:
             continue
         filt = meta.get("filter") or filter_from_path(Path(p))
         filt = canon_filter(filt) if filt else None
@@ -2713,12 +2820,21 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
         # Sum each file's own exposure (all ~equal within the group) so hours
         # are exact rather than count x one sampled exptime.
         total_hours = sum((m.get("exptime") or 0) for _, m in members) / 3600.0
+        valid_dates = [
+            d for d in (_date_only(m.get("date_obs")) and m.get("date_obs")
+                        for _, m in members)
+            if d
+        ]
+        first_date_obs = min(valid_dates) if valid_dates else None
+        last_date_obs = max(valid_dates) if valid_dates else None
         blocks.append({
             "bucket": parent,
             "filter": filt,
             "exptime": rep_meta.get("exptime"),
             "n_subs": count,
             "total_hours": total_hours,
+            "first_date_obs": first_date_obs,
+            "last_date_obs": last_date_obs,
             "ra_deg": rep_meta.get("ra_deg"),
             "dec_deg": rep_meta.get("dec_deg"),
             "pix_arcsec": rep_meta.get("pix_arcsec"),
