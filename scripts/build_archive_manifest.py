@@ -146,6 +146,117 @@ def sanitize_telescope(raw):
     return _TELESCOPE_CANONICAL_BY_FOLD.get(fold, s)
 
 
+# Vendor tokens stripped from the front of a camera name so the same physical
+# camera, written as "ZWO ASI2600MM Pro" by NINA and "ASI2600MM Pro" by the
+# ASIAIR, lands on one rig key. Case-insensitive, longest-first, start only.
+CAMERA_VENDOR_TOKENS = (
+    "zwo", "qhy", "qhyccd", "svbony", "player one", "playerone",
+    "atik", "altair", "touptek", "risingcam", "omegon",
+    "starlight xpress",
+)
+_CAMERA_VENDOR_TOKENS_SORTED = sorted(CAMERA_VENDOR_TOKENS, key=len, reverse=True)
+
+
+def sanitize_camera(raw):
+    """Strip a vendor prefix and collapse whitespace; None for empty input."""
+    if raw is None:
+        return None
+    s = re.sub(r"\s+", " ", str(raw).strip())
+    if not s:
+        return None
+    lower = s.casefold()
+    for tok in _CAMERA_VENDOR_TOKENS_SORTED:
+        if lower.startswith(tok) and len(s) > len(tok) and s[len(tok)].isspace():
+            rest = s[len(tok):].strip()
+            return rest or None
+    return s
+
+
+# Rig identity: a "?" half means missing gear, never the literal word "None".
+_RIG_KEY_UNSAFE_CHARS = re.compile(r"[|/\\:]")
+_RIG_KEY_MAX_LEN = 48
+
+
+def _rig_key_half(raw):
+    s = "" if raw is None else str(raw)
+    s = re.sub(r"\s+", " ", s.strip())
+    if not s:
+        return "?"
+    s = _RIG_KEY_UNSAFE_CHARS.sub("_", s)
+    return s[:_RIG_KEY_MAX_LEN] or "?"
+
+
+def rig_key(telescope, camera):
+    """Join a telescope/camera pair into one identity key, safe for a manifest.
+
+    A None half is treated as empty before any str() call, so a missing pair
+    is "?|?", never "None|None". Path separators are replaced and each half is
+    capped so a junk header can't bloat the manifest or smuggle a path in.
+    """
+    return f"{_rig_key_half(telescope)}|{_rig_key_half(camera)}"
+
+
+def rig_label(key):
+    """Render a rig_key as a human label; the unknown rig gets its own name."""
+    if key == "?|?":
+        return "Unknown rig"
+    scope, _, cam = key.partition("|")
+    return f"{scope} + {cam}"
+
+
+REJECT_FOLDER_TOKENS = ("rejected", "bad")
+
+
+def is_rejected_bucket(bucket):
+    """True when any path segment (either slash style) names a reject folder."""
+    if not bucket:
+        return False
+    segments = re.split(r"[\\/]+", str(bucket))
+    return any(
+        any(tok in seg.casefold() for tok in REJECT_FOLDER_TOKENS)
+        for seg in segments
+    )
+
+
+def _member_tag(member, key, default):
+    """Two-level lookup: member wins over its _folder_sub block, value-wins.
+
+    A key present at member level with a non-None value wins; a member-level
+    None means "absent" and falls through to the block; otherwise default.
+    """
+    if key in member and member[key] is not None:
+        return member[key]
+    block = member.get("_folder_sub") or {}
+    if key in block and block[key] is not None:
+        return block[key]
+    return default
+
+
+def counts_captured(member):
+    """Only a folder_sub block can ever be captured; other roles are gated off."""
+    if member.get("role") != "folder_sub":
+        return False
+    return bool(_member_tag(member, "_counts_captured", True))
+
+
+def counts_accepted(member):
+    """Only a folder_sub block can ever be accepted; other roles are gated off."""
+    if member.get("role") != "folder_sub":
+        return False
+    return bool(_member_tag(member, "_counts_accepted", True))
+
+
+def accepted_basis_of(member):
+    """Only a folder_sub block has an acceptance basis; other roles get None."""
+    if member.get("role") != "folder_sub":
+        return None
+    return _member_tag(member, "_accepted_basis", "no_rejects")
+
+
+def session_root_of(member):
+    return _member_tag(member, "_session_root", None)
+
+
 # Keys are matched after upper-casing, so a mixed-case key here is dead. The
 # three that were (Ha, Halpha, H-alpha) are kept because they read as
 # documentation of the spellings handled, but each has an upper-case twin that
@@ -758,7 +869,7 @@ def read_fits_meta(path: Path) -> dict:
             # Record INSTRUME independently as the camera identity — the telescope
             # fallback above is a legacy workaround for files missing TELESCOP.
             cam_raw = str(h.get("INSTRUME") or "").strip()
-            out["camera"] = cam_raw or None
+            out["camera"] = sanitize_camera(cam_raw) or None
             out["imagetyp"] = str(h.get("IMAGETYP") or h.get("OBSTYPE") or "").strip() or None
             # A Bayer matrix keyword means a colour sensor. NINA, SGP and
             # ASIAIR all write BAYERPAT for OSC cameras; a debayered RGB stack
@@ -1136,7 +1247,7 @@ def read_xisf_meta(path: Path) -> dict:
             out["object"] = object_from_filename(Path(path).stem)
         out["telescope"] = sanitize_telescope(fk("TELESCOP") or fk("INSTRUME"))
         cam_raw = str(fk("INSTRUME") or "").strip()
-        out["camera"] = cam_raw or None
+        out["camera"] = sanitize_camera(cam_raw) or None
         out["imagetyp"] = str(fk("IMAGETYP") or fk("OBSTYPE") or "").strip() or None
         for src_key, dst_key, caster in (
             ("GAIN", "gain", float), ("OFFSET", "offset", float),
@@ -1264,7 +1375,7 @@ def read_xisf_meta(path: Path) -> dict:
             if exp and exp > 0:
                 out["exptime"] = exp
         if out["camera"] is None:
-            out["camera"] = _xisf_prop_str(props, "Instrument:Camera:Name")
+            out["camera"] = sanitize_camera(_xisf_prop_str(props, "Instrument:Camera:Name"))
             if out["camera"] and not out["colour"] and _camera_name_is_colour(out["camera"]):
                 out["colour"] = True
         if out["telescope"] is None:
