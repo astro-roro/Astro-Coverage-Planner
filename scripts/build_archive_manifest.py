@@ -2717,6 +2717,38 @@ def compute_fov_from_meta(meta: dict) -> tuple[list | None, float | None, str]:
     return [gw * pix / 60.0, gh * pix / 60.0], pix, method
 
 
+def fov_corners(ra_c: float, dec_c: float, w_arcmin: float, h_arcmin: float,
+                log=None, label: str = "") -> tuple[list, list]:
+    """Return (corners_icrs, corners_gal) for a rectangle of w x h arcmin on ra_c, dec_c.
+
+    The offset is a flat tangent-plane approximation, which is what the rest of
+    the planner draws. A field near a pole, or a wide lens pointed high, puts a
+    corner past +/-90 in that approximation and SkyCoord refuses the latitude.
+    The corner is clamped to the pole instead, and the clamp is logged, because
+    a crash here loses the whole manifest for one target.
+    """
+    corners_icrs = []
+    corners_gal = []
+    clamped = False
+    for dx, dy in [(-1, -1), (-1, 1), (1, 1), (1, -1)]:
+        cos_dec = np.cos(np.radians(dec_c))
+        if abs(cos_dec) < 1e-9:
+            c_ra = ra_c
+        else:
+            c_ra = (ra_c + (dx * w_arcmin / 2.0) / 60.0 / cos_dec) % 360.0
+        c_dec = dec_c + (dy * h_arcmin / 2.0) / 60.0
+        if c_dec > 90.0 or c_dec < -90.0:
+            c_dec = max(-90.0, min(90.0, c_dec))
+            clamped = True
+        corners_icrs.append([float(c_ra), float(c_dec)])
+        sc2 = SkyCoord(c_ra * u.deg, c_dec * u.deg).galactic
+        corners_gal.append([float(sc2.l.deg), float(sc2.b.deg)])
+    if clamped and log:
+        log(f"  WARN: footprint corner past the pole clamped for {label or 'a target'} "
+            f"(centre dec {dec_c:.2f}, fov {w_arcmin:.0f}x{h_arcmin:.0f} arcmin)")
+    return corners_icrs, corners_gal
+
+
 def cluster_by_coords(items, radius_arcmin=30.0):
     """Greedy spatial clustering. Items must have (ra_deg, dec_deg). Returns list of lists of indices."""
     with_coords = [(i, it) for i, it in enumerate(items)
@@ -3677,13 +3709,10 @@ def main():
         corners_gal = []
         if fov_arcmin:
             w_arcmin, h_arcmin = fov_arcmin
-            for dx, dy in [(-1, -1), (-1, 1), (1, 1), (1, -1)]:
-                # Offset in arcmin
-                c_ra = ra_c + (dx * w_arcmin / 2.0) / 60.0 / np.cos(np.radians(dec_c))
-                c_dec = dec_c + (dy * h_arcmin / 2.0) / 60.0
-                corners_icrs.append([c_ra, c_dec])
-                sc2 = SkyCoord(c_ra * u.deg, c_dec * u.deg).galactic
-                corners_gal.append([float(sc2.l.deg), float(sc2.b.deg)])
+            corners_icrs, corners_gal = fov_corners(
+                ra_c, dec_c, w_arcmin, h_arcmin,
+                log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"),
+                label=", ".join(objects[:2]) or f"cluster at {ra_c:.2f}, {dec_c:.2f}")
 
         # Date range
         dates = sorted({m.get("date_obs")[:10] for m in members if m.get("date_obs")})
