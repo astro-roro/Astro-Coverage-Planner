@@ -99,7 +99,7 @@ class ScanCacheCase(unittest.TestCase):
                         if tok.isdigit()]
                 self.assertEqual(len(nums), 3, line)
                 return tuple(nums)
-        self.fail(f"no header cache summary line in output:\n{proc.stdout}")
+        raise AssertionError(f"no header cache summary line in output:\n{proc.stdout}")
 
     def manifest_body(self) -> dict:
         m = json.loads(self.manifest.read_text(encoding="utf-8"))
@@ -189,7 +189,7 @@ class TestInvalidation(ScanCacheCase):
 class TestFallbacks(ScanCacheCase):
 
     def test_corrupt_cache_falls_back_to_a_cold_scan(self):
-        first = self.run_scan()
+        self.run_scan()
         cold = self.manifest_body()
         self.cache.write_text('{"schema": 1, "entries": {"a": ', encoding="utf-8")
         second = self.run_scan()

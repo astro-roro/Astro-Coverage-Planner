@@ -17,14 +17,14 @@ To build it, point `FITS_ROOTS` at one or more folders of stacked FITS/XISF mast
 
 **macOS / Linux:**
 
-    FITS_ROOTS="/Volumes/Astro/Images:/Volumes/Archive" python scripts/build_archive_manifest.py
+    FITS_ROOTS="/Volumes/Astro/Images;/Volumes/Archive" python scripts/build_archive_manifest.py
 
 **Windows PowerShell:**
 
     $env:FITS_ROOTS="D:/Astro/Images;E:/Archive"
     python scripts/build_archive_manifest.py
 
-Use **`;`** as the separator on Windows and **`:`** on macOS/Linux (matching each shell's PATH convention).
+Use **`;`** as the separator on every platform. A colon is a legal character in a macOS or Linux path, so the builder does not split on it.
 
 Both of these are set for the current terminal session only. Close the window or open a new tab and it's gone, so if you also start `app.py` from a different terminal (or a different session later on) it won't see `FITS_ROOTS` unless you set it there too. On macOS/Linux, the `FITS_ROOTS="..." python ...` form above only applies to that one command anyway, which is usually what you want. On Windows, if you'd rather not retype `$env:FITS_ROOTS=...` every session, set it permanently with:
 
@@ -42,7 +42,7 @@ Both the build script and the webapp read these environment variables. Set whate
 
 | Var | Default | Purpose |
 |---|---|---|
-| `FITS_ROOTS` | (none, required for build) | One or more image roots for the manifest builder. Semicolon-separated on Windows, colon-separated on macOS/Linux. |
+| `FITS_ROOTS` | (none, required for build) | One or more image roots for the manifest builder. Semicolon-separated on every platform. |
 | `MANIFEST_PATH` | `./data/manifest.json` | Where the manifest is read (by the app) and written (by the builder). |
 | `CATALOGS_PATH` | `./data/catalogs.json` | Path to overlay catalogues. |
 | `GEAR_PATH` | `./data/gear.json` | Telescopes + cameras for the planner. |

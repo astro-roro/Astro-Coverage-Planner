@@ -72,6 +72,28 @@ class TestRgbMasterWcs(unittest.TestCase):
         self.assertEqual(meta["naxis1"], 64)
         self.assertEqual(meta["naxis2"], 48)
 
+    def test_two_plane_sip_master_is_solved(self):
+        """A Siril stack of an ASIAIR SIP solve: NAXIS3=2 with A_ORDER set.
+
+        With SIP terms present, WCS(header) raises on the third axis before
+        .celestial can drop it, so these masters were reported under 'plate
+        solves that failed to parse' and treated as unsolved.
+        """
+        h = _solved_header()
+        h["CTYPE1"] = "RA---TAN-SIP"
+        h["CTYPE2"] = "DEC--TAN-SIP"
+        h["A_ORDER"] = 2
+        h["B_ORDER"] = 2
+        for k in ("A_0_2", "A_1_1", "A_2_0", "B_0_2", "B_1_1", "B_2_0"):
+            h[k] = 1e-7
+        p = self.tmp / "sip2.fits"
+        fits.PrimaryHDU(data=np.zeros((2, 48, 64), dtype="float32"), header=h).writeto(p, overwrite=True)
+        meta = bam.read_fits_meta(p)
+        self.assertTrue(meta["ok"])
+        self.assertTrue(meta["has_wcs"], "SIP-solved two-plane master must read as plate solved")
+        self.assertAlmostEqual(meta["ra_deg"], CRVAL1, delta=0.05)
+        self.assertAlmostEqual(meta["dec_deg"], CRVAL2, delta=0.05)
+
     def test_mono_master_still_solved(self):
         """Guard the 2-plane path the fix routes through .celestial."""
         p = _write(self.tmp / "mono.fits", np.zeros((48, 64), dtype="float32"))

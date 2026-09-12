@@ -125,16 +125,23 @@ class TestCollapseMasterVariants(unittest.TestCase):
         self.assertEqual(len(kept), 1)
         self.assertEqual(len(dropped), 1)
 
-    def test_hours_are_counted_once_after_collapse(self):
-        """The point of the whole exercise."""
+    def test_hours_are_counted_once_whether_or_not_the_variants_collapse(self):
+        """Three exports of one stack are 1.33 hours of light, before and after.
+
+        This used to read 4.0 hours before the collapse, because hours were the
+        sum over masters. Since the product owner's 2026-09-12 decision the
+        deepest master alone sets integrated hours, so the count is right even
+        with every variant still present.
+        """
         masters = [_m(BASE + ".xisf", ncombine=40),
                    _m(BASE + "_autocrop.xisf", ncombine=40),
                    _m(BASE + "_drizzle_2x.xisf", ncombine=40)]
         before = bam.build_filters_data(masters)["B"]["total_hours"]
         kept, _ = bam.collapse_master_variants(masters)
         after = bam.build_filters_data(kept)["B"]["total_hours"]
-        self.assertAlmostEqual(before, 4.0, places=3)
-        self.assertAlmostEqual(after, 40 * 120.0 / 3600.0, places=3)
+        one_stack = 40 * 120.0 / 3600.0
+        self.assertAlmostEqual(before, one_stack, places=3)
+        self.assertAlmostEqual(after, one_stack, places=3)
 
     def test_empty_input(self):
         self.assertEqual(bam.collapse_master_variants([]), ([], []))

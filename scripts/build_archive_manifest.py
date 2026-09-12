@@ -28,6 +28,7 @@ Then start the planner; the manifest will be picked up automatically.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import html
 import inspect
@@ -146,6 +147,117 @@ def sanitize_telescope(raw):
     return _TELESCOPE_CANONICAL_BY_FOLD.get(fold, s)
 
 
+# Vendor tokens stripped from the front of a camera name so the same physical
+# camera, written as "ZWO ASI2600MM Pro" by NINA and "ASI2600MM Pro" by the
+# ASIAIR, lands on one rig key. Case-insensitive, longest-first, start only.
+CAMERA_VENDOR_TOKENS = (
+    "zwo", "qhy", "qhyccd", "svbony", "player one", "playerone",
+    "atik", "altair", "touptek", "risingcam", "omegon",
+    "starlight xpress",
+)
+_CAMERA_VENDOR_TOKENS_SORTED = sorted(CAMERA_VENDOR_TOKENS, key=len, reverse=True)
+
+
+def sanitize_camera(raw):
+    """Strip a vendor prefix and collapse whitespace; None for empty input."""
+    if raw is None:
+        return None
+    s = re.sub(r"\s+", " ", str(raw).strip())
+    if not s:
+        return None
+    lower = s.casefold()
+    for tok in _CAMERA_VENDOR_TOKENS_SORTED:
+        if lower.startswith(tok) and len(s) > len(tok) and s[len(tok)].isspace():
+            rest = s[len(tok):].strip()
+            return rest or None
+    return s
+
+
+# Rig identity: a "?" half means missing gear, never the literal word "None".
+_RIG_KEY_UNSAFE_CHARS = re.compile(r"[|/\\:]")
+_RIG_KEY_MAX_LEN = 48
+
+
+def _rig_key_half(raw):
+    s = "" if raw is None else str(raw)
+    s = re.sub(r"\s+", " ", s.strip())
+    if not s:
+        return "?"
+    s = _RIG_KEY_UNSAFE_CHARS.sub("_", s)
+    return s[:_RIG_KEY_MAX_LEN] or "?"
+
+
+def rig_key(telescope, camera):
+    """Join a telescope/camera pair into one identity key, safe for a manifest.
+
+    A None half is treated as empty before any str() call, so a missing pair
+    is "?|?", never "None|None". Path separators are replaced and each half is
+    capped so a junk header can't bloat the manifest or smuggle a path in.
+    """
+    return f"{_rig_key_half(telescope)}|{_rig_key_half(camera)}"
+
+
+def rig_label(key):
+    """Render a rig_key as a human label; the unknown rig gets its own name."""
+    if key == "?|?":
+        return "Unknown rig"
+    scope, _, cam = key.partition("|")
+    return f"{scope} + {cam}"
+
+
+REJECT_FOLDER_TOKENS = ("rejected", "bad")
+
+
+def is_rejected_bucket(bucket):
+    """True when any path segment (either slash style) names a reject folder."""
+    if not bucket:
+        return False
+    segments = re.split(r"[\\/]+", str(bucket))
+    return any(
+        any(tok in seg.casefold() for tok in REJECT_FOLDER_TOKENS)
+        for seg in segments
+    )
+
+
+def _member_tag(member, key, default):
+    """Two-level lookup: member wins over its _folder_sub block, value-wins.
+
+    A key present at member level with a non-None value wins; a member-level
+    None means "absent" and falls through to the block; otherwise default.
+    """
+    if key in member and member[key] is not None:
+        return member[key]
+    block = member.get("_folder_sub") or {}
+    if key in block and block[key] is not None:
+        return block[key]
+    return default
+
+
+def counts_captured(member):
+    """Only a folder_sub block can ever be captured; other roles are gated off."""
+    if member.get("role") != "folder_sub":
+        return False
+    return bool(_member_tag(member, "_counts_captured", True))
+
+
+def counts_accepted(member):
+    """Only a folder_sub block can ever be accepted; other roles are gated off."""
+    if member.get("role") != "folder_sub":
+        return False
+    return bool(_member_tag(member, "_counts_accepted", True))
+
+
+def accepted_basis_of(member):
+    """Only a folder_sub block has an acceptance basis; other roles get None."""
+    if member.get("role") != "folder_sub":
+        return None
+    return _member_tag(member, "_accepted_basis", "no_rejects")
+
+
+def session_root_of(member):
+    return _member_tag(member, "_session_root", None)
+
+
 # Keys are matched after upper-casing, so a mixed-case key here is dead. The
 # three that were (Ha, Halpha, H-alpha) are kept because they read as
 # documentation of the spellings handled, but each has an upper-case twin that
@@ -160,7 +272,17 @@ FILTER_CANON = {
     "G": "G", "GREEN": "G",
     "B": "B", "BLUE": "B",
     "V": "V",
-    "IDAS": "IDAS", "IR": "IR", "UV": "UV",
+    "IR": "IR", "UV": "UV",
+    # IDAS light pollution suppression filters. Broadband: they cut the mercury
+    # and sodium lines and pass the rest, so on a mono camera they are a wide
+    # luminance and on a colour camera they are RGB at once, the same as no
+    # filter. The narrowband IDAS filters (NB1, NBZ and so on) are not here:
+    # those belong in OSC_BAND_FILTERS with the other dual-band filters.
+    "IDAS": "IDAS", "LPS": "LPS",
+    "LPS-D1": "LPS-D1", "LPS D1": "LPS-D1", "LPS-D2": "LPS-D2", "LPS D2": "LPS-D2",
+    "LPS-D3": "LPS-D3", "LPS D3": "LPS-D3", "LPS-P2": "LPS-P2", "LPS P2": "LPS-P2",
+    "LPS-P3": "LPS-P3", "LPS P3": "LPS-P3", "LPS-V4": "LPS-V4", "LPS V4": "LPS-V4",
+    "LPS-A1": "LPS-A1", "LPS A1": "LPS-A1",
     # No filter wheel, or an empty slot. Kept as its own bucket rather than
     # guessed into L: on a mono camera it is a wide luminance, on a colour
     # camera it is RGB at once (issue #63).
@@ -302,10 +424,32 @@ def _note_unrecognised_filter(name: str) -> None:
         sink.append(name)
 
 
+# Values that say the filter is not known. A capture app writing
+# FILTER = 'unknown' means the same as leaving the keyword out, so both must
+# reach the same band, or a target grows one row per spelling: three of the
+# maintainer's targets carried a separate "Unknown" and "unknown" band, each
+# counting the same hours.
+#
+# Two near misses stay out of this set on purpose. "NONE" and "NO FILTER" are
+# what NINA writes when the wheel holds no filter, which is real information and
+# already canonicalises to NoFilter. "NA" is how a sodium filter is written.
+_FILTER_PLACEHOLDERS = {
+    "", "-", "--", "?", "N/A", "NULL",
+    "UNKNOWN", "UNSPECIFIED", "NOT SET", "NOTSET",
+}
+
+
 def canon_filter(raw: str | None) -> str | None:
     if raw is None:
         return None
     s = str(raw).strip().upper()
+    if s in _FILTER_PLACEHOLDERS:
+        return None
+    # Some wheels report the slot number rather than the filter in it. A bare
+    # number says where the filter sat, not what it passed, so it names no band.
+    # One header in the maintainer's archive reads FILTER = '2'.
+    if s.isdigit():
+        return None
     hit = FILTER_CANON.get(s)
     if hit is not None:
         return hit
@@ -336,7 +480,14 @@ def _osc_band_in(text: str) -> str | None:
 # named after itself, so unknown filters (IR, sodium, ...) still show up.
 # Broadband light pollution filters behave like no filter at all: L on mono,
 # RGB on a colour camera.
-_BROADBAND_LIKE_NOFILTER = {"NoFilter", "L-Pro", "L-Quad", "L-QEF", "CLS", "UHC"}
+_BROADBAND_LIKE_NOFILTER = {
+    "NoFilter", "L-Pro", "L-Quad", "L-QEF", "CLS", "UHC",
+    # The IDAS LPS family, added 2026-09-12. They had been crediting bands named
+    # after themselves, so 26.2 hours of the maintainer's archive sat under IDAS
+    # and LPS instead of under L, where a luminance-hungry plan would look.
+    "IDAS", "LPS", "LPS-D1", "LPS-D2", "LPS-D3", "LPS-P2", "LPS-P3", "LPS-V4",
+    "LPS-A1",
+}
 _MULTI_BAND = {
     "L-eXtreme": ["Ha", "OIII"], "L-eNhance": ["Ha", "OIII"], "L-Ultimate": ["Ha", "OIII"],
     "NBZ": ["Ha", "OIII"], "NBZ UHS": ["Ha", "OIII"], "ALP-T": ["Ha", "OIII"],
@@ -354,7 +505,10 @@ _SINGLE_BAND_NAMES = set(FILTER_CANON.values()) - {"NoFilter"}
 def bands_for(filt: str | None, colour: bool) -> list[str]:
     """Coverage bands a frame credits, given its canonical filter and sensor type."""
     if not filt:
-        return ["Unknown"]
+        # A colour camera with no filter recorded at all (common: OSC capture
+        # apps often leave the field blank rather than writing "NoFilter")
+        # is still full-colour data, same as an explicit NoFilter.
+        return ["R", "G", "B"] if colour else ["Unknown"]
     if filt in _BROADBAND_LIKE_NOFILTER:
         return ["R", "G", "B"] if colour else ["L"]
     if filt in _MULTI_BAND:
@@ -370,59 +524,563 @@ def bands_for(filt: str | None, colour: bool) -> list[str]:
 def filter_label(filt: str | None, colour: bool) -> str:
     """Display name for the real filter behind a band credit."""
     if not filt:
-        return "Unknown"
+        return "OSC" if colour else "Unknown"
     if filt == "NoFilter" and colour:
         return "OSC"
     return filt
 
 
-def build_filters_data(members: list[dict]) -> dict:
-    """Per-band hours for one target from its cluster members.
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-    Masters contribute NCOMBINE x EXPTIME when available, else EXPTIME. Folder
-    sub blocks contribute n_subs x exptime (their exptime and ncombine already
-    encode this). Each member credits every band its filter maps to, and each
-    band records which real filters fed it under ``sources``.
+
+def _date_only(date_obs):
+    """First 10 characters of a date_obs string when they look like a date.
+
+    ``None`` for a missing value or one that doesn't match ``YYYY-MM-DD`` in
+    its first 10 characters, so a malformed value never survives as a mangled
+    prefix.
     """
-    filters_data = defaultdict(lambda: {
-        "total_hours": 0.0, "files": 0, "paths": [],
-        "sub_folders": 0, "n_subs": 0, "folder_sub_buckets": [],
-        "sources": defaultdict(float),
-    })
+    if not date_obs:
+        return None
+    s = str(date_obs)[:10]
+    return s if _DATE_ONLY_RE.match(s) else None
+
+
+def _folder_sub_hours(m):
+    """Hours for a folder-sub member: the block's own total when it has one.
+
+    ``_folder_sub['total_hours']`` is the exact per-file EXPTIME sum, so a
+    mixed-exposure session survives; fall back to exptime x ncombine (or
+    exptime alone) only when the block carries no total of its own.
+    """
+    fs = m.get("_folder_sub") or {}
+    total = fs.get("total_hours")
+    if total:
+        return total
+    if m.get("exptime") and m.get("ncombine"):
+        return m["exptime"] * m["ncombine"] / 3600.0
+    if m.get("exptime"):
+        return m["exptime"] / 3600.0
+    return 0.0
+
+
+def _master_hours_and_depth(m):
+    """(hours, depth_known) for a master member.
+
+    Depth is known only when both exptime and ncombine are present (ncombine
+    > 0, since a falsy ncombine takes the exptime-alone branch). A
+    depth-unknown master still counts one exposure so a headline is never
+    zero beside frames actually on disk.
+    """
+    exptime = m.get("exptime")
+    ncombine = m.get("ncombine")
+    if exptime and ncombine:
+        return exptime * ncombine / 3600.0, True
+    if exptime:
+        return exptime / 3600.0, False
+    return 0.0, False
+
+
+# Stale-master rule (product owner, 2026-09-11): a master is stale when
+# accepted hours exceed integrated hours by more than the SMALLER of 20
+# percent of integrated hours and 2.0 hours.
+STALE_RELATIVE_TOLERANCE = 0.20
+STALE_ABSOLUTE_CAP_HOURS = 2.0
+
+# Integration-anomaly rule: integrated hours may exceed captured hours by up
+# to 5 percent plus a 0.1 h floor (for tiny stacks) before it is flagged.
+# Gated off whenever masters_without_subs is True, so a tidied archive with
+# deleted subs reports missing subs rather than an integrity failure.
+INTEGRATION_ANOMALY_RELATIVE_TOLERANCE = 0.05
+INTEGRATION_ANOMALY_FLOOR_HOURS = 0.1
+
+
+def parent_dir(path) -> str:
+    """The directory holding ``path``, spelled the way ``path`` was.
+
+    ``str(Path(p).parent)`` rewrites separators to the platform's own, so on
+    Windows a forward-slash path comes back with backslashes. Every caller here
+    compares the result against bucket strings by plain string equality, and a
+    rewritten separator silently stops matching: on Windows the session master
+    link came back empty for any path written with forward slashes, which is how
+    people type a root by hand.
+    """
+    s = str(path)
+    cut = max(s.rfind("/"), s.rfind("\\"))
+    if cut < 0:
+        return s
+    return s[:cut] or s[:cut + 1]
+
+
+def _bucket_parts(bucket):
+    """Path segments of a bucket, or None for a missing bucket."""
+    if not bucket:
+        return None
+    return [p for p in re.split(r"[\\/]+", str(bucket)) if p not in ("", ".")]
+
+
+def _is_nested_bucket(child_parts, parent_parts):
+    """True when child_parts is a proper descendant of parent_parts."""
+    if child_parts is None or parent_parts is None:
+        return False
+    return (len(child_parts) > len(parent_parts)
+            and child_parts[:len(parent_parts)] == parent_parts)
+
+
+def pick_integration_master(masters: list[dict]) -> dict | None:
+    """The one master whose depth sets integrated hours: the deepest.
+
+    Product owner's decision, 2026-09-12. A band and rig often holds several
+    masters, and they are not additive. In the maintainer's archive 32 rig-band
+    rows hold the same stack re-exported under another name, sharing a capture
+    instant to the second: adding them read Sh2-27 in Ha as 81 subs when 41 were
+    ever taken. The deepest master is the one that contains the others, so it is
+    the integration.
+
+    Newest was considered and rejected on the evidence. Horsehead in Ha holds a
+    23 hour master and a 2 hour one stacked later, and the newest rule reports 2.
+    When a shallower master is the newer one, the stale flag is what says to
+    rebuild; integrated still reports the deepest stack that exists.
+
+    A master with no subframe count cannot be the source, so a master carrying a
+    count always wins over one without, however deep the latter's single exposure
+    looks. When no master carries a count the deepest still comes back, and the
+    caller reports the depth as unknown so the headline falls back to captured.
+    """
+    if not masters:
+        return None
+    return max(masters, key=lambda x: (
+        bool(x.get("depth_known")), x.get("hours") or 0.0,
+        x.get("date") or "", x.get("path") or ""))
+
+
+def build_filters_data(members: list[dict]) -> dict:
+    """Per-band, per-rig hours for one target from its cluster members.
+
+    Three numbers per band and per rig: captured (subs shot), accepted
+    (captured minus rejected folders, standing decision 4) and integrated
+    (master stacks). The headline is integrated when a master with a known
+    subframe count exists for that band and rig (standing decision 3), else
+    captured. Band rows sum their rigs; only the archive total above this
+    function combines rigs across bands (standing decision 2).
+
+    Every value returned is an unrounded float; emit_filters_data() rounds
+    for the manifest surface.
+    """
+    # band -> casefolded rig key -> raw per-rig evidence, before the headline
+    # decision is made. Kept separate from the finished row so `sources` can
+    # be built from whichever evidence the rig's own headline basis credits.
+    raw = defaultdict(lambda: defaultdict(lambda: {
+        "spellings": set(), "masters": [], "captured_blocks": [],
+    }))
+    band_paths = defaultdict(list)
+    band_buckets = defaultdict(list)
+
     for m in members:
         colour = bool(m.get("colour"))
-        label = filter_label(m.get("filter"), colour)
+        filt = m.get("filter")
+        label = filter_label(filt, colour)
         is_folder_sub = m.get("role") == "folder_sub"
-        if m.get("exptime") and m.get("ncombine"):
-            hours = m["exptime"] * m["ncombine"] / 3600.0
-        elif m.get("exptime"):
-            hours = m["exptime"] / 3600.0
+        rig = m.get("_rig_key") or rig_key(m.get("telescope"), m.get("camera"))
+        cf_rig = rig.casefold()
+
+        if is_folder_sub:
+            fs = m.get("_folder_sub") or {}
+            hours = _folder_sub_hours(m)
+            captured = counts_captured(m)
+            block = {
+                "hours": hours,
+                "accepted": counts_accepted(m),
+                "rejected": accepted_basis_of(m) == "rejected_folders",
+                "n_subs": fs.get("n_subs") or 0,
+                "first": _date_only(fs.get("first_date_obs") or m.get("date_obs")),
+                "last": _date_only(fs.get("last_date_obs") or m.get("date_obs")),
+                "label": label,
+                "session_root": session_root_of(m),
+                "bucket": fs.get("bucket"),
+                "rejected_copy_hours": rejected_copy_hours(fs),
+            }
         else:
-            hours = 0.0
-        for band in bands_for(m.get("filter"), colour):
-            d = filters_data[band]
-            if not is_folder_sub:
-                d["paths"].append(m["path"])
-                d["files"] += 1
+            hours, depth_known = _master_hours_and_depth(m)
+            entry = {
+                "path": m.get("path"),
+                "hours": hours,
+                "depth_known": depth_known,
+                "date": _date_only(m.get("date_obs")),
+                "label": label,
+                "session_root": session_root_of(m),
+            }
+
+        for band in bands_for(filt, colour):
+            rd = raw[band][cf_rig]
+            rd["spellings"].add(rig)
+            if is_folder_sub:
+                if captured:
+                    rd["captured_blocks"].append(block)
+                    band_buckets[band].append({
+                        "bucket": fs.get("bucket"),
+                        "n_subs": fs.get("n_subs"),
+                        "exptime": fs.get("exptime"),
+                        "hours": round((fs.get("exptime") or 0) * (fs.get("n_subs") or 0) / 3600.0, 2),
+                        "stage": fs.get("_stage"),
+                        "session_root": session_root_of(m),
+                        "sample_path": fs.get("sample_path"),
+                        "telescope": fs.get("telescope"),
+                    })
             else:
-                d["sub_folders"] += 1
-                d["n_subs"] += m.get("ncombine") or 0
-                fs = m.get("_folder_sub") or {}
-                d["folder_sub_buckets"].append({
-                    "bucket": fs.get("bucket"),
-                    "n_subs": fs.get("n_subs"),
-                    "exptime": fs.get("exptime"),
-                    "hours": round((fs.get("exptime") or 0) * (fs.get("n_subs") or 0) / 3600.0, 2),
-                    "stage": fs.get("_stage"),
-                    "session_root": fs.get("_session_root"),
-                    "sample_path": fs.get("sample_path"),
-                    "telescope": fs.get("telescope"),
-                })
-            d["total_hours"] += hours
-            d["sources"][label] += hours
-    for d in filters_data.values():
-        d["sources"] = {k: round(v, 2) for k, v in d["sources"].items()}
-    return dict(filters_data)
+                rd["masters"].append(entry)
+                band_paths[band].append(m.get("path"))
+
+    filters_data = {}
+    for band, rig_groups in raw.items():
+        rig_rows = {}
+        band_captured = band_accepted = band_integrated = band_headline = 0.0
+        band_depth_unknown = False
+        contributing_bases = set()
+        accepted_bases = set()
+        sources = defaultdict(float)
+        band_stale_master = False
+        band_stale_excess_hours = 0.0
+        band_integration_anomaly = False
+        band_masters_without_subs = False
+        band_multi_master = False
+
+        for cf_rig, rd in rig_groups.items():
+            emitted_key = min(rd["spellings"])
+            scope_half, _, cam_half = emitted_key.partition("|")
+            telescope = None if scope_half == "?" else scope_half
+            camera = None if cam_half == "?" else cam_half
+
+            # One master sets integrated, never the sum of them: see
+            # pick_integration_master for why adding them is wrong.
+            integration_master = pick_integration_master(rd["masters"])
+            integrated_hours = (
+                integration_master["hours"] if integration_master else 0.0)
+            master_depth_unknown = bool(
+                integration_master and not integration_master["depth_known"])
+
+            captured_hours = sum(x["hours"] for x in rd["captured_blocks"])
+            accepted_hours = sum(
+                x["hours"] for x in rd["captured_blocks"] if x["accepted"])
+            # A rejected block whose bucket is a nested subfolder of another
+            # captured block (e.g. "og/rejected" under "og") represents subs
+            # already counted in that parent's total, moved aside rather than
+            # a distinct capture, so its hours come back out of accepted. A
+            # rejected block at the SAME bucket as its sibling (a synthetic or
+            # flat layout) is a separate, additional group of subs and is
+            # simply excluded, not subtracted again.
+            all_bucket_parts = [_bucket_parts(x["bucket"]) for x in rd["captured_blocks"]]
+            for x, x_parts in zip(rd["captured_blocks"], all_bucket_parts):
+                if x["accepted"]:
+                    continue
+                if any(_is_nested_bucket(x_parts, other_parts)
+                       for other_parts in all_bucket_parts):
+                    accepted_hours -= x["hours"]
+
+            # Frames condemned by a rejected copy that the capture-time
+            # collapse absorbed into this block (see rejected_copy_hours).
+            rejected_copy_total = sum(
+                x["rejected_copy_hours"] for x in rd["captured_blocks"] if x["accepted"])
+            accepted_hours = max(0.0, accepted_hours - rejected_copy_total)
+
+            if rd["captured_blocks"]:
+                accepted_basis = ("rejected_folders"
+                                   if (any(x["rejected"] for x in rd["captured_blocks"])
+                                       or rejected_copy_total > 0)
+                                   else "no_rejects")
+            else:
+                accepted_basis = None
+
+            if (integration_master and integration_master["depth_known"]
+                    and integrated_hours > 0):
+                headline_basis, headline_hours = "integrated", integrated_hours
+            elif captured_hours > 0:
+                headline_basis, headline_hours = "captured", captured_hours
+            else:
+                headline_basis, headline_hours = "none", 0.0
+
+            first_dates = [x["first"] for x in rd["captured_blocks"] if x["first"]]
+            last_dates = [x["last"] for x in rd["captured_blocks"] if x["last"]]
+            master_dates = [x["date"] for x in rd["masters"] if x["date"]]
+
+            captured_session_roots = {
+                x["session_root"] for x in rd["captured_blocks"]
+                if x["session_root"] is not None
+            }
+            masters_without_subs = any(
+                x["session_root"] is None
+                or x["session_root"] not in captured_session_roots
+                for x in rd["masters"]
+            )
+            multi_master = len(rd["masters"]) > 1
+
+            stale_threshold = min(
+                STALE_RELATIVE_TOLERANCE * integrated_hours,
+                STALE_ABSOLUTE_CAP_HOURS,
+            )
+            stale_master = (
+                len(rd["masters"]) > 0
+                and integrated_hours > 0
+                and (accepted_hours - integrated_hours) > stale_threshold
+            )
+            stale_excess_hours = (
+                accepted_hours - integrated_hours if stale_master else 0.0
+            )
+            stale_basis = "accepted" if stale_master else None
+
+            integration_anomaly = (
+                captured_hours > 0
+                and not masters_without_subs
+                and integrated_hours > (
+                    captured_hours * (1 + INTEGRATION_ANOMALY_RELATIVE_TOLERANCE)
+                    + INTEGRATION_ANOMALY_FLOOR_HOURS
+                )
+            )
+
+            rig_rows[emitted_key] = {
+                "telescope": telescope,
+                "camera": camera,
+                "captured_hours": captured_hours,
+                "accepted_hours": accepted_hours,
+                "accepted_basis": accepted_basis,
+                "integrated_hours": integrated_hours,
+                "integrated_master": (
+                    integration_master["path"] if integration_master else None),
+                "headline_hours": headline_hours,
+                "headline_basis": headline_basis,
+                "master_depth_unknown": master_depth_unknown,
+                "n_masters": len(rd["masters"]),
+                "n_captured_blocks": len(rd["captured_blocks"]),
+                "n_subs": sum(x["n_subs"] for x in rd["captured_blocks"]),
+                "first_sub_date": min(first_dates) if first_dates else None,
+                "last_sub_date": max(last_dates) if last_dates else None,
+                "last_master_date": max(master_dates) if master_dates else None,
+                "master_files": [x["path"] for x in rd["masters"]][:10],
+                "stale_master": stale_master,
+                "stale_excess_hours": stale_excess_hours,
+                "stale_basis": stale_basis,
+                "integration_anomaly": integration_anomaly,
+                "masters_without_subs": masters_without_subs,
+                "multi_master": multi_master,
+            }
+
+            band_captured += captured_hours
+            band_accepted += accepted_hours
+            band_integrated += integrated_hours
+            band_headline += headline_hours
+            if master_depth_unknown:
+                band_depth_unknown = True
+            if headline_hours > 0:
+                contributing_bases.add(headline_basis)
+            if accepted_basis is not None:
+                accepted_bases.add(accepted_basis)
+
+            if headline_basis == "integrated":
+                for x in rd["masters"]:
+                    sources[x["label"]] += x["hours"]
+            elif headline_basis == "captured":
+                for x in rd["captured_blocks"]:
+                    sources[x["label"]] += x["hours"]
+
+            if stale_master:
+                band_stale_master = True
+            band_stale_excess_hours += stale_excess_hours
+            if integration_anomaly:
+                band_integration_anomaly = True
+            if masters_without_subs:
+                band_masters_without_subs = True
+            if multi_master:
+                band_multi_master = True
+
+        if not contributing_bases:
+            band_basis = "none"
+        elif contributing_bases == {"integrated"}:
+            band_basis = "integrated"
+        elif contributing_bases == {"captured"}:
+            band_basis = "captured"
+        else:
+            band_basis = "mixed"
+
+        if not accepted_bases:
+            band_accepted_basis = None
+        elif "rejected_folders" in accepted_bases:
+            band_accepted_basis = "rejected_folders"
+        else:
+            band_accepted_basis = "no_rejects"
+
+        paths = band_paths.get(band, [])
+        buckets = band_buckets.get(band, [])
+
+        filters_data[band] = {
+            "total_hours": band_headline,
+            "files": len(paths),
+            "paths": list(paths),
+            "sub_folders": len(buckets),
+            "n_subs": sum(b.get("n_subs") or 0 for b in buckets),
+            "folder_sub_buckets": buckets,
+            "sources": dict(sources),
+            "captured_hours": band_captured,
+            "accepted_hours": band_accepted,
+            "accepted_basis": band_accepted_basis,
+            "integrated_hours": band_integrated,
+            "headline_hours": band_headline,
+            "headline_basis": band_basis,
+            "master_depth_unknown": band_depth_unknown,
+            "rigs": dict(sorted(rig_rows.items())),
+            "stale_master": band_stale_master,
+            "stale_excess_hours": band_stale_excess_hours,
+            "stale_basis": "accepted" if band_stale_master else None,
+            "integration_anomaly": band_integration_anomaly,
+            "masters_without_subs": band_masters_without_subs,
+            "multi_master": band_multi_master,
+        }
+
+    return filters_data
+
+
+_EMIT_BAND_ROUND_KEYS = (
+    "total_hours", "captured_hours", "accepted_hours", "integrated_hours",
+    "headline_hours", "stale_excess_hours",
+)
+_EMIT_RIG_ROUND_KEYS = (
+    "captured_hours", "accepted_hours", "integrated_hours", "headline_hours",
+    "stale_excess_hours",
+)
+
+
+def emit_filters_data(filters_data: dict) -> dict:
+    """Round build_filters_data()'s unrounded floats for the manifest surface.
+
+    Pure: the argument is never mutated. A band value is round(sum of the
+    unrounded rig values, 2), not the sum of the rounded rig values, so a
+    rounded rig row may fail to sum exactly to the band value by up to
+    0.01 x n_rigs, and that is expected, not a bug. Also applies today's
+    caps (paths[:10], folder_sub_buckets[:10]) and seeds
+    captured_unattributed_hours = 0.0, which apply_db_captured_floor() may
+    later raise.
+    """
+    out = {}
+    for band, d in filters_data.items():
+        band_out = dict(d)
+        for key in _EMIT_BAND_ROUND_KEYS:
+            if key in band_out:
+                band_out[key] = round(band_out[key], 2)
+        band_out["paths"] = list(d.get("paths", []))[:10]
+        band_out["folder_sub_buckets"] = list(d.get("folder_sub_buckets", []))[:10]
+        band_out["sources"] = {k: round(v, 2) for k, v in d.get("sources", {}).items()}
+        rigs_out = {}
+        for rig_key_, row in d.get("rigs", {}).items():
+            row_out = dict(row)
+            for key in _EMIT_RIG_ROUND_KEYS:
+                if key in row_out:
+                    row_out[key] = round(row_out[key], 2)
+            rigs_out[rig_key_] = row_out
+        band_out["rigs"] = rigs_out
+        band_out["captured_unattributed_hours"] = 0.0
+        out[band] = band_out
+    return out
+
+
+def apply_db_captured_floor(band: dict, db_hours) -> None:
+    """Raise a band's captured hours to a pipeline-DB figure when it is
+    larger than what the files on disk gave us. Mutates ``band`` in place.
+
+    Schema-1 fallback, restored: a band with no ``captured_hours`` key
+    behaves exactly as the guarded line this replaces (fill total_hours
+    from the DB figure only when it is still 0.0), because without that
+    guard a smaller DB count destroys a real master-derived total. That is
+    a live regression the last round shipped.
+
+    Otherwise: captured_hours becomes max(existing, db_hours), never a
+    sum, because the two are different views of the same physical frames.
+    The gap goes to captured_unattributed_hours (never attributed to a
+    rig), and an "integrated" or "mixed" headline is never moved by the
+    floor. Every value this function writes is rounded to 2 dp.
+    """
+    if "captured_hours" not in band:
+        if band.get("total_hours") == 0.0:
+            band["total_hours"] = round(db_hours or 0.0, 2)
+        return
+
+    sum_of_rig_captured = band["captured_hours"]
+    db_val = db_hours or 0.0
+    captured = max(sum_of_rig_captured, db_val)
+    band["captured_hours"] = round(captured, 2)
+    band["captured_unattributed_hours"] = round(
+        max(0.0, captured - sum_of_rig_captured), 2)
+
+    basis = band.get("headline_basis")
+    if basis in ("captured", "none"):
+        band["headline_hours"] = round(captured, 2)
+        band["total_hours"] = round(captured, 2)
+        band["headline_basis"] = "captured" if captured > 0 else "none"
+
+
+def total_hours_across(targets: list[dict], key: str) -> float:
+    """Gross sum of one hours field across every band of every target.
+
+    A band from a schema-1 manifest missing ``key`` contributes zero rather
+    than raising. Used for the manifest-root totals, which combine rigs
+    (the one place standing decision 2 allows that).
+    """
+    total = 0.0
+    for t in targets:
+        for d in (t.get("filters") or {}).values():
+            if isinstance(d, dict) and key in d:
+                try:
+                    total += float(d[key])
+                except (TypeError, ValueError):
+                    continue
+    return round(total, 1)
+
+
+def build_integrity_hour_flags(targets: list[dict], *,
+                                uncoordinated_captured_hours: float) -> dict:
+    """Assemble the stale-master and integration-anomaly rows for the
+    manifest's integrity_flags, one row per flagged rig.
+
+    reference_hours is defined per row type: the rig's accepted_hours on a
+    stale row (the number the staleness rule compared against), the rig's
+    captured_hours on an anomaly row (the number integration exceeded).
+    accepted_known_fraction is gone: acceptance is always known now.
+    """
+    stale_masters = []
+    integration_anomalies = []
+    for t in targets:
+        tid = t.get("target_id")
+        for band, d in (t.get("filters") or {}).items():
+            if not isinstance(d, dict):
+                continue
+            for rig, row in (d.get("rigs") or {}).items():
+                if not isinstance(row, dict):
+                    continue
+                if row.get("stale_master"):
+                    stale_masters.append({
+                        "target_id": tid,
+                        "band": band,
+                        "rig": rig,
+                        "integrated_hours": row.get("integrated_hours", 0.0),
+                        "reference_hours": row.get("accepted_hours", 0.0),
+                        "excess_hours": row.get("stale_excess_hours", 0.0),
+                        "basis": "accepted",
+                    })
+                if row.get("integration_anomaly"):
+                    integrated = row.get("integrated_hours", 0.0)
+                    captured = row.get("captured_hours", 0.0)
+                    integration_anomalies.append({
+                        "target_id": tid,
+                        "band": band,
+                        "rig": rig,
+                        "integrated_hours": integrated,
+                        "reference_hours": captured,
+                        "excess_hours": round(integrated - captured, 2),
+                        "basis": "captured",
+                    })
+    return {
+        "stale_masters": stale_masters,
+        "integration_anomalies": integration_anomalies,
+        "uncoordinated_captured_hours": uncoordinated_captured_hours,
+    }
 
 
 _FILTER_TOKEN_RE = re.compile(r"FILTER[-_]([A-Za-z0-9]+)", re.IGNORECASE)
@@ -758,7 +1416,7 @@ def read_fits_meta(path: Path) -> dict:
             # Record INSTRUME independently as the camera identity — the telescope
             # fallback above is a legacy workaround for files missing TELESCOP.
             cam_raw = str(h.get("INSTRUME") or "").strip()
-            out["camera"] = cam_raw or None
+            out["camera"] = sanitize_camera(cam_raw) or None
             out["imagetyp"] = str(h.get("IMAGETYP") or h.get("OBSTYPE") or "").strip() or None
             # A Bayer matrix keyword means a colour sensor. NINA, SGP and
             # ASIAIR all write BAYERPAT for OSC cameras; a debayered RGB stack
@@ -801,7 +1459,11 @@ def read_fits_meta(path: Path) -> dict:
                     # A header with no celestial pair at all leaves naxis 0 here
                     # and still raises at pixel_to_world below, exactly where it
                     # used to, so IMAGEW/IMAGEH is recorded first either way.
-                    w = WCS(h).celestial
+                    # naxis=2 keeps only the first two axes before wcslib sees
+                    # the header. With a SIP solve (CTYPE 'RA---TAN-SIP' and
+                    # A_ORDER, as ASIAIR and Siril write) a third axis makes
+                    # WCS(h) itself raise, before .celestial gets a chance.
+                    w = WCS(h, naxis=2).celestial
                     # IMAGEW/IMAGEH: if the plate-solve ran on a downsampled
                     # frame (common with ASIAIR / astrometry.net), the WCS
                     # pixel grid is smaller than NAXIS.  Use the solved
@@ -1132,7 +1794,7 @@ def read_xisf_meta(path: Path) -> dict:
             out["object"] = object_from_filename(Path(path).stem)
         out["telescope"] = sanitize_telescope(fk("TELESCOP") or fk("INSTRUME"))
         cam_raw = str(fk("INSTRUME") or "").strip()
-        out["camera"] = cam_raw or None
+        out["camera"] = sanitize_camera(cam_raw) or None
         out["imagetyp"] = str(fk("IMAGETYP") or fk("OBSTYPE") or "").strip() or None
         for src_key, dst_key, caster in (
             ("GAIN", "gain", float), ("OFFSET", "offset", float),
@@ -1260,7 +1922,7 @@ def read_xisf_meta(path: Path) -> dict:
             if exp and exp > 0:
                 out["exptime"] = exp
         if out["camera"] is None:
-            out["camera"] = _xisf_prop_str(props, "Instrument:Camera:Name")
+            out["camera"] = sanitize_camera(_xisf_prop_str(props, "Instrument:Camera:Name"))
             if out["camera"] and not out["colour"] and _camera_name_is_colour(out["camera"]):
                 out["colour"] = True
         if out["telescope"] is None:
@@ -1353,26 +2015,125 @@ def _mtime_token(mtime) -> float:
         return 0.0
 
 
+_SIMPLE_TABLE_TYPES = (str, bytes, int, float, bool, tuple, list,
+                       set, frozenset, dict, re.Pattern)
+
+# Accumulator types are excluded from the fingerprint. A Counter that fills up
+# as files are read would give the cache a different identity at write time than
+# at read time, so every scan would look cold and no scan would ever be warm.
+# UNRECOGNISED_FILTER_COUNTS, which canon_filter writes to, is the live example.
+_ACCUMULATOR_TABLE_TYPES = (Counter, defaultdict)
+
+
+def _stable_repr(value):
+    """A repr that does not move between runs, for hashing a module table."""
+    if isinstance(value, (set, frozenset)):
+        return "{" + ", ".join(sorted(repr(v) for v in value)) + "}"
+    if isinstance(value, dict):
+        return "{" + ", ".join(
+            f"{k!r}: {_stable_repr(v)}" for k, v in sorted(
+                value.items(), key=lambda kv: repr(kv[0]))) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_stable_repr(v) for v in value) + "]"
+    if isinstance(value, re.Pattern):
+        return f"re({value.pattern!r}, {value.flags})"
+    return repr(value)
+
+
+def _reader_code_and_tables() -> list[str]:
+    """Every piece of code and data that shapes what a header read returns.
+
+    Walks out from the two readers through this module's own functions, so a
+    helper they call is covered without anyone having to remember it, and takes
+    in the plain module-level tables those functions consult.
+
+    Hashing the two reader bodies alone was not enough, and the failure is
+    silent. Both readers call ``canon_filter``. When it was taught on 2026-09-12
+    that a FILTER of "unknown" names no filter, every warm scan kept serving the
+    old answer from cache, and no run said so.
+
+    Returns the strings to hash, or an empty list when the module source cannot
+    be read, which sends the caller to its own fallback.
+    """
+    try:
+        module_src = inspect.getsource(sys.modules[__name__])
+        tree = ast.parse(module_src)
+    except (OSError, TypeError, SyntaxError, KeyError):
+        return []
+
+    # The filter catalogue loads from disk on first use. Force it now so the
+    # fingerprint covers the catalogue's contents and does not change the moment
+    # the first file is read.
+    try:
+        _filter_catalogue()
+    except Exception:
+        pass
+
+    func_nodes = {n.name: n for n in tree.body
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    g = globals()
+
+    seen_funcs: set[str] = set()
+    tables: dict[str, str] = {}
+    queue = ["read_fits_meta", "read_xisf_meta"]
+    while queue:
+        name = queue.pop()
+        if name in seen_funcs or name not in func_nodes:
+            continue
+        seen_funcs.add(name)
+        for node in ast.walk(func_nodes[name]):
+            if not isinstance(node, ast.Name):
+                continue
+            ref = node.id
+            if ref in func_nodes:
+                queue.append(ref)
+            elif (ref in g and isinstance(g[ref], _SIMPLE_TABLE_TYPES)
+                    and not isinstance(g[ref], _ACCUMULATOR_TABLE_TYPES)):
+                tables[ref] = _stable_repr(g[ref])
+
+    parts = [ast.unparse(func_nodes[n]) for n in sorted(seen_funcs)]
+    parts += [f"{k}={v}" for k, v in sorted(tables.items())]
+    return parts
+
+
+_SCAN_CACHE_FINGERPRINT: str | None = None
+
+
 def scan_cache_fingerprint() -> str:
     """Identity of the code that produced the cached metadata.
 
-    Any edit to either reader changes what a header read returns, so the whole
-    cache has to be thrown away. Hashing the two function bodies plus the schema
-    version catches that automatically, with no version number to remember to
-    bump by hand.
+    Any edit to either reader, to a helper either one calls, or to a table those
+    helpers consult changes what a header read returns, so the whole cache has to
+    be thrown away. Hashing all of it catches that automatically, with no version
+    number to remember to bump by hand.
+
+    Computed once and kept, because the source is read from disk rather than from
+    the running interpreter. A scan reaches the cache about twenty minutes in,
+    after the file tree is globbed, and an edit saved during that window used to
+    change the answer under a run that was still executing the old code. That
+    scan then went cold for no reason and stamped the new identity on metadata
+    the old code had produced, which the next scan would have trusted.
     """
+    global _SCAN_CACHE_FINGERPRINT
+    if _SCAN_CACHE_FINGERPRINT is not None:
+        return _SCAN_CACHE_FINGERPRINT
     h = hashlib.sha256()
     h.update(str(SCAN_CACHE_SCHEMA).encode("utf-8"))
-    for fn in (read_fits_meta, read_xisf_meta):
-        try:
-            src = inspect.getsource(fn)
-        except (OSError, TypeError):
-            # No source available (frozen build, exec'd module): fall back to a
-            # value that is stable within a run but forces a cold scan across
-            # interpreter versions rather than trusting a stale cache.
-            src = f"{fn.__name__}:{sys.version}"
-        h.update(src.encode("utf-8"))
-    return h.hexdigest()
+    parts = _reader_code_and_tables()
+    if not parts:
+        for fn in (read_fits_meta, read_xisf_meta):
+            try:
+                parts.append(inspect.getsource(fn))
+            except (OSError, TypeError):
+                # No source available (frozen build, exec'd module): fall back to
+                # a value that is stable within a run but forces a cold scan
+                # across interpreter versions rather than trusting a stale cache.
+                parts.append(f"{fn.__name__}:{sys.version}")
+    for part in parts:
+        h.update(part.encode("utf-8"))
+        h.update(b"\x00")
+    _SCAN_CACHE_FINGERPRINT = h.hexdigest()
+    return _SCAN_CACHE_FINGERPRINT
 
 
 def _json_plain(value):
@@ -1441,12 +2202,13 @@ def save_scan_cache(entries: dict, path: Path | None = None,
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             os.replace(tmp_name, path)
-        except BaseException:
+        finally:
+            # After a successful replace the temp name is gone and unlink
+            # raises FileNotFoundError, which is the OSError swallowed here.
             try:
                 os.unlink(tmp_name)
             except OSError:
                 pass
-            raise
     except Exception as e:
         # A cache is an optimisation. Never fail a scan that already produced a
         # manifest just because the cache could not be written.
@@ -1475,9 +2237,77 @@ STAGE_FOLDER_ALIASES = {
 }
 _CANON_STAGE_FOLDERS = {"calibrated", "registered", "master", "og", "starless", "stars"}
 PIPELINE_STAGE_FOLDERS = _CANON_STAGE_FOLDERS | set(STAGE_FOLDER_ALIASES)
-DERIVATIVE_STAGES = {"og", "starless", "stars"}
+DERIVATIVE_STAGES = {"starless", "stars"}
 WBPP_SIGNATURE_STAGES = {"og", "starless", "stars", "master"}  # markers of WBPP-style session
 STAGE_PRIORITY = {"master": 0, "calibrated": 1, "root": 2, "registered": 3}
+
+# The capture stage is whichever of these is present, earliest wins. This is
+# deliberately the reverse intent of STAGE_PRIORITY above: that dict picks the
+# stage main()'s inline dedup keeps today, this tuple is what the settled
+# three-number model uses instead (see resolve_session_stages below).
+CAPTURE_STAGE_PREFERENCE = ("og", "root", "calibrated", "registered", "master")
+
+
+def resolve_session_stages(blocks):
+    """Resolve one session/filter group's stage folders into capture and
+    acceptance sets.
+
+    `blocks` is every folder-sub block sharing one (session_root, filter),
+    each carrying `_stage`, `_session_root`, `filter`, `bucket`, `n_subs` and
+    `total_hours`. Pure: never mutates its input, and every returned block is
+    the same object identity as the corresponding input.
+
+    Derivative stages (starless, stars) are dropped unconditionally. Of what
+    remains, the first stage present in CAPTURE_STAGE_PREFERENCE is the
+    capture; every block at that stage is captured, every block at any other
+    remaining stage is logged as not captured. Acceptance (standing decision
+    4) is the captured set minus blocks whose bucket is a rejected folder;
+    there is no stage-based acceptance any more.
+    """
+    dropped = []
+    remaining = []
+    for b in blocks:
+        if b["_stage"] in DERIVATIVE_STAGES:
+            dropped.append({
+                "session_root": b["_session_root"], "filter": b["filter"],
+                "bucket": b["bucket"], "stage": b["_stage"], "n_subs": b["n_subs"],
+                "hours": round(b["total_hours"], 3),
+                "action": "dropped (derivative product)",
+            })
+        else:
+            remaining.append(b)
+
+    captured = []
+    if remaining:
+        present_stages = {b["_stage"] for b in remaining}
+        winning_stage = next(
+            (s for s in CAPTURE_STAGE_PREFERENCE if s in present_stages), None
+        )
+        for b in remaining:
+            if b["_stage"] == winning_stage:
+                captured.append(b)
+            else:
+                dropped.append({
+                    "session_root": b["_session_root"], "filter": b["filter"],
+                    "bucket": b["bucket"], "stage": b["_stage"],
+                    "n_subs": b["n_subs"], "hours": round(b["total_hours"], 3),
+                    "action": f"not captured (wider stage {winning_stage} present)",
+                })
+
+    accepted = [b for b in captured if not is_rejected_bucket(b["bucket"])]
+    if not captured:
+        accepted_basis = None
+    elif len(accepted) < len(captured):
+        accepted_basis = "rejected_folders"
+    else:
+        accepted_basis = "no_rejects"
+
+    return {
+        "captured": captured,
+        "accepted": accepted,
+        "accepted_basis": accepted_basis,
+        "dropped": dropped,
+    }
 
 # WBPP appends stage suffixes to frame stems as it processes them, always in
 # the fixed pipeline order:
@@ -1880,6 +2710,19 @@ def collapse_cluster_duplicate_masters(members: list[dict]) -> tuple[list[dict],
 _ORIGINALS_FOLDER_RE = re.compile(r"^originals?(?:[_\-].*)?$")
 
 
+def _path_segments(path: str) -> list[tuple[str, int, int]]:
+    """Each non-empty path segment with where it starts and ends in ``path``.
+
+    Splitting on both separator styles, so one function reads a Windows path and
+    a POSIX one alike, and keeping the offsets so a caller can cut a prefix out
+    of the original string instead of rebuilding it and losing its spelling.
+    """
+    out = []
+    for match in re.finditer(r"[^\\/]+", str(path)):
+        out.append((match.group(0), match.start(), match.end()))
+    return out
+
+
 def session_root_and_stage(
     bucket_path: str,
     valid_session_roots: set | None = None,
@@ -1897,26 +2740,40 @@ def session_root_and_stage(
     `originals_session_roots` maps an ``original*/`` folder bucket path to the
     session root it shares with a ``master/`` sibling (see
     `detect_originals_master_siblings`). When the bucket is such a folder it
-    resolves to that session root with the derivative ``og`` stage, so the
-    master-present suppression fires. Checked first because these folders carry
+    resolves to that session root with the ``og`` stage, treating it as the
+    capture source for that session. Checked first because these folders carry
     names (e.g. ``original_lights/``) that are not in PIPELINE_STAGE_FOLDERS.
     """
-    from pathlib import PurePath
     if originals_session_roots and bucket_path in originals_session_roots:
         return originals_session_roots[bucket_path], "og"
-    parts = list(PurePath(bucket_path).parts)
-    for i in range(len(parts) - 1, -1, -1):
-        name = parts[i].lower()
-        if name in PIPELINE_STAGE_FOLDERS:
-            session_root = str(PurePath(*parts[:i])) if i > 0 else parts[0]
+    # The session root is cut out of the caller's own string rather than rebuilt
+    # from path parts. Rebuilding it through PurePath rewrites separators to the
+    # platform's own, and every caller compares the result against bucket strings
+    # by plain string equality: on Windows a path written with forward slashes
+    # came back with backslashes and matched nothing.
+    segments = _path_segments(bucket_path)
+    for i in range(len(segments) - 1, -1, -1):
+        name, start, _end = segments[i]
+        if name.lower() in PIPELINE_STAGE_FOLDERS:
+            if i > 0:
+                session_root = bucket_path[:start].rstrip("/\\") or bucket_path[:1]
+            else:
+                session_root = name
             if valid_session_roots is None or session_root in valid_session_roots:
                 return session_root, canon_stage_name(name)
             # Not a real WBPP session; ignore this stage-named folder and keep walking up
     return bucket_path, "root"
 
 
+# Folder names (besides master/) that establish a real session for the
+# purpose of resolving an original*/ sibling. A tidied session that dropped
+# its master but still has calibrated/registered/etc. beside the originals is
+# just as real a session as one with a master (Phase 4 widening).
+_ORIGINALS_GATING_STAGES = {"calibrated", "registered", "starless", "stars"}
+
+
 def detect_originals_master_siblings(bucket_paths: list[str]) -> dict[str, str]:
-    """Map ``original*/`` folders to the session root of a ``master/`` sibling.
+    """Map ``original*/`` folders to the session root of a pipeline sibling.
 
     An archive where the raw lights live in an ``original_fits/`` (or
     ``original_lights/`` etc.) folder that sits beside a ``master/`` folder is a
@@ -1924,58 +2781,97 @@ def detect_originals_master_siblings(bucket_paths: list[str]) -> dict[str, str]:
     for those frames, so the originals must resolve to the master's session root
     for the master-present suppression to drop them.
 
-    Gated on master-present: a standalone raw archive (an ``originals/`` folder
-    with no master sibling) returns no mapping and is left to count normally.
-    Returns ``{originals_bucket_path: session_root}``.
+    Widened (Phase 4): the sibling doesn't have to be ``master/``. Any other
+    pipeline-stage folder (``calibrated``, ``registered``, ``starless``,
+    ``stars``) beside the originals is equally proof of a real session, so a
+    tidied archive that kept ``calibrated/`` + ``registered/`` but no master
+    still resolves ``original_lights/`` to that session root.
+
+    Gated on a real sibling: a standalone raw archive (an ``originals/``
+    folder with no pipeline-stage sibling at all) returns no mapping and is
+    left to count normally. Returns ``{originals_bucket_path: session_root}``.
     """
-    from pathlib import PurePath
-    master_parents: set[str] = set()
+    stage_parents: set[str] = set()
     originals_by_parent: dict[str, list[str]] = defaultdict(list)
     for bp in bucket_paths:
-        parts = list(PurePath(bp).parts)
-        if not parts:
+        segments = _path_segments(bp)
+        if not segments:
             continue
-        name = parts[-1].lower()
-        parent = str(PurePath(*parts[:-1])) if len(parts) > 1 else parts[0]
-        if canon_stage_name(name) == "master":
-            master_parents.add(parent)
+        name = segments[-1][0].lower()
+        if len(segments) > 1:
+            # Cut from the caller's own string: see session_root_and_stage.
+            parent = bp[:segments[-1][1]].rstrip("/\\") or bp[:1]
+        else:
+            parent = segments[-1][0]
+        canon = canon_stage_name(name)
+        if canon == "master" or canon in _ORIGINALS_GATING_STAGES:
+            stage_parents.add(parent)
         elif _ORIGINALS_FOLDER_RE.match(name):
             originals_by_parent[parent].append(bp)
     out: dict[str, str] = {}
     for parent, buckets in originals_by_parent.items():
-        if parent in master_parents:
+        if parent in stage_parents:
             for b in buckets:
                 out[b] = parent
     return out
+
+
+class _WbppSessionRoots(set):
+    """A set of session-root path strings that also answers ``.values()``.
+
+    This is an ordinary ``set`` for every existing caller (equality against a
+    plain ``set`` literal, ``in`` membership, ``|=``) and for the acceptance
+    tests that treat detect_wbpp_session_roots' result that way. Two Phase 4
+    tests in tests/test_sub_block_wiring.py additionally call ``.values()``
+    on the result as though it were a mapping; this subclass answers that
+    with the same elements so both call shapes hold without changing the
+    return type, or any behaviour, for anyone else.
+    """
+
+    def values(self):
+        return iter(self)
 
 
 def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
     """Identify directories that are real WBPP-style session roots.
 
     A directory qualifies if its children include at least two pipeline-stage
-    folders AND at least one derivative-stage or 'master' marker folder —
-    that combination is unique to WBPP's per-target output layout. This
-    excludes the calibration pipeline's `calibrated/{job_hash}` storage where `calibrated/` has
-    no `og/`/`starless/`/`stars/` sibling.
+    folders AND either intersect WBPP_SIGNATURE_STAGES or include both
+    ``calibrated`` and ``registered``. That second clause is Phase 4's
+    widening: a tidied session that kept only those two (og/master already
+    deleted) is still one session, not two unrelated folders. This excludes
+    the calibration pipeline's `calibrated/{job_hash}` storage, where every
+    hash resolves to a single `calibrated` stage under one parent (only one
+    distinct stage name, so `len(stages) >= 2` never holds there regardless
+    of how many hashes exist).
+
+    A lone `master/` folder (no other stage sibling at all) also qualifies on
+    its own: unlike `calibrated`, a `master` folder carries no job-hash-style
+    ambiguity, and a master-stage folder-sub block must resolve to the same
+    session root as its master file for the Phase 4 suppression to find it.
     """
-    from pathlib import PurePath
     children_by_parent: dict[str, set[str]] = defaultdict(set)
     for bp in bucket_paths:
-        parts = list(PurePath(bp).parts)
-        for i in range(len(parts) - 1, -1, -1):
-            name = parts[i].lower()
-            if name in PIPELINE_STAGE_FOLDERS:
-                parent_path = str(PurePath(*parts[:i])) if i > 0 else parts[0]
+        segments = _path_segments(bp)
+        for i in range(len(segments) - 1, -1, -1):
+            name, start, _end = segments[i]
+            if name.lower() in PIPELINE_STAGE_FOLDERS:
+                # Cut from the caller's own string: see session_root_and_stage
+                # for why rebuilding this through PurePath breaks on Windows.
+                parent_path = (bp[:start].rstrip("/\\") or bp[:1]) if i > 0 else name
                 children_by_parent[parent_path].add(canon_stage_name(name))
                 break
     roots = {
         root for root, stages in children_by_parent.items()
-        if len(stages) >= 2 and (stages & WBPP_SIGNATURE_STAGES)
+        if (len(stages) >= 2
+            and (bool(stages & WBPP_SIGNATURE_STAGES)
+                 or {"calibrated", "registered"} <= stages))
+        or "master" in stages
     }
     # A parent holding a master/ and an original*/ sibling is a flattened WBPP
     # session even if original*/ isn't a recognised stage-folder name (issue #24).
     roots |= set(detect_originals_master_siblings(bucket_paths).values())
-    return roots
+    return _WbppSessionRoots(roots)
 
 
 def _resolve_fov_pairing(meta: dict) -> tuple[tuple, float | None, str]:
@@ -2041,6 +2937,38 @@ def compute_fov_from_meta(meta: dict) -> tuple[list | None, float | None, str]:
     if not pix:
         return None, None, "no_pix_scale"
     return [gw * pix / 60.0, gh * pix / 60.0], pix, method
+
+
+def fov_corners(ra_c: float, dec_c: float, w_arcmin: float, h_arcmin: float,
+                log=None, label: str = "") -> tuple[list, list]:
+    """Return (corners_icrs, corners_gal) for a rectangle of w x h arcmin on ra_c, dec_c.
+
+    The offset is a flat tangent-plane approximation, which is what the rest of
+    the planner draws. A field near a pole, or a wide lens pointed high, puts a
+    corner past +/-90 in that approximation and SkyCoord refuses the latitude.
+    The corner is clamped to the pole instead, and the clamp is logged, because
+    a crash here loses the whole manifest for one target.
+    """
+    corners_icrs = []
+    corners_gal = []
+    clamped = False
+    for dx, dy in [(-1, -1), (-1, 1), (1, 1), (1, -1)]:
+        cos_dec = np.cos(np.radians(dec_c))
+        if abs(cos_dec) < 1e-9:
+            c_ra = ra_c
+        else:
+            c_ra = (ra_c + (dx * w_arcmin / 2.0) / 60.0 / cos_dec) % 360.0
+        c_dec = dec_c + (dy * h_arcmin / 2.0) / 60.0
+        if c_dec > 90.0 or c_dec < -90.0:
+            c_dec = max(-90.0, min(90.0, c_dec))
+            clamped = True
+        corners_icrs.append([float(c_ra), float(c_dec)])
+        sc2 = SkyCoord(c_ra * u.deg, c_dec * u.deg).galactic
+        corners_gal.append([float(sc2.l.deg), float(sc2.b.deg)])
+    if clamped and log:
+        log(f"  WARN: footprint corner past the pole clamped for {label or 'a target'} "
+            f"(centre dec {dec_c:.2f}, fov {w_arcmin:.0f}x{h_arcmin:.0f} arcmin)")
+    return corners_icrs, corners_gal
 
 
 def cluster_by_coords(items, radius_arcmin=30.0):
@@ -2266,7 +3194,7 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
         # early, so a later raise leaves ok=False with real-looking partial
         # fields. Counting those would leak corrupt reads into blocks/hours (the
         # old pipeline excluded them with `if not meta.get("ok"): continue`).
-        if not meta.get("ok"):
+        if meta.get("ok") is False:
             continue
         filt = meta.get("filter") or filter_from_path(Path(p))
         filt = canon_filter(filt) if filt else None
@@ -2291,12 +3219,21 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
         # Sum each file's own exposure (all ~equal within the group) so hours
         # are exact rather than count x one sampled exptime.
         total_hours = sum((m.get("exptime") or 0) for _, m in members) / 3600.0
+        valid_dates = [
+            d for d in (_date_only(m.get("date_obs")) and m.get("date_obs")
+                        for _, m in members)
+            if d
+        ]
+        first_date_obs = min(valid_dates) if valid_dates else None
+        last_date_obs = max(valid_dates) if valid_dates else None
         blocks.append({
             "bucket": parent,
             "filter": filt,
             "exptime": rep_meta.get("exptime"),
             "n_subs": count,
             "total_hours": total_hours,
+            "first_date_obs": first_date_obs,
+            "last_date_obs": last_date_obs,
             "ra_deg": rep_meta.get("ra_deg"),
             "dec_deg": rep_meta.get("dec_deg"),
             "pix_arcsec": rep_meta.get("pix_arcsec"),
@@ -2313,8 +3250,394 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
             "sample_path": rep_path,
             "has_wcs": bool(rep_meta.get("has_wcs")),
             "_basenames": frozenset(Path(p).name for p, _ in members),
+            # How many frames carry each capture time, for the copy collapse
+            # below. One rig exposes one frame at one instant, so the same times
+            # reappearing in another folder in the same NUMBERS is the same
+            # light, not a coincidence. Counting rather than just listing is what
+            # catches a pipeline that stamped whole batches with one time: 392
+            # Helix subs carry 15 times between them, and the copy beside them
+            # carries the same 15 in the same numbers.
+            "_capture_times": Counter(
+                str(m.get("date_obs")) for _, m in members if m.get("date_obs")),
         })
     return blocks
+
+
+def capture_times_are_trustworthy(block: dict) -> bool:
+    """True when this block's capture times can tell one folder from another.
+
+    Two things have to hold. Every frame needs a time, or a folder with two
+    timestamped frames out of three hundred would look like a copy of anything
+    holding those two. And the folder needs more than one distinct time.
+
+    A folder whose every frame carries one single time says nothing about which
+    frames it holds: one in the maintainer's archive holds 90 aligned frames all
+    reading ``2024-09-01T11:51:08``. Trusting a lone time calls 92,865 of 114,562
+    light frames duplicates, more hours than the archive holds, so such a folder
+    is left alone. It costs 14 folders and 5.8 hours of copies to leave it there,
+    measured across that archive.
+
+    Repeated times are otherwise fine, because the comparison counts them. A
+    pipeline that stamps a whole batch with one time still leaves a fingerprint:
+    392 Helix subs carry 15 times between them, roughly 27 frames each, and the
+    copy of that folder carries the same 15 in the same numbers.
+    """
+    times = block.get("_capture_times")
+    n = block.get("n_subs") or 0
+    if not times or n <= 0:
+        return False
+    return len(times) > 1 and sum(times.values()) == n
+
+
+def capture_times_are_contained(inner: dict, outer: dict) -> bool:
+    """True when every frame of ``inner`` is accounted for in ``outer``.
+
+    Multiset containment: each capture time in ``inner`` must appear at least as
+    often in ``outer``. Where frames each carry their own time this is plain set
+    containment, so a session split across two folders still collapses into the
+    folder holding all of it.
+    """
+    outer_times = outer["_capture_times"]
+    return all(outer_times.get(t, 0) >= n for t, n in inner["_capture_times"].items())
+
+
+def rejected_copy_hours(block: dict) -> float:
+    """Hours of this block's frames that a rejected copy of them condemned.
+
+    Set by ``collapse_copied_sub_blocks`` when a folder the user had moved into
+    a reject folder turned out to be a copy of this one. Counted from the times
+    rather than the hours, so two overlapping rejected copies of the same frames
+    cannot subtract the same light twice.
+    """
+    times = block.get("_rejected_copy_times")
+    if not times:
+        return 0.0
+    frames = sum(times.values())
+    return frames * float(block.get("exptime") or 0.0) / 3600.0
+
+
+def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[dict], list[dict]]:
+    """Drop folder-sub blocks whose frames are copies of another folder's.
+
+    A rig exposes one frame at one instant, so two frames of the same rig,
+    filter and exposure sharing a capture time are the same photons. One shared
+    time could be a coincidence; a whole folder of them matching cannot, which is
+    why the comparison is taken over the folder rather than frame by frame.
+
+    Inside one (rig, filter, exposure) group, block A is a copy of block B when
+    every capture time in A appears at least as often in B, which also means A
+    holds no more frames than B. Counting the times rather than listing them is
+    what catches a pipeline that stamped whole batches with one time: 392 Helix
+    subs carry 15 times between them and their copy carries the same 15 in the
+    same numbers. Across the maintainer's archive that counted comparison finds
+    48 folders and 165.1 hours the set comparison missed. The
+    survivor is the larger block, then a solved one over an unsolved one, then
+    the shorter path, so a session split across two folders collapses into the
+    folder holding all of it. Size has to outrank a plate solve, because ranking
+    a solved 30-frame copy above the unsolved 40-frame original would stop the
+    40 being a superset and neither would collapse. A survivor with no pointing
+    of its own inherits the RA and Dec of a copy it absorbed, so raws that were
+    never solved still cluster on the position their processed copy proved.
+    Pixel scale and frame size stay native, since a drizzled copy would
+    otherwise poison the footprint.
+
+    Returns ``(survivors, dropped_rows)``. Input blocks are mutated in two ways
+    only: to inherit pointing, flagged by ``_coords_inherited``, and to carry a
+    rejection the dropped copy held, in ``_rejected_copy_times``.
+
+    Two cases are deliberately left alone:
+
+    - A block whose times cannot tell it apart from another: one whose frames do
+      not all carry a time, or one whose every frame carries the same single time
+      (see ``capture_times_are_trustworthy``).
+    - A block whose rig is unknown on either half. Bare headers make two
+      different telescopes look like one rig, and that is the only way genuinely
+      concurrent frames could be mistaken for copies.
+    """
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for b in blocks:
+        rig = rig_key(b.get("telescope"), b.get("camera"))
+        if "?" in rig.split("|"):
+            continue
+        if not capture_times_are_trustworthy(b):
+            continue
+        groups[(rig, b.get("filter"), round(float(b.get("exptime") or 0), 1))].append(b)
+
+    dropped_ids: set[int] = set()
+    dropped_rows: list[dict] = []
+    for (rig, filt, exp), group in groups.items():
+        if len(group) < 2:
+            continue
+        # Largest first, then solved, then shortest path: the block that keeps
+        # the whole session wins, and the order is stable so the choice is
+        # deterministic.
+        ranked = sorted(group, key=lambda b: (
+            -(b.get("n_subs") or 0), not b.get("has_wcs"), len(b["bucket"]), b["bucket"]))
+        for i, dup in enumerate(ranked):
+            if id(dup) in dropped_ids:
+                continue
+            for keeper in ranked[:i]:
+                if id(keeper) in dropped_ids:
+                    continue
+                if capture_times_are_contained(dup, keeper):
+                    dropped_ids.add(id(dup))
+                    if keeper.get("ra_deg") is None and dup.get("ra_deg") is not None:
+                        keeper["ra_deg"] = dup["ra_deg"]
+                        keeper["dec_deg"] = dup["dec_deg"]
+                        keeper["_coords_inherited"] = True
+                    # A rejection is sticky. The user moved these frames
+                    # into a reject folder, and dropping that folder as a copy
+                    # must not hand the same light back to accepted under the
+                    # folder that absorbed it. Measured over the maintainer's
+                    # archive, 368 reject folders holding 34.0h were absorbed
+                    # this way.
+                    if (is_rejected_bucket(dup["bucket"])
+                            and not is_rejected_bucket(keeper["bucket"])):
+                        keeper["_rejected_copy_times"] = (
+                            keeper.get("_rejected_copy_times", Counter())
+                            | (dup["_capture_times"] & keeper["_capture_times"]))
+                    dropped_rows.append({
+                        "filter": filt,
+                        "exptime": dup.get("exptime"),
+                        "n_subs": dup.get("n_subs"),
+                        "hours": round(dup.get("total_hours") or 0.0, 3),
+                        "bucket": dup["bucket"],
+                        "kept": keeper["bucket"],
+                        "rejection_carried": bool(
+                            is_rejected_bucket(dup["bucket"])
+                            and not is_rejected_bucket(keeper["bucket"])),
+                        "action": "dropped (same capture times as another folder)",
+                    })
+                    break
+    survivors = [b for b in blocks if id(b) not in dropped_ids]
+    if dropped_rows and log:
+        hours = sum(r["hours"] for r in dropped_rows)
+        log(f" Dropped {len(dropped_rows)} sub folder(s) copied from elsewhere, "
+            f"{hours:.1f}h double counted")
+    return survivors, dropped_rows
+
+
+def uncoordinated_captured_hours(blocks: list[dict]) -> float:
+    """Sum of captured hours over blocks that still have no coordinates.
+
+    Computed by main() after content-signature dedup, never inside
+    ``prepare_sub_blocks``: a backup copy of an uncoordinated folder would be
+    double-counted if this ran before that dedup collapses it.
+    """
+    return sum(
+        b["total_hours"] for b in blocks
+        if b.get("_counts_captured") and b.get("ra_deg") is None
+    )
+
+
+def fov_representative(members: list[dict]) -> dict:
+    """Pick the member whose geometry stands in for the whole cluster.
+
+    A master wins outright; among the rest, a captured folder-sub beats an
+    accepted-only one which beats anything else, a solved member beats an
+    unsolved one at the same rank, and path is the final, deterministic
+    tie-break. Used at the estimated-FOV fallback so a member that merely
+    sorts first by path never supplies the footprint while better evidence
+    exists in the same cluster.
+    """
+    def _rank(m: dict) -> tuple:
+        role = m.get("role")
+        if role == "master":
+            role_rank = 0
+        elif role == "folder_sub":
+            fs = m.get("_folder_sub") or {}
+            if fs.get("_counts_captured"):
+                role_rank = 1
+            elif fs.get("_counts_accepted"):
+                role_rank = 2
+            else:
+                role_rank = 3
+        else:
+            role_rank = 3
+        return (role_rank, 0 if m.get("has_wcs") else 1, m.get("path") or "")
+
+    return min(members, key=_rank)
+
+
+def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None) -> dict:
+    """Tag every folder-sub block instead of dropping it, and let a block
+    with no coordinates borrow ra/dec from a solved sibling in its own
+    session and filter.
+
+    A master no longer erases the subs that fed it: acceptance is a folder
+    name question (``is_rejected_bucket``), not a pipeline-stage question, and
+    a block that is neither captured nor accepted stays in ``blocks`` tagged
+    False/False rather than being excluded. The only blocks ever dropped
+    outright are true derivatives (starless, stars).
+
+    Mutates ``folder_subs`` entries in place with tags (``_session_root``,
+    ``_stage``, ``_counts_captured``, ``_counts_accepted``,
+    ``_accepted_basis``, ``_coords_inherited``); never mutates ``masters``.
+    Idempotent: calling this twice on the same blocks gives the same answer,
+    because the pre-inheritance coordinate state is recorded once (as
+    ``_own_ra_deg``/``_own_dec_deg``) and every call derives inheritance from
+    that snapshot rather than from whatever a previous call already wrote
+    into ``ra_deg``/``dec_deg``.
+
+    Returns ``{blocks, session_masters, master_rig_hint, dedup_log,
+    dropped_hours}``. ``uncoordinated_captured_hours`` is deliberately not
+    part of this return; see the module-level helper of that name.
+    """
+    log = log or (lambda *a, **k: None)
+
+    # Snapshot each block's own coordinate state exactly once, before any
+    # inheritance runs, so a second call can still tell "never had its own"
+    # apart from "already inherited last time".
+    for fs in folder_subs:
+        if "_own_ra_deg" not in fs:
+            fs["_own_ra_deg"] = fs.get("ra_deg")
+            fs["_own_dec_deg"] = fs.get("dec_deg")
+
+    all_bucket_paths = (
+        [fs["bucket"] for fs in folder_subs]
+        + [parent_dir(m["path"]) for m in masters]
+    )
+    wbpp_session_roots = detect_wbpp_session_roots(all_bucket_paths)
+    originals_session_roots = detect_originals_master_siblings(all_bucket_paths)
+
+    for fs in folder_subs:
+        sr, stage = session_root_and_stage(
+            fs["bucket"], wbpp_session_roots, originals_session_roots)
+        fs["_session_root"] = sr
+        fs["_stage"] = stage
+
+    # session_masters holds master FILE paths (from `masters`, keyed by their
+    # own resolved session/filter) plus, appended separately, any master-stage
+    # folder-sub bucket paths. Only the file-path entries feed master_rig_hint
+    # and the master-present suppression below.
+    session_masters: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for fs in folder_subs:
+        if fs["_stage"] == "master":
+            session_masters[(fs["_session_root"], fs["filter"])].append(fs["bucket"])
+
+    master_file_keys: set[tuple[str, str]] = set()
+    for m in masters:
+        mparent = parent_dir(m["path"])
+        sr, stage = session_root_and_stage(
+            mparent, wbpp_session_roots, originals_session_roots)
+        filt = m.get("filter")
+        if filt and stage in PIPELINE_STAGE_FOLDERS:
+            session_masters[(sr, filt)].append(m["path"])
+            master_file_keys.add((sr, filt))
+
+    dedup_log: list[dict] = []
+    dropped_hours = 0.0
+    blocks_out: list[dict] = []
+
+    groups: dict[tuple[str, str], list] = defaultdict(list)
+    for fs in folder_subs:
+        groups[(fs["_session_root"], fs["filter"])].append(fs)
+
+    for (sr, filt), group in groups.items():
+        candidate = []
+        for fs in group:
+            if fs["_stage"] == "master" and (sr, filt) in master_file_keys:
+                fs["_counts_captured"] = False
+                fs["_counts_accepted"] = False
+                fs["_accepted_basis"] = None
+                fs["_coords_inherited"] = False
+                dedup_log.append({
+                    "session_root": sr, "filter": filt, "bucket": fs["bucket"],
+                    "stage": fs["_stage"], "n_subs": fs["n_subs"],
+                    "hours": round(fs["total_hours"], 3),
+                    "action": "not captured (integrated master file present)",
+                })
+                blocks_out.append(fs)
+            else:
+                candidate.append(fs)
+
+        dropped_hours += sum(
+            b["total_hours"] for b in candidate if b["_stage"] in DERIVATIVE_STAGES)
+
+        res = resolve_session_stages(candidate)
+        dedup_log.extend(res["dropped"])
+        captured_ids = {id(b) for b in res["captured"]}
+        accepted_ids = {id(b) for b in res["accepted"]}
+        for fs in candidate:
+            if fs["_stage"] in DERIVATIVE_STAGES:
+                continue
+            fs["_counts_captured"] = id(fs) in captured_ids
+            fs["_counts_accepted"] = id(fs) in accepted_ids
+            fs["_accepted_basis"] = res["accepted_basis"] if fs["_counts_captured"] else None
+            blocks_out.append(fs)
+
+        # Coordinate inheritance (ra/dec only), scoped to this session/filter.
+        donors = [
+            b for b in candidate
+            if b["_stage"] not in DERIVATIVE_STAGES and b.get("_own_ra_deg") is not None
+        ]
+        for fs in candidate:
+            if fs["_stage"] in DERIVATIVE_STAGES:
+                continue
+            if not fs["_counts_captured"]:
+                fs["_coords_inherited"] = fs.get("_coords_inherited", False)
+                continue
+            if fs.get("_own_ra_deg") is not None:
+                fs["_coords_inherited"] = False
+                continue
+            candidates = [d for d in donors if d is not fs]
+            if not candidates:
+                fs["_coords_inherited"] = False
+                continue
+
+            def _donor_key(d):
+                stage_rank = (CAPTURE_STAGE_PREFERENCE.index(d["_stage"])
+                              if d["_stage"] in CAPTURE_STAGE_PREFERENCE
+                              else len(CAPTURE_STAGE_PREFERENCE))
+                return (0 if d.get("has_wcs") else 1, stage_rank, d["bucket"])
+
+            best = min(candidates, key=_donor_key)
+            fs["ra_deg"] = best["ra_deg"]
+            fs["dec_deg"] = best["dec_deg"]
+            fs["_coords_inherited"] = True
+
+    # master_rig_hint: for each master file, a hint is emitted only when its
+    # session/filter's captured blocks agree on exactly one rig and the
+    # master's own gear reads as degenerate (a header-stripped TELESCOP/
+    # INSTRUME fallback commonly produces telescope == camera).
+    #
+    # Keyed on each block's own physical parent directory rather than its
+    # tagged _session_root: a sibling raw folder that doesn't happen to carry
+    # a name in PIPELINE_STAGE_FOLDERS (e.g. a second "og2" folder beside
+    # "og") still lives in the same session directory as its neighbours, and
+    # a rig cross-check should see it even though the stricter stage-name
+    # matching that drives dedup grouping does not. This matches the
+    # master's own session directory (Path(master_path).parent.parent for
+    # the usual session/master/file.xisf layout) because session_root_and_stage
+    # resolves that identically once the "master" folder name is recognised.
+    captured_rigs: dict[tuple[str, str], set] = defaultdict(set)
+    for fs in blocks_out:
+        if fs.get("_counts_captured"):
+            captured_rigs[(parent_dir(fs["bucket"]), fs["filter"])].add(
+                rig_key(fs.get("telescope"), fs.get("camera")))
+
+    master_rig_hint: dict[str, str] = {}
+    for m in masters:
+        mparent = parent_dir(m["path"])
+        sr, stage = session_root_and_stage(
+            mparent, wbpp_session_roots, originals_session_roots)
+        filt = m.get("filter")
+        rigs = captured_rigs.get((sr, filt), set())
+        if len(rigs) != 1:
+            continue
+        mkey = rig_key(m.get("telescope"), m.get("camera"))
+        scope_half, cam_half = mkey.split("|", 1)
+        degenerate = "?" in (scope_half, cam_half) or scope_half.casefold() == cam_half.casefold()
+        if degenerate:
+            master_rig_hint[m["path"]] = next(iter(rigs))
+
+    return {
+        "blocks": blocks_out,
+        "session_masters": session_masters,
+        "master_rig_hint": master_rig_hint,
+        "dedup_log": dedup_log,
+        "dropped_hours": dropped_hours,
+    }
 
 
 def main():
@@ -2538,104 +3861,47 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] Built {len(folder_subs)} raw folder-sub blocks "
           f"({n_fs_wcs_raw} with WCS) representing {total_sub_hours_raw:.1f}h before dedup")
 
-    # Bug 1 fix: dedupe folder-sub blocks that represent the same frames at
-    # different pipeline stages. calibrated/ + registered/ + og/ + starless/ +
-    # stars/ under one session root are all derived from the same ~16 subs.
-    # Priority: master > calibrated > root > registered. Drop og/starless/stars.
-    # Also: if a master/ folder is present in the same session, it already
-    # represents the integration — skip all folder_sub blocks for that session
-    # (the master file contributes hours via the masters list).
-    #
-    # First, find the real WBPP-style session roots so we don't accidentally
-    # treat the calibration pipeline's calibrated/{job_hash} folders (where each hash is a separate
-    # session) as one shared session.
-    all_bucket_paths = [fs["bucket"] for fs in folder_subs] + [str(Path(m["path"]).parent) for m in masters]
-    wbpp_session_roots = detect_wbpp_session_roots(all_bucket_paths)
-    print(f"[{time.time()-t0:6.1f}s] Detected {len(wbpp_session_roots)} WBPP-style session roots")
-
-    # original*/ folders that sit beside a master/ folder belong to that
-    # master's session (issue #24) — resolve them so master-present suppression
-    # fires. Standalone raw archives (no master sibling) get no mapping.
-    originals_session_roots = detect_originals_master_siblings(all_bucket_paths)
-    if originals_session_roots:
-        print(f"[{time.time()-t0:6.1f}s] Mapped {len(originals_session_roots)} originals folder(s) "
-              f"to a master sibling's session root")
-
-    session_dedup_log = []
-    session_master_seen: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for fs in folder_subs:
-        sr, stage = session_root_and_stage(fs["bucket"], wbpp_session_roots, originals_session_roots)
-        fs["_session_root"] = sr
-        fs["_stage"] = stage
-        if stage == "master":
-            session_master_seen[(sr, fs["filter"])].append(fs["bucket"])
-
-    # Also: if a proper master file (from `masters` list) has its parent
-    # within a detected WBPP session, suppress that session's folder_subs.
-    for m in masters:
-        mp = Path(m["path"])
-        mparent = str(mp.parent)
-        sr, stage = session_root_and_stage(mparent, wbpp_session_roots, originals_session_roots)
-        filt = m.get("filter")
-        if filt and stage in PIPELINE_STAGE_FOLDERS:
-            session_master_seen[(sr, filt)].append(m["path"])
-
-    session_groups: dict[tuple[str, str], list] = defaultdict(list)
-    for fs in folder_subs:
-        session_groups[(fs["_session_root"], fs["filter"])].append(fs)
-
-    deduped_folder_subs = []
-    for (sr, filt), group in session_groups.items():
-        has_external_master = bool(session_master_seen.get((sr, filt)))
-        # Drop derivative stages unconditionally
-        kept = []
-        for fs in group:
-            if fs["_stage"] in DERIVATIVE_STAGES:
-                session_dedup_log.append({
-                    "session_root": sr, "filter": filt, "bucket": fs["bucket"],
-                    "stage": fs["_stage"], "n_subs": fs["n_subs"],
-                    "hours": round(fs["total_hours"], 3),
-                    "action": "dropped (derivative product)",
-                })
-            else:
-                kept.append(fs)
-        if not kept:
-            continue
-        if has_external_master:
-            # A master integrated file exists for this session/filter. The
-            # master contributes the hours; skip all folder_sub entries.
-            for fs in kept:
-                session_dedup_log.append({
-                    "session_root": sr, "filter": filt, "bucket": fs["bucket"],
-                    "stage": fs["_stage"], "n_subs": fs["n_subs"],
-                    "hours": round(fs["total_hours"], 3),
-                    "action": "dropped (master present in session)",
-                })
-            continue
-        kept.sort(key=lambda fs: STAGE_PRIORITY.get(fs["_stage"], 99))
-        primary = kept[0]
-        deduped_folder_subs.append(primary)
-        for fs in kept[1:]:
-            session_dedup_log.append({
-                "session_root": sr, "filter": filt, "bucket": fs["bucket"],
-                "stage": fs["_stage"], "n_subs": fs["n_subs"],
-                "hours": round(fs["total_hours"], 3),
-                "action": f"dropped (keeping {primary['_stage']} for session)",
-            })
-
-    dropped_hours = total_sub_hours_raw - sum(fs["total_hours"] for fs in deduped_folder_subs)
-    folder_subs = deduped_folder_subs
+    # Prepare every folder-sub block: tag it with its session/stage and
+    # capture/acceptance status instead of dropping it, and let a block with
+    # no coordinates of its own borrow ra/dec from a solved sibling in the
+    # same session and filter. A master no longer erases the subs that fed
+    # it (see prepare_sub_blocks); acceptance is a folder-name question
+    # (rejected/bad), not a pipeline-stage question.
+    prepared = prepare_sub_blocks(folder_subs, masters)
+    folder_subs = prepared["blocks"]
+    session_masters = prepared["session_masters"]
+    master_rig_hint = prepared["master_rig_hint"]
+    session_dedup_log = prepared["dedup_log"]
+    dropped_hours = prepared["dropped_hours"]
     n_fs_wcs = sum(1 for f in folder_subs if f["has_wcs"])
     total_sub_hours = sum(f["total_hours"] for f in folder_subs)
-    print(f"[{time.time()-t0:6.1f}s] After session dedup: {len(folder_subs)} blocks "
-          f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h "
-          f"(dropped {dropped_hours:.1f}h across {len(session_dedup_log)} pipeline-stage duplicates)")
+    n_captured = sum(1 for f in folder_subs if f["_counts_captured"])
+    print(f"[{time.time()-t0:6.1f}s] Prepared {len(folder_subs)} blocks "
+          f"({n_captured} captured, {n_fs_wcs} with WCS) representing "
+          f"{total_sub_hours:.1f}h (dropped {dropped_hours:.1f}h across "
+          f"{len(session_dedup_log)} pipeline-stage log rows)")
 
-    # Bug 1b fix: content-signature dedup. Some folders are exact backups of
-    # others (e.g. the ASIAIR / ASIAIR Mini pair, where the user copied the
-    # whole tree from one NAS share to another). Buckets sharing the same
-    # filter, exptime, and filename-set are duplicate subs — keep one, drop
-    # the rest. Prefer shorter paths as canonical.
+    # Copy each master's own resolved session root onto the master member, and
+    # a degenerate master's rig hint onto _rig_key so build_filters_data groups
+    # it with the subs that fed it instead of splitting into a second rig.
+    master_session_root: dict[str, str] = {}
+    for (sr, _filt), paths in session_masters.items():
+        for p in paths:
+            master_session_root.setdefault(p, sr)
+    for m in masters:
+        if m["path"] in master_session_root:
+            m["_session_root"] = master_session_root[m["path"]]
+        if m["path"] in master_rig_hint:
+            m["_rig_key"] = master_rig_hint[m["path"]]
+
+    # Content-signature dedup stays here, after prepare_sub_blocks: some
+    # folders are exact backups of others (e.g. the ASIAIR / ASIAIR Mini
+    # pair, where the user copied the whole tree from one NAS share to
+    # another). Buckets sharing the same filter, exptime, and filename-set
+    # are duplicate subs, so keep one and drop the rest. Tag-aware: the
+    # survivor is chosen by capture/acceptance status first (so a duplicate
+    # copy never demotes a real capture), then by shorter path, and takes
+    # the OR of both flags plus the more informative acceptance basis.
     content_dedup_log = []
     content_groups: dict[tuple, list] = defaultdict(list)
     for fs in folder_subs:
@@ -2648,14 +3914,20 @@ def main():
         if key is None:
             continue
         content_groups[key].append(fs)
-    content_kept: list = []
     keep_ids = set()
     for key, group in content_groups.items():
         if len(group) <= 1:
             keep_ids.add(id(group[0]))
             continue
-        group.sort(key=lambda fs: (len(fs["bucket"]), fs["bucket"]))
+        group.sort(key=lambda fs: (
+            not fs.get("_counts_captured", False),
+            not fs.get("_counts_accepted", False),
+            len(fs["bucket"]), fs["bucket"]))
         primary = group[0]
+        primary["_counts_captured"] = any(fs.get("_counts_captured") for fs in group)
+        primary["_counts_accepted"] = any(fs.get("_counts_accepted") for fs in group)
+        if any(fs.get("_accepted_basis") == "rejected_folders" for fs in group):
+            primary["_accepted_basis"] = "rejected_folders"
         keep_ids.add(id(primary))
         for dup in group[1:]:
             content_dedup_log.append({
@@ -2673,6 +3945,26 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] After content dedup: {len(folder_subs)} blocks "
           f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h "
           f"(dropped {content_dropped_hours:.1f}h across {len(content_dedup_log)} content-identical duplicates)")
+
+    # Copy collapse by capture time. Content dedup above only catches folders
+    # holding the same FILENAMES, so it misses the same light saved under a
+    # pipeline's own names in another tree. Capture times catch those, and they
+    # run after content dedup so an exact backup is already gone.
+    folder_subs, capture_dedup_log = collapse_copied_sub_blocks(
+        folder_subs, log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"))
+    capture_dropped_hours = total_sub_hours - sum(fs["total_hours"] for fs in folder_subs)
+    total_sub_hours = sum(fs["total_hours"] for fs in folder_subs)
+    n_fs_wcs = sum(1 for f in folder_subs if f["has_wcs"])
+    print(f"[{time.time()-t0:6.1f}s] After capture-time dedup: {len(folder_subs)} blocks "
+          f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h")
+
+    # Computed here, after content-signature dedup, not inside
+    # prepare_sub_blocks: a backup copy of an uncoordinated folder would be
+    # double-counted if this ran before that dedup collapses it.
+    uncoordinated_hours_total = uncoordinated_captured_hours(folder_subs)
+    if uncoordinated_hours_total:
+        print(f"[{time.time()-t0:6.1f}s] {uncoordinated_hours_total:.1f}h captured but "
+              f"still without coordinates")
 
     # Filter: masters with WCS are trustable centers; without, try to keep
     masters_by_id = {f["path"]: f for f in masters}
@@ -2711,6 +4003,7 @@ def main():
         "exptime": fs["exptime"],
         "ncombine": fs["n_subs"],
         "has_wcs": bool(fs.get("has_wcs")),
+        "_session_root": fs.get("_session_root"),
         "_folder_sub": fs,
     } for fs in folder_subs
       if fs.get("ra_deg") is not None and fs.get("dec_deg") is not None]
@@ -2803,8 +4096,8 @@ def main():
             # foreign instrument since clustering is done by spatial proximity).
             # Flag as estimated so downstream reports can surface the caveat.
             fov_flag = "estimated"
-            first = members[0]
-            fov_candidate, pix_candidate, method = compute_fov_from_meta(first)
+            representative = fov_representative(members)
+            fov_candidate, pix_candidate, method = compute_fov_from_meta(representative)
             if fov_candidate:
                 fov_arcmin = [round(fov_candidate[0], 2), round(fov_candidate[1], 2)]
                 pix_arcsec = round(pix_candidate, 3)
@@ -2813,13 +4106,10 @@ def main():
         corners_gal = []
         if fov_arcmin:
             w_arcmin, h_arcmin = fov_arcmin
-            for dx, dy in [(-1, -1), (-1, 1), (1, 1), (1, -1)]:
-                # Offset in arcmin
-                c_ra = ra_c + (dx * w_arcmin / 2.0) / 60.0 / np.cos(np.radians(dec_c))
-                c_dec = dec_c + (dy * h_arcmin / 2.0) / 60.0
-                corners_icrs.append([c_ra, c_dec])
-                sc2 = SkyCoord(c_ra * u.deg, c_dec * u.deg).galactic
-                corners_gal.append([float(sc2.l.deg), float(sc2.b.deg)])
+            corners_icrs, corners_gal = fov_corners(
+                ra_c, dec_c, w_arcmin, h_arcmin,
+                log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"),
+                label=", ".join(objects[:2]) or f"cluster at {ra_c:.2f}, {dec_c:.2f}")
 
         # Date range
         dates = sorted({m.get("date_obs")[:10] for m in members if m.get("date_obs")})
@@ -2838,18 +4128,7 @@ def main():
             "pix_arcsec": pix_arcsec,
             "corners_icrs": corners_icrs,
             "corners_galactic": corners_gal,
-            "filters": {
-                f: {
-                    "total_hours": round(d["total_hours"], 2),
-                    "files": d["files"],
-                    "paths": d["paths"][:10],  # cap for JSON size
-                    "sub_folders": d.get("sub_folders", 0),
-                    "n_subs": d.get("n_subs", 0),
-                    "folder_sub_buckets": d.get("folder_sub_buckets", [])[:10],
-                    "sources": d.get("sources", {}),
-                }
-                for f, d in filters_data.items()
-            },
+            "filters": emit_filters_data(filters_data),
             "master_files": [m["path"] for m in members if m.get("role") != "folder_sub"],
             "telescopes": sorted({m.get("telescope") for m in members if m.get("telescope")}),
             "cameras": sorted({m.get("camera") for m in members if m.get("camera")}),
@@ -2879,13 +4158,37 @@ def main():
             db_unmatched += 1
             continue
         t = targets[ti]
-        f_entry = t["filters"].setdefault(filt, {"total_hours": 0.0, "files": 0, "paths": []})
+        f_entry = t["filters"].setdefault(filt, {
+            "total_hours": 0.0, "files": 0, "paths": [], "sub_folders": 0,
+            "n_subs": 0, "folder_sub_buckets": [], "sources": {},
+            "captured_hours": 0.0, "accepted_hours": 0.0,
+            "accepted_basis": None, "integrated_hours": 0.0,
+            "headline_hours": 0.0, "headline_basis": "none",
+            "master_depth_unknown": False, "stale_master": False,
+            "stale_excess_hours": 0.0, "stale_basis": None,
+            "captured_unattributed_hours": 0.0,
+            "integration_anomaly": False, "masters_without_subs": False,
+            "multi_master": False,
+            "rigs": {},
+        })
         f_entry["db_sub_hours"] = f_entry.get("db_sub_hours", 0.0) + agg["hours"]
         f_entry["db_sub_count"] = f_entry.get("db_sub_count", 0) + agg["n_subs"]
-        # Use db hours as authoritative total if no master-derived hours
-        if f_entry["total_hours"] == 0.0:
-            f_entry["total_hours"] = round(agg["hours"], 2)
     print(f"[{time.time()-t0:6.1f}s] {db_unmatched} DB (object,filter) rows unmatched to target clusters")
+
+    # Raise captured (and, when the headline isn't integrated, the headline)
+    # to the DB figure when it is the larger view, once per band, after
+    # every DB row for it has been folded into db_sub_hours above. A
+    # cluster with more than one object-name alias (e.g. M31 / NGC 224)
+    # touches the same band via more than one db_aggs row, so the floor
+    # must run once on the final accumulated total rather than once per
+    # alias -- calling it per row would compound: the second call would
+    # read back the already-raised captured_hours as its baseline instead
+    # of the true rig-measured figure. Schema-1 bands keep their old
+    # zero-guard inside apply_db_captured_floor.
+    for t in targets:
+        for f_entry in t["filters"].values():
+            if "db_sub_hours" in f_entry:
+                apply_db_captured_floor(f_entry, f_entry["db_sub_hours"])
 
     # Step 6: Integrity checks
     print(f"[{time.time()-t0:6.1f}s] Step 6: Integrity checks (sii vs ha correlation)")
@@ -2940,6 +4243,8 @@ def main():
 
     # Step 7: Write manifest
     print(f"[{time.time()-t0:6.1f}s] Step 7: Writing manifest")
+    hour_flags = build_integrity_hour_flags(
+        targets, uncoordinated_captured_hours=uncoordinated_hours_total)
     manifest = {
         "scan_date": datetime.now().isoformat(),
         "scan_duration_sec": round(time.time() - t0, 1),
@@ -2949,6 +4254,9 @@ def main():
         "total_targets": len(targets),
         "total_masters_with_wcs": n_wcs,
         "total_integration_hours": round(total_hours, 1),
+        "manifest_schema": 2,
+        "total_captured_hours": total_hours_across(targets, "captured_hours"),
+        "total_integrated_hours": total_hours_across(targets, "integrated_hours"),
         "targets": targets,
         "integrity_flags": {
             "sii_ha_correlation_suspects": flagged,
@@ -2964,12 +4272,18 @@ def main():
             "content_dedup_drops": content_dedup_log,
             "content_dedup_hours_dropped": round(content_dropped_hours, 2),
             "content_dedup_buckets_dropped": len(content_dedup_log),
+            "capture_dedup_drops": capture_dedup_log,
+            "capture_dedup_hours_dropped": round(capture_dropped_hours, 2),
+            "capture_dedup_buckets_dropped": len(capture_dedup_log),
             "unrecognised_filter_names": [
                 {"name": name, "frames": count}
                 for name, count in sorted(
                     UNRECOGNISED_FILTER_COUNTS.items(), key=lambda kv: -kv[1]
                 )
             ],
+            "stale_masters": hour_flags["stale_masters"],
+            "integration_anomalies": hour_flags["integration_anomalies"],
+            "uncoordinated_captured_hours": hour_flags["uncoordinated_captured_hours"],
         },
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -3026,6 +4340,8 @@ def write_summary(m: dict):
     lines.append(f"- **Unique targets** (spatial clusters, 30′): {m['total_targets']}")
     lines.append(f"- **Masters with WCS**: {m['total_masters_with_wcs']}")
     lines.append(f"- **Total integration (gross, all filters)**: {m['total_integration_hours']} h")
+    lines.append(f"- **Total captured (gross, all filters)**: {m.get('total_captured_hours', 0)} h")
+    lines.append(f"- **Total integrated (gross, all filters)**: {m.get('total_integrated_hours', 0)} h")
     lines.append("")
     lines.append("## File role counts")
     lines.append("")
@@ -3042,8 +4358,8 @@ def write_summary(m: dict):
     for t in m["targets"]:
         for f, d in t["filters"].items():
             per_filter[f]["targets"] += 1
-            per_filter[f]["hours"] += d["total_hours"]
-            per_filter[f]["masters"] += d["files"]
+            per_filter[f]["hours"] += d.get("total_hours", 0.0)
+            per_filter[f]["masters"] += d.get("files", 0)
     lines.append("| Filter | #targets | #masters | hours |")
     lines.append("|---|---:|---:|---:|")
     for f in ("Ha", "SII", "OIII", "L", "R", "G", "B", "V", "IDAS", "IR", "Unknown"):
@@ -3060,11 +4376,11 @@ def write_summary(m: dict):
     lines.append("")
     lines.append("| Target (objects) | l | b | filters | hours |")
     lines.append("|---|---:|---:|---|---:|")
-    tgts = sorted(m["targets"], key=lambda t: -sum(d["total_hours"] for d in t["filters"].values()))[:15]
+    tgts = sorted(m["targets"], key=lambda t: -sum(d.get("total_hours", 0.0) for d in t["filters"].values()))[:15]
     for t in tgts:
         objs = ", ".join(t["objects"][:2]) + (f" (+{len(t['objects'])-2})" if len(t["objects"]) > 2 else "")
-        flist = ", ".join(f"{f}={d['total_hours']:.1f}h" for f, d in sorted(t["filters"].items(), key=lambda x: -x[1]["total_hours"]) if d["total_hours"] > 0)
-        total = sum(d["total_hours"] for d in t["filters"].values())
+        flist = ", ".join(f"{f}={d.get('total_hours', 0.0):.1f}h" for f, d in sorted(t["filters"].items(), key=lambda x: -x[1].get("total_hours", 0.0)) if d.get("total_hours", 0.0) > 0)
+        total = sum(d.get("total_hours", 0.0) for d in t["filters"].values())
         lines.append(f"| {objs or '(unknown)'} | {t['center_l_deg']:.2f} | {t['center_b_deg']:+.2f} | {flist} | {total:.1f} |")
     lines.append("")
 
@@ -3089,6 +4405,16 @@ def write_summary(m: dict):
         lines.append(f"  - `{d['path']}` counted under `{d['kept']}`")
     if len(xdup) > 20:
         lines.append(f"  - ... and {len(xdup) - 20} more, listed in `archive_manifest.json`")
+    cdup = flags.get("capture_dedup_drops", [])
+    lines.append(f"- **Sub folders copied from elsewhere**: {len(cdup)} "
+                 f"({flags.get('capture_dedup_hours_dropped', 0)}h counted once)")
+    lines.append("  Each folder below holds frames whose capture times all appear in the")
+    lines.append("  folder beside it, on the same rig, filter and exposure, so it is the")
+    lines.append("  same light saved twice. Check a few if a target's hours look low.")
+    for d in cdup[:20]:
+        lines.append(f"  - `{d['bucket']}` ({d['n_subs']} subs) counted under `{d['kept']}`")
+    if len(cdup) > 20:
+        lines.append(f"  - ... and {len(cdup) - 20} more, listed in `archive_manifest.json`")
     amb = flags.get("masters_ambiguous_filter", [])
     lines.append(f"- **Masters with ambiguous filter**: {len(amb)}")
     for pth in amb[:20]:

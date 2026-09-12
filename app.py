@@ -1585,9 +1585,9 @@ def _shorten_archive_path(s: str, roots: list[str]) -> str:
     """One absolute path, cut down so it still names the file but no longer
     names the machine.
 
-    A path under a scan root becomes root-relative. A path under no known root
-    keeps its last two segments. Either way the username, the mount point and
-    the folder layout above the archive stop crossing the wire.
+    A path under a scan root becomes root-relative. A path under no known
+    root keeps its last two segments. Either way the username, the mount
+    point and the folder layout above the archive stop crossing the wire.
     """
     folded = s.replace("\\", "/")
     low = folded.lower()
@@ -1605,18 +1605,27 @@ def _shorten_archive_path(s: str, roots: list[str]) -> str:
 
 
 def _without_archive_paths(obj, roots: list[str]):
-    """Recursively shorten every absolute path in a manifest payload.
+    """Recursively shorten every absolute path in a manifest payload,
+    walking dict keys as well as values.
 
     Deliberately structural rather than a list of key names. `api_manifest`
     used to strip the one key called `paths`, which read as if it prevented
     this, while `master_files`, `per_master_fov[].path` and three fields
     inside every `folder_sub_buckets` entry carried the real layout through.
     Walking the whole payload means a key added later is covered too.
+
+    Keys are walked as well as values: a rig key can itself be path-shaped,
+    from a capture app that wrote a profile path into a camera field, and a
+    key is just as much a wire leak as a value.
     """
     if isinstance(obj, str):
         return _shorten_archive_path(obj, roots) if _ABS_PATH_RE.match(obj) else obj
     if isinstance(obj, dict):
-        return {k: _without_archive_paths(v, roots) for k, v in obj.items()}
+        return {
+            (_shorten_archive_path(k, roots) if isinstance(k, str) and _ABS_PATH_RE.match(k) else k):
+            _without_archive_paths(v, roots)
+            for k, v in obj.items()
+        }
     if isinstance(obj, list):
         return [_without_archive_paths(v, roots) for v in obj]
     return obj
@@ -1633,6 +1642,8 @@ def api_manifest():
             "scan_date": None,
             "total_targets": 0,
             "total_integration_hours": 0,
+            "total_captured_hours": 0,
+            "total_integrated_hours": 0,
             "targets": [],
         })
     roots = [str(r) for r in (m.get("scan_roots") or []) if r]
@@ -1644,6 +1655,8 @@ def api_manifest():
         "scan_date": m.get("scan_date"),
         "total_targets": m.get("total_targets"),
         "total_integration_hours": m.get("total_integration_hours"),
+        "total_captured_hours": m.get("total_captured_hours", 0),
+        "total_integrated_hours": m.get("total_integrated_hours", 0),
         "targets": slim_targets,
         "scan_health": _scan_health(m),
     }, roots))
@@ -1681,6 +1694,25 @@ def _scan_health(m: dict) -> dict | None:
     for row in flags.get("unrecognised_filter_names") or []:
         if isinstance(row, dict) and row.get("name"):
             unrec.append({"name": str(row["name"])[:64], "frames": int(row.get("frames") or 0)})
+
+    def _rig_rows(key, limit=10):
+        """Slim stale-master / integration-anomaly rows for the rail: which
+        target, band and rig, and by how much."""
+        v = flags.get(key)
+        if not isinstance(v, list):
+            return []
+        out = []
+        for row in v[:limit]:
+            if not isinstance(row, dict):
+                continue
+            out.append({
+                "target_id": row.get("target_id"),
+                "band": row.get("band"),
+                "rig": row.get("rig"),
+                "excess_hours": row.get("excess_hours"),
+            })
+        return out
+
     return {
         "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
         "masters_missing_wcs": _count("masters_missing_wcs"),
@@ -1689,6 +1721,9 @@ def _scan_health(m: dict) -> dict | None:
         "masters_ambiguous_filter_examples": _examples("masters_ambiguous_filter"),
         "dedup_hours_dropped": round(_num("session_dedup_hours_dropped") + _num("content_dedup_hours_dropped"), 2),
         "unrecognised_filters": unrec,
+        "stale_masters": _count("stale_masters"),
+        "stale_masters_examples": _rig_rows("stale_masters"),
+        "integration_anomalies": _count("integration_anomalies"),
     }
 
 
