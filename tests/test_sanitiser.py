@@ -87,8 +87,12 @@ def test_round_trip_essentials():
     assert "date_range" not in t0
     assert "paths" not in t0["filters"]["Ha"]
     assert "sub_folders" not in t0["filters"]["Ha"]
-    # Filter rebuilt with only the two allowed keys
-    assert set(t0["filters"]["Ha"].keys()) == {"total_hours", "files"}
+    # Filter rebuilt with only the allowed keys (phase 6 adds the three
+    # hours numbers, headline_basis and stale_master; never rigs)
+    assert set(t0["filters"]["Ha"].keys()) == {
+        "total_hours", "files", "captured_hours", "accepted_hours",
+        "integrated_hours", "headline_basis", "stale_master",
+    }
     # target_id regenerated and prefixed
     assert isinstance(t0["target_id"], str) and t0["target_id"].startswith("f_")
     assert t0["target_id"] != 7

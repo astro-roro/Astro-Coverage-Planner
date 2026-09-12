@@ -99,14 +99,31 @@ class TestCollapseClusterDuplicateMasters(unittest.TestCase):
 
 
 class TestHoursCountedOnce(unittest.TestCase):
-    def test_band_hours_halve_after_the_collapse(self):
+    """The collapse no longer changes hours, because one master sets integrated.
+
+    It used to halve them: hours were the sum over masters, so the same stack in
+    two folders counted twice and this collapse was the correction. Since the
+    product owner's 2026-09-12 decision the deepest master alone sets integrated
+    hours, so a duplicate cannot inflate them in the first place. The collapse
+    still earns its place by picking which master describes the field.
+    """
+
+    def test_a_duplicate_master_never_inflated_the_hours(self):
         a = master("/a/Sh2-27/B.xisf")
         b = master("/a/Sh2-27/master/masterLight_FILTER-B_mono.xisf")
         before = bam.build_filters_data([a, b])
-        self.assertAlmostEqual(before["B"]["total_hours"], 2.667, places=2)
-        kept, _ = bam.collapse_cluster_duplicate_masters([a, b])
-        after = bam.build_filters_data(kept)
-        self.assertAlmostEqual(after["B"]["total_hours"], 1.333, places=2)
+        self.assertAlmostEqual(before["B"]["total_hours"], 1.333, places=2)
+
+    def test_the_collapse_leaves_the_hours_exactly_where_they_were(self):
+        a = master("/a/Sh2-27/B.xisf")
+        b = master("/a/Sh2-27/master/masterLight_FILTER-B_mono.xisf")
+        before = bam.build_filters_data([a, b])["B"]
+        kept, dropped = bam.collapse_cluster_duplicate_masters([a, b])
+        after = bam.build_filters_data(kept)["B"]
+        self.assertEqual(len(dropped), 1)
+        self.assertAlmostEqual(after["total_hours"], before["total_hours"], places=9)
+        self.assertAlmostEqual(after["integrated_hours"], before["integrated_hours"],
+                               places=9)
 
 
 if __name__ == "__main__":
