@@ -28,6 +28,7 @@ Then start the planner; the manifest will be picked up automatically.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import html
 import inspect
@@ -413,10 +414,27 @@ def _note_unrecognised_filter(name: str) -> None:
         sink.append(name)
 
 
+# Values that say the filter is not known. A capture app writing
+# FILTER = 'unknown' means the same as leaving the keyword out, so both must
+# reach the same band, or a target grows one row per spelling: three of the
+# maintainer's targets carried a separate "Unknown" and "unknown" band, each
+# counting the same hours.
+#
+# Two near misses stay out of this set on purpose. "NONE" and "NO FILTER" are
+# what NINA writes when the wheel holds no filter, which is real information and
+# already canonicalises to NoFilter. "NA" is how a sodium filter is written.
+_FILTER_PLACEHOLDERS = {
+    "", "-", "--", "?", "N/A", "NULL",
+    "UNKNOWN", "UNSPECIFIED", "NOT SET", "NOTSET",
+}
+
+
 def canon_filter(raw: str | None) -> str | None:
     if raw is None:
         return None
     s = str(raw).strip().upper()
+    if s in _FILTER_PLACEHOLDERS:
+        return None
     hit = FILTER_CANON.get(s)
     if hit is not None:
         return hit
@@ -1958,26 +1976,125 @@ def _mtime_token(mtime) -> float:
         return 0.0
 
 
+_SIMPLE_TABLE_TYPES = (str, bytes, int, float, bool, tuple, list,
+                       set, frozenset, dict, re.Pattern)
+
+# Accumulator types are excluded from the fingerprint. A Counter that fills up
+# as files are read would give the cache a different identity at write time than
+# at read time, so every scan would look cold and no scan would ever be warm.
+# UNRECOGNISED_FILTER_COUNTS, which canon_filter writes to, is the live example.
+_ACCUMULATOR_TABLE_TYPES = (Counter, defaultdict)
+
+
+def _stable_repr(value):
+    """A repr that does not move between runs, for hashing a module table."""
+    if isinstance(value, (set, frozenset)):
+        return "{" + ", ".join(sorted(repr(v) for v in value)) + "}"
+    if isinstance(value, dict):
+        return "{" + ", ".join(
+            f"{k!r}: {_stable_repr(v)}" for k, v in sorted(
+                value.items(), key=lambda kv: repr(kv[0]))) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_stable_repr(v) for v in value) + "]"
+    if isinstance(value, re.Pattern):
+        return f"re({value.pattern!r}, {value.flags})"
+    return repr(value)
+
+
+def _reader_code_and_tables() -> list[str]:
+    """Every piece of code and data that shapes what a header read returns.
+
+    Walks out from the two readers through this module's own functions, so a
+    helper they call is covered without anyone having to remember it, and takes
+    in the plain module-level tables those functions consult.
+
+    Hashing the two reader bodies alone was not enough, and the failure is
+    silent. Both readers call ``canon_filter``. When it was taught on 2026-09-12
+    that a FILTER of "unknown" names no filter, every warm scan kept serving the
+    old answer from cache, and no run said so.
+
+    Returns the strings to hash, or an empty list when the module source cannot
+    be read, which sends the caller to its own fallback.
+    """
+    try:
+        module_src = inspect.getsource(sys.modules[__name__])
+        tree = ast.parse(module_src)
+    except (OSError, TypeError, SyntaxError, KeyError):
+        return []
+
+    # The filter catalogue loads from disk on first use. Force it now so the
+    # fingerprint covers the catalogue's contents and does not change the moment
+    # the first file is read.
+    try:
+        _filter_catalogue()
+    except Exception:
+        pass
+
+    func_nodes = {n.name: n for n in tree.body
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    g = globals()
+
+    seen_funcs: set[str] = set()
+    tables: dict[str, str] = {}
+    queue = ["read_fits_meta", "read_xisf_meta"]
+    while queue:
+        name = queue.pop()
+        if name in seen_funcs or name not in func_nodes:
+            continue
+        seen_funcs.add(name)
+        for node in ast.walk(func_nodes[name]):
+            if not isinstance(node, ast.Name):
+                continue
+            ref = node.id
+            if ref in func_nodes:
+                queue.append(ref)
+            elif (ref in g and isinstance(g[ref], _SIMPLE_TABLE_TYPES)
+                    and not isinstance(g[ref], _ACCUMULATOR_TABLE_TYPES)):
+                tables[ref] = _stable_repr(g[ref])
+
+    parts = [ast.unparse(func_nodes[n]) for n in sorted(seen_funcs)]
+    parts += [f"{k}={v}" for k, v in sorted(tables.items())]
+    return parts
+
+
+_SCAN_CACHE_FINGERPRINT: str | None = None
+
+
 def scan_cache_fingerprint() -> str:
     """Identity of the code that produced the cached metadata.
 
-    Any edit to either reader changes what a header read returns, so the whole
-    cache has to be thrown away. Hashing the two function bodies plus the schema
-    version catches that automatically, with no version number to remember to
-    bump by hand.
+    Any edit to either reader, to a helper either one calls, or to a table those
+    helpers consult changes what a header read returns, so the whole cache has to
+    be thrown away. Hashing all of it catches that automatically, with no version
+    number to remember to bump by hand.
+
+    Computed once and kept, because the source is read from disk rather than from
+    the running interpreter. A scan reaches the cache about twenty minutes in,
+    after the file tree is globbed, and an edit saved during that window used to
+    change the answer under a run that was still executing the old code. That
+    scan then went cold for no reason and stamped the new identity on metadata
+    the old code had produced, which the next scan would have trusted.
     """
+    global _SCAN_CACHE_FINGERPRINT
+    if _SCAN_CACHE_FINGERPRINT is not None:
+        return _SCAN_CACHE_FINGERPRINT
     h = hashlib.sha256()
     h.update(str(SCAN_CACHE_SCHEMA).encode("utf-8"))
-    for fn in (read_fits_meta, read_xisf_meta):
-        try:
-            src = inspect.getsource(fn)
-        except (OSError, TypeError):
-            # No source available (frozen build, exec'd module): fall back to a
-            # value that is stable within a run but forces a cold scan across
-            # interpreter versions rather than trusting a stale cache.
-            src = f"{fn.__name__}:{sys.version}"
-        h.update(src.encode("utf-8"))
-    return h.hexdigest()
+    parts = _reader_code_and_tables()
+    if not parts:
+        for fn in (read_fits_meta, read_xisf_meta):
+            try:
+                parts.append(inspect.getsource(fn))
+            except (OSError, TypeError):
+                # No source available (frozen build, exec'd module): fall back to
+                # a value that is stable within a run but forces a cold scan
+                # across interpreter versions rather than trusting a stale cache.
+                parts.append(f"{fn.__name__}:{sys.version}")
+    for part in parts:
+        h.update(part.encode("utf-8"))
+        h.update(b"\x00")
+    _SCAN_CACHE_FINGERPRINT = h.hexdigest()
+    return _SCAN_CACHE_FINGERPRINT
 
 
 def _json_plain(value):
