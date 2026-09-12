@@ -595,6 +595,23 @@ INTEGRATION_ANOMALY_RELATIVE_TOLERANCE = 0.05
 INTEGRATION_ANOMALY_FLOOR_HOURS = 0.1
 
 
+def parent_dir(path) -> str:
+    """The directory holding ``path``, spelled the way ``path`` was.
+
+    ``str(Path(p).parent)`` rewrites separators to the platform's own, so on
+    Windows a forward-slash path comes back with backslashes. Every caller here
+    compares the result against bucket strings by plain string equality, and a
+    rewritten separator silently stops matching: on Windows the session master
+    link came back empty for any path written with forward slashes, which is how
+    people type a root by hand.
+    """
+    s = str(path)
+    cut = max(s.rfind("/"), s.rfind("\\"))
+    if cut < 0:
+        return s
+    return s[:cut] or s[:cut + 1]
+
+
 def _bucket_parts(bucket):
     """Path segments of a bucket, or None for a missing bucket."""
     if not bucket:
@@ -2693,6 +2710,19 @@ def collapse_cluster_duplicate_masters(members: list[dict]) -> tuple[list[dict],
 _ORIGINALS_FOLDER_RE = re.compile(r"^originals?(?:[_\-].*)?$")
 
 
+def _path_segments(path: str) -> list[tuple[str, int, int]]:
+    """Each non-empty path segment with where it starts and ends in ``path``.
+
+    Splitting on both separator styles, so one function reads a Windows path and
+    a POSIX one alike, and keeping the offsets so a caller can cut a prefix out
+    of the original string instead of rebuilding it and losing its spelling.
+    """
+    out = []
+    for match in re.finditer(r"[^\\/]+", str(path)):
+        out.append((match.group(0), match.start(), match.end()))
+    return out
+
+
 def session_root_and_stage(
     bucket_path: str,
     valid_session_roots: set | None = None,
@@ -2714,14 +2744,21 @@ def session_root_and_stage(
     capture source for that session. Checked first because these folders carry
     names (e.g. ``original_lights/``) that are not in PIPELINE_STAGE_FOLDERS.
     """
-    from pathlib import PurePath
     if originals_session_roots and bucket_path in originals_session_roots:
         return originals_session_roots[bucket_path], "og"
-    parts = list(PurePath(bucket_path).parts)
-    for i in range(len(parts) - 1, -1, -1):
-        name = parts[i].lower()
-        if name in PIPELINE_STAGE_FOLDERS:
-            session_root = str(PurePath(*parts[:i])) if i > 0 else parts[0]
+    # The session root is cut out of the caller's own string rather than rebuilt
+    # from path parts. Rebuilding it through PurePath rewrites separators to the
+    # platform's own, and every caller compares the result against bucket strings
+    # by plain string equality: on Windows a path written with forward slashes
+    # came back with backslashes and matched nothing.
+    segments = _path_segments(bucket_path)
+    for i in range(len(segments) - 1, -1, -1):
+        name, start, _end = segments[i]
+        if name.lower() in PIPELINE_STAGE_FOLDERS:
+            if i > 0:
+                session_root = bucket_path[:start].rstrip("/\\") or bucket_path[:1]
+            else:
+                session_root = name
             if valid_session_roots is None or session_root in valid_session_roots:
                 return session_root, canon_stage_name(name)
             # Not a real WBPP session; ignore this stage-named folder and keep walking up
@@ -2754,15 +2791,18 @@ def detect_originals_master_siblings(bucket_paths: list[str]) -> dict[str, str]:
     folder with no pipeline-stage sibling at all) returns no mapping and is
     left to count normally. Returns ``{originals_bucket_path: session_root}``.
     """
-    from pathlib import PurePath
     stage_parents: set[str] = set()
     originals_by_parent: dict[str, list[str]] = defaultdict(list)
     for bp in bucket_paths:
-        parts = list(PurePath(bp).parts)
-        if not parts:
+        segments = _path_segments(bp)
+        if not segments:
             continue
-        name = parts[-1].lower()
-        parent = str(PurePath(*parts[:-1])) if len(parts) > 1 else parts[0]
+        name = segments[-1][0].lower()
+        if len(segments) > 1:
+            # Cut from the caller's own string: see session_root_and_stage.
+            parent = bp[:segments[-1][1]].rstrip("/\\") or bp[:1]
+        else:
+            parent = segments[-1][0]
         canon = canon_stage_name(name)
         if canon == "master" or canon in _ORIGINALS_GATING_STAGES:
             stage_parents.add(parent)
@@ -2810,14 +2850,15 @@ def detect_wbpp_session_roots(bucket_paths: list[str]) -> set[str]:
     ambiguity, and a master-stage folder-sub block must resolve to the same
     session root as its master file for the Phase 4 suppression to find it.
     """
-    from pathlib import PurePath
     children_by_parent: dict[str, set[str]] = defaultdict(set)
     for bp in bucket_paths:
-        parts = list(PurePath(bp).parts)
-        for i in range(len(parts) - 1, -1, -1):
-            name = parts[i].lower()
-            if name in PIPELINE_STAGE_FOLDERS:
-                parent_path = str(PurePath(*parts[:i])) if i > 0 else parts[0]
+        segments = _path_segments(bp)
+        for i in range(len(segments) - 1, -1, -1):
+            name, start, _end = segments[i]
+            if name.lower() in PIPELINE_STAGE_FOLDERS:
+                # Cut from the caller's own string: see session_root_and_stage
+                # for why rebuilding this through PurePath breaks on Windows.
+                parent_path = (bp[:start].rstrip("/\\") or bp[:1]) if i > 0 else name
                 children_by_parent[parent_path].add(canon_stage_name(name))
                 break
     roots = {
@@ -3454,7 +3495,7 @@ def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None
 
     all_bucket_paths = (
         [fs["bucket"] for fs in folder_subs]
-        + [str(Path(m["path"]).parent) for m in masters]
+        + [parent_dir(m["path"]) for m in masters]
     )
     wbpp_session_roots = detect_wbpp_session_roots(all_bucket_paths)
     originals_session_roots = detect_originals_master_siblings(all_bucket_paths)
@@ -3476,7 +3517,7 @@ def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None
 
     master_file_keys: set[tuple[str, str]] = set()
     for m in masters:
-        mparent = str(Path(m["path"]).parent)
+        mparent = parent_dir(m["path"])
         sr, stage = session_root_and_stage(
             mparent, wbpp_session_roots, originals_session_roots)
         filt = m.get("filter")
@@ -3572,12 +3613,12 @@ def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None
     captured_rigs: dict[tuple[str, str], set] = defaultdict(set)
     for fs in blocks_out:
         if fs.get("_counts_captured"):
-            captured_rigs[(str(Path(fs["bucket"]).parent), fs["filter"])].add(
+            captured_rigs[(parent_dir(fs["bucket"]), fs["filter"])].add(
                 rig_key(fs.get("telescope"), fs.get("camera")))
 
     master_rig_hint: dict[str, str] = {}
     for m in masters:
-        mparent = str(Path(m["path"]).parent)
+        mparent = parent_dir(m["path"])
         sr, stage = session_root_and_stage(
             mparent, wbpp_session_roots, originals_session_roots)
         filt = m.get("filter")
