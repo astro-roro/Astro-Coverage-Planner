@@ -63,7 +63,8 @@ from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import (Flask, Response, jsonify, redirect, render_template, request,
+                   send_from_directory)
 
 # Reconfigure stdout/stderr to UTF-8 so non-ASCII characters in log/print
 # output don't crash on Windows where the default console codec (cp1252)
@@ -146,8 +147,31 @@ mimetypes.add_type("text/javascript", ".js")
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
-app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
 app.jinja_env.auto_reload = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
+
+# Every write endpoint takes a small JSON document. The largest legitimate
+# body is a 400-panel mosaic sent to /api/visibility/panels, around 25 KB,
+# and a full gear document, around 10 KB. One megabyte leaves room for an
+# archive far larger than any reported and still refuses the case that
+# prompted this: an unauthenticated caller posting megabytes that
+# /api/plans/match then wrote to disk and kept forever.
+MAX_BODY_BYTES = int(os.environ.get("ACP_MAX_BODY_BYTES", 1024 * 1024))
+app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
+
+# NINA profiles that have reported a fingerprint. A real user has a handful.
+# The key is caller-supplied, so without a ceiling anyone on the LAN can grow
+# the file without limit.
+MAX_FINGERPRINT_PROFILES = int(os.environ.get("ACP_MAX_FINGERPRINT_PROFILES", 50))
+
+
+@app.errorhandler(413)
+def _body_too_large(_exc):
+    """JSON, not Flask's HTML page. The NINA plugin parses every response it
+    gets from ACP, so an HTML error body reads to it as a broken server."""
+    return jsonify({"error": f"request body larger than {MAX_BODY_BYTES} bytes",
+                    "max_bytes": MAX_BODY_BYTES}), 413
+
 
 
 def _api_auth_token() -> str:
@@ -157,33 +181,172 @@ def _api_auth_token() -> str:
     return (os.environ.get("ACP_API_TOKEN") or "").strip()
 
 
+def _token_matches(supplied: str, token: str) -> bool:
+    """Constant-time comparison of a bearer token that may not be ASCII.
+
+    Comparing the two as str raised TypeError on any non-ASCII token, which
+    turned every request into a 500 whether the token was right or wrong.
+
+    WSGI hands a header value over already decoded as latin-1, one character
+    per byte, so encoding it back with latin-1 recovers the bytes the client
+    actually sent. HTTP clients disagree about how to put a non-ASCII token
+    on the wire: curl sends UTF-8, some .NET and Java clients send latin-1.
+    Both encodings of the configured token are accepted, since both derive
+    from the same secret and refusing one would just look like a broken
+    server to whoever picked that client.
+    """
+    on_the_wire = supplied.encode("latin-1", "replace")
+    candidates = {token.encode("utf-8")}
+    try:
+        # Strict, not "replace": a lossy encoding would let a caller sending
+        # a question mark where a character does not fit latin-1 through.
+        candidates.add(token.encode("latin-1"))
+    except UnicodeEncodeError:
+        pass
+    return any(hmac.compare_digest(on_the_wire, c) for c in candidates)
+
+
 if _api_auth_token():
     logging.info("[acp] API auth: ON: /api/* requires a matching ACP_API_TOKEN bearer token")
+    if not _api_auth_token().isascii():
+        logging.warning(
+            "[acp] ACP_API_TOKEN contains non-ASCII characters. It works here, but "
+            "HTTP clients disagree about how to encode such a header, so a plugin "
+            "or curl on another machine may fail to authenticate. ASCII is safer.")
+    if len(_api_auth_token()) < 16:
+        logging.warning(
+            "[acp] ACP_API_TOKEN is shorter than 16 characters. It is the only thing "
+            "standing between your archive and anyone who can reach the port.")
 else:
     logging.info("[acp] API auth: OFF: set ACP_API_TOKEN to require a bearer token on /api/*")
 
 
+SESSION_COOKIE_NAME = "acp_session"
+# Thirty days. Long enough that a home user signs in once and forgets about
+# it, short enough that a browser left on a machine that changes hands does
+# not stay signed in forever.
+SESSION_COOKIE_MAX_AGE_S = 30 * 24 * 3600
+
+
+def _session_cookie_value(token: str) -> str:
+    """The cookie that stands in for the token in a browser.
+
+    Derived from the token rather than being the token, so the value in the
+    cookie jar is not the thing the user pastes into their NINA plugin. It is
+    still credential-equivalent, which is why the cookie is HttpOnly: it does
+    not need to be reachable from page JavaScript, and the page never reads
+    it.
+    """
+    return hmac.new(token.encode("utf-8"), b"acp-browser-session",
+                    hashlib.sha256).hexdigest()
+
+
+def _request_is_https() -> bool:
+    return request.is_secure or (
+        request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() == "https")
+
+
+def _wants_html() -> bool:
+    """A browser navigating, rather than the plugin or curl calling.
+
+    Checked against the Accept header alone. A plugin that asks for JSON, or
+    sends no Accept at all, keeps getting 401 JSON rather than a login page
+    it cannot read.
+    """
+    accept = request.headers.get("Accept", "")
+    return "text/html" in accept
+
+
+# Paths that answer before any credential exists. The login form itself, and
+# the favicon, so a signed-out tab is not a broken-image icon.
+_UNGATED_PATHS = ("/login", "/favicon.ico")
+
+
 @app.before_request
 def _api_gate():
-    """Bearer-token gate for /api/*, off by default (issue: NINA plugin
-    prep). The HTML page and static files are never gated: only the API
-    surface a plugin or curl would hit.
+    """Access gate for the whole app, off by default.
+
+    This used to cover /api/* only, on the reasoning that the API is the
+    surface a plugin or curl would hit. The effect was that setting
+    ACP_API_TOKEN served the page shell and then 401d every fetch it made,
+    so the browser UI was dead and nobody would turn the token on. The token
+    is the only thing that closes the LAN exposure, so it has to be usable.
+
+    Every path is gated now. A browser navigating in with no credential gets
+    a login form, which exchanges the token for a session cookie once. The
+    plugin and curl keep sending Authorization: Bearer and never see the
+    form.
 
     OPTIONS used to be answered here with a 204 and no auth check, to serve
     a CORS preflight. The preflight is gone (see the note below where the
     CORS headers used to be), so OPTIONS is now treated like any other
     method and Flask answers it. That removes an unauthenticated path
     through the gate for no loss."""
-    if not request.path.startswith("/api/"):
-        return None
     token = _api_auth_token()
     if not token:
         return None
+    if request.path in _UNGATED_PATHS:
+        return None
+
     auth_header = request.headers.get("Authorization", "")
     supplied = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
-    if not hmac.compare_digest(supplied, token):
-        return jsonify({"error": "unauthorized"}), 401
-    return None
+    if supplied and _token_matches(supplied, token):
+        return None
+
+    cookie = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if cookie and hmac.compare_digest(cookie, _session_cookie_value(token)):
+        return None
+
+    if _wants_html() and request.method == "GET":
+        # Rendered in place rather than redirected to, so the address bar
+        # keeps the URL the user asked for and signing in lands them there.
+        return render_template("login.html", next_path=request.full_path), 401
+    return jsonify({"error": "unauthorized"}), 401
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Exchange the access token for a session cookie.
+
+    A GET here when no token is configured, or when the caller already has a
+    valid cookie, just goes to the app: there is nothing to sign in to.
+    """
+    token = _api_auth_token()
+    if not token:
+        return redirect("/")
+    if request.method == "GET":
+        return render_template("login.html", next_path="/"), 200
+
+    supplied = (request.form.get("token") or "").strip()
+    if not _token_matches(supplied, token):
+        logging.warning("[acp] failed sign-in attempt from %s", request.remote_addr)
+        return render_template("login.html", next_path=request.form.get("next") or "/",
+                               error="That token was not accepted."), 401
+
+    target = request.form.get("next") or "/"
+    # Only ever back into this app, never to a host an attacker put in the
+    # form: a bare path, no scheme, no protocol-relative "//host" form.
+    if not target.startswith("/") or target.startswith("//"):
+        target = "/"
+    resp = redirect(target)
+    resp.set_cookie(
+        SESSION_COOKIE_NAME, _session_cookie_value(token),
+        max_age=SESSION_COOKIE_MAX_AGE_S,
+        httponly=True,
+        # Strict, not Lax. Lax would send the cookie on a top-level
+        # navigation from another site, which is exactly the cross-origin
+        # write path commit 55b9841 closed by removing CORS.
+        samesite="Strict",
+        secure=_request_is_https(),
+    )
+    return resp
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    resp = redirect("/login")
+    resp.delete_cookie(SESSION_COOKIE_NAME)
+    return resp
 
 
 # There is deliberately no CORS here. An earlier version of this file sent
@@ -1445,10 +1608,15 @@ def _without_archive_paths(obj, roots: list[str]):
     """Recursively shorten every absolute path in a manifest payload,
     walking dict keys as well as values.
 
-    Deliberately structural rather than a list of key names, and not
-    limited to values: a rig key can itself be path-shaped (a capture app
-    that wrote a profile path into a camera field), and a key is just as
-    much a wire leak as a value.
+    Deliberately structural rather than a list of key names. `api_manifest`
+    used to strip the one key called `paths`, which read as if it prevented
+    this, while `master_files`, `per_master_fov[].path` and three fields
+    inside every `folder_sub_buckets` entry carried the real layout through.
+    Walking the whole payload means a key added later is covered too.
+
+    Keys are walked as well as values: a rig key can itself be path-shaped,
+    from a capture app that wrote a profile path into a camera field, and a
+    key is just as much a wire leak as a value.
     """
     if isinstance(obj, str):
         return _shorten_archive_path(obj, roots) if _ABS_PATH_RE.match(obj) else obj
@@ -1545,8 +1713,42 @@ def _scan_health(m: dict) -> dict | None:
             })
         return out
 
+    def _error_groups(key, limit=5):
+        """Rows shaped {error, files, examples}.
+
+        Paths are left whole here. api_manifest passes the entire payload
+        through _without_archive_paths, so shortening them again would only
+        cut the same path twice.
+        """
+        v = flags.get(key)
+        if not isinstance(v, list):
+            return []
+        out = []
+        for row in v[:limit]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                n_files = int(row.get("files") or 0)
+            except (TypeError, ValueError):
+                # The manifest is a file on disk and may predate this key or
+                # have been hand-edited. A junk count must not take the panel
+                # down with it, same as _num above.
+                n_files = 0
+            examples = row.get("examples")
+            out.append({
+                "error": str(row.get("error") or "")[:200],
+                "files": n_files,
+                "examples": ([str(x)[:400] for x in examples[:5] if x]
+                             if isinstance(examples, list) else []),
+            })
+        return out
+
     return {
         "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
+        "unreadable_files": int(flags.get("unreadable_file_count") or 0),
+        "unreadable_files_examples": _error_groups("unreadable_files"),
+        "unreadable_dirs": int(flags.get("unreadable_dir_count") or 0),
+        "unreadable_dirs_examples": _error_groups("unreadable_dirs"),
         "masters_missing_wcs": _count("masters_missing_wcs"),
         "masters_ambiguous_filter": _count("masters_ambiguous_filter"),
         "masters_missing_wcs_examples": _examples("masters_missing_wcs"),
@@ -3504,6 +3706,12 @@ def api_plans_match():
     })
 
 
+# Kept alongside the normalised rig because they help diagnose a report and
+# say nothing about where the user lives. Deliberately excludes `site` and
+# `rotation_deg`.
+_FINGERPRINT_EXTRA_KEYS = ("nina_version", "pixel_scale_arcsec")
+
+
 def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
     """Remember the last fingerprint per profile name.
 
@@ -3522,8 +3730,26 @@ def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
         "received_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
         "summary": dict(summary),
-        "fingerprint": fp,
+        # The normalised rig plus a short allowlist, not the raw body.
+        # Storing the body verbatim let an unknown key a caller invented
+        # reach disk, and it also wrote the user's observing site
+        # coordinates into a file /api/fingerprints then served to anyone
+        # who could reach the port. The store has no use for the site, the
+        # rotation, or anything else the caller chose to send.
+        "fingerprint": {**_normalise_fingerprint(fp),
+                        **{k: fp[k] for k in _FINGERPRINT_EXTRA_KEYS
+                           if isinstance(fp.get(k), (str, int, float))}},
     }
+    if len(profiles) > MAX_FINGERPRINT_PROFILES:
+        # Oldest report out first. An entry with no timestamp sorts first and
+        # so goes first, which is the right call for a record we cannot age.
+        keep = sorted(profiles.items(),
+                      key=lambda kv: str((kv[1] or {}).get("received_at") or ""),
+                      reverse=True)[:MAX_FINGERPRINT_PROFILES]
+        dropped = len(profiles) - len(keep)
+        profiles = dict(keep)
+        logging.info("fingerprint store at its ceiling of %d profiles; dropped %d oldest",
+                     MAX_FINGERPRINT_PROFILES, dropped)
     try:
         save_fingerprints({"version": doc.get("version", 1), "profiles": profiles})
     except (OSError, ValueError) as exc:
@@ -4213,6 +4439,7 @@ _scan_state = {
     "last_exit_code": None,
     "last_trigger": None,
     "last_error": None,
+    "last_error_kind": None,
 }
 _scan_scheduler_thread: threading.Thread | None = None
 _scan_scheduler_stop = threading.Event()
@@ -4228,6 +4455,49 @@ def scan_status() -> dict:
     return state
 
 
+# What a failed scan is told to the caller as. The scanner's own stderr goes
+# to the log and no further: the last line of a Python traceback is the
+# exception message, and for the common failures that message is a path.
+# /api/scan/status has no authentication in the stock configuration.
+_SCAN_ERROR_KINDS = (
+    ("no valid roots", "no_archive_roots"),
+    ("permission denied", "permission_denied"),
+    ("no such file", "path_not_found"),
+    ("memoryerror", "out_of_memory"),
+    ("no space left", "disk_full"),
+)
+_SCAN_ERROR_MESSAGES = {
+    "no_archive_roots": "the scan found no archive roots to read; check FITS_ROOTS",
+    "permission_denied": "the scan could not read part of the archive",
+    "path_not_found": "the scan could not find part of the archive",
+    "out_of_memory": "the scan ran out of memory",
+    "disk_full": "the scan ran out of disk space",
+    "crashed": "the scan failed; see the server log for the reason",
+    "could_not_start": "the scan could not be started; see the server log",
+}
+
+
+def _classify_scan_error(text: str) -> str:
+    low = (text or "").lower()
+    for needle, kind in _SCAN_ERROR_KINDS:
+        if needle in low:
+            return kind
+    return "crashed"
+
+
+def _record_scan_error(text: str | None, kind: str | None = None) -> None:
+    """Keep the shape of the failure, discard its wording."""
+    with SCAN_STATE_LOCK:
+        if text is None and kind is None:
+            _scan_state["last_error_kind"] = None
+            _scan_state["last_error"] = None
+            return
+        k = kind or _classify_scan_error(text or "")
+        _scan_state["last_error_kind"] = k
+        _scan_state["last_error"] = _SCAN_ERROR_MESSAGES.get(
+            k, _SCAN_ERROR_MESSAGES["crashed"])
+
+
 def _run_scan_subprocess(args: list[str]) -> int:
     """Run the builder and return its exit code. Overridden in tests."""
     proc = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True, text=True)
@@ -4235,11 +4505,9 @@ def _run_scan_subprocess(args: list[str]) -> int:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
         logging.error("scheduled scan failed (exit %s):\n%s",
                       proc.returncode, "\n".join(tail))
-        with SCAN_STATE_LOCK:
-            _scan_state["last_error"] = tail[-1] if tail else None
+        _record_scan_error("\n".join(tail))
     else:
-        with SCAN_STATE_LOCK:
-            _scan_state["last_error"] = None
+        _record_scan_error(None)
     return proc.returncode
 
 
@@ -4264,8 +4532,7 @@ def run_scan_now(trigger: str = "cron") -> bool:
         code = _run_scan_subprocess([sys.executable, str(SCAN_SCRIPT_PATH)])
     except Exception as e:
         logging.error("scheduled scan could not start: %s: %s", type(e).__name__, e)
-        with SCAN_STATE_LOCK:
-            _scan_state["last_error"] = f"{type(e).__name__}: {e}"
+        _record_scan_error(f"{type(e).__name__}: {e}", kind="could_not_start")
     finally:
         with SCAN_STATE_LOCK:
             _scan_state["running"] = False

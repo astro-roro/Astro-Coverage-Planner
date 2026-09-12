@@ -55,7 +55,15 @@ The API is unauthenticated by default and binds to `127.0.0.1`, see the [securit
 
 ### Optional bearer-token auth
 
-Set `ACP_API_TOKEN` to require `Authorization: Bearer <token>` on every request under `/api/*`. Leave it unset (the default) and every request passes, same as before this existed, this is meant for the case where you've put ACP on a LAN or a NUC that the NINA plugin reaches over the network, not for a stock loopback install. A request to `/api/*` with a missing or wrong token gets `401 {"error": "unauthorized"}`; the token is compared with `hmac.compare_digest`, not `==`. The HTML page (`GET /`) and static files are never gated, so a browser can always load the UI, only the JSON API is behind the token. ACP logs one line at startup saying whether API auth is on.
+Set `ACP_API_TOKEN` to require a credential on every request. Leave it unset (the default) and every request passes, same as before this existed. It is meant for the case where you have put ACP on a LAN or a NUC that the NINA plugin reaches over the network, not for a stock loopback install. ACP logs one line at startup saying whether auth is on, and warns if the token is under 16 characters or contains non-ASCII characters.
+
+Two credentials are accepted, and both are compared with `hmac.compare_digest` rather than `==`.
+
+**`Authorization: Bearer <token>`** is what the NINA plugin and any script should send. A request with a missing or wrong token gets `401 {"error": "unauthorized"}`.
+
+**A session cookie** is what a browser uses. Navigating to any page without a credential returns the sign-in form with status 401. Posting the token to `POST /login` sets `acp_session`, which is `HttpOnly`, `SameSite=Strict`, `Secure` when the request arrived over https, and valid for 30 days. `POST /logout` clears it. The cookie value is derived from the token rather than being the token, so what sits in the cookie jar is not the string you paste into the plugin.
+
+Until 2026-09-07 the gate covered `/api/*` only, and the page and static files were served to anyone. The effect was that turning the token on gave you the app shell and a 401 on every fetch it made, so the browser UI was dead and nobody would enable the one setting that closes the LAN exposure. The gate now covers every path except `/login` and `/favicon.ico`.
 
 The API sends no CORS headers and grants no preflight, deliberately. It used to send `Access-Control-Allow-Origin: *` on reads and answer the preflight, on the reasoning that withholding the header from write responses kept writes closed. That is half right: it stops an attacker reading the reply, not sending the request. Since the preflight listed `PUT` and `DELETE` as allowed, any web page a user visited could delete their plans or publish one, silently, because ACP normally runs on the same machine as their browser.
 

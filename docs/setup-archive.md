@@ -67,6 +67,8 @@ Both the build script and the webapp read these environment variables. Set whate
 | `ACP_STATIC_MAX_AGE_S` | `3600` | Cache lifetime for static files; set `0` in development. |
 | `ACP_API_TOKEN` | unset | When set, requires `Authorization: Bearer <token>` on `/api/*` (401 otherwise). Unset means no auth, matching pre-existing loopback behaviour. See [docs/api.md](api.md#optional-bearer-token-auth). |
 | `ACP_PUBLISH_DEST`, `ACP_PUBLISH_SSH_KEY`, `ACP_LIVE_OUT_DIR` | unset | Live-page publishing, see [sharing.md](sharing.md). |
+| `ACP_MAX_BODY_BYTES` | `1048576` | Largest request body accepted. Anything bigger gets a 413. The largest legitimate body is a 400-panel mosaic at roughly 25 KB, so raise this only if you hit the limit. |
+| `ACP_MAX_FINGERPRINT_PROFILES` | `50` | How many NINA profiles the gear fingerprint store keeps. Oldest report is dropped first. |
 | `NAS_PREFIX`, `PIPELINE_DB_ALT` | unset | Manifest builder only: NAS path prefix and an alternate pipeline DB, see `scripts/build_archive_manifest.py`. |
 
 A typical "everything in one custom location" invocation:
@@ -174,7 +176,7 @@ Each run is a separate process, so a builder that crashes leaves the web app ser
 
 ACP is intended to run on your own machine, behind your own firewall, against your own data. Two things to be aware of before exposing it to anything beyond `localhost`:
 
-- **Default bind is `127.0.0.1`.** Only switch to `HOST=0.0.0.0` on a trusted LAN. ACP has no authentication by default and the `/api/manifest` and `/api/target/<id>` endpoints expose your archive's full file paths over HTTP, anyone who can reach the port can enumerate where your imaging data lives on disk. Set `ACP_API_TOKEN` (see [docs/api.md](api.md#optional-bearer-token-auth)) if you do put ACP on a LAN, e.g. so a NINA plugin on another machine can reach it.
+- **Default bind is `127.0.0.1`.** Only switch to `HOST=0.0.0.0` on a trusted LAN. ACP has no authentication by default, so anyone who can reach the port can read every target you have shot, its coordinates and its hours. Since 2026-09-07 the `/api/manifest` and `/api/target/<id>` endpoints report file paths relative to your scan roots rather than in full, so your username and mount points no longer cross the wire, but the folder structure inside the archive still does. Set `ACP_API_TOKEN` (see [docs/api.md](api.md#optional-bearer-token-auth)) if you do put ACP on a LAN, e.g. so a NINA plugin on another machine can reach it.
 - **`python3 app.py` runs Flask's dev server.** Fine for local single-user use; not built to handle public internet traffic. The Docker image runs `waitress` instead, which is a production WSGI server, but it still has no TLS or authentication. For anything beyond your own network, put either behind a reverse proxy (nginx, caddy) that adds TLS and authentication.
 
 If you need genuinely shared access for a small group, the [friend manifests](sharing.md) feature is the intended path, each person runs their own copy of ACP locally and consumes sanitised exports from the others, rather than pointing multiple browsers at one shared instance.
