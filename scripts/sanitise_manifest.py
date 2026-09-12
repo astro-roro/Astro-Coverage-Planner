@@ -44,9 +44,17 @@ _TARGET_KEEP = {
 
 
 def validate_no_paths(obj: Any, _path: tuple = ()) -> None:
-    """Recursively scan for path-shaped strings. Raises RuntimeError on leak."""
+    """Recursively scan for path-shaped strings. Raises RuntimeError on leak.
+
+    Walks dict keys as well as values: a rig key can carry a header's raw
+    file path (e.g. a profile path mistaken for a camera name), and that
+    string is just as much a leak sitting in a key as it would be in a
+    value.
+    """
     if isinstance(obj, dict):
         for k, v in obj.items():
+            if isinstance(k, str):
+                validate_no_paths(k, _path + (f"<key:{k}>",))
             validate_no_paths(v, _path + (str(k),))
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
@@ -131,20 +139,37 @@ def _stable_target_id(orig_id: Any, ra: Any, dec: Any) -> str:
 
 
 def _clean_filter_entry(entry: Any) -> dict:
-    """Keep total_hours (rounded 0.1h), files count and the per-source hours."""
+    """Keep the hours numbers (rounded 0.1h), files count, headline basis,
+    staleness flag and the per-source hours. Never carries ``rigs``: a rig
+    row's telescope/camera identity is exactly the gear fingerprint this
+    sanitiser exists to strip.
+    """
     if not isinstance(entry, dict):
-        return {"total_hours": 0.0, "files": 0}
-    hours = entry.get("total_hours", 0.0) or 0.0
+        entry = {}
+
+    def _hours(key):
+        v = entry.get(key, 0.0) or 0.0
+        try:
+            return round(float(v), 1)
+        except (TypeError, ValueError):
+            return 0.0
+
     files = entry.get("files", 0) or 0
-    try:
-        hours = round(float(hours), 1)
-    except (TypeError, ValueError):
-        hours = 0.0
     try:
         files = int(files)
     except (TypeError, ValueError):
         files = 0
-    out = {"total_hours": hours, "files": files}
+
+    out = {
+        "total_hours": _hours("total_hours"),
+        "files": files,
+        "captured_hours": _hours("captured_hours"),
+        "accepted_hours": _hours("accepted_hours"),
+        "integrated_hours": _hours("integrated_hours"),
+        "headline_basis": entry.get("headline_basis")
+        if isinstance(entry.get("headline_basis"), str) else None,
+        "stale_master": bool(entry.get("stale_master")),
+    }
     sources = entry.get("sources")
     if isinstance(sources, dict):
         clean = {}

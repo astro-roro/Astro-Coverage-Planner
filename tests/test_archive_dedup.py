@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from pathlib import Path, PurePath
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from build_archive_manifest import (  # noqa: E402
@@ -258,7 +258,7 @@ class TestAliasedStageResolution(unittest.TestCase):
     def test_aliased_folders_detected_as_wbpp_session(self):
         buckets = ["S/T/cal", "S/T/reg", "S/T/master"]
         roots = detect_wbpp_session_roots(buckets)
-        self.assertEqual(roots, {str(PurePath("S/T"))})
+        self.assertEqual(roots, {"S/T"})
 
     def test_session_root_and_stage_canonicalises(self):
         buckets = ["S/T/cal", "S/T/reg", "S/T/master"]
@@ -271,7 +271,7 @@ class TestAliasedStageResolution(unittest.TestCase):
         for bucket, expected_stage in cases:
             with self.subTest(bucket=bucket):
                 sr, stage = session_root_and_stage(bucket, roots)
-                self.assertEqual(sr, str(PurePath("S/T")))
+                self.assertEqual(sr, "S/T")
                 self.assertEqual(stage, expected_stage)
 
     def test_non_wbpp_alias_not_deduped(self):
@@ -293,7 +293,7 @@ class TestOriginalsSibling(unittest.TestCase):
         # original_lights/ is not a stage-folder name, but it sits beside master/.
         buckets = ["S/T/master", "S/T/original_lights"]
         osr = detect_originals_master_siblings(buckets)
-        self.assertEqual(osr, {"S/T/original_lights": str(PurePath("S/T"))})
+        self.assertEqual(osr, {"S/T/original_lights": "S/T"})
 
     def test_originals_variants_match(self):
         for name in ("original", "originals", "original_fits", "original_lights",
@@ -301,7 +301,7 @@ class TestOriginalsSibling(unittest.TestCase):
             with self.subTest(name=name):
                 buckets = [f"S/T/master", f"S/T/{name}"]
                 osr = detect_originals_master_siblings(buckets)
-                self.assertEqual(osr.get(f"S/T/{name}"), str(PurePath("S/T")))
+                self.assertEqual(osr.get(f"S/T/{name}"), "S/T")
 
     def test_standalone_originals_untouched(self):
         """An originals/ folder with no master sibling gets no mapping."""
@@ -318,13 +318,13 @@ class TestOriginalsSibling(unittest.TestCase):
         osr = detect_originals_master_siblings(buckets)
         roots = detect_wbpp_session_roots(buckets)
         # The flattened session is detected even though original_lights/ is not a stage name.
-        self.assertIn(str(PurePath("S/T")), roots)
+        self.assertIn("S/T", roots)
         sr, stage = session_root_and_stage("S/T/original_lights", roots, osr)
-        self.assertEqual(sr, str(PurePath("S/T")))
+        self.assertEqual(sr, "S/T")
         self.assertEqual(stage, "og")
         # And the master resolves to the same session root, so suppression keys align.
         msr, mstage = session_root_and_stage("S/T/master", roots, osr)
-        self.assertEqual(msr, str(PurePath("S/T")))
+        self.assertEqual(msr, "S/T")
         self.assertEqual(mstage, "master")
 
     def test_standalone_originals_stay_root(self):

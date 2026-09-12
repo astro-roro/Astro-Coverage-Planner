@@ -1415,6 +1415,54 @@ def index():
     )
 
 
+_ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
+
+
+def _shorten_archive_path(s: str, roots: list[str]) -> str:
+    """One absolute path, cut down so it still names the file but no longer
+    names the machine.
+
+    A path under a scan root becomes root-relative. A path under no known
+    root keeps its last two segments. Either way the username, the mount
+    point and the folder layout above the archive stop crossing the wire.
+    """
+    folded = s.replace("\\", "/")
+    low = folded.lower()
+    for root in roots:
+        r = str(root).replace("\\", "/").rstrip("/")
+        if not r:
+            continue
+        rl = r.lower()
+        if low == rl:
+            return r.rsplit("/", 1)[-1] or folded
+        if low.startswith(rl + "/"):
+            return folded[len(r) + 1:]
+    parts = [seg for seg in folded.split("/") if seg]
+    return "/".join(parts[-2:]) if parts else folded
+
+
+def _without_archive_paths(obj, roots: list[str]):
+    """Recursively shorten every absolute path in a manifest payload,
+    walking dict keys as well as values.
+
+    Deliberately structural rather than a list of key names, and not
+    limited to values: a rig key can itself be path-shaped (a capture app
+    that wrote a profile path into a camera field), and a key is just as
+    much a wire leak as a value.
+    """
+    if isinstance(obj, str):
+        return _shorten_archive_path(obj, roots) if _ABS_PATH_RE.match(obj) else obj
+    if isinstance(obj, dict):
+        return {
+            (_shorten_archive_path(k, roots) if isinstance(k, str) and _ABS_PATH_RE.match(k) else k):
+            _without_archive_paths(v, roots)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_without_archive_paths(v, roots) for v in obj]
+    return obj
+
+
 @app.route("/api/manifest")
 def api_manifest():
     m = load_manifest()
@@ -1426,19 +1474,24 @@ def api_manifest():
             "scan_date": None,
             "total_targets": 0,
             "total_integration_hours": 0,
+            "total_captured_hours": 0,
+            "total_integrated_hours": 0,
             "targets": [],
         })
+    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
     slim_targets = []
     for t in m["targets"]:
         ft = {f: {k: v for k, v in d.items() if k != "paths"} for f, d in t["filters"].items()}
         slim_targets.append({**t, "filters": ft})
-    return jsonify({
+    return jsonify(_without_archive_paths({
         "scan_date": m.get("scan_date"),
         "total_targets": m.get("total_targets"),
         "total_integration_hours": m.get("total_integration_hours"),
+        "total_captured_hours": m.get("total_captured_hours", 0),
+        "total_integrated_hours": m.get("total_integrated_hours", 0),
         "targets": slim_targets,
         "scan_health": _scan_health(m),
-    })
+    }, roots))
 
 
 def _scan_health(m: dict) -> dict | None:
@@ -1473,6 +1526,25 @@ def _scan_health(m: dict) -> dict | None:
     for row in flags.get("unrecognised_filter_names") or []:
         if isinstance(row, dict) and row.get("name"):
             unrec.append({"name": str(row["name"])[:64], "frames": int(row.get("frames") or 0)})
+
+    def _rig_rows(key, limit=10):
+        """Slim stale-master / integration-anomaly rows for the rail: which
+        target, band and rig, and by how much."""
+        v = flags.get(key)
+        if not isinstance(v, list):
+            return []
+        out = []
+        for row in v[:limit]:
+            if not isinstance(row, dict):
+                continue
+            out.append({
+                "target_id": row.get("target_id"),
+                "band": row.get("band"),
+                "rig": row.get("rig"),
+                "excess_hours": row.get("excess_hours"),
+            })
+        return out
+
     return {
         "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
         "masters_missing_wcs": _count("masters_missing_wcs"),
@@ -1481,6 +1553,9 @@ def _scan_health(m: dict) -> dict | None:
         "masters_ambiguous_filter_examples": _examples("masters_ambiguous_filter"),
         "dedup_hours_dropped": round(_num("session_dedup_hours_dropped") + _num("content_dedup_hours_dropped"), 2),
         "unrecognised_filters": unrec,
+        "stale_masters": _count("stale_masters"),
+        "stale_masters_examples": _rig_rows("stale_masters"),
+        "integration_anomalies": _count("integration_anomalies"),
     }
 
 
@@ -1489,9 +1564,10 @@ def api_target(target_id: int):
     m = load_manifest()
     if m is None:
         return jsonify({"error": "manifest not found"}), 404
+    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
     for t in m["targets"]:
         if t["target_id"] == target_id:
-            return jsonify(t)
+            return jsonify(_without_archive_paths(t, roots))
     return jsonify({"error": "not found"}), 404
 
 
