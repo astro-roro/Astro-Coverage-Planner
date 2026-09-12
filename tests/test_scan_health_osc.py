@@ -127,3 +127,66 @@ class TestGearSeedOsc(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnreadableInputsReachThePanel(unittest.TestCase):
+    """Finding E1c: the count was printed to stdout and went nowhere else.
+
+    A user running the scan from Task Scheduler or from the container's own
+    scheduled thread never saw that files had been dropped. 33 files in the
+    maintainer's archive were being lost that way.
+    """
+
+    @staticmethod
+    def _health(flags):
+        return app_module._scan_health({"integrity_flags": flags})
+
+    def test_the_file_count_and_its_errors_reach_the_panel(self):
+        health = self._health({
+            "unreadable_file_count": 33,
+            "unreadable_files": [
+                {"error": "OSError: Header missing END card",
+                 "files": 30,
+                 "examples": ["/Archive/M42/light_0001.fits"]},
+                {"error": "ValueError: empty file", "files": 3, "examples": []},
+            ],
+        })
+        self.assertEqual(health["unreadable_files"], 33)
+        rows = health["unreadable_files_examples"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["files"], 30)
+        self.assertIn("END card", rows[0]["error"])
+        self.assertEqual(rows[0]["examples"], ["/Archive/M42/light_0001.fits"])
+
+    def test_the_directory_count_reaches_the_panel(self):
+        health = self._health({
+            "unreadable_dir_count": 1,
+            "unreadable_dirs": [{"error": "PermissionError: Permission denied",
+                                 "files": 1, "examples": ["/Archive/Unreadable"]}],
+        })
+        self.assertEqual(health["unreadable_dirs"], 1)
+        self.assertEqual(health["unreadable_dirs_examples"][0]["examples"],
+                         ["/Archive/Unreadable"])
+
+    def test_a_clean_scan_reports_zero_rather_than_nothing(self):
+        health = self._health({"masters_missing_wcs": []})
+        self.assertEqual(health["unreadable_files"], 0)
+        self.assertEqual(health["unreadable_dirs"], 0)
+        self.assertEqual(health["unreadable_files_examples"], [])
+        self.assertEqual(health["unreadable_dirs_examples"], [])
+
+    def test_a_manifest_written_before_these_flags_existed_still_works(self):
+        health = self._health({})
+        self.assertEqual(health["unreadable_files"], 0)
+        self.assertEqual(health["unreadable_dirs_examples"], [])
+
+    def test_a_junk_row_is_skipped_rather_than_crashing_the_panel(self):
+        health = self._health({"unreadable_files": ["not a dict", {"files": "many"}]})
+        rows = health["unreadable_files_examples"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["files"], 0)
+
+    def test_only_the_first_few_error_groups_are_sent(self):
+        health = self._health({"unreadable_files": [
+            {"error": f"err {i}", "files": 1, "examples": []} for i in range(12)]})
+        self.assertEqual(len(health["unreadable_files_examples"]), 5)

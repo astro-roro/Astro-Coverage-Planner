@@ -202,9 +202,10 @@ class TestSubExposurePersists(unittest.TestCase):
 
 
 class TestApiAuth(unittest.TestCase):
-    """ACP_API_TOKEN unset keeps today's loopback behaviour (every request
-    passes); setting it gates /api/* only, leaving the HTML page and
-    static files reachable so a stock install doesn't change shape."""
+    """ACP_API_TOKEN unset keeps today's loopback behaviour: every request
+    passes. Setting it gates the whole app, browser UI included, and a
+    browser signs in through /login. The wider gate tests live in
+    tests/test_api_gate.py; these cover the bearer path the plugin uses."""
 
     def setUp(self):
         _fresh_state()
@@ -232,15 +233,20 @@ class TestApiAuth(unittest.TestCase):
             r = self.client.get("/api/version", headers={"Authorization": "Bearer secret123"})
             self.assertEqual(r.status_code, 200)
 
-    def test_index_not_gated(self):
-        with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
-            r = self.client.get("/")
-            self.assertEqual(r.status_code, 200)
+    # These two used to assert that / and /static were served without a
+    # credential, on the reasoning that only the API surface needed gating.
+    # The effect was that turning the token on served the page shell and then
+    # 401d every fetch it made, so the browser UI was dead and nobody would
+    # turn on the one thing that closes the LAN exposure. The gate covers the
+    # whole app from 2026-09-07; see tests/test_api_gate.py.
 
-    def test_static_not_gated(self):
+    def test_index_is_gated(self):
         with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
-            r = self.client.get("/static/app.js")
-            self.assertEqual(r.status_code, 200)
+            self.assertEqual(self.client.get("/").status_code, 401)
+
+    def test_static_is_gated(self):
+        with mock.patch.dict(os.environ, {"ACP_API_TOKEN": "secret123"}):
+            self.assertEqual(self.client.get("/static/app.js").status_code, 401)
 
 
 class TestApiCors(unittest.TestCase):
