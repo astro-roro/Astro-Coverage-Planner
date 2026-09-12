@@ -25,6 +25,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import build_archive_manifest as bam  # noqa: E402
 
+# Computed once, because a skipIf argument is evaluated when the class body runs
+# whatever the decorators above it say, and os.geteuid does not exist on Windows.
+ON_WINDOWS = os.name == "nt"
+# getattr rather than a platform test: geteuid is absent on Windows and the
+# default of 1 just means "not root", which is the answer that matters here.
+AS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
+CAN_DENY_OURSELVES = not (ON_WINDOWS or AS_ROOT)
+DENY_REASON = "mode bits do not deny the owner on Windows, nor root anywhere"
+
 
 class TestAnUnreadableDirectoryIsReported(unittest.TestCase):
     def setUp(self):
@@ -52,8 +61,7 @@ class TestAnUnreadableDirectoryIsReported(unittest.TestCase):
         self.assertEqual(unreadable, [])
         self.assertEqual(len(files), 2)
 
-    @unittest.skipIf(os.name == "nt", "mode bits do not deny the owner on Windows")
-    @unittest.skipIf(os.geteuid() == 0, "root can enter a mode-000 directory")
+    @unittest.skipUnless(CAN_DENY_OURSELVES, DENY_REASON)
     def test_a_mode_000_directory_is_named_with_its_error(self):
         self.blocked.chmod(0o000)
         files, unreadable = self._walk()
@@ -63,8 +71,7 @@ class TestAnUnreadableDirectoryIsReported(unittest.TestCase):
         self.assertEqual(row["path"], str(self.blocked))
         self.assertIn("Error", row["error"])
 
-    @unittest.skipIf(os.name == "nt", "mode bits do not deny the owner on Windows")
-    @unittest.skipIf(os.geteuid() == 0, "root can enter a mode-000 directory")
+    @unittest.skipUnless(CAN_DENY_OURSELVES, DENY_REASON)
     def test_the_warning_reaches_the_log(self):
         self.blocked.chmod(0o000)
         lines = []
@@ -88,7 +95,7 @@ class TestTheWalkStillRefusesToLeaveTheArchive(unittest.TestCase):
     this test fails if anyone turns it on.
     """
 
-    @unittest.skipIf(os.name == "nt", "symlinks need a privilege on Windows")
+    @unittest.skipIf(ON_WINDOWS, "symlinks need a privilege on Windows")
     def test_a_symlinked_directory_is_not_followed(self):
         with tempfile.TemporaryDirectory() as outside_dir, \
                 tempfile.TemporaryDirectory() as inside_dir:
