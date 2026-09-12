@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -89,10 +90,11 @@ class TestAnUnreadableDirectoryIsReported(unittest.TestCase):
 
 
 class TestTheWalkStillRefusesToLeaveTheArchive(unittest.TestCase):
-    """E1d: a symlinked directory must not pull in files from outside the root.
+    """E1d: a linked directory must not pull in files from outside the root.
 
     os.walk defaults to followlinks=False and that default is load bearing, so
-    this test fails if anyone turns it on.
+    the symlink test fails if anyone turns it on. Windows has a second kind of
+    link that the same default says nothing about, so it gets its own test.
     """
 
     @unittest.skipIf(ON_WINDOWS, "symlinks need a privilege on Windows")
@@ -108,6 +110,40 @@ class TestTheWalkStillRefusesToLeaveTheArchive(unittest.TestCase):
             names = [p.name for p, _s, _m in files]
             self.assertEqual(names, ["light_0001.fits"])
             self.assertEqual(unreadable, [])
+
+    @unittest.skipUnless(ON_WINDOWS, "junctions only exist on Windows")
+    def test_a_directory_junction_is_not_followed(self):
+        """A junction is the Windows shape of this escape, and a different one.
+
+        Windows marks a junction with the reparse tag IO_REPARSE_TAG_MOUNT_POINT
+        rather than IO_REPARSE_TAG_SYMLINK, and DirEntry.is_symlink reports False
+        for one. followlinks=False asks os.walk about symlinks, so on its own it
+        says nothing about junctions. Making one needs no privilege, unlike a
+        symlink here, so a user is far more likely to have one: NINA and several
+        capture tools suggest a junction for moving an image folder off C:.
+        """
+        with tempfile.TemporaryDirectory() as outside_dir, \
+                tempfile.TemporaryDirectory() as inside_dir:
+            outside, inside = Path(outside_dir), Path(inside_dir)
+            (outside / "secret_0001.fits").write_bytes(b"x" * 16)
+            (inside / "light_0001.fits").write_bytes(b"x" * 16)
+            link = inside / "escape"
+            made = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                capture_output=True, text=True)
+            if made.returncode != 0:
+                self.skipTest(f"mklink /J refused: {made.stdout}{made.stderr}")
+            try:
+                files, unreadable = bam.glob_archive(
+                    [inside], bam.EXTENSIONS, log=lambda _m: None)
+                names = [p.name for p, _s, _m in files]
+                self.assertEqual(names, ["light_0001.fits"])
+                self.assertEqual(unreadable, [])
+            finally:
+                # rmdir unlinks the junction and leaves its target alone, while
+                # rmtree walks through it and empties the directory outside,
+                # which is the very thing this test exists to catch.
+                os.rmdir(link)
 
 
 class TestExtensionMatching(unittest.TestCase):
