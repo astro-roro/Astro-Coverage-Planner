@@ -20,3 +20,9 @@ LICENSE
 blueprints/
 Dockerfile
 .dockerignore
+notes/
+node_modules/
+package-lock.json
+package.json
+.venv*/
+.github/
