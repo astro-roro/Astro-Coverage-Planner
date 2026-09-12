@@ -272,7 +272,17 @@ FILTER_CANON = {
     "G": "G", "GREEN": "G",
     "B": "B", "BLUE": "B",
     "V": "V",
-    "IDAS": "IDAS", "IR": "IR", "UV": "UV",
+    "IR": "IR", "UV": "UV",
+    # IDAS light pollution suppression filters. Broadband: they cut the mercury
+    # and sodium lines and pass the rest, so on a mono camera they are a wide
+    # luminance and on a colour camera they are RGB at once, the same as no
+    # filter. The narrowband IDAS filters (NB1, NBZ and so on) are not here:
+    # those belong in OSC_BAND_FILTERS with the other dual-band filters.
+    "IDAS": "IDAS", "LPS": "LPS",
+    "LPS-D1": "LPS-D1", "LPS D1": "LPS-D1", "LPS-D2": "LPS-D2", "LPS D2": "LPS-D2",
+    "LPS-D3": "LPS-D3", "LPS D3": "LPS-D3", "LPS-P2": "LPS-P2", "LPS P2": "LPS-P2",
+    "LPS-P3": "LPS-P3", "LPS P3": "LPS-P3", "LPS-V4": "LPS-V4", "LPS V4": "LPS-V4",
+    "LPS-A1": "LPS-A1", "LPS A1": "LPS-A1",
     # No filter wheel, or an empty slot. Kept as its own bucket rather than
     # guessed into L: on a mono camera it is a wide luminance, on a colour
     # camera it is RGB at once (issue #63).
@@ -435,6 +445,11 @@ def canon_filter(raw: str | None) -> str | None:
     s = str(raw).strip().upper()
     if s in _FILTER_PLACEHOLDERS:
         return None
+    # Some wheels report the slot number rather than the filter in it. A bare
+    # number says where the filter sat, not what it passed, so it names no band.
+    # One header in the maintainer's archive reads FILTER = '2'.
+    if s.isdigit():
+        return None
     hit = FILTER_CANON.get(s)
     if hit is not None:
         return hit
@@ -465,7 +480,14 @@ def _osc_band_in(text: str) -> str | None:
 # named after itself, so unknown filters (IR, sodium, ...) still show up.
 # Broadband light pollution filters behave like no filter at all: L on mono,
 # RGB on a colour camera.
-_BROADBAND_LIKE_NOFILTER = {"NoFilter", "L-Pro", "L-Quad", "L-QEF", "CLS", "UHC"}
+_BROADBAND_LIKE_NOFILTER = {
+    "NoFilter", "L-Pro", "L-Quad", "L-QEF", "CLS", "UHC",
+    # The IDAS LPS family, added 2026-09-12. They had been crediting bands named
+    # after themselves, so 26.2 hours of the maintainer's archive sat under IDAS
+    # and LPS instead of under L, where a luminance-hungry plan would look.
+    "IDAS", "LPS", "LPS-D1", "LPS-D2", "LPS-D3", "LPS-P2", "LPS-P3", "LPS-V4",
+    "LPS-A1",
+}
 _MULTI_BAND = {
     "L-eXtreme": ["Ha", "OIII"], "L-eNhance": ["Ha", "OIII"], "L-Ultimate": ["Ha", "OIII"],
     "NBZ": ["Ha", "OIII"], "NBZ UHS": ["Ha", "OIII"], "ALP-T": ["Ha", "OIII"],
