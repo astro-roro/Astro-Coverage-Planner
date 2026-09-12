@@ -1963,22 +1963,104 @@ def read_xisf_meta(path: Path) -> dict:
     return out
 
 
-def glob_archive(roots, extensions, log=print):
-    """Glob all matching files under roots.
+# An absolute path embedded in an exception message, for the case where no scan
+# root matches it. A run of characters starting at a separator and containing
+# another, ending at a quote, a comma or the end of the message. Spaces are
+# allowed inside, because real roots have them, which means a few trailing words
+# can end up inside the match and come out attached to the file name. That reads
+# fine and it never leaves half a path behind, which a whitespace-bounded
+# pattern does.
+# The lookbehind keeps a path that has already had its root replaced: once
+# "<archive>" stands where the root was, what follows is relative and is the
+# useful half, so it stays whole.
+_ERROR_PATH_RE = re.compile(r"(?<!>)(?:[A-Za-z]:[\\/]|/)[^'\",\n]*[\\/][^'\",\n]*")
 
-    Returns a list of ``(Path, size_bytes, mtime)``. The mtime comes from the
-    same stat call as the size so the scan cache can key on it without a second
-    stat per file, which matters on a NAS where stat is a network round trip.
+
+def scrub_paths_from_error(message: str, roots=()) -> str:
+    """An exception message with the archive layout taken out of it.
+
+    These messages become integrity_flags keys, so they cross the wire to the
+    page. The API shortens a value that *is* a path; it cannot shorten one
+    sitting inside a sentence, and FileNotFoundError and astropy both name the
+    file inside the message.
+
+    Any known scan root is replaced with "<archive>", which is what removes the
+    username and the mount point, and works whatever the root contains. Spaces
+    are common in a real root: the maintainer's is "/Volumes/Singularity/Astro
+    With RoRo". A path under no known root is cut back to its last segment
+    instead, and since that pattern allows spaces, a few trailing words of the
+    message can come out attached to the file name. That reads fine and it never
+    leaves half a path behind, which is what a whitespace-bounded pattern did.
+    The examples list beside the message names the file either way.
+    """
+    out = str(message)
+    for root in sorted((str(r) for r in roots or ()), key=len, reverse=True):
+        r = root.rstrip("/\\")
+        if not r:
+            continue
+        out = out.replace(r, "<archive>")
+        out = out.replace(r.replace("\\", "/"), "<archive>")
+    def _basename(match):
+        raw = match.group(0)
+        tail = re.split(r"[\\/]", raw)[-1]
+        return tail or raw
+    return _ERROR_PATH_RE.sub(_basename, out)
+
+
+def _group_unreadable_dirs(rows: list[dict]) -> dict[str, list[str]]:
+    """Directories the walk could not enter, grouped by the error that stopped it.
+
+    Same shape as wcs_read_errors and unreadable_files, because one cause
+    (a permission, a dead NAS mount) usually hits a whole subtree at once.
+    """
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        grouped[row.get("error") or "unknown"].append(row.get("path") or "")
+    return grouped
+
+
+def glob_archive(roots, extensions, log=print):
+    """Walk the roots and collect every file with a matching extension.
+
+    Returns ``(files, unreadable_dirs)``. Each file is ``(Path, size_bytes,
+    mtime)``; the mtime comes from the same stat call as the size so the scan
+    cache can key on it without a second stat per file, which matters on a NAS
+    where stat is a network round trip.
+
+    ``unreadable_dirs`` is why this is ``os.walk`` and not ``rglob``. A
+    directory the scanner cannot enter used to disappear in silence: rglob
+    swallows the PermissionError and the walk carries on, so a user with one
+    awkwardly permissioned folder on a NAS loses those hours and is never told.
+    The failure looked exactly like an archive that simply held fewer frames.
+    Confirmed against a mode-000 directory on 2026-09-06.
+
+    Symlinked directories are still not followed, which is what keeps a link
+    pointing out of the archive from pulling in files from anywhere on the disk.
+    ``os.walk`` defaults to ``followlinks=False`` and that default is load
+    bearing here, so do not turn it on.
     """
     files = []
+    unreadable_dirs: list[dict] = []
+    wanted = tuple(e.lower() for e in extensions)
     for root in roots:
         if not root.exists():
             log(f"  skip missing root: {root}")
             continue
         log(f"  scanning {root}...")
         t0 = time.time()
-        for ext in extensions:
-            for p in root.rglob(f"*{ext}"):
+
+        def _note_unreadable(err: OSError) -> None:
+            unreadable_dirs.append({
+                "path": str(getattr(err, "filename", "") or ""),
+                "error": scrub_paths_from_error(
+                    f"{type(err).__name__}: {err.strerror or err}", roots),
+            })
+
+        for dirpath, _dirnames, filenames in os.walk(root, onerror=_note_unreadable):
+            for name in filenames:
+                if not name.lower().endswith(wanted):
+                    continue
+                p = Path(dirpath) / name
                 try:
                     st = p.stat()
                     sz, mtime = st.st_size, st.st_mtime
@@ -1986,7 +2068,10 @@ def glob_archive(roots, extensions, log=print):
                     sz, mtime = 0, 0.0
                 files.append((p, sz, mtime))
         log(f"  scan {root}: {len(files)} files so far ({time.time()-t0:.1f}s)")
-    return files
+    for d in unreadable_dirs:
+        log(f"  WARN: could not read {d['path']}: {d['error']}. "
+            f"Any frames inside it are missing from this scan.")
+    return files, unreadable_dirs
 
 
 def scan_cache_key(path) -> str:
@@ -3658,8 +3743,9 @@ def main():
               f"(e.g. FITS_ROOTS='D:/Astro/Images;E:/Archive') or edit NAS_ROOTS at the "
               f"top of {Path(__file__).name}.")
         sys.exit(1)
-    files = glob_archive(scan_roots, EXTENSIONS,
-                         log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
+    files, unreadable_dirs = glob_archive(
+        scan_roots, EXTENSIONS,
+        log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
     print(f"[{time.time()-t0:6.1f}s] Found {len(files)} files total")
 
     # Step 2: Pre-filter by filename/folder for obvious calibration (skip header read)
@@ -3795,6 +3881,11 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] Step 3b: Post-read classification (IMAGETYP-first)")
     roles_count = defaultdict(int)
     n_unreadable = 0
+    # Grouped by the error that stopped the read, the way wcs_read_errors is:
+    # one bad file shape usually hits every file the same tool wrote. These
+    # reach integrity_flags so a scan run from Task Scheduler or the container's
+    # own thread is not the only place the news appears.
+    unreadable_errors: dict[str, list[str]] = defaultdict(list)
     for entry in classified:
         if entry["role"] == "calibration":
             roles_count["calibration"] += 1
@@ -3809,13 +3900,23 @@ def main():
             entry["role"] = "unreadable"
             roles_count["unreadable"] += 1
             n_unreadable += 1
+            unreadable_errors[scrub_paths_from_error(
+                meta.get("error") or entry.get("error") or "unknown read failure",
+                scan_roots,
+            )].append(entry["path"])
             continue
         role = classify_by_header(meta or {}, p, entry["size_bytes"])
         entry["role"] = role
         roles_count[role] += 1
+    unreadable_file_groups = [
+        {"error": err, "files": len(paths), "examples": [str(x) for x in paths[:5] if x]}
+        for err, paths in sorted(unreadable_errors.items(), key=lambda kv: -len(kv[1]))
+    ]
     if n_unreadable:
         print(f"[{time.time()-t0:6.1f}s]   excluded {n_unreadable} unreadable file(s) "
               f"(header read raised partway; ok=False)")
+        for g in unreadable_file_groups[:5]:
+            print(f"      {g['files']:>6d}  {g['error']}")
     for role, n in sorted(roles_count.items(), key=lambda x: -x[1]):
         print(f"  {role:20s} {n:>7d}")
 
@@ -4263,6 +4364,16 @@ def main():
             "masters_missing_wcs": no_wcs,
             "master_variant_drops": master_variant_drops,
             "wcs_read_errors": wcs_error_groups,
+            "unreadable_files": unreadable_file_groups,
+            "unreadable_file_count": n_unreadable,
+            "unreadable_dirs": [
+                {"error": err, "files": len(paths),
+                 "examples": [str(x) for x in paths[:5] if x]}
+                for err, paths in sorted(
+                    _group_unreadable_dirs(unreadable_dirs).items(),
+                    key=lambda kv: -len(kv[1]))
+            ],
+            "unreadable_dir_count": len(unreadable_dirs),
             "masters_ambiguous_filter": ambig,
             "cluster_dedup_drops": cluster_dedup_log,
             "cluster_dedup_hours_dropped": round(cluster_dropped_hours, 2),

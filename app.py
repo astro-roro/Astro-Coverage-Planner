@@ -1713,8 +1713,42 @@ def _scan_health(m: dict) -> dict | None:
             })
         return out
 
+    def _error_groups(key, limit=5):
+        """Rows shaped {error, files, examples}.
+
+        Paths are left whole here. api_manifest passes the entire payload
+        through _without_archive_paths, so shortening them again would only
+        cut the same path twice.
+        """
+        v = flags.get(key)
+        if not isinstance(v, list):
+            return []
+        out = []
+        for row in v[:limit]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                n_files = int(row.get("files") or 0)
+            except (TypeError, ValueError):
+                # The manifest is a file on disk and may predate this key or
+                # have been hand-edited. A junk count must not take the panel
+                # down with it, same as _num above.
+                n_files = 0
+            examples = row.get("examples")
+            out.append({
+                "error": str(row.get("error") or "")[:200],
+                "files": n_files,
+                "examples": ([str(x)[:400] for x in examples[:5] if x]
+                             if isinstance(examples, list) else []),
+            })
+        return out
+
     return {
         "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
+        "unreadable_files": int(flags.get("unreadable_file_count") or 0),
+        "unreadable_files_examples": _error_groups("unreadable_files"),
+        "unreadable_dirs": int(flags.get("unreadable_dir_count") or 0),
+        "unreadable_dirs_examples": _error_groups("unreadable_dirs"),
         "masters_missing_wcs": _count("masters_missing_wcs"),
         "masters_ambiguous_filter": _count("masters_ambiguous_filter"),
         "masters_missing_wcs_examples": _examples("masters_missing_wcs"),
