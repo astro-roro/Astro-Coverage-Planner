@@ -145,6 +145,39 @@ class TestTheWalkStillRefusesToLeaveTheArchive(unittest.TestCase):
                 # which is the very thing this test exists to catch.
                 os.rmdir(link)
 
+    def test_a_real_directory_is_not_mistaken_for_a_link(self):
+        """The pruning must not cost anyone an ordinary nested folder."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "Ha" / "2026-09-01").mkdir(parents=True)
+            (root / "Ha" / "2026-09-01" / "light_0001.fits").write_bytes(b"x" * 16)
+            self.assertFalse(bam.is_directory_link(root / "Ha"))
+            files, _ = bam.glob_archive(
+                [root], bam.EXTENSIONS, log=lambda _m: None)
+            self.assertEqual([p.name for p, _s, _m in files], ["light_0001.fits"])
+
+    def test_a_missing_path_is_not_a_link(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(bam.is_directory_link(Path(d) / "gone"))
+
+    @unittest.skipIf(ON_WINDOWS, "symlinks need a privilege on Windows")
+    def test_the_skipped_link_is_named_in_the_log(self):
+        """E1b's lesson applied here: refusing to walk something is not silent.
+
+        Someone who moved a capture folder out of the archive and left a link
+        behind would otherwise see fewer hours and be told nothing.
+        """
+        lines = []
+        with tempfile.TemporaryDirectory() as outside_dir, \
+                tempfile.TemporaryDirectory() as inside_dir:
+            outside, inside = Path(outside_dir), Path(inside_dir)
+            (outside / "secret_0001.fits").write_bytes(b"x" * 16)
+            (inside / "escape").symlink_to(outside, target_is_directory=True)
+            bam.glob_archive([inside], bam.EXTENSIONS, log=lines.append)
+        said = "\n".join(lines)
+        self.assertIn("escape", said)
+        self.assertIn("FITS_ROOTS", said)
+
 
 class TestExtensionMatching(unittest.TestCase):
     """The walk replaced four rglob passes, so it has to match the same files."""

@@ -35,6 +35,7 @@ import inspect
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import threading
@@ -2019,6 +2020,42 @@ def _group_unreadable_dirs(rows: list[dict]) -> dict[str, list[str]]:
     return grouped
 
 
+# The two reparse tags that mean "this directory is really somewhere else".
+# Deliberately not "any reparse point", which would be the easier test and the
+# wrong one: a OneDrive folder is a reparse point too, and pruning those would
+# skip the whole archive of anyone who keeps their images in OneDrive. Absent on
+# POSIX, where the set is empty and only the symlink check below can fire.
+_DIRECTORY_LINK_TAGS = {
+    tag for tag in (
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None),
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", None),
+    ) if tag is not None
+}
+
+
+def is_directory_link(path) -> bool:
+    """True when this directory entry points at another directory.
+
+    Windows has two shapes of directory link and ``followlinks=False`` only
+    covers one. A junction carries the reparse tag ``MOUNT_POINT`` rather than
+    ``SYMLINK``, so ``os.path.islink`` and ``DirEntry.is_symlink`` both report
+    False for one and ``os.walk`` has no reason to stop. Measured on the Windows
+    CI runner on 2026-09-13: a junction inside the archive pulled a frame from
+    outside the root into the scan.
+
+    Junctions matter more than symlinks here rather than less. Making one needs
+    no privilege, and moving a capture folder off the C: drive with a junction is
+    common advice, so an ACP user is likelier to have a junction than a symlink.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return getattr(st, "st_reparse_tag", 0) in _DIRECTORY_LINK_TAGS
+
+
 def glob_archive(roots, extensions, log=print):
     """Walk the roots and collect every file with a matching extension.
 
@@ -2034,13 +2071,16 @@ def glob_archive(roots, extensions, log=print):
     The failure looked exactly like an archive that simply held fewer frames.
     Confirmed against a mode-000 directory on 2026-09-06.
 
-    Symlinked directories are still not followed, which is what keeps a link
-    pointing out of the archive from pulling in files from anywhere on the disk.
-    ``os.walk`` defaults to ``followlinks=False`` and that default is load
-    bearing here, so do not turn it on.
+    Linked directories are not followed, which is what keeps a link pointing out
+    of the archive from pulling in files from anywhere on the disk. ``os.walk``
+    defaults to ``followlinks=False`` and that default is load bearing, so do not
+    turn it on, but it is not sufficient on its own: see ``is_directory_link``
+    for the Windows junction it does not cover. A root that is itself a link is
+    still followed, since naming it in FITS_ROOTS is a deliberate choice.
     """
     files = []
     unreadable_dirs: list[dict] = []
+    skipped_links: list[str] = []
     wanted = tuple(e.lower() for e in extensions)
     for root in roots:
         if not root.exists():
@@ -2056,7 +2096,16 @@ def glob_archive(roots, extensions, log=print):
                     f"{type(err).__name__}: {err.strerror or err}", roots),
             })
 
-        for dirpath, _dirnames, filenames in os.walk(root, onerror=_note_unreadable):
+        for dirpath, dirnames, filenames in os.walk(root, onerror=_note_unreadable):
+            # Pruned in place, which is how os.walk is told not to descend.
+            # Symlinks it would refuse anyway; junctions it would follow.
+            kept = []
+            for name in dirnames:
+                if is_directory_link(os.path.join(dirpath, name)):
+                    skipped_links.append(os.path.join(dirpath, name))
+                else:
+                    kept.append(name)
+            dirnames[:] = kept
             for name in filenames:
                 if not name.lower().endswith(wanted):
                     continue
@@ -2071,6 +2120,12 @@ def glob_archive(roots, extensions, log=print):
     for d in unreadable_dirs:
         log(f"  WARN: could not read {d['path']}: {d['error']}. "
             f"Any frames inside it are missing from this scan.")
+    # Said out loud for the same reason unreadable directories are. Refusing to
+    # follow a link is right, and a user who moved a capture folder off C: with a
+    # junction would otherwise just see fewer hours and no explanation.
+    for link in skipped_links:
+        log(f"  WARN: not following the link at {link}, so nothing inside it is "
+            f"in this scan. Add its target to FITS_ROOTS to include those frames.")
     return files, unreadable_dirs
 
 
