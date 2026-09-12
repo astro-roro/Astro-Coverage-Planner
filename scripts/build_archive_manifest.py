@@ -3187,28 +3187,55 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
             "sample_path": rep_path,
             "has_wcs": bool(rep_meta.get("has_wcs")),
             "_basenames": frozenset(Path(p).name for p, _ in members),
-            # Every frame's own capture time, for the copy collapse below. One
-            # rig exposes one frame at one instant, so a whole SET of times
-            # reappearing in another folder is the same light, not a coincidence.
-            "_capture_times": frozenset(
+            # How many frames carry each capture time, for the copy collapse
+            # below. One rig exposes one frame at one instant, so the same times
+            # reappearing in another folder in the same NUMBERS is the same
+            # light, not a coincidence. Counting rather than just listing is what
+            # catches a pipeline that stamped whole batches with one time: 392
+            # Helix subs carry 15 times between them, and the copy beside them
+            # carries the same 15 in the same numbers.
+            "_capture_times": Counter(
                 str(m.get("date_obs")) for _, m in members if m.get("date_obs")),
         })
     return blocks
 
 
 def capture_times_are_trustworthy(block: dict) -> bool:
-    """True when this block's frames each carry their own distinct capture time.
+    """True when this block's capture times can tell one folder from another.
 
-    Some tools stamp every frame they write with one time. One folder in the
-    maintainer's archive holds 90 aligned frames all reading
-    ``2024-09-01T11:51:08``. Those times carry no information about which frame
-    is which, so the block must never be collapsed by them: measured across
-    that archive, trusting them calls 92,865 of 114,562 light frames duplicates,
-    more hours than the archive holds.
+    Two things have to hold. Every frame needs a time, or a folder with two
+    timestamped frames out of three hundred would look like a copy of anything
+    holding those two. And the folder needs more than one distinct time.
+
+    A folder whose every frame carries one single time says nothing about which
+    frames it holds: one in the maintainer's archive holds 90 aligned frames all
+    reading ``2024-09-01T11:51:08``. Trusting a lone time calls 92,865 of 114,562
+    light frames duplicates, more hours than the archive holds, so such a folder
+    is left alone. It costs 14 folders and 5.8 hours of copies to leave it there,
+    measured across that archive.
+
+    Repeated times are otherwise fine, because the comparison counts them. A
+    pipeline that stamps a whole batch with one time still leaves a fingerprint:
+    392 Helix subs carry 15 times between them, roughly 27 frames each, and the
+    copy of that folder carries the same 15 in the same numbers.
     """
     times = block.get("_capture_times")
     n = block.get("n_subs") or 0
-    return bool(times) and n > 0 and len(times) == n
+    if not times or n <= 0:
+        return False
+    return len(times) > 1 and sum(times.values()) == n
+
+
+def capture_times_are_contained(inner: dict, outer: dict) -> bool:
+    """True when every frame of ``inner`` is accounted for in ``outer``.
+
+    Multiset containment: each capture time in ``inner`` must appear at least as
+    often in ``outer``. Where frames each carry their own time this is plain set
+    containment, so a session split across two folders still collapses into the
+    folder holding all of it.
+    """
+    outer_times = outer["_capture_times"]
+    return all(outer_times.get(t, 0) >= n for t, n in inner["_capture_times"].items())
 
 
 def rejected_copy_hours(block: dict) -> float:
@@ -3222,7 +3249,8 @@ def rejected_copy_hours(block: dict) -> float:
     times = block.get("_rejected_copy_times")
     if not times:
         return 0.0
-    return len(times) * float(block.get("exptime") or 0.0) / 3600.0
+    frames = sum(times.values())
+    return frames * float(block.get("exptime") or 0.0) / 3600.0
 
 
 def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[dict], list[dict]]:
@@ -3230,11 +3258,16 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
 
     A rig exposes one frame at one instant, so two frames of the same rig,
     filter and exposure sharing a capture time are the same photons. One shared
-    time could be a coincidence; a whole set matching cannot, which is why the
-    comparison is set containment rather than frame by frame.
+    time could be a coincidence; a whole folder of them matching cannot, which is
+    why the comparison is taken over the folder rather than frame by frame.
 
     Inside one (rig, filter, exposure) group, block A is a copy of block B when
-    every capture time in A also appears in B and A holds no more frames. The
+    every capture time in A appears at least as often in B, which also means A
+    holds no more frames than B. Counting the times rather than listing them is
+    what catches a pipeline that stamped whole batches with one time: 392 Helix
+    subs carry 15 times between them and their copy carries the same 15 in the
+    same numbers. Across the maintainer's archive that counted comparison finds
+    48 folders and 165.1 hours the set comparison missed. The
     survivor is the larger block, then a solved one over an unsolved one, then
     the shorter path, so a session split across two folders collapses into the
     folder holding all of it. Size has to outrank a plate solve, because ranking
@@ -3251,8 +3284,9 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
 
     Two cases are deliberately left alone:
 
-    - A block whose times are not one per frame (see
-      ``capture_times_are_trustworthy``).
+    - A block whose times cannot tell it apart from another: one whose frames do
+      not all carry a time, or one whose every frame carries the same single time
+      (see ``capture_times_are_trustworthy``).
     - A block whose rig is unknown on either half. Bare headers make two
       different telescopes look like one rig, and that is the only way genuinely
       concurrent frames could be mistaken for copies.
@@ -3282,7 +3316,7 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
             for keeper in ranked[:i]:
                 if id(keeper) in dropped_ids:
                     continue
-                if dup["_capture_times"] <= keeper["_capture_times"]:
+                if capture_times_are_contained(dup, keeper):
                     dropped_ids.add(id(dup))
                     if keeper.get("ra_deg") is None and dup.get("ra_deg") is not None:
                         keeper["ra_deg"] = dup["ra_deg"]
@@ -3297,7 +3331,7 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
                     if (is_rejected_bucket(dup["bucket"])
                             and not is_rejected_bucket(keeper["bucket"])):
                         keeper["_rejected_copy_times"] = (
-                            keeper.get("_rejected_copy_times", frozenset())
+                            keeper.get("_rejected_copy_times", Counter())
                             | (dup["_capture_times"] & keeper["_capture_times"]))
                     dropped_rows.append({
                         "filter": filt,
