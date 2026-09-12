@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from build_archive_manifest import (  # noqa: E402
     capture_times_are_trustworthy,
     collapse_copied_sub_blocks,
+    rejected_copy_hours,
 )
 
 RIG = {"telescope": "RedCat 51", "camera": "ASI2600MM Pro"}
@@ -232,3 +233,59 @@ class TestCollapse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRejectionSurvivesTheCollapse(unittest.TestCase):
+    """A reject folder absorbed as a copy must keep condemning its frames.
+
+    The user moved those frames aside on purpose. Dropping the folder as a copy
+    of the session it came from would otherwise hand the same light back to
+    accepted, which is what happened to 368 reject folders holding 34.0h of the
+    maintainer's archive.
+    """
+
+    def test_an_absorbed_reject_folder_condemns_its_frames_in_the_keeper(self):
+        forty = _stamps(12, 9, 40)
+        keep = _block("/session/lights", forty)
+        rejected = _block("/session/rejected/stars", forty[:3])
+        survivors, dropped = collapse_copied_sub_blocks([keep, rejected])
+        self.assertEqual([b["bucket"] for b in survivors], ["/session/lights"])
+        self.assertAlmostEqual(rejected_copy_hours(survivors[0]), 3 * 120 / 3600.0)
+        self.assertTrue(dropped[0]["rejection_carried"])
+
+    def test_two_overlapping_reject_folders_condemn_each_frame_once(self):
+        forty = _stamps(12, 9, 40)
+        keep = _block("/session/lights", forty)
+        a = _block("/session/rejected/round-one", forty[:3])
+        b = _block("/session/bad/round-two", forty[1:4])
+        survivors, _ = collapse_copied_sub_blocks([keep, a, b])
+        self.assertAlmostEqual(rejected_copy_hours(survivors[0]), 4 * 120 / 3600.0)
+
+    def test_an_ordinary_copy_condemns_nothing(self):
+        forty = _stamps(12, 9, 40)
+        survivors, dropped = collapse_copied_sub_blocks(
+            [_block("/session/lights", forty), _block("/jobs/copy", forty[:10])])
+        self.assertEqual(rejected_copy_hours(survivors[0]), 0.0)
+        self.assertFalse(dropped[0]["rejection_carried"])
+
+    def test_a_reject_keeper_records_nothing_because_it_is_already_rejected(self):
+        """The whole folder is excluded from accepted, so there is nothing to subtract."""
+        forty = _stamps(12, 9, 40)
+        keep = _block("/session/rejected/all-of-it", forty)
+        copy = _block("/session/rejected/again", forty[:10])
+        survivors, dropped = collapse_copied_sub_blocks([keep, copy])
+        self.assertEqual(rejected_copy_hours(survivors[0]), 0.0)
+        self.assertFalse(dropped[0]["rejection_carried"])
+
+    def test_a_reject_folder_holding_light_of_its_own_is_not_a_copy(self):
+        """It survives whole, so the reject folder rule excludes it directly."""
+        forty = _stamps(12, 9, 40)
+        keep = _block("/session/lights", forty)
+        rejected = _block("/session/rejected/mixed", forty[:2] + ["2099-01-01T00:00:00"])
+        survivors, dropped = collapse_copied_sub_blocks([keep, rejected])
+        self.assertEqual(len(survivors), 2)
+        self.assertEqual(dropped, [])
+        self.assertEqual(rejected_copy_hours(keep), 0.0)
+
+    def test_a_block_no_reject_folder_touched_reports_no_hours(self):
+        self.assertEqual(rejected_copy_hours(_block("/a", _stamps(12, 9, 5))), 0.0)

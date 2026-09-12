@@ -614,6 +614,7 @@ def build_filters_data(members: list[dict]) -> dict:
                 "label": label,
                 "session_root": session_root_of(m),
                 "bucket": fs.get("bucket"),
+                "rejected_copy_hours": rejected_copy_hours(fs),
             }
         else:
             hours, depth_known = _master_hours_and_depth(m)
@@ -688,9 +689,16 @@ def build_filters_data(members: list[dict]) -> dict:
                        for other_parts in all_bucket_parts):
                     accepted_hours -= x["hours"]
 
+            # Frames condemned by a rejected copy that the capture-time
+            # collapse absorbed into this block (see rejected_copy_hours).
+            rejected_copy_total = sum(
+                x["rejected_copy_hours"] for x in rd["captured_blocks"] if x["accepted"])
+            accepted_hours = max(0.0, accepted_hours - rejected_copy_total)
+
             if rd["captured_blocks"]:
                 accepted_basis = ("rejected_folders"
-                                   if any(x["rejected"] for x in rd["captured_blocks"])
+                                   if (any(x["rejected"] for x in rd["captured_blocks"])
+                                       or rejected_copy_total > 0)
                                    else "no_rejects")
             else:
                 accepted_basis = None
@@ -3052,6 +3060,20 @@ def capture_times_are_trustworthy(block: dict) -> bool:
     return bool(times) and n > 0 and len(times) == n
 
 
+def rejected_copy_hours(block: dict) -> float:
+    """Hours of this block's frames that a rejected copy of them condemned.
+
+    Set by ``collapse_copied_sub_blocks`` when a folder the user had moved into
+    a reject folder turned out to be a copy of this one. Counted from the times
+    rather than the hours, so two overlapping rejected copies of the same frames
+    cannot subtract the same light twice.
+    """
+    times = block.get("_rejected_copy_times")
+    if not times:
+        return 0.0
+    return len(times) * float(block.get("exptime") or 0.0) / 3600.0
+
+
 def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[dict], list[dict]]:
     """Drop folder-sub blocks whose frames are copies of another folder's.
 
@@ -3072,8 +3094,9 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
     Pixel scale and frame size stay native, since a drizzled copy would
     otherwise poison the footprint.
 
-    Returns ``(survivors, dropped_rows)``. Input blocks are only ever mutated to
-    inherit pointing, and the ``_coords_inherited`` flag records that.
+    Returns ``(survivors, dropped_rows)``. Input blocks are mutated in two ways
+    only: to inherit pointing, flagged by ``_coords_inherited``, and to carry a
+    rejection the dropped copy held, in ``_rejected_copy_times``.
 
     Two cases are deliberately left alone:
 
@@ -3114,6 +3137,17 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
                         keeper["ra_deg"] = dup["ra_deg"]
                         keeper["dec_deg"] = dup["dec_deg"]
                         keeper["_coords_inherited"] = True
+                    # A rejection is sticky. The user moved these frames
+                    # into a reject folder, and dropping that folder as a copy
+                    # must not hand the same light back to accepted under the
+                    # folder that absorbed it. Measured over the maintainer's
+                    # archive, 368 reject folders holding 34.0h were absorbed
+                    # this way.
+                    if (is_rejected_bucket(dup["bucket"])
+                            and not is_rejected_bucket(keeper["bucket"])):
+                        keeper["_rejected_copy_times"] = (
+                            keeper.get("_rejected_copy_times", frozenset())
+                            | (dup["_capture_times"] & keeper["_capture_times"]))
                     dropped_rows.append({
                         "filter": filt,
                         "exptime": dup.get("exptime"),
@@ -3121,6 +3155,9 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
                         "hours": round(dup.get("total_hours") or 0.0, 3),
                         "bucket": dup["bucket"],
                         "kept": keeper["bucket"],
+                        "rejection_carried": bool(
+                            is_rejected_bucket(dup["bucket"])
+                            and not is_rejected_bucket(keeper["bucket"])),
                         "action": "dropped (same capture times as another folder)",
                     })
                     break
