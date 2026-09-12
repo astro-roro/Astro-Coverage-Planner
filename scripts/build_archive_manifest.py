@@ -3028,8 +3028,108 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
             "sample_path": rep_path,
             "has_wcs": bool(rep_meta.get("has_wcs")),
             "_basenames": frozenset(Path(p).name for p, _ in members),
+            # Every frame's own capture time, for the copy collapse below. One
+            # rig exposes one frame at one instant, so a whole SET of times
+            # reappearing in another folder is the same light, not a coincidence.
+            "_capture_times": frozenset(
+                str(m.get("date_obs")) for _, m in members if m.get("date_obs")),
         })
     return blocks
+
+
+def capture_times_are_trustworthy(block: dict) -> bool:
+    """True when this block's frames each carry their own distinct capture time.
+
+    Some tools stamp every frame they write with one time. One folder in the
+    maintainer's archive holds 90 aligned frames all reading
+    ``2024-09-01T11:51:08``. Those times carry no information about which frame
+    is which, so the block must never be collapsed by them: measured across
+    that archive, trusting them calls 92,865 of 114,562 light frames duplicates,
+    more hours than the archive holds.
+    """
+    times = block.get("_capture_times")
+    n = block.get("n_subs") or 0
+    return bool(times) and n > 0 and len(times) == n
+
+
+def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[dict], list[dict]]:
+    """Drop folder-sub blocks whose frames are copies of another folder's.
+
+    A rig exposes one frame at one instant, so two frames of the same rig,
+    filter and exposure sharing a capture time are the same photons. One shared
+    time could be a coincidence; a whole set matching cannot, which is why the
+    comparison is set containment rather than frame by frame.
+
+    Inside one (rig, filter, exposure) group, block A is a copy of block B when
+    every capture time in A also appears in B and A holds no more frames. The
+    survivor is the larger block, then a solved one over an unsolved one, then
+    the shorter path, so a session split across two folders collapses into the
+    folder holding all of it. Size has to outrank a plate solve, because ranking
+    a solved 30-frame copy above the unsolved 40-frame original would stop the
+    40 being a superset and neither would collapse. A survivor with no pointing
+    of its own inherits the RA and Dec of a copy it absorbed, so raws that were
+    never solved still cluster on the position their processed copy proved.
+    Pixel scale and frame size stay native, since a drizzled copy would
+    otherwise poison the footprint.
+
+    Returns ``(survivors, dropped_rows)``. Input blocks are only ever mutated to
+    inherit pointing, and the ``_coords_inherited`` flag records that.
+
+    Two cases are deliberately left alone:
+
+    - A block whose times are not one per frame (see
+      ``capture_times_are_trustworthy``).
+    - A block whose rig is unknown on either half. Bare headers make two
+      different telescopes look like one rig, and that is the only way genuinely
+      concurrent frames could be mistaken for copies.
+    """
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for b in blocks:
+        rig = rig_key(b.get("telescope"), b.get("camera"))
+        if "?" in rig.split("|"):
+            continue
+        if not capture_times_are_trustworthy(b):
+            continue
+        groups[(rig, b.get("filter"), round(float(b.get("exptime") or 0), 1))].append(b)
+
+    dropped_ids: set[int] = set()
+    dropped_rows: list[dict] = []
+    for (rig, filt, exp), group in groups.items():
+        if len(group) < 2:
+            continue
+        # Largest first, then solved, then shortest path: the block that keeps
+        # the whole session wins, and the order is stable so the choice is
+        # deterministic.
+        ranked = sorted(group, key=lambda b: (
+            -(b.get("n_subs") or 0), not b.get("has_wcs"), len(b["bucket"]), b["bucket"]))
+        for i, dup in enumerate(ranked):
+            if id(dup) in dropped_ids:
+                continue
+            for keeper in ranked[:i]:
+                if id(keeper) in dropped_ids:
+                    continue
+                if dup["_capture_times"] <= keeper["_capture_times"]:
+                    dropped_ids.add(id(dup))
+                    if keeper.get("ra_deg") is None and dup.get("ra_deg") is not None:
+                        keeper["ra_deg"] = dup["ra_deg"]
+                        keeper["dec_deg"] = dup["dec_deg"]
+                        keeper["_coords_inherited"] = True
+                    dropped_rows.append({
+                        "filter": filt,
+                        "exptime": dup.get("exptime"),
+                        "n_subs": dup.get("n_subs"),
+                        "hours": round(dup.get("total_hours") or 0.0, 3),
+                        "bucket": dup["bucket"],
+                        "kept": keeper["bucket"],
+                        "action": "dropped (same capture times as another folder)",
+                    })
+                    break
+    survivors = [b for b in blocks if id(b) not in dropped_ids]
+    if dropped_rows and log:
+        hours = sum(r["hours"] for r in dropped_rows)
+        log(f" Dropped {len(dropped_rows)} sub folder(s) copied from elsewhere, "
+            f"{hours:.1f}h double counted")
+    return survivors, dropped_rows
 
 
 def uncoordinated_captured_hours(blocks: list[dict]) -> float:
@@ -3561,6 +3661,18 @@ def main():
           f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h "
           f"(dropped {content_dropped_hours:.1f}h across {len(content_dedup_log)} content-identical duplicates)")
 
+    # Copy collapse by capture time. Content dedup above only catches folders
+    # holding the same FILENAMES, so it misses the same light saved under a
+    # pipeline's own names in another tree. Capture times catch those, and they
+    # run after content dedup so an exact backup is already gone.
+    folder_subs, capture_dedup_log = collapse_copied_sub_blocks(
+        folder_subs, log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"))
+    capture_dropped_hours = total_sub_hours - sum(fs["total_hours"] for fs in folder_subs)
+    total_sub_hours = sum(fs["total_hours"] for fs in folder_subs)
+    n_fs_wcs = sum(1 for f in folder_subs if f["has_wcs"])
+    print(f"[{time.time()-t0:6.1f}s] After capture-time dedup: {len(folder_subs)} blocks "
+          f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h")
+
     # Computed here, after content-signature dedup, not inside
     # prepare_sub_blocks: a backup copy of an uncoordinated folder would be
     # double-counted if this ran before that dedup collapses it.
@@ -3875,6 +3987,9 @@ def main():
             "content_dedup_drops": content_dedup_log,
             "content_dedup_hours_dropped": round(content_dropped_hours, 2),
             "content_dedup_buckets_dropped": len(content_dedup_log),
+            "capture_dedup_drops": capture_dedup_log,
+            "capture_dedup_hours_dropped": round(capture_dropped_hours, 2),
+            "capture_dedup_buckets_dropped": len(capture_dedup_log),
             "unrecognised_filter_names": [
                 {"name": name, "frames": count}
                 for name, count in sorted(
@@ -4005,6 +4120,16 @@ def write_summary(m: dict):
         lines.append(f"  - `{d['path']}` counted under `{d['kept']}`")
     if len(xdup) > 20:
         lines.append(f"  - ... and {len(xdup) - 20} more, listed in `archive_manifest.json`")
+    cdup = flags.get("capture_dedup_drops", [])
+    lines.append(f"- **Sub folders copied from elsewhere**: {len(cdup)} "
+                 f"({flags.get('capture_dedup_hours_dropped', 0)}h counted once)")
+    lines.append("  Each folder below holds frames whose capture times all appear in the")
+    lines.append("  folder beside it, on the same rig, filter and exposure, so it is the")
+    lines.append("  same light saved twice. Check a few if a target's hours look low.")
+    for d in cdup[:20]:
+        lines.append(f"  - `{d['bucket']}` ({d['n_subs']} subs) counted under `{d['kept']}`")
+    if len(cdup) > 20:
+        lines.append(f"  - ... and {len(cdup) - 20} more, listed in `archive_manifest.json`")
     amb = flags.get("masters_ambiguous_filter", [])
     lines.append(f"- **Masters with ambiguous filter**: {len(amb)}")
     for pth in amb[:20]:
