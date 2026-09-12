@@ -35,8 +35,14 @@ class TestParentDir(unittest.TestCase):
     def test_a_file_at_the_root_keeps_the_root(self):
         self.assertEqual(bam.parent_dir("/M31_Ha.xisf"), "/")
 
-    def test_it_accepts_a_path_object(self):
-        self.assertEqual(bam.parent_dir(Path("/S/sess1/m.xisf")), "/S/sess1")
+    def test_a_path_object_carries_the_platform_spelling(self):
+        """str() on a Path is where the separators get chosen, not here.
+
+        Production always passes the strings the scan produced, so this only
+        records that a Path argument is accepted and spelled its own way.
+        """
+        given = Path("/S/sess1/m.xisf")
+        self.assertEqual(bam.parent_dir(given), str(given.parent))
 
 
 class TestSessionRootKeepsItsSpelling(unittest.TestCase):
