@@ -570,6 +570,33 @@ def _is_nested_bucket(child_parts, parent_parts):
             and child_parts[:len(parent_parts)] == parent_parts)
 
 
+def pick_integration_master(masters: list[dict]) -> dict | None:
+    """The one master whose depth sets integrated hours: the deepest.
+
+    Product owner's decision, 2026-09-12. A band and rig often holds several
+    masters, and they are not additive. In the maintainer's archive 32 rig-band
+    rows hold the same stack re-exported under another name, sharing a capture
+    instant to the second: adding them read Sh2-27 in Ha as 81 subs when 41 were
+    ever taken. The deepest master is the one that contains the others, so it is
+    the integration.
+
+    Newest was considered and rejected on the evidence. Horsehead in Ha holds a
+    23 hour master and a 2 hour one stacked later, and the newest rule reports 2.
+    When a shallower master is the newer one, the stale flag is what says to
+    rebuild; integrated still reports the deepest stack that exists.
+
+    A master with no subframe count cannot be the source, so a master carrying a
+    count always wins over one without, however deep the latter's single exposure
+    looks. When no master carries a count the deepest still comes back, and the
+    caller reports the depth as unknown so the headline falls back to captured.
+    """
+    if not masters:
+        return None
+    return max(masters, key=lambda x: (
+        bool(x.get("depth_known")), x.get("hours") or 0.0,
+        x.get("date") or "", x.get("path") or ""))
+
+
 def build_filters_data(members: list[dict]) -> dict:
     """Per-band, per-rig hours for one target from its cluster members.
 
@@ -667,9 +694,13 @@ def build_filters_data(members: list[dict]) -> dict:
             telescope = None if scope_half == "?" else scope_half
             camera = None if cam_half == "?" else cam_half
 
-            integrated_hours = sum(x["hours"] for x in rd["masters"])
-            known_depth_masters = sum(1 for x in rd["masters"] if x["depth_known"])
-            master_depth_unknown = any(not x["depth_known"] for x in rd["masters"])
+            # One master sets integrated, never the sum of them: see
+            # pick_integration_master for why adding them is wrong.
+            integration_master = pick_integration_master(rd["masters"])
+            integrated_hours = (
+                integration_master["hours"] if integration_master else 0.0)
+            master_depth_unknown = bool(
+                integration_master and not integration_master["depth_known"])
 
             captured_hours = sum(x["hours"] for x in rd["captured_blocks"])
             accepted_hours = sum(
@@ -703,7 +734,8 @@ def build_filters_data(members: list[dict]) -> dict:
             else:
                 accepted_basis = None
 
-            if known_depth_masters > 0 and integrated_hours > 0:
+            if (integration_master and integration_master["depth_known"]
+                    and integrated_hours > 0):
                 headline_basis, headline_hours = "integrated", integrated_hours
             elif captured_hours > 0:
                 headline_basis, headline_hours = "captured", captured_hours
@@ -755,6 +787,8 @@ def build_filters_data(members: list[dict]) -> dict:
                 "accepted_hours": accepted_hours,
                 "accepted_basis": accepted_basis,
                 "integrated_hours": integrated_hours,
+                "integrated_master": (
+                    integration_master["path"] if integration_master else None),
                 "headline_hours": headline_hours,
                 "headline_basis": headline_basis,
                 "master_depth_unknown": master_depth_unknown,
