@@ -3780,7 +3780,42 @@ def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None
     }
 
 
+def force_utf8_output() -> None:
+    """Make sure printing a path can never kill a scan.
+
+    Windows hands a redirected stdout the locale encoding, cp1252 on an English
+    install, and one accented character in an archive path then raises
+    UnicodeEncodeError out of a plain print. The scan dies on that line.
+    Measured on Windows 11 with Python 3.14 on 2026-09-13: a root named with a
+    single omega killed the run before it read one file.
+
+    A console is not affected, because Python writes to a real console through
+    the wide character API whatever the code page says. Redirected output is the
+    case that matters and it is the one ACP itself uses, since app.py runs this
+    script with capture_output=True. Through a pipe the failure was worse than
+    visible: cmd reported exit code 0 because the pipeline's status came from the
+    reader, so a caller checking the code saw a scan that had crashed as a pass.
+
+    backslashreplace rather than replace, so a name that still cannot be encoded
+    stays identifiable in the log instead of turning into a row of questions.
+
+    Called from main only. Importing this module must not reach in and change the
+    streams of whoever imported it, and app.py imports it for canon_filter.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            # A stream the tests or the caller replaced with their own object.
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            # Detached or already closed. Nothing here is worth failing a scan.
+            pass
+
+
 def main():
+    force_utf8_output()
     t0 = time.time()
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
