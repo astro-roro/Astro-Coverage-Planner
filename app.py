@@ -1679,6 +1679,18 @@ def _scan_health(m: dict) -> dict | None:
         except (TypeError, ValueError):
             return 0.0
 
+    def _int(key):
+        """A whole count, guarded the way _num already guards a fraction.
+
+        The manifest is a file on disk. It can predate a key, or be hand edited,
+        and a count that reads "many" used to take the whole panel down with a
+        ValueError rather than showing the rest of the scan's health.
+        """
+        try:
+            return int(flags.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _examples(key, limit=10):
         """First few offending paths, so the rail can name the file.
 
@@ -1743,12 +1755,35 @@ def _scan_health(m: dict) -> dict | None:
             })
         return out
 
+    def _mangled_names(limit=5):
+        """Rows shaped {name, example}: a name the server invented, and where.
+
+        Its own shape rather than _error_groups, because a renamed file is not an
+        error and the useful part is the invented name itself. A share that does
+        this hands every client an 8.3 name in place of one Windows cannot hold,
+        so folder names in the manifest are not the ones on disk.
+        """
+        v = flags.get("mangled_names")
+        if not isinstance(v, list):
+            return []
+        out = []
+        for row in v[:limit]:
+            if not isinstance(row, dict):
+                continue
+            out.append({
+                "name": str(row.get("name") or "")[:80],
+                "example": str(row.get("example") or "")[:400],
+            })
+        return out
+
     return {
         "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
-        "unreadable_files": int(flags.get("unreadable_file_count") or 0),
+        "unreadable_files": _int("unreadable_file_count"),
         "unreadable_files_examples": _error_groups("unreadable_files"),
-        "unreadable_dirs": int(flags.get("unreadable_dir_count") or 0),
+        "unreadable_dirs": _int("unreadable_dir_count"),
         "unreadable_dirs_examples": _error_groups("unreadable_dirs"),
+        "mangled_names": _int("mangled_name_count"),
+        "mangled_names_examples": _mangled_names(),
         "masters_missing_wcs": _count("masters_missing_wcs"),
         "masters_ambiguous_filter": _count("masters_ambiguous_filter"),
         "masters_missing_wcs_examples": _examples("masters_missing_wcs"),
