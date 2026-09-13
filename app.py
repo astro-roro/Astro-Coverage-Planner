@@ -4499,8 +4499,18 @@ def _record_scan_error(text: str | None, kind: str | None = None) -> None:
 
 
 def _run_scan_subprocess(args: list[str]) -> int:
-    """Run the builder and return its exit code. Overridden in tests."""
-    proc = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    """Run the builder and return its exit code. Overridden in tests.
+
+    The encoding is named rather than left to the locale. text=True alone decodes
+    the builder's output with the system encoding, which is cp1252 on an English
+    Windows install, so an accented character in an archive path came back as
+    mojibake in the error tail this records and shows in the scan health panel.
+    The builder writes UTF-8 deliberately (see force_utf8_output there), so this
+    is the matching half. errors="replace" because a garbled tail is still worth
+    reading and a decode error here would lose the reason a scan failed.
+    """
+    proc = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
         logging.error("scheduled scan failed (exit %s):\n%s",
