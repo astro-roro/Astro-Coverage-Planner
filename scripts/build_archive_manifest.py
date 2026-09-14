@@ -2056,6 +2056,41 @@ def is_directory_link(path) -> bool:
     return getattr(st, "st_reparse_tag", 0) in _DIRECTORY_LINK_TAGS
 
 
+# An SMB server hands every client an 8.3 name in place of one Windows cannot
+# represent: up to six characters, a tilde, one more, and sometimes a three
+# letter extension. Measured against a Synology share on 2026-09-13, where a
+# frame called nul.fits arrived as NSQ1NJ~K on Windows and macOS alike, and
+# folders called "trailing dot." and "con" arrived as TQEBZE~2 and CSHOFG~F.
+_MANGLED_8_3_RE = re.compile(r"^[A-Z0-9_]{1,6}~[0-9A-Z](\.[A-Z0-9]{1,3})?$")
+
+
+def looks_mangled(name: str) -> bool:
+    """True when a name looks like an 8.3 stand-in rather than a real one.
+
+    The real name cannot be recovered: the server never sends it. All this can
+    do is notice that the archive holds names nobody chose, which is worth
+    saying because a mangled name is meaningless to anything reading folder
+    names for sense, and because a mangled file loses its extension.
+    """
+    return bool(_MANGLED_8_3_RE.match(name))
+
+
+def mangled_name_examples(paths, limit: int = 5) -> list[dict]:
+    """The renamed segments across a set of paths, with one example each.
+
+    Taken from the scanned paths rather than during the walk, so a folder that
+    holds no frames is not reported. An empty folder being renamed costs nobody
+    anything.
+    """
+    seen: dict[str, str] = {}
+    for p in paths:
+        for match in re.finditer(r"[^\\/]+", str(p)):
+            name = match.group(0)
+            if looks_mangled(name):
+                seen.setdefault(name, str(p))
+    return [{"name": n, "example": seen[n]} for n in sorted(seen)][:limit]
+
+
 def glob_archive(roots, extensions, log=print):
     """Walk the roots and collect every file with a matching extension.
 
@@ -2107,7 +2142,15 @@ def glob_archive(roots, extensions, log=print):
                     kept.append(name)
             dirnames[:] = kept
             for name in filenames:
-                if not name.lower().endswith(wanted):
+                # A mangled name is taken whatever it ends with, because the
+                # mangling throws the extension away: nul.fits arrives as
+                # NSQ1NJ~K and the extension test can never match it. Before
+                # this, such a frame was simply absent from the scan with
+                # nothing said, which is the failure E1b and E1c were about.
+                # The header read is what decides whether it is really a frame,
+                # and if it is not it lands in unreadable_files, which is the
+                # honest answer for a file whose name tells us nothing.
+                if not name.lower().endswith(wanted) and not looks_mangled(name):
                     continue
                 p = Path(dirpath) / name
                 try:
@@ -3837,6 +3880,13 @@ def main():
         scan_roots, EXTENSIONS,
         log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
     print(f"[{time.time()-t0:6.1f}s] Found {len(files)} files total")
+    mangled = mangled_name_examples([p for p, _s, _m in files])
+    if mangled:
+        print(f"[{time.time()-t0:6.1f}s] WARN: the share renamed "
+              f"{len(mangled)} or more names to 8.3 form, so folder names in "
+              f"this scan are not the ones on disk: "
+              f"{', '.join(m['name'] for m in mangled)}. A frame renamed this "
+              f"way also loses its extension; those are read anyway.")
 
     # Step 2: Pre-filter by filename/folder for obvious calibration (skip header read)
     print(f"[{time.time()-t0:6.1f}s] Step 2: Pre-filtering calibration + selecting header-read set")
@@ -4464,6 +4514,8 @@ def main():
                     key=lambda kv: -len(kv[1]))
             ],
             "unreadable_dir_count": len(unreadable_dirs),
+            "mangled_names": mangled,
+            "mangled_name_count": len(mangled),
             "masters_ambiguous_filter": ambig,
             "cluster_dedup_drops": cluster_dedup_log,
             "cluster_dedup_hours_dropped": round(cluster_dropped_hours, 2),
