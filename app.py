@@ -1776,12 +1776,30 @@ def _scan_health(m: dict) -> dict | None:
             })
         return out
 
+    def _skipped_links(limit=5):
+        """Paths of directory links the walk refused to follow.
+
+        Plain strings rather than error rows, because nothing went wrong: not
+        following a link is the correct behaviour and what it protects against
+        is a link pointing out of the archive. It is still worth saying, since
+        a user who moved a capture folder off C: with a junction would
+        otherwise see fewer hours and no reason for it.
+        """
+        v = flags.get("skipped_links")
+        if not isinstance(v, list):
+            return []
+        return [str(x)[:400] for x in v[:limit] if x]
+
     return {
         "sii_ha_suspects": _count("sii_ha_correlation_suspects"),
         "unreadable_files": _int("unreadable_file_count"),
         "unreadable_files_examples": _error_groups("unreadable_files"),
         "unreadable_dirs": _int("unreadable_dir_count"),
         "unreadable_dirs_examples": _error_groups("unreadable_dirs"),
+        "stat_failures": _int("stat_failure_count"),
+        "stat_failures_examples": _error_groups("stat_failures"),
+        "skipped_links": _int("skipped_link_count"),
+        "skipped_links_examples": _skipped_links(),
         "mangled_names": _int("mangled_name_count"),
         "mangled_names_examples": _mangled_names(),
         "masters_missing_wcs": _count("masters_missing_wcs"),
