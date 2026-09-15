@@ -58,14 +58,14 @@ class TestAnUnreadableDirectoryIsReported(unittest.TestCase):
         return bam.glob_archive([self.root], bam.EXTENSIONS, log=lambda _m: None)
 
     def test_a_readable_tree_reports_no_unreadable_directory(self):
-        files, unreadable = self._walk()
+        files, unreadable, _s, _l = self._walk()
         self.assertEqual(unreadable, [])
         self.assertEqual(len(files), 2)
 
     @unittest.skipUnless(CAN_DENY_OURSELVES, DENY_REASON)
     def test_a_mode_000_directory_is_named_with_its_error(self):
         self.blocked.chmod(0o000)
-        files, unreadable = self._walk()
+        files, unreadable, _s, _l = self._walk()
         self.assertEqual(len(files), 1, "the readable frame is still found")
         self.assertEqual(len(unreadable), 1)
         row = unreadable[0]
@@ -83,7 +83,7 @@ class TestAnUnreadableDirectoryIsReported(unittest.TestCase):
         self.assertIn("missing from this scan", warnings[0])
 
     def test_a_missing_root_is_still_skipped_not_reported_as_unreadable(self):
-        files, unreadable = bam.glob_archive(
+        files, unreadable, _s, _l = bam.glob_archive(
             [self.root / "nope"], bam.EXTENSIONS, log=lambda _m: None)
         self.assertEqual(files, [])
         self.assertEqual(unreadable, [])
@@ -105,7 +105,7 @@ class TestTheWalkStillRefusesToLeaveTheArchive(unittest.TestCase):
             (outside / "secret_0001.fits").write_bytes(b"x" * 16)
             (inside / "light_0001.fits").write_bytes(b"x" * 16)
             (inside / "escape").symlink_to(outside, target_is_directory=True)
-            files, unreadable = bam.glob_archive(
+            files, unreadable, _s, _l = bam.glob_archive(
                 [inside], bam.EXTENSIONS, log=lambda _m: None)
             names = [p.name for p, _s, _m in files]
             self.assertEqual(names, ["light_0001.fits"])
@@ -134,7 +134,7 @@ class TestTheWalkStillRefusesToLeaveTheArchive(unittest.TestCase):
             if made.returncode != 0:
                 self.skipTest(f"mklink /J refused: {made.stdout}{made.stderr}")
             try:
-                files, unreadable = bam.glob_archive(
+                files, unreadable, _s, _l = bam.glob_archive(
                     [inside], bam.EXTENSIONS, log=lambda _m: None)
                 names = [p.name for p, _s, _m in files]
                 self.assertEqual(names, ["light_0001.fits"])
@@ -152,7 +152,7 @@ class TestTheWalkStillRefusesToLeaveTheArchive(unittest.TestCase):
             (root / "Ha" / "2026-09-01").mkdir(parents=True)
             (root / "Ha" / "2026-09-01" / "light_0001.fits").write_bytes(b"x" * 16)
             self.assertFalse(bam.is_directory_link(root / "Ha"))
-            files, _ = bam.glob_archive(
+            files, _u, _s, _l = bam.glob_archive(
                 [root], bam.EXTENSIONS, log=lambda _m: None)
             self.assertEqual([p.name for p, _s, _m in files], ["light_0001.fits"])
 
@@ -190,7 +190,7 @@ class TestExtensionMatching(unittest.TestCase):
                 name = f"light_{i}{ext}"
                 (root / name).write_bytes(b"x" * 16)
                 expected.add(name)
-            files, _ = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
+            files, _u, _s, _l = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
             self.assertEqual({p.name for p, _s, _m in files}, expected)
 
     def test_an_uppercase_extension_is_found_too(self):
@@ -209,7 +209,7 @@ class TestExtensionMatching(unittest.TestCase):
             root = Path(d)
             for i, ext in enumerate(bam.EXTENSIONS):
                 (root / f"upper_{i}{ext.upper()}").write_bytes(b"x" * 16)
-            files, _ = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
+            files, _u, _s, _l = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
             self.assertEqual(len(files), len(bam.EXTENSIONS))
 
     def test_a_file_with_no_matching_extension_is_left_out(self):
@@ -217,7 +217,7 @@ class TestExtensionMatching(unittest.TestCase):
             root = Path(d)
             (root / "notes.txt").write_bytes(b"x")
             (root / "light.fits").write_bytes(b"x")
-            files, _ = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
+            files, _u, _s, _l = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
             self.assertEqual([p.name for p, _s, _m in files], ["light.fits"])
 
     def test_a_nested_folder_is_walked(self):
@@ -226,7 +226,7 @@ class TestExtensionMatching(unittest.TestCase):
             deep = root / "a" / "b" / "c"
             deep.mkdir(parents=True)
             (deep / "light.fit").write_bytes(b"x")
-            files, _ = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
+            files, _u, _s, _l = bam.glob_archive([root], bam.EXTENSIONS, log=lambda _m: None)
             self.assertEqual(len(files), 1)
 
     def test_size_and_mtime_come_back_with_each_file(self):
@@ -234,14 +234,14 @@ class TestExtensionMatching(unittest.TestCase):
             root = Path(d)
             (root / "light.fits").write_bytes(b"x" * 4096)
             (path, size, mtime), = bam.glob_archive(
-                [root], bam.EXTENSIONS, log=lambda _m: None)[0]
+                [root], bam.EXTENSIONS, log=lambda _m: None).files
             self.assertEqual(size, 4096)
             self.assertGreater(mtime, 0)
 
 
 class TestUnreadableDirGrouping(unittest.TestCase):
     def test_rows_group_by_the_error_that_stopped_the_walk(self):
-        grouped = bam._group_unreadable_dirs([
+        grouped = bam._group_by_error([
             {"path": "/a/one", "error": "PermissionError: denied"},
             {"path": "/a/two", "error": "PermissionError: denied"},
             {"path": "/b/three", "error": "OSError: host is down"},
@@ -251,11 +251,11 @@ class TestUnreadableDirGrouping(unittest.TestCase):
         self.assertEqual(len(grouped["PermissionError: denied"]), 2)
 
     def test_a_row_with_no_error_still_groups(self):
-        grouped = bam._group_unreadable_dirs([{"path": "/a"}])
+        grouped = bam._group_by_error([{"path": "/a"}])
         self.assertEqual(list(grouped), ["unknown"])
 
     def test_nothing_in_means_nothing_out(self):
-        self.assertEqual(bam._group_unreadable_dirs([]), {})
+        self.assertEqual(bam._group_by_error([]), {})
 
 
 if __name__ == "__main__":
@@ -340,4 +340,4 @@ class TestErrorMessagesDoNotCarryTheArchiveLayout(unittest.TestCase):
         self.assertEqual(len(set(msgs)), 3, "file names are kept, so still distinct")
         dirs = [{"path": f"/a/b/{i}", "error": bam.scrub_paths_from_error(
             "PermissionError: Permission denied")} for i in range(3)]
-        self.assertEqual(len(bam._group_unreadable_dirs(dirs)), 1)
+        self.assertEqual(len(bam._group_by_error(dirs)), 1)
