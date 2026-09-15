@@ -59,7 +59,7 @@ class TestTheFrameIsFoundAnyway(unittest.TestCase):
             root = Path(d)
             (root / "light_0001.fits").write_bytes(b"x" * 16)
             (root / "NSQ1NJ~K").write_bytes(b"x" * 16)
-            files, _ = bam.glob_archive([root], bam.EXTENSIONS,
+            files, _u, _s, _l = bam.glob_archive([root], bam.EXTENSIONS,
                                         log=lambda _m: None)
             self.assertEqual({p.name for p, _s, _m in files},
                              {"light_0001.fits", "NSQ1NJ~K"})
@@ -70,7 +70,7 @@ class TestTheFrameIsFoundAnyway(unittest.TestCase):
             root = Path(d)
             (root / "README").write_bytes(b"x" * 16)
             (root / "notes").write_bytes(b"x" * 16)
-            files, _ = bam.glob_archive([root], bam.EXTENSIONS,
+            files, _u, _s, _l = bam.glob_archive([root], bam.EXTENSIONS,
                                         log=lambda _m: None)
             self.assertEqual(files, [])
 
@@ -79,7 +79,7 @@ class TestTheFrameIsFoundAnyway(unittest.TestCase):
             root = Path(d)
             (root / "TQEBZE~2").mkdir()
             (root / "TQEBZE~2" / "light_0001.fits").write_bytes(b"x" * 16)
-            files, _ = bam.glob_archive([root], bam.EXTENSIONS,
+            files, _u, _s, _l = bam.glob_archive([root], bam.EXTENSIONS,
                                         log=lambda _m: None)
             self.assertEqual([p.name for p, _s, _m in files],
                              ["light_0001.fits"])

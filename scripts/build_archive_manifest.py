@@ -45,6 +45,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from astropy.coordinates import SkyCoord
@@ -2008,11 +2009,12 @@ def scrub_paths_from_error(message: str, roots=()) -> str:
     return _ERROR_PATH_RE.sub(_basename, out)
 
 
-def _group_unreadable_dirs(rows: list[dict]) -> dict[str, list[str]]:
-    """Directories the walk could not enter, grouped by the error that stopped it.
+def _group_by_error(rows: list[dict]) -> dict[str, list[str]]:
+    """Rows of {path, error} grouped by the error, for directories and files alike.
 
     Same shape as wcs_read_errors and unreadable_files, because one cause
     (a permission, a dead NAS mount) usually hits a whole subtree at once.
+    Listing forty paths under one message is far more use than forty messages.
     """
     grouped: dict[str, list[str]] = defaultdict(list)
     for row in rows:
@@ -2091,13 +2093,38 @@ def mangled_name_examples(paths, limit: int = 5) -> list[dict]:
     return [{"name": n, "example": seen[n]} for n in sorted(seen)][:limit]
 
 
+class ArchiveWalk(NamedTuple):
+    """Everything one walk of the archive learned, including what went wrong.
+
+    A plain ``(files, unreadable_dirs)`` tuple was enough while the only thing
+    worth reporting was a directory that would not open. It is not enough now:
+    a file whose stat failed and a directory link that was not followed are
+    both things the user has to be told about, and both were reaching the scan
+    log and going no further.
+    """
+
+    files: list          # (Path, size_bytes, mtime) per file
+    unreadable_dirs: list
+    stat_failures: list  # {"path", "error"} per file whose stat raised
+    skipped_links: list  # absolute paths of directory links not followed
+
+
 def glob_archive(roots, extensions, log=print):
     """Walk the roots and collect every file with a matching extension.
 
-    Returns ``(files, unreadable_dirs)``. Each file is ``(Path, size_bytes,
-    mtime)``; the mtime comes from the same stat call as the size so the scan
-    cache can key on it without a second stat per file, which matters on a NAS
-    where stat is a network round trip.
+    Returns an ``ArchiveWalk``. Each file is ``(Path, size_bytes, mtime)``; the
+    mtime comes from the same stat call as the size so the scan cache can key on
+    it without a second stat per file, which matters on a NAS where stat is a
+    network round trip.
+
+    A stat that raises no longer passes size 0 and mtime 0 on in silence. The
+    file is still scanned, since its header may well read fine, but the failure
+    is recorded so the run can report it and keep the file out of the scan
+    cache. Zero is a real size a real file can have, so a cached entry written
+    from a failed stat would match again on the next failure and pin the wrong
+    metadata in place. Size also decides master against sub above 200MB, so a
+    zeroed master with no subframe count is counted as a single sub and its
+    hours are wrong.
 
     ``unreadable_dirs`` is why this is ``os.walk`` and not ``rglob``. A
     directory the scanner cannot enter used to disappear in silence: rglob
@@ -2115,6 +2142,7 @@ def glob_archive(roots, extensions, log=print):
     """
     files = []
     unreadable_dirs: list[dict] = []
+    stat_failures: list[dict] = []
     skipped_links: list[str] = []
     wanted = tuple(e.lower() for e in extensions)
     for root in roots:
@@ -2156,8 +2184,24 @@ def glob_archive(roots, extensions, log=print):
                 try:
                     st = p.stat()
                     sz, mtime = st.st_size, st.st_mtime
-                except Exception:
+                except Exception as err:
+                    # An SMB reconnect, a NAS spinning up, a path longer than
+                    # Windows will open. The file still goes into the scan,
+                    # because the header read may succeed where stat did not,
+                    # but the run has to know the numbers on this one are made
+                    # up rather than measured.
+                    #
+                    # Still a bare Exception rather than OSError. A null byte in
+                    # a name off a hostile share raises ValueError here, and one
+                    # bad name must cost that file's size, not the whole scan.
                     sz, mtime = 0, 0.0
+                    stat_failures.append({
+                        "path": str(p),
+                        "error": scrub_paths_from_error(
+                            f"{type(err).__name__}: "
+                            f"{getattr(err, 'strerror', None) or err}",
+                            roots),
+                    })
                 files.append((p, sz, mtime))
         log(f"  scan {root}: {len(files)} files so far ({time.time()-t0:.1f}s)")
     for d in unreadable_dirs:
@@ -2169,7 +2213,13 @@ def glob_archive(roots, extensions, log=print):
     for link in skipped_links:
         log(f"  WARN: not following the link at {link}, so nothing inside it is "
             f"in this scan. Add its target to FITS_ROOTS to include those frames.")
-    return files, unreadable_dirs
+    if stat_failures:
+        log(f"  WARN: could not read the size or date of {len(stat_failures)} "
+            f"file(s). They are still scanned, but a frame whose size is "
+            f"unknown can be counted as a sub when it is really a master.")
+        for f in stat_failures[:5]:
+            log(f"    {f['path']}: {f['error']}")
+    return ArchiveWalk(files, unreadable_dirs, stat_failures, skipped_links)
 
 
 def scan_cache_key(path) -> str:
@@ -3876,9 +3926,12 @@ def main():
               f"(e.g. FITS_ROOTS='D:/Astro/Images;E:/Archive') or edit NAS_ROOTS at the "
               f"top of {Path(__file__).name}.")
         sys.exit(1)
-    files, unreadable_dirs = glob_archive(
+    walk = glob_archive(
         scan_roots, EXTENSIONS,
         log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
+    files, unreadable_dirs = walk.files, walk.unreadable_dirs
+    # Keyed by path so the cache write can ask about one file cheaply.
+    stat_failed_paths = {f["path"] for f in walk.stat_failures}
     print(f"[{time.time()-t0:6.1f}s] Found {len(files)} files total")
     mangled = mangled_name_examples([p for p, _s, _m in files])
     if mangled:
@@ -3962,6 +4015,7 @@ def main():
         sz, mtime = stat_by_path.get(f["path"], (None, None))
         ent = old_cache.get(scan_cache_key(f["path"]))
         if (ent is not None and sz is not None
+                and f["path"] not in stat_failed_paths
                 and ent.get("size") == sz
                 and ent.get("mtime") == _mtime_token(mtime)):
             meta = dict(ent["meta"])
@@ -3991,7 +4045,10 @@ def main():
                 # Copy meta into the classified entry too
                 _apply_meta(entry, meta)
                 sz, mtime = stat_by_path.get(path, (None, None))
-                if sz is not None:
+                # Zero is a size a real file can have, so an entry written from
+                # a failed stat would match on the next failure and pin wrong
+                # metadata in place for as long as the failure lasts.
+                if sz is not None and path not in stat_failed_paths:
                     try:
                         new_cache[scan_cache_key(path)] = {
                             "size": sz,
@@ -4510,10 +4567,20 @@ def main():
                 {"error": err, "files": len(paths),
                  "examples": [str(x) for x in paths[:5] if x]}
                 for err, paths in sorted(
-                    _group_unreadable_dirs(unreadable_dirs).items(),
+                    _group_by_error(unreadable_dirs).items(),
                     key=lambda kv: -len(kv[1]))
             ],
             "unreadable_dir_count": len(unreadable_dirs),
+            "stat_failures": [
+                {"error": err, "files": len(paths),
+                 "examples": [str(x) for x in paths[:5] if x]}
+                for err, paths in sorted(
+                    _group_by_error(walk.stat_failures).items(),
+                    key=lambda kv: -len(kv[1]))
+            ],
+            "stat_failure_count": len(walk.stat_failures),
+            "skipped_links": [str(x) for x in walk.skipped_links[:10]],
+            "skipped_link_count": len(walk.skipped_links),
             "mangled_names": mangled,
             "mangled_name_count": len(mangled),
             "masters_ambiguous_filter": ambig,
