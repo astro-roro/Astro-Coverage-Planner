@@ -69,6 +69,23 @@ def _import_module_from_path(path: Path, module_name: str) -> ModuleType | None:
     return module
 
 
+def _rule_paths(app: "Flask") -> set[str]:
+    return {str(rule) for rule in app.url_map.iter_rules()}
+
+
+def routes_outside_api(before: set[str], after: set[str]) -> list[str]:
+    """Routes an extension added that do not sit under ``/api/``.
+
+    Loading arbitrary Python from a configured directory is the feature working
+    as designed, so this is a warning and not a restriction. The reason to say
+    it out loud is that the gate an operator reasons about is the one named
+    after the API. An extension is free to mount ``/backdoor`` beside the
+    pages, and with no token set that route answers anyone on the LAN. Sorted
+    so the warning reads the same on every start.
+    """
+    return sorted(r for r in (after - before) if not r.startswith("/api/"))
+
+
 def load_extensions(app: "Flask") -> list[str]:
     """Discover and register extensions on *app*.
 
@@ -108,6 +125,7 @@ def load_extensions(app: "Flask") -> list[str]:
         register = getattr(module, "register", None)
         if not callable(register):
             continue
+        before = _rule_paths(app)
         try:
             register(app)
         except Exception:
@@ -115,5 +133,13 @@ def load_extensions(app: "Flask") -> list[str]:
             continue
         loaded.append(path.name)
         logger.info("Loaded extension: %s", path.name)
+        outside = routes_outside_api(before, _rule_paths(app))
+        if outside:
+            logger.warning(
+                "Extension %s mounted %d route(s) outside /api/: %s. Those are "
+                "served like any page. With ACP_API_TOKEN set they sit behind "
+                "the same gate as everything else; with no token set they "
+                "answer anyone who can reach this port.",
+                path.name, len(outside), ", ".join(outside))
 
     return loaded

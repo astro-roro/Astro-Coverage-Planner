@@ -286,4 +286,6 @@ If your extension might be useful to others, consider opening a PR to ship it as
 
 **Failures.** Load and registration errors are logged via Python's `logging` under the `acp.extensions` logger — check there if an extension silently doesn't show up. The rest of the app keeps running regardless.
 
+**Routes outside `/api/`.** An extension can mount a route anywhere, including beside the pages. The loader logs a warning at startup naming any route it added outside `/api/`, because the setting an operator reasons about is called `ACP_API_TOKEN` and it would be easy to read the gate as covering the API alone. It does not: with a token set, every path is behind it. With no token set, every path answers anyone who can reach the port, and a route called `/backdoor` is no different from the coverage page. Keep extension routes under `/api/ext/<name>/` unless you have a reason not to.
+
 **Debugging.** Set `LOG_LEVEL=DEBUG` to see the registration sequence on startup; each Protocol implementation gets a one-line confirmation when it's accepted into the registry.
