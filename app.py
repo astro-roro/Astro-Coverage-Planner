@@ -304,6 +304,26 @@ def _api_gate():
     return jsonify({"error": "unauthorized"}), 401
 
 
+def _safe_next_path(candidate: str) -> str:
+    """A same-app path to send the browser back to after sign-in, or "/".
+
+    ``candidate`` comes from the login form, so it is attacker-controlled.
+    A scheme or a host sends the browser off this app entirely; a backslash
+    is rejected too, because browsers treat "/\\evil.com" as protocol-relative
+    even though urlsplit does not parse it that way. Control characters are
+    rejected outright. What is left must be a bare path, no scheme, no
+    netloc, so a normal path with a query string still comes back unchanged.
+    """
+    if not candidate:
+        return "/"
+    if "\\" in candidate or any(ord(ch) < 0x20 for ch in candidate):
+        return "/"
+    parsed = urllib.parse.urlsplit(candidate)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
+        return "/"
+    return candidate
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     """Exchange the access token for a session cookie.
@@ -320,14 +340,11 @@ def login():
     supplied = (request.form.get("token") or "").strip()
     if not _token_matches(supplied, token):
         logging.warning("[acp] failed sign-in attempt from %s", request.remote_addr)
-        return render_template("login.html", next_path=request.form.get("next") or "/",
+        return render_template("login.html",
+                               next_path=_safe_next_path(request.form.get("next") or "/"),
                                error="That token was not accepted."), 401
 
-    target = request.form.get("next") or "/"
-    # Only ever back into this app, never to a host an attacker put in the
-    # form: a bare path, no scheme, no protocol-relative "//host" form.
-    if not target.startswith("/") or target.startswith("//"):
-        target = "/"
+    target = _safe_next_path(request.form.get("next") or "/")
     resp = redirect(target)
     resp.set_cookie(
         SESSION_COOKIE_NAME, _session_cookie_value(token),
