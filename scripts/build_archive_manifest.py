@@ -3598,7 +3598,7 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
 
     dropped_ids: set[int] = set()
     dropped_rows: list[dict] = []
-    for (rig, filt, exp), group in groups.items():
+    for (rig, filt, _), group in groups.items():
         if len(group) < 2:
             continue
         # Largest first, then solved, then shortest path: the block that keeps
