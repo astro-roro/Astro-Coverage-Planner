@@ -339,7 +339,7 @@ def login():
 
     supplied = (request.form.get("token") or "").strip()
     if not _token_matches(supplied, token):
-        logging.warning("[acp] failed sign-in attempt from %s", request.remote_addr)
+        logging.warning("[acp] failed sign-in attempt from %r", request.remote_addr)
         return render_template("login.html",
                                next_path=_safe_next_path(request.form.get("next") or "/"),
                                error="That token was not accepted."), 401
