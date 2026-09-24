@@ -168,9 +168,17 @@ MAX_FINGERPRINT_PROFILES = int(os.environ.get("ACP_MAX_FINGERPRINT_PROFILES", 50
 @app.errorhandler(413)
 def _body_too_large(_exc):
     """JSON, not Flask's HTML page. The NINA plugin parses every response it
-    gets from ACP, so an HTML error body reads to it as a broken server."""
-    return jsonify({"error": f"request body larger than {MAX_BODY_BYTES} bytes",
-                    "max_bytes": MAX_BODY_BYTES}), 413
+    gets from ACP, so an HTML error body reads to it as a broken server.
+
+    Reads ``request.max_content_length`` rather than the global
+    ``MAX_BODY_BYTES``, because a route can raise its own limit for one
+    request by setting that attribute before reading the body (Flask 3.1+).
+    Flask falls back to ``app.config["MAX_CONTENT_LENGTH"]`` when a route
+    sets nothing, so this names the right limit either way.
+    """
+    limit = request.max_content_length
+    return jsonify({"error": f"request body larger than {limit} bytes",
+                    "max_bytes": limit}), 413
 
 
 
