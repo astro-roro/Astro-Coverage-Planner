@@ -1637,6 +1637,36 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 }
 .link-btn:hover { color: #e0e4ea; border-color: #3a4458; }
 
+/* TS upload banner: a slim full-width row under the toolbar, filled by
+   loadTsSyncBanner() in app.js. Hidden by default (the [hidden] rule),
+   so a fresh page load with nothing pending reserves no space and the
+   layout doesn't shift; it only grows the topbar by one row once there's
+   something to show. */
+.ts-sync-banner {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: #f0c674;
+  background: #241b0d;
+  border: 1px solid #4a3b1a;
+  border-radius: 4px;
+}
+.ts-sync-banner[hidden] { display: none; }
+.ts-sync-line { white-space: normal; }
+.ts-sync-link {
+  color: #6aa6ff;
+  text-decoration: underline;
+}
+.ts-sync-link:hover { color: #88baff; }
+.ts-sync-more {
+  color: #a2aec2;
+  font-style: italic;
+}
+
 /* --- Onboarding banner (shown when manifest is empty) --- */
 .onboarding-banner {
   position: absolute;
