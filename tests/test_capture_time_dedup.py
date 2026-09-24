@@ -340,7 +340,7 @@ class TestTimesAreCountedNotJustListed(unittest.TestCase):
         """
         small = _block("/three-on-one-stamp", ["T", "T", "T", "U"])
         large = _block("/one-each", ["T", "U", "V", "W", "X"])
-        self.assertTrue(set(small["_capture_times"]) <= set(large["_capture_times"]))
+        self.assertLessEqual(set(small["_capture_times"]), set(large["_capture_times"]))
         self.assertFalse(capture_times_are_contained(small, large))
         survivors, dropped = collapse_copied_sub_blocks([small, large])
         self.assertEqual(len(survivors), 2)
