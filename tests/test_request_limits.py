@@ -18,6 +18,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import app as app_module  # noqa: E402
 from app import app  # noqa: E402
+from flask import Flask, jsonify, request  # noqa: E402
+
+
+# A stand-in for the extension's upload route (spec: docs/specs/ts-upload-import.md,
+# "Core change: a bigger limit for one route"). The real route lives in the
+# extension repo, which core's test suite does not load, so this proves the
+# mechanism core exposes on a fresh Flask app rather than the shared `app`
+# singleton: by the time this module runs, another test module may already
+# have served a request through `app`, and Flask refuses new routes after
+# that. The mechanism itself is app.py's own errorhandler(413) and
+# MAX_BODY_BYTES config, reused unchanged below.
+_BIG_ROUTE_LIMIT = 5 * 1024 * 1024
+
+
+def _make_stand_in_app() -> Flask:
+    stand_in = Flask(__name__)
+    stand_in.config["MAX_CONTENT_LENGTH"] = app_module.MAX_BODY_BYTES
+
+    @stand_in.errorhandler(413)
+    def _too_large(_exc):
+        limit = request.max_content_length
+        return jsonify({"error": f"request body larger than {limit} bytes",
+                        "max_bytes": limit}), 413
+
+    @stand_in.route("/api/ext/nina-ts-sync/import/uploads", methods=["POST"])
+    def _upload():
+        request.max_content_length = _BIG_ROUTE_LIMIT
+        request.get_data()  # triggers the 413 check against the raised limit
+        return "ok", 200
+
+    @stand_in.route("/api/plans/match", methods=["POST"])
+    def _ordinary_route():
+        request.get_data()  # global MAX_CONTENT_LENGTH applies; route sets nothing
+        return "ok", 200
+
+    return stand_in
 
 FP = {
     "profile_name": "Rig A",
@@ -133,6 +169,52 @@ class TestFingerprintStore(LimitsCase):
         for _ in range(20):
             self.post(FP)
         self.assertEqual(len(self.stored()["profiles"]), 1)
+
+
+class TestPerRouteLimit(unittest.TestCase):
+    """A route can raise its own body limit above the global 1 MB cap.
+
+    Spec: docs/specs/ts-upload-import.md, "Core change: a bigger limit for
+    one route". The TS upload route (in the extension repo) needs to accept
+    files up to ACP_TS_UPLOAD_MAX_BYTES (default 64 MB). This exercises the
+    mechanism core provides for that: Flask 3.1's per-request
+    request.max_content_length, and the 413 handler reading it instead of
+    the global constant. See _make_stand_in_app above for why this runs on
+    a separate Flask app rather than the shared `app` singleton.
+    """
+
+    def setUp(self):
+        self.client = _make_stand_in_app().test_client()
+
+    def test_a_route_that_raises_its_own_limit_accepts_a_5mb_body(self):
+        body = b"A" * (5 * 1024 * 1024)
+        self.assertGreater(len(body), app_module.MAX_BODY_BYTES)
+        r = self.client.post("/api/ext/nina-ts-sync/import/uploads", data=body,
+                              content_type="application/octet-stream")
+        self.assertEqual(r.status_code, 200)
+
+    def test_the_raised_route_still_refuses_a_body_over_its_own_limit(self):
+        body = b"A" * (_BIG_ROUTE_LIMIT + 1024)
+        r = self.client.post("/api/ext/nina-ts-sync/import/uploads", data=body,
+                              content_type="application/octet-stream")
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(r.get_json()["max_bytes"], _BIG_ROUTE_LIMIT)
+
+    def test_every_other_route_still_refuses_1_1_mb_with_413(self):
+        body = b"A" * int(app_module.MAX_BODY_BYTES * 1.1)
+        r = self.client.post("/api/plans/match", data=body,
+                              content_type="application/octet-stream")
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(r.get_json()["max_bytes"], app_module.MAX_BODY_BYTES)
+
+    def test_the_upload_routes_413_body_names_its_own_limit_not_the_global_one(self):
+        body = b"A" * (_BIG_ROUTE_LIMIT + 1024)
+        r = self.client.post("/api/ext/nina-ts-sync/import/uploads", data=body,
+                              content_type="application/octet-stream")
+        payload = r.get_json()
+        self.assertEqual(payload["max_bytes"], _BIG_ROUTE_LIMIT)
+        self.assertNotEqual(payload["max_bytes"], app_module.MAX_BODY_BYTES)
+        self.assertIn(str(_BIG_ROUTE_LIMIT), payload["error"])
 
 
 if __name__ == "__main__":

@@ -119,6 +119,21 @@ class TestTheWholeAppIsGated(TokenCase):
         self.assertEqual(self.client.get("/api/version", headers=h).status_code, 200)
         self.assertEqual(self.client.get("/", headers=h).status_code, 200)
 
+    def test_an_extension_route_with_no_token_is_refused_json(self):
+        """docs/specs/ts-upload-import.md: ACP core's gate already covers
+        every path, so the extension's /api/ext/... routes get auth for
+        free. No route exists at this path in core; the gate runs in
+        before_request, ahead of routing, so it still answers 401 rather
+        than the 404 a signed-in caller would see."""
+        r = self.client.post("/api/ext/nina-ts-sync/import/uploads")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.get_json(), {"error": "unauthorized"})
+
+    def test_an_extension_route_with_the_token_passes_the_gate(self):
+        h = {"Authorization": "Bearer " + ASCII_TOKEN}
+        r = self.client.post("/api/ext/nina-ts-sync/import/uploads", headers=h)
+        self.assertNotEqual(r.status_code, 401)
+
 
 class TestSigningIn(TokenCase):
 
