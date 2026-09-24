@@ -163,9 +163,14 @@ class TestSigningIn(TokenCase):
         self.assertTrue(r.headers["Location"].endswith("/?target=42"))
 
     def test_an_offsite_next_is_refused(self):
-        for hostile in ("https://evil.example/", "//evil.example/"):
+        for hostile in ("https://evil.example/", "//evil.example/",
+                         "/\\evil.example", "https://evil.example"):
             r = self.sign_in(next_path=hostile)
             self.assertNotIn("evil.example", r.headers["Location"], hostile)
+
+    def test_an_empty_next_goes_to_the_app(self):
+        r = self.sign_in(next_path="")
+        self.assertTrue(r.headers["Location"].endswith("/"))
 
     def test_logging_out_clears_the_cookie(self):
         self.sign_in()

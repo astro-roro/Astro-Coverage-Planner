@@ -141,7 +141,7 @@ class TestDedupLogRows(unittest.TestCase):
         allowed = {"dropped (derivative product)",
                    "not captured (wider stage og present)",
                    "not captured (integrated master file present)"}
-        self.assertTrue({r["action"] for r in out["dedup_log"]} <= allowed)
+        self.assertLessEqual({r["action"] for r in out["dedup_log"]}, allowed)
 
 
 class TestCoordInheritance(unittest.TestCase):
