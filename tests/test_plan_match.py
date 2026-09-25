@@ -57,8 +57,12 @@ def _write_gear(telescopes, cameras):
 
 
 def _write_plans(plans):
+    # settings_migrated: 1 so the draft->active migration (test_plan_migration.py
+    # owns that behaviour) doesn't fire on the raw file this helper writes
+    # and rewrite a fixture's deliberate "draft" state to "active" out
+    # from under these tests.
     app_module.PLANS_PATH.write_text(
-        json.dumps({"version": 1, "plans": plans}), encoding="utf-8")
+        json.dumps({"version": 1, "settings_migrated": 1, "plans": plans}), encoding="utf-8")
     app_module._plans_cache = None
     app_module._plans_cache_mtime = None
 
@@ -407,6 +411,62 @@ class TestFingerprintStore(unittest.TestCase):
         body = _match(self.client, fp)
         stored = self.client.get("/api/fingerprints").get_json()["profiles"]
         self.assertEqual(list(stored), [body["fingerprint_id"]])
+
+
+class TestSupportsState(unittest.TestCase):
+    """/api/plans/match is what the NINA plugin's "Sync for tonight" calls
+    to decide what to load. A plugin that sends `supports_state: true`
+    needs every plan back, including paused ones, so it can still write
+    their state to TS (docs/specs/ts-project-settings.md section 6). An
+    older plugin that doesn't send the flag must never see a paused plan
+    at all, because it writes state 1 on every push."""
+
+    def setUp(self):
+        _redirect_state()
+        self.client = app.test_client()
+        _write_gear([TEL_540], [CAM_2600MM])
+
+    def test_inactive_plan_held_and_excluded_from_summary_with_supports_state(self):
+        _write_plans([
+            _plan("p-fit", "tel-540", "cam-2600", ["Ha"]),
+            _plan("p-inactive", "tel-540", "cam-2600", ["Ha"], state="inactive"),
+        ])
+        body = _match(self.client, _fingerprint(supports_state=True))
+        self.assertEqual({p["id"] for p in body["plans"]}, {"p-fit", "p-inactive"})
+        held = next(p for p in body["plans"] if p["id"] == "p-inactive")
+        self.assertEqual(held["match"], {"verdict": "held", "state": "inactive"})
+        self.assertEqual(sum(body["summary"].values()), 1)  # only p-fit counted
+
+    def test_inactive_plan_absent_without_supports_state(self):
+        _write_plans([
+            _plan("p-fit", "tel-540", "cam-2600", ["Ha"]),
+            _plan("p-inactive", "tel-540", "cam-2600", ["Ha"], state="inactive"),
+        ])
+        body = _match(self.client, _fingerprint())
+        self.assertEqual({p["id"] for p in body["plans"]}, {"p-fit"})
+
+    def test_draft_plan_follows_the_same_two_rules(self):
+        _write_plans([_plan("p-draft", "tel-540", "cam-2600", ["Ha"], state="draft")])
+        with_flag = _match(self.client, _fingerprint(supports_state=True))
+        self.assertEqual({p["id"] for p in with_flag["plans"]}, {"p-draft"})
+        self.assertEqual(with_flag["plans"][0]["match"]["state"], "draft")
+
+        without_flag = _match(self.client, _fingerprint())
+        self.assertEqual({p["id"] for p in without_flag["plans"]}, set())
+
+    def test_closed_plan_follows_the_same_two_rules(self):
+        _write_plans([_plan("p-closed", "tel-540", "cam-2600", ["Ha"], state="closed")])
+        with_flag = _match(self.client, _fingerprint(supports_state=True))
+        self.assertEqual({p["id"] for p in with_flag["plans"]}, {"p-closed"})
+        without_flag = _match(self.client, _fingerprint())
+        self.assertEqual({p["id"] for p in without_flag["plans"]}, set())
+
+    def test_active_plan_unaffected_either_way(self):
+        _write_plans([_plan("p-active", "tel-540", "cam-2600", ["Ha"], state="active")])
+        with_flag = _match(self.client, _fingerprint(supports_state=True))
+        without_flag = _match(self.client, _fingerprint())
+        self.assertEqual({p["id"] for p in with_flag["plans"]}, {"p-active"})
+        self.assertEqual({p["id"] for p in without_flag["plans"]}, {"p-active"})
 
 
 if __name__ == "__main__":

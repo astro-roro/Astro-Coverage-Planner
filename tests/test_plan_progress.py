@@ -32,7 +32,7 @@ def _redirect_state():
 
 def _write_plans(plans):
     app_module.PLANS_PATH.write_text(
-        json.dumps({"version": 1, "plans": plans}), encoding="utf-8")
+        json.dumps({"version": 1, "settings_migrated": 1, "plans": plans}), encoding="utf-8")
     app_module._plans_cache = None
     app_module._plans_cache_mtime = None
 

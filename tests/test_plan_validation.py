@@ -532,5 +532,68 @@ class TestPublicPageFields(unittest.TestCase):
         self.assertEqual(r.status_code, 201)
 
 
+class TestPlanState(unittest.TestCase):
+    """`state` is one of the four TS project states (draft, active,
+    inactive, closed), per docs/specs/ts-project-settings.md section 1.
+    "parked" is a held PR #97 value that never shipped; it is accepted on
+    write and normalised to "inactive" rather than rejected, so an old
+    client that still sends it doesn't 400."""
+
+    def setUp(self):
+        _fresh_plans_path()
+        self.client = app.test_client()
+
+    def test_each_of_the_four_states_saves(self):
+        for state in ("draft", "active", "inactive", "closed"):
+            r = self.client.post("/api/plans", json=_valid_plan_payload(plan_id=state, state=state))
+            self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+            self.assertEqual(r.get_json()["state"], state)
+
+    def test_unknown_state_rejected(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(state="paused"))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("state", r.get_json()["error"])
+
+    def test_no_state_field_still_accepted(self):
+        payload = _valid_plan_payload()
+        del payload["state"]
+        r = self.client.post("/api/plans", json=payload)
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertNotIn("state", r.get_json())
+
+    def test_parked_saves_as_inactive(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(state="parked"))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["state"], "inactive")
+
+
+class TestMinimumTimeMin(unittest.TestCase):
+    """`minimum_time_min`: integer minutes, ≥ 0, absent means 0. Same
+    defence-in-depth shape as min_altitude_deg."""
+
+    def setUp(self):
+        _fresh_plans_path()
+        self.client = app.test_client()
+
+    def test_negative_rejected(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(minimum_time_min=-1))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("minimum_time_min", r.get_json()["error"])
+
+    def test_non_integer_rejected(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(minimum_time_min=1.5))
+        self.assertEqual(r.status_code, 400)
+
+    def test_string_rejected(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(minimum_time_min="x"))
+        self.assertEqual(r.status_code, 400)
+
+    def test_zero_and_sixty_accepted(self):
+        for v in (0, 60):
+            r = self.client.post("/api/plans", json=_valid_plan_payload(plan_id=f"p{v}", minimum_time_min=v))
+            self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+            self.assertEqual(r.get_json()["minimum_time_min"], v)
+
+
 if __name__ == "__main__":
     unittest.main()
