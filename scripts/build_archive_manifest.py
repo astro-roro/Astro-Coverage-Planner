@@ -1340,6 +1340,34 @@ def _camera_name_is_colour(name: str | None) -> bool | None:
     return None
 
 
+def wcs_rotation_deg(w, cx: float, cy: float) -> float | None:
+    """Position angle of the image's +Y axis at pixel (cx, cy), degrees east of north.
+
+    This is the planner's convention for ``target.rotation_deg`` (see
+    ``computePlanCorners`` in static/app.js), so a master's angle and a plan's
+    angle mean the same thing. It is measured on the sky at the image centre
+    rather than read off the CD matrix, because the matrix describes the frame
+    at CRPIX: a solver that parks CRPIX in a corner, or a field near a pole,
+    turns north by a visible amount between CRPIX and the centre.
+
+    Parity does not change the answer. A mirrored image has its +X axis on the
+    other side of +Y, but +Y itself still points where this says.
+
+    Returns [0, 360), rounded to 0.01 degree, or None if the WCS will not give
+    a finite answer.
+    """
+    try:
+        c0 = w.pixel_to_world(cx, cy)
+        c1 = w.pixel_to_world(cx, cy + 1.0)
+        pa = float(c0.position_angle(c1).deg)
+    except Exception:
+        return None
+    if not np.isfinite(pa):
+        return None
+    pa = round(pa % 360.0, 2)
+    return 0.0 if pa >= 360.0 else pa
+
+
 def read_fits_meta(path: Path) -> dict:
     """Read FITS header, extract WCS center, pixel scale, exposure, filter, date, imagetyp."""
     out = {
@@ -1377,6 +1405,9 @@ def read_fits_meta(path: Path) -> dict:
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
+        # Position angle of the image's +Y axis, degrees east of north, in
+        # [0, 360). None when the solve gives no orientation.
+        "rotation_deg": None,
         "wcs_error": None,
         "date_obs": None,
         "object": None,
@@ -1486,6 +1517,7 @@ def read_fits_meta(path: Path) -> dict:
                     sky = w.pixel_to_world(cx, cy)
                     out["ra_deg"] = float(sky.ra.deg)
                     out["dec_deg"] = float(sky.dec.deg)
+                    out["rotation_deg"] = wcs_rotation_deg(w, cx, cy)
                     try:
                         pix = w.proj_plane_pixel_scales()
                         out["pix_arcsec"] = float(np.mean([p.to(u.arcsec).value for p in pix]))
@@ -1733,6 +1765,9 @@ def read_xisf_meta(path: Path) -> dict:
         "ra_deg": None,
         "dec_deg": None,
         "has_wcs": False,
+        # Position angle of the image's +Y axis, degrees east of north, in
+        # [0, 360). None when the solve gives no orientation.
+        "rotation_deg": None,
         "wcs_error": None,
         "date_obs": None,
         "object": None,
@@ -1857,6 +1892,11 @@ def read_xisf_meta(path: Path) -> dict:
                                     [float(cd2_1 or 0), float(cd2_2 or cd1_1)]]
                     else:
                         w.wcs.cdelt = [float(cdelt1), float(cdelt2 or cdelt1)]
+                        # The older CDELT form carries its rotation in CROTA2.
+                        # Without it every such solve would read as north up.
+                        crota2 = fk("CROTA2")
+                        if crota2 is not None:
+                            w.wcs.crota = [0.0, float(crota2)]
                     if out["wcs_naxis1"] and out["wcs_naxis2"]:
                         cx, cy = out["wcs_naxis1"] / 2.0, out["wcs_naxis2"] / 2.0
                     else:
@@ -1864,6 +1904,7 @@ def read_xisf_meta(path: Path) -> dict:
                     sky = w.pixel_to_world(cx, cy)
                     out["ra_deg"] = float(sky.ra.deg)
                     out["dec_deg"] = float(sky.dec.deg)
+                    out["rotation_deg"] = wcs_rotation_deg(w, cx, cy)
                 else:
                     # No CRPIX/CD available to build a real WCS — fall back
                     # to CRVAL as the best available approximation.
@@ -2383,8 +2424,13 @@ def _json_plain(value):
 
 
 def load_scan_cache(path: Path | None = None, fingerprint: str | None = None,
-                    log=print) -> dict:
-    """Load the header cache; anything unusable means an empty (cold) cache."""
+                    log=print, accept_stale: bool = False) -> dict:
+    """Load the header cache; anything unusable means an empty (cold) cache.
+
+    ``accept_stale`` keeps a cache written by different reader code instead of
+    discarding it. Only ``--refresh-rotation`` asks for that, and it re-reads
+    the files the older code could not have answered for.
+    """
     path = Path(path or SCAN_CACHE_PATH)
     fingerprint = fingerprint or scan_cache_fingerprint()
     try:
@@ -2401,8 +2447,11 @@ def load_scan_cache(path: Path | None = None, fingerprint: str | None = None,
         log(f"  scan cache schema {raw.get('schema')!r} != {SCAN_CACHE_SCHEMA}, scanning cold")
         return {}
     if raw.get("reader_hash") != fingerprint:
-        log("  scan cache was written by different reader code, scanning cold")
-        return {}
+        if not accept_stale:
+            log("  scan cache was written by different reader code, scanning cold")
+            return {}
+        log("  scan cache was written by different reader code, keeping it "
+            "anyway for --refresh-rotation")
     entries = raw.get("entries")
     if not isinstance(entries, dict):
         return {}
@@ -2414,6 +2463,18 @@ def load_scan_cache(path: Path | None = None, fingerprint: str | None = None,
                 and isinstance(ent.get("mtime"), (int, float))):
             out[key] = ent
     return out
+
+
+def needs_rotation_reread(meta: dict, p: Path, size) -> bool:
+    """True for a cached solved master that was read before angles existed.
+
+    Only masters feed a target's angle, so under ``--refresh-rotation`` they
+    are the only files worth opening again. A cached entry that already carries
+    ``rotation_deg`` (even None) was written by code that knew about it.
+    """
+    if "rotation_deg" in meta or not meta.get("has_wcs") or not meta.get("ok"):
+        return False
+    return classify_by_header(meta, p, size) == "master"
 
 
 def save_scan_cache(entries: dict, path: Path | None = None,
@@ -3173,8 +3234,14 @@ def compute_fov_from_meta(meta: dict) -> tuple[list | None, float | None, str]:
 
 
 def fov_corners(ra_c: float, dec_c: float, w_arcmin: float, h_arcmin: float,
-                log=None, label: str = "") -> tuple[list, list]:
+                log=None, label: str = "", rot_deg: float = 0.0) -> tuple[list, list]:
     """Return (corners_icrs, corners_gal) for a rectangle of w x h arcmin on ra_c, dec_c.
+
+    ``rot_deg`` turns the rectangle so its height runs along position angle
+    ``rot_deg`` east of north, with the same arithmetic as ``computePlanCorners``
+    in static/app.js, so a plan and the coverage it is compared with line up.
+    Corners come back in the order SW, NW, NE, SE of the unrotated box. At 0 the
+    result is exactly what this returned before rotation existed.
 
     The offset is a flat tangent-plane approximation, which is what the rest of
     the planner draws. A field near a pole, or a wide lens pointed high, puts a
@@ -3185,13 +3252,19 @@ def fov_corners(ra_c: float, dec_c: float, w_arcmin: float, h_arcmin: float,
     corners_icrs = []
     corners_gal = []
     clamped = False
+    r = np.radians(rot_deg or 0.0)
+    cos_r, sin_r = np.cos(r), np.sin(r)
     for dx, dy in [(-1, -1), (-1, 1), (1, 1), (1, -1)]:
+        lx = dx * w_arcmin / 2.0
+        ly = dy * h_arcmin / 2.0
+        east = lx * cos_r + ly * sin_r
+        north = -lx * sin_r + ly * cos_r
         cos_dec = np.cos(np.radians(dec_c))
         if abs(cos_dec) < 1e-9:
             c_ra = ra_c
         else:
-            c_ra = (ra_c + (dx * w_arcmin / 2.0) / 60.0 / cos_dec) % 360.0
-        c_dec = dec_c + (dy * h_arcmin / 2.0) / 60.0
+            c_ra = (ra_c + east / 60.0 / cos_dec) % 360.0
+        c_dec = dec_c + north / 60.0
         if c_dec > 90.0 or c_dec < -90.0:
             c_dec = max(-90.0, min(90.0, c_dec))
             clamped = True
@@ -3202,6 +3275,110 @@ def fov_corners(ra_c: float, dec_c: float, w_arcmin: float, h_arcmin: float,
         log(f"  WARN: footprint corner past the pole clamped for {label or 'a target'} "
             f"(centre dec {dec_c:.2f}, fov {w_arcmin:.0f}x{h_arcmin:.0f} arcmin)")
     return corners_icrs, corners_gal
+
+
+# Masters whose angles (folded to [0, 180)) sit within this many degrees of each
+# other count as the same framing. Re-solving one framing on different nights
+# moves the angle by a fraction of a degree; a deliberate re-frame or a second
+# rig moves it by far more.
+ROTATION_GROUP_TOL_DEG = 3.0
+
+
+def _fold_180(a: float) -> float:
+    a = a % 180.0
+    return 0.0 if a >= 180.0 else a
+
+
+def _dist_180(a: float, b: float) -> float:
+    d = abs(_fold_180(a) - _fold_180(b))
+    return min(d, 180.0 - d)
+
+
+def _mean_angle_180(angles: list[float], weights: list[float]) -> float:
+    """Weighted mean of angles that repeat every 180 degrees (doubled-angle mean)."""
+    ws = weights if any(w > 0 for w in weights) else [1.0] * len(angles)
+    s = sum(w * np.sin(np.radians(2 * a)) for a, w in zip(angles, ws))
+    c = sum(w * np.cos(np.radians(2 * a)) for a, w in zip(angles, ws))
+    return round(_fold_180(float(np.degrees(np.arctan2(s, c))) / 2.0), 2)
+
+
+def target_rotation(masters: list[dict], tol_deg: float = ROTATION_GROUP_TOL_DEG) -> dict:
+    """Pick one angle for a target and the rectangle size to draw at that angle.
+
+    Each item in ``masters`` has ``rotation_deg`` (degrees east of north, or
+    None), ``fov_arcmin`` ([w, h]) and ``hours`` (integration, used as weight).
+
+    A rectangle looks the same at a and a + 180, so angles are compared folded
+    to [0, 180). Masters are grouped when they sit within ``tol_deg`` of each
+    other, and the group holding the most integration sets the angle. Ties go
+    to the group with more masters.
+
+    The size is the smallest rectangle at that angle, on the target centre,
+    that holds every master's frame. Masters in the chosen group count as
+    lined up exactly. A master in another group is turned by the difference
+    first, so a second rig or a re-framed night widens the box rather than
+    being cut off. A master with no angle is assumed lined up.
+
+    Returns ``rotation_deg``, ``rotation_source``, ``footprint_arcmin`` and, when
+    the masters disagree, ``rotation_alternates`` (one entry per other group).
+    ``rotation_source`` is "wcs" when every master gave an angle and they agree,
+    "wcs_partial" when they agree but some gave none, "wcs_mixed" when they
+    disagree, and "none" when no master gave an angle, which draws at 0.
+    """
+    sized = [m for m in masters if m.get("fov_arcmin")]
+    with_angle = [m for m in sized if m.get("rotation_deg") is not None]
+    groups: list[dict] = []
+    left = [(_fold_180(float(m["rotation_deg"])), float(m.get("hours") or 0.0), m)
+            for m in with_angle]
+    while left:
+        best = None
+        for a, _w, _m in left:
+            members = [x for x in left if _dist_180(x[0], a) <= tol_deg]
+            key = (sum(x[1] for x in members), len(members), -a)
+            if best is None or key > best[0]:
+                best = (key, members)
+        members = best[1]
+        groups.append({
+            "rotation_deg": _mean_angle_180([x[0] for x in members], [x[1] for x in members]),
+            "hours": round(sum(x[1] for x in members), 2),
+            "n_masters": len(members),
+            "_masters": [x[2] for x in members],
+        })
+        left = [x for x in left if not any(x is y for y in members)]
+
+    if groups:
+        chosen = groups[0]
+        rot = chosen["rotation_deg"]
+        if len(groups) > 1:
+            source = "wcs_mixed"
+        elif len(with_angle) < len(sized):
+            source = "wcs_partial"
+        else:
+            source = "wcs"
+    else:
+        chosen, rot, source = None, 0.0, "none"
+
+    in_chosen = chosen["_masters"] if chosen else []
+    half_w = half_h = 0.0
+    for m in sized:
+        w, h = float(m["fov_arcmin"][0]), float(m["fov_arcmin"][1])
+        if m.get("rotation_deg") is None or any(m is x for x in in_chosen):
+            d = 0.0
+        else:
+            d = np.radians(float(m["rotation_deg"]) - rot)
+        c, s = abs(np.cos(d)), abs(np.sin(d))
+        half_w = max(half_w, (w * c + h * s) / 2.0)
+        half_h = max(half_h, (w * s + h * c) / 2.0)
+
+    out = {
+        "rotation_deg": rot,
+        "rotation_source": source,
+        "footprint_arcmin": [round(2 * half_w, 2), round(2 * half_h, 2)] if sized else None,
+    }
+    if len(groups) > 1:
+        out["rotation_alternates"] = [
+            {k: v for k, v in g.items() if not k.startswith("_")} for g in groups[1:]]
+    return out
 
 
 def cluster_by_coords(items, radius_arcmin=30.0):
@@ -3998,22 +4175,31 @@ def main():
                 entry[k] = v
 
     use_cache = not (_CLI_ARGS and getattr(_CLI_ARGS, "no_cache", False))
+    refresh_rotation = bool(_CLI_ARGS and getattr(_CLI_ARGS, "refresh_rotation", False))
     fingerprint = scan_cache_fingerprint()
     old_cache = {}
     if use_cache:
         old_cache = load_scan_cache(
             SCAN_CACHE_PATH, fingerprint,
-            log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
+            log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"),
+            accept_stale=refresh_rotation)
     else:
         print(f"[{time.time()-t0:6.1f}s]   --no-cache: re-reading every header")
     new_cache: dict[str, dict] = {}
     cache_hits = 0
+    rotation_rereads = 0
 
     sample_meta = {}  # path → meta (one entry per imaging-candidate file)
     cold = []         # entries whose header we actually have to open
     for f in to_read:
         sz, mtime = stat_by_path.get(f["path"], (None, None))
         ent = old_cache.get(scan_cache_key(f["path"]))
+        if (refresh_rotation and ent is not None
+                and needs_rotation_reread(ent.get("meta") or {}, Path(f["path"]),
+                                          f["size_bytes"])):
+            rotation_rereads += 1
+            cold.append(f)
+            continue
         if (ent is not None and sz is not None
                 and f["path"] not in stat_failed_paths
                 and ent.get("size") == sz
@@ -4033,6 +4219,9 @@ def main():
     if cache_hits:
         print(f"[{time.time()-t0:6.1f}s]   scan cache: {cache_hits} hit(s), "
               f"{len(cold)} file(s) to read")
+    if refresh_rotation:
+        print(f"[{time.time()-t0:6.1f}s]   --refresh-rotation: re-reading "
+              f"{rotation_rereads} solved master(s) cached without an angle")
 
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         futures = {ex.submit(_read_one, f): f for f in cold}
@@ -4350,6 +4539,7 @@ def main():
         # different instrument that happened to spatially cluster here).
         master_members = [m for m in members if m.get("role") != "folder_sub"]
         per_master_fov = []
+        rotation_inputs = []
         for mm in master_members:
             fov_mm, pix_mm, method = compute_fov_from_meta(mm)
             if fov_mm:
@@ -4358,9 +4548,15 @@ def main():
                     "fov_arcmin": [round(fov_mm[0], 2), round(fov_mm[1], 2)],
                     "pix_arcsec": round(pix_mm, 3),
                     "method": method,
+                    "rotation_deg": mm.get("rotation_deg"),
                     "filter": mm.get("filter"),
                     "telescope": mm.get("telescope"),
                 }
+                rotation_inputs.append({
+                    "rotation_deg": mm.get("rotation_deg"),
+                    "fov_arcmin": entry["fov_arcmin"],
+                    "hours": (mm.get("exptime") or 0) * (mm.get("ncombine") or 0) / 3600.0,
+                })
                 # Surface extra FITS-derived fields used by the Coverage-Planner
                 # to auto-seed gear and do physics-based telescope/camera matching.
                 # All optional — omitted when the source header didn't carry them.
@@ -4399,15 +4595,20 @@ def main():
             if fov_candidate:
                 fov_arcmin = [round(fov_candidate[0], 2), round(fov_candidate[1], 2)]
                 pix_arcsec = round(pix_candidate, 3)
+        # The angle the target was shot at, and the box that holds every
+        # master's frame at that angle. A target with no master draws at 0.
+        rotation = target_rotation(rotation_inputs)
+        footprint_arcmin = rotation["footprint_arcmin"] or fov_arcmin
         # FOV corners (ICRS + Galactic)
         corners_icrs = []
         corners_gal = []
-        if fov_arcmin:
-            w_arcmin, h_arcmin = fov_arcmin
+        if footprint_arcmin:
+            w_arcmin, h_arcmin = footprint_arcmin
             corners_icrs, corners_gal = fov_corners(
                 ra_c, dec_c, w_arcmin, h_arcmin,
                 log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"),
-                label=", ".join(objects[:2]) or f"cluster at {ra_c:.2f}, {dec_c:.2f}")
+                label=", ".join(objects[:2]) or f"cluster at {ra_c:.2f}, {dec_c:.2f}",
+                rot_deg=rotation["rotation_deg"])
 
         # Date range
         dates = sorted({m.get("date_obs")[:10] for m in members if m.get("date_obs")})
@@ -4424,6 +4625,11 @@ def main():
             "fov_flag": fov_flag,
             "per_master_fov": per_master_fov,
             "pix_arcsec": pix_arcsec,
+            "rotation_deg": rotation["rotation_deg"],
+            "rotation_source": rotation["rotation_source"],
+            **({"rotation_alternates": rotation["rotation_alternates"]}
+               if "rotation_alternates" in rotation else {}),
+            "footprint_arcmin": footprint_arcmin,
             "corners_icrs": corners_icrs,
             "corners_galactic": corners_gal,
             "filters": emit_filters_data(filters_data),
@@ -4805,6 +5011,11 @@ def _parse_cli(argv: list[str] | None = None):
     ap.add_argument("--no-cache", action="store_true",
                     help="Ignore the header cache and re-read every file's "
                          "header. The cache is still rewritten at the end.")
+    ap.add_argument("--refresh-rotation", action="store_true",
+                    help="One-off upgrade pass: keep a header cache written by "
+                         "the previous version and re-read only the solved "
+                         "masters it holds without a rotation angle, instead "
+                         "of re-reading the whole archive.")
     return ap.parse_args(argv)
 
 
