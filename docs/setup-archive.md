@@ -144,6 +144,12 @@ You never have to manage the cache by hand. It is rewritten in full at the end o
 
     python scripts/build_archive_manifest.py --no-cache
 
+The first scan after upgrading to the version that records each master's rotation is one of those cold scans, because the header readers changed. On a big archive that can take hours. If your last scan used the version just before it, you can skip most of that:
+
+    python scripts/build_archive_manifest.py --refresh-rotation
+
+This keeps the old cache and opens only the plate-solved masters again, since they are the only files the angle is read from. Everything else comes from the cache. Use it once, straight after the upgrade. A cache from an older version than that can hold other stale answers, so run a normal scan instead.
+
 If you keep two archives with different `FITS_ROOTS` and run both regularly, give each its own `ACP_SCAN_CACHE` path. Sharing one is harmless but each run drops the other's entries, so neither ever gets a warm scan.
 
 ### Rescanning on a schedule

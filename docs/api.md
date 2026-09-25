@@ -90,6 +90,9 @@ Minimal shape:
       "center_b_deg": -0.63,
       "fov_arcmin": [120.0, 90.0],
       "pix_arcsec": 1.5,
+      "rotation_deg": 32.4,
+      "rotation_source": "wcs",
+      "footprint_arcmin": [120.0, 90.0],
       "corners_icrs":     [[ra,dec], [ra,dec], [ra,dec], [ra,dec]],
       "corners_galactic": [[l,b],    [l,b],    [l,b],    [l,b]   ],
       "telescopes": ["RedCat 51"],
@@ -105,7 +108,18 @@ Minimal shape:
 }
 ```
 
-**Corner order** for `corners_icrs`: `[SW, NW, NE, SE]`. The frontend places the filter badge on the NW corner and rotates it with the FOV.
+**Corner order** for `corners_icrs`: `[SW, NW, NE, SE]` of the box before it is turned. The frontend places the filter badge on whichever corner ends up furthest north-west and rotates it with the FOV.
+
+**Rotation.** `rotation_deg` is the angle the target was shot at: the position angle of the image's +Y axis, in degrees east of north, folded into 0 to 180 (a rectangle looks the same turned half a circle). It is the same convention as a plan's `target.rotation_deg`. The scanner reads it from each master's plate solve and stores the unfolded angle, 0 to 360, on each `per_master_fov` entry. `corners_icrs` and `corners_galactic` are the box turned to that angle, and `footprint_arcmin` is its size, which can be larger than `fov_arcmin` when the masters differ.
+
+`rotation_source` says where the angle came from:
+
+- `wcs`: every master has a plate solve and they agree within 3 degrees.
+- `wcs_partial`: they agree, but some masters had no usable angle.
+- `wcs_mixed`: the masters were shot at different angles. The angle with the most integration wins, the box grows to hold every frame, and `rotation_alternates` lists the other angles with their hours.
+- `none`: no master gave an angle, so the box is drawn north up.
+
+A manifest written before these fields existed has none of them and draws north up, as it always did.
 
 See `scripts/make_demo_manifest.py` for a runnable example that produces a valid minimal manifest.
 
