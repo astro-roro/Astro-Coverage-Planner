@@ -318,18 +318,27 @@ def _safe_next_path(candidate: str) -> str:
     ``candidate`` comes from the login form, so it is attacker-controlled.
     A scheme or a host sends the browser off this app entirely; a backslash
     is rejected too, because browsers treat "/\\evil.com" as protocol-relative
-    even though urlsplit does not parse it that way. Control characters are
-    rejected outright. What is left must be a bare path, no scheme, no
-    netloc, so a normal path with a query string still comes back unchanged.
+    even though urlsplit does not parse it that way, and a percent-encoded
+    backslash or slash (``%5c``, ``%2f``) would smuggle the same trick past a
+    check that only looks at the raw form value, so the check runs on the
+    decoded string as well. A third leading slash ("///evil.com") is also
+    rejected: some browsers collapse it to "//evil.com" and treat it as
+    protocol-relative even though urlsplit parses it as a plain path.
+
+    The return value is rebuilt from the validated, parsed pieces rather
+    than handed back verbatim, so nothing that reached this function
+    unexamined can reach the redirect.
     """
     if not candidate:
         return "/"
-    if "\\" in candidate or any(ord(ch) < 0x20 for ch in candidate):
-        return "/"
-    parsed = urllib.parse.urlsplit(candidate)
+    decoded = urllib.parse.unquote(candidate)
+    for value in (candidate, decoded):
+        if "\\" in value or any(ord(ch) < 0x20 for ch in value) or value.startswith("//"):
+            return "/"
+    parsed = urllib.parse.urlsplit(decoded)
     if parsed.scheme or parsed.netloc or not parsed.path.startswith("/"):
         return "/"
-    return candidate
+    return urllib.parse.urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -347,7 +356,7 @@ def login():
 
     supplied = (request.form.get("token") or "").strip()
     if not _token_matches(supplied, token):
-        logging.warning("[acp] failed sign-in attempt from %r", request.remote_addr)
+        logging.warning("[acp] failed sign-in attempt from %s", _safe_log(request.remote_addr))
         return render_template("login.html",
                                next_path=_safe_next_path(request.form.get("next") or "/"),
                                error="That token was not accepted."), 401
