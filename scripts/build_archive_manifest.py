@@ -17,6 +17,10 @@ Environment variables (all optional):
   ACP_SCAN_CACHE Where the per-file header cache lives.
                  Default: ``<repo>/data/scan_cache.json``. Delete it or pass
                  ``--no-cache`` to force every header to be read again.
+  ACP_TARGET_IDS Ledger that keeps target numbers stable across scans.
+                 Default: ``target_ids.json`` beside the manifest.
+  TARGET_OVERRIDES_PATH  Finished marks the planner stores per target, moved
+                 onto the surviving number when two targets merge.
   PIPELINE_DB    Optional sqlite DB with a ``frames`` table for per-sub hours
                  (a calibration tool's job_queue.db). Missing is fine — hours
                  then come solely from master-file headers.
@@ -53,6 +57,10 @@ from astropy.io import fits
 from astropy.wcs import WCS
 import astropy.units as u
 
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import target_ids  # noqa: E402
+
 import warnings
 warnings.filterwarnings("ignore", category=Warning)
 
@@ -84,6 +92,10 @@ DB_PATH = Path(os.environ.get("PIPELINE_DB") or (REPO_ROOT / "state" / "job_queu
 MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH") or (REPO_ROOT / "data" / "manifest.json"))
 REPORT_DIR = MANIFEST_PATH.parent
 SUMMARY_PATH = REPORT_DIR / "archive_manifest_summary.md"
+
+# Ledger of every target number ever issued, so a rescan keeps each target's
+# number (see scripts/target_ids.py).
+TARGET_IDS_PATH = Path(os.environ.get("ACP_TARGET_IDS") or (REPORT_DIR / "target_ids.json"))
 
 EXTENSIONS = (".fit", ".fits", ".fts", ".xisf")
 
@@ -4628,7 +4640,7 @@ def main():
         date_range = [dates[0], dates[-1]] if dates else None
 
         targets.append({
-            "target_id": i + 1,
+            "target_id": None,  # set by assign_target_ids below
             "objects": objects,
             "center_ra_deg": ra_c,
             "center_dec_deg": dec_c,
@@ -4659,6 +4671,14 @@ def main():
     if cluster_dedup_log:
         print(f"[{time.time()-t0:6.1f}s] Dropped {len(cluster_dedup_log)} master(s) "
               f"duplicated across folders, {cluster_dropped_hours:.1f}h double counted")
+
+    # Give each target the number it had last scan. Hours and footprints are
+    # final by now; the DB floor below only adds hours to named bands.
+    print(f"[{time.time()-t0:6.1f}s] Step 5a: Matching targets to last scan's numbers")
+    previous_manifest = target_ids.read_previous_targets(MANIFEST_PATH)
+    id_ledger, id_report = target_ids.assign_target_ids(
+        targets, previous_manifest, target_ids.load_ledger(TARGET_IDS_PATH))
+    print(f"[{time.time()-t0:6.1f}s] {target_ids.describe_report(id_report)}")
 
     # Enrich targets with DB sub hours by fuzzy object-name matching
     # For each target, find DB (object, filter) rows whose object name looks similar to any of target.objects
@@ -4772,6 +4792,7 @@ def main():
         "total_masters_with_wcs": n_wcs,
         "total_integration_hours": round(total_hours, 1),
         "manifest_schema": 2,
+        "target_id_changes": id_report,
         "total_captured_hours": total_hours_across(targets, "captured_hours"),
         "total_integrated_hours": total_hours_across(targets, "integrated_hours"),
         "targets": targets,
@@ -4825,7 +4846,15 @@ def main():
             "uncoordinated_captured_hours": hour_flags["uncoordinated_captured_hours"],
         },
     }
-    MANIFEST_PATH.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    # Order matters if the scan is killed part way. Moving per-target marks
+    # first is safe, since a merge's surviving number is already in the old
+    # manifest. The ledger goes before the manifest so the next run never
+    # sees a manifest holding numbers the ledger has not recorded.
+    target_ids.carry_over_merges(
+        {int(k): v for k, v in id_report["merges"].items()},
+        log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"))
+    target_ids.atomic_write_json(TARGET_IDS_PATH, id_ledger, indent=2)
+    target_ids.atomic_write_json(MANIFEST_PATH, manifest, indent=2)
     print(f"[{time.time()-t0:6.1f}s] Wrote {MANIFEST_PATH}")
 
     # Optional sanitised copy for sharing — same data, but stripped of paths,
@@ -4858,6 +4887,7 @@ def main():
     print(f"  Header cache:      {cache_hits} hits, {len(cold)} misses, "
           f"{cache_dropped} dropped")
     print(f"  Targets (clusters): {len(targets)}")
+    print(f"  Target numbers:    {target_ids.describe_report(id_report)}")
     print(f"  Total hours (gross, all filters): {total_hours:.1f}")
     print(f"  sii==ha suspects:  {len(flagged)}")
     print(f"  Masters missing WCS: {len(no_wcs)}")
@@ -4882,6 +4912,16 @@ def write_summary(m: dict):
     lines.append(f"- **Total captured (gross, all filters)**: {m.get('total_captured_hours', 0)} h")
     lines.append(f"- **Total integrated (gross, all filters)**: {m.get('total_integrated_hours', 0)} h")
     lines.append("")
+    ids = m.get("target_id_changes")
+    if ids:
+        lines.append("## Target numbers")
+        lines.append("")
+        lines.append(target_ids.describe_report(ids))
+        if ids.get("merges"):
+            lines.append("")
+            for old, new in ids["merges"].items():
+                lines.append(f"- #{old} merged into #{new}")
+        lines.append("")
     lines.append("## File role counts")
     lines.append("")
     lines.append("| Role | Count |")
