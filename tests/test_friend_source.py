@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -86,111 +87,106 @@ def _friend_sources(mod) -> list:
     return [s for s in mod.app.coverage_sources if s.metadata()["kind"] == "friend"]
 
 
-def test_env_var_round_trip() -> None:
-    sanitised = sanitise_dict(_raw_manifest(), label="Dave")
-    tmp = Path(tempfile.mkdtemp())
-    path = tmp / "dave.json"
-    path.write_text(json.dumps(sanitised), encoding="utf-8")
 
-    mod, cap = _reload_app_with_env(str(path))
-    friends = _friend_sources(mod)
-    assert len(friends) == 1, [s.id() for s in mod.app.coverage_sources]
-    friend = friends[0]
-    meta = friend.metadata()
-    assert meta["kind"] == "friend"
-    assert meta["attribution"] == "Shared by Dave"
-    assert friend.id() == "friend_dave"
+class FriendSourceTests(unittest.TestCase):
 
-    regions = list(friend.coverage())
-    assert len(regions) == 1
-    assert regions[0]["kind"] == "polygon"
-    assert len(regions[0]["vertices"]) == 4
-    assert regions[0]["filters"]["Ha"]["hours"] == 5.0
-    assert not cap.warnings, cap.warnings
-    print("test_env_var_round_trip OK")
+    def test_env_var_round_trip(self):
+        sanitised = sanitise_dict(_raw_manifest(), label="Dave")
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "dave.json"
+        path.write_text(json.dumps(sanitised), encoding="utf-8")
 
+        mod, cap = _reload_app_with_env(str(path))
+        friends = _friend_sources(mod)
+        assert len(friends) == 1, [s.id() for s in mod.app.coverage_sources]
+        friend = friends[0]
+        meta = friend.metadata()
+        assert meta["kind"] == "friend"
+        assert meta["attribution"] == "Shared by Dave"
+        assert friend.id() == "friend_dave"
 
-def test_tripwire_rejects_unsanitised() -> None:
-    """Manifest without 'sanitised: true' must be rejected and logged."""
-    payload = _raw_manifest()  # raw, no sanitised flag
-    tmp = Path(tempfile.mkdtemp())
-    path = tmp / "raw.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    mod, cap = _reload_app_with_env(str(path))
-    assert _friend_sources(mod) == [], [s.id() for s in mod.app.coverage_sources]
-    assert any("sanitised" in w for w in cap.warnings), cap.warnings
-    print("test_tripwire_rejects_unsanitised OK")
+        regions = list(friend.coverage())
+        assert len(regions) == 1
+        assert regions[0]["kind"] == "polygon"
+        assert len(regions[0]["vertices"]) == 4
+        assert regions[0]["filters"]["Ha"]["hours"] == 5.0
+        assert not cap.warnings, cap.warnings
+        print("test_env_var_round_trip OK")
 
 
-def test_malformed_json_is_skipped() -> None:
-    tmp = Path(tempfile.mkdtemp())
-    path = tmp / "broken.json"
-    path.write_text("{not valid json", encoding="utf-8")
+    def test_tripwire_rejects_unsanitised(self):
+        """Manifest without 'sanitised: true' must be rejected and logged."""
+        payload = _raw_manifest()  # raw, no sanitised flag
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "raw.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
 
-    mod, cap = _reload_app_with_env(str(path))
-    assert _friend_sources(mod) == [], [s.id() for s in mod.app.coverage_sources]
-    assert any(str(path) in w for w in cap.warnings), cap.warnings
-    print("test_malformed_json_is_skipped OK")
-
-
-def test_missing_path_is_skipped() -> None:
-    tmp = Path(tempfile.mkdtemp())
-    path = tmp / "does_not_exist.json"  # never created
-    mod, cap = _reload_app_with_env(str(path))
-    assert _friend_sources(mod) == []
-    assert any("path not found" in w for w in cap.warnings), cap.warnings
-    print("test_missing_path_is_skipped OK")
+        mod, cap = _reload_app_with_env(str(path))
+        assert _friend_sources(mod) == [], [s.id() for s in mod.app.coverage_sources]
+        assert any("sanitised" in w for w in cap.warnings), cap.warnings
+        print("test_tripwire_rejects_unsanitised OK")
 
 
-def test_source_id_sanitiser() -> None:
-    """Filename with characters outside [a-zA-Z0-9_-] gets coerced to underscores."""
-    sanitised = sanitise_dict(_raw_manifest(), label="Friend 2026")
-    tmp = Path(tempfile.mkdtemp())
-    # Pick a filename with a character that survives Windows but isn't alnum/_/-.
-    # A space and a dot in the stem both qualify; use a space which is safe everywhere.
-    path = tmp / "friend share 2026.json"
-    path.write_text(json.dumps(sanitised), encoding="utf-8")
+    def test_malformed_json_is_skipped(self):
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "broken.json"
+        path.write_text("{not valid json", encoding="utf-8")
 
-    mod, _cap = _reload_app_with_env(str(path))
-    friends = _friend_sources(mod)
-    assert len(friends) == 1
-    sid = friends[0].id()
-    # All characters must be in the canonical safe set; the space in the stem
-    # should have been replaced.
-    assert all(c.isalnum() or c in "_-" for c in sid), sid
-    assert sid.startswith("friend_"), sid
-    assert " " not in sid, sid
-    print(f"test_source_id_sanitiser OK (id={sid!r})")
+        mod, cap = _reload_app_with_env(str(path))
+        assert _friend_sources(mod) == [], [s.id() for s in mod.app.coverage_sources]
+        assert any(str(path) in w for w in cap.warnings), cap.warnings
+        print("test_malformed_json_is_skipped OK")
 
 
-def test_two_friends_via_semicolon() -> None:
-    """Both load when env var lists two valid sanitised manifests."""
-    s1 = sanitise_dict(_raw_manifest(), label="Dave")
-    s2 = sanitise_dict(_raw_manifest(), label="Sara")
-    tmp = Path(tempfile.mkdtemp())
-    p1 = tmp / "dave.json"
-    p2 = tmp / "sara.json"
-    p1.write_text(json.dumps(s1), encoding="utf-8")
-    p2.write_text(json.dumps(s2), encoding="utf-8")
+    def test_missing_path_is_skipped(self):
+        tmp = Path(tempfile.mkdtemp())
+        path = tmp / "does_not_exist.json"  # never created
+        mod, cap = _reload_app_with_env(str(path))
+        assert _friend_sources(mod) == []
+        assert any("path not found" in w for w in cap.warnings), cap.warnings
+        print("test_missing_path_is_skipped OK")
 
-    mod, cap = _reload_app_with_env(f"{p1};{p2}")
-    friends = _friend_sources(mod)
-    assert len(friends) == 2, [s.id() for s in mod.app.coverage_sources]
-    labels = [s.metadata()["label"] for s in friends]
-    assert labels == ["Dave", "Sara"], labels
-    assert not cap.warnings, cap.warnings
-    print("test_two_friends_via_semicolon OK")
+
+    def test_source_id_sanitiser(self):
+        """Filename with characters outside [a-zA-Z0-9_-] gets coerced to underscores."""
+        sanitised = sanitise_dict(_raw_manifest(), label="Friend 2026")
+        tmp = Path(tempfile.mkdtemp())
+        # Pick a filename with a character that survives Windows but isn't alnum/_/-.
+        # A space and a dot in the stem both qualify; use a space which is safe everywhere.
+        path = tmp / "friend share 2026.json"
+        path.write_text(json.dumps(sanitised), encoding="utf-8")
+
+        mod, _cap = _reload_app_with_env(str(path))
+        friends = _friend_sources(mod)
+        assert len(friends) == 1
+        sid = friends[0].id()
+        # All characters must be in the canonical safe set; the space in the stem
+        # should have been replaced.
+        assert all(c.isalnum() or c in "_-" for c in sid), sid
+        assert sid.startswith("friend_"), sid
+        assert " " not in sid, sid
+        print(f"test_source_id_sanitiser OK (id={sid!r})")
+
+
+    def test_two_friends_via_semicolon(self):
+        """Both load when env var lists two valid sanitised manifests."""
+        s1 = sanitise_dict(_raw_manifest(), label="Dave")
+        s2 = sanitise_dict(_raw_manifest(), label="Sara")
+        tmp = Path(tempfile.mkdtemp())
+        p1 = tmp / "dave.json"
+        p2 = tmp / "sara.json"
+        p1.write_text(json.dumps(s1), encoding="utf-8")
+        p2.write_text(json.dumps(s2), encoding="utf-8")
+
+        mod, cap = _reload_app_with_env(f"{p1};{p2}")
+        friends = _friend_sources(mod)
+        assert len(friends) == 2, [s.id() for s in mod.app.coverage_sources]
+        labels = [s.metadata()["label"] for s in friends]
+        assert labels == ["Dave", "Sara"], labels
+        assert not cap.warnings, cap.warnings
+        print("test_two_friends_via_semicolon OK")
+
 
 
 if __name__ == "__main__":
-    try:
-        test_env_var_round_trip()
-        test_tripwire_rejects_unsanitised()
-        test_malformed_json_is_skipped()
-        test_missing_path_is_skipped()
-        test_source_id_sanitiser()
-        test_two_friends_via_semicolon()
-    finally:
-        os.environ.pop("ACP_FRIEND_MANIFESTS", None)
-    print("ALL OK")
+    unittest.main()
