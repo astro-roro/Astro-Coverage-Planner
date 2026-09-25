@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { describeUpload, summariseUploads } from "../../static/ts-sync-banner.mjs";
+import { describeUpload, summariseUploads, formatExpiry } from "../../static/ts-sync-banner.mjs";
 
 describe("describeUpload", () => {
   it("names new and conflicting counts for a ready upload", () => {
@@ -32,6 +32,53 @@ describe("describeUpload", () => {
   it("has no colon when a ready upload has no non-zero counts", () => {
     const text = describeUpload({ machine: "X", state: "ready", counts: {} });
     assert.equal(text, "X sent TS changes to review.");
+  });
+
+  it("omits the expiry when expires_iso is absent, for both old and new servers", () => {
+    const ready = describeUpload({ machine: "X", state: "ready", counts: { new: 1 } });
+    assert.equal(ready, "X sent TS changes to review: 1 new.");
+    const checking = describeUpload({ machine: "X", state: "checking" });
+    assert.equal(checking, "X sent TS changes. ACP is still reading them.");
+  });
+
+  it("appends the expiry when expires_iso is present", () => {
+    const now = new Date(2026, 8, 25, 9, 0);
+    const text = describeUpload(
+      { machine: "X", state: "ready", counts: { new: 1 }, expires_iso: "2026-09-26T05:40:00" },
+      now,
+    );
+    assert.equal(text, "X sent TS changes to review: 1 new. Expires 5:40 am tomorrow.");
+  });
+
+  it("appends the expiry to a still-checking upload too", () => {
+    const now = new Date(2026, 8, 25, 9, 0);
+    const text = describeUpload(
+      { machine: "X", state: "checking", expires_iso: "2026-09-25T15:40:00" },
+      now,
+    );
+    assert.equal(text, "X sent TS changes. ACP is still reading them. Expires 3:40 pm today.");
+  });
+});
+
+describe("formatExpiry", () => {
+  const now = new Date(2026, 8, 25, 9, 0);
+
+  it("says today for a time later the same day", () => {
+    assert.equal(formatExpiry("2026-09-25T15:40:00", now), "3:40 pm today");
+  });
+
+  it("says tomorrow for a time the following calendar day", () => {
+    assert.equal(formatExpiry("2026-09-26T05:40:00", now), "5:40 am tomorrow");
+  });
+
+  it("names the date further out", () => {
+    const text = formatExpiry("2026-09-30T12:00:00", now);
+    assert.match(text, /^12:00 pm on Wed,? 30 Sept?$/);
+  });
+
+  it("returns null for a missing or unparseable timestamp", () => {
+    assert.equal(formatExpiry(undefined, now), null);
+    assert.equal(formatExpiry("not-a-date", now), null);
   });
 });
 
