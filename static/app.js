@@ -127,6 +127,7 @@ let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on
 let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
+let editingPlanOriginalSettings = null; // {state, priority, minimum_time_min} as loaded, so savePlan() knows whether to also hit the project settings route
 let planOverlay = null;        // Aladin overlay for plan footprints (solid, plans with data)
 let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed, not-started plans)
 let planCenterCat = null;      // Aladin catalog for plan center + rotation handle markers
@@ -574,6 +575,7 @@ import {
   withTimeout,
 } from "./init-error.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
+import { planStateBadgeLabel } from "./plan-state.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -6009,7 +6011,12 @@ function newEmptyPlan() {
     priority: "normal",
     min_altitude_deg: 30,
     meridian_window_min: 0,
-    state: "draft",
+    minimum_time_min: 0,
+    // A new plan starts active, not draft: decision 2 in
+    // docs/specs/ts-project-settings.md. Every existing plan left as
+    // draft under the old meaning was already imaging in TS, so drafting
+    // a new one by default would just leave it unscheduled until changed.
+    state: "active",
   };
 }
 
@@ -6067,9 +6074,16 @@ function renderPlanList() {
     remaining *= panelCount;
     const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
     const priLabel = pri.charAt(0).toUpperCase() + pri.slice(1);
-    return `<li class="plan-row" data-plan-id="${esc(pl.id)}">
+    // Active (or no state at all, pre-existing plans) shows no badge so the
+    // usual list looks as it always has; any other state gets a small
+    // label. Closed plans are drawn faded via the row's own class.
+    const state = pl.state || "active";
+    const stateLabel = planStateBadgeLabel(state);
+    const stateBadge = stateLabel ? `<span class="plan-state-badge">${stateLabel}</span>` : "";
+    const rowClass = state === "closed" ? "plan-row plan-state-closed" : "plan-row";
+    return `<li class="${rowClass}" data-plan-id="${esc(pl.id)}">
         <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
-        <span class="plan-name">${name}</span>
+        <span class="plan-name">${name}${stateBadge}</span>
         ${visCell}
         <div class="plan-row-line2">
           <span class="plan-project">${proj}</span>
@@ -6210,6 +6224,11 @@ function renderPlanEditor(plan) {
   updateSearchVisibility();
   selectedPlanId = plan.id;
   editingPlan = JSON.parse(JSON.stringify(plan));
+  editingPlanOriginalSettings = {
+    state: editingPlan.state || "active",
+    priority: editingPlan.priority || "normal",
+    minimum_time_min: editingPlan.minimum_time_min ?? 0,
+  };
   saveUiState();
 
   const panel = document.getElementById("panelBody");
@@ -6221,6 +6240,12 @@ function renderPlanEditor(plan) {
   const camFilters = camera?.filters ? Object.keys(camera.filters) : FILTER_DOT_ORDER;
   const filters = FILTER_DOT_ORDER.filter(f => camFilters.includes(f));
   const mos = planMosaic(editingPlan);
+  // Other plans sharing this project_name: state, priority and minimum
+  // time apply to the whole TS project, not just this plan (see
+  // PUT /api/projects/<name>/settings), so the editor says so.
+  const projectMateCount = editingPlan.project_name
+    ? plans.filter(p => p.id !== editingPlan.id && p.project_name === editingPlan.project_name).length
+    : 0;
 
   const telOpts = (gear.telescopes || []).map(t =>
     `<option value="${esc(t.id)}" ${t.id === editingPlan.telescope_id ? "selected" : ""}>${esc(t.name)} (${t.focal_length_mm}mm)</option>`
@@ -6326,6 +6351,14 @@ function renderPlanEditor(plan) {
 
       <fieldset>
         <legend>Constraints</legend>
+        <label><span class="lab">State</span>
+          <select id="f_state">
+            <option value="draft"    ${(editingPlan.state||"active")==="draft"?"selected":""}>Draft</option>
+            <option value="active"   ${(editingPlan.state||"active")==="active"?"selected":""}>Active</option>
+            <option value="inactive" ${(editingPlan.state||"active")==="inactive"?"selected":""}>Inactive</option>
+            <option value="closed"   ${(editingPlan.state||"active")==="closed"?"selected":""}>Closed</option>
+          </select>
+        </label>
         <label><span class="lab">Priority</span>
           <select id="f_priority">
             <option value="high"   ${editingPlan.priority==="high"?"selected":""}>High</option>
@@ -6333,6 +6366,10 @@ function renderPlanEditor(plan) {
             <option value="low"    ${editingPlan.priority==="low"?"selected":""}>Low</option>
           </select>
         </label>
+        <label><span class="lab">Minimum time (min)</span>
+          <input type="number" step="1" min="0" id="f_mintime" value="${editingPlan.minimum_time_min ?? 0}">
+        </label>
+        ${projectMateCount > 0 ? `<div class="proj-settings-note" style="font-size:11px;color:#78839a">State, priority and minimum time apply to all ${projectMateCount + 1} plans in project ${esc(editingPlan.project_name)}.</div>` : ""}
         <label><span class="lab">Min altitude (°)</span>
           <input type="number" step="1" min="0" max="90" id="f_minalt" value="${editingPlan.min_altitude_deg ?? 30}">
         </label>
@@ -6471,7 +6508,11 @@ function renderPlanEditor(plan) {
       el.dispatchEvent(new Event("change", { bubbles: true }));
     }
   });
+  panel.querySelector("#f_state")?.addEventListener("change", e => { editingPlan.state = e.target.value; });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
+  panel.querySelector("#f_mintime")?.addEventListener("input", e => {
+    const v = parseInt(e.target.value, 10); if (Number.isFinite(v) && v >= 0) editingPlan.minimum_time_min = v;
+  });
   panel.querySelector("#f_visibility")?.addEventListener("change", e => {
     editingPlan.visibility = e.target.value;
     const extra = panel.querySelector("#f_public_extra");
@@ -6546,6 +6587,33 @@ function renderPlanEditor(plan) {
 
 async function savePlan() {
   if (!editingPlan) return false;
+  // State, priority and minimum time apply to every plan sharing this
+  // project_name (docs/specs/ts-project-settings.md section 1), so a
+  // change to any of the three goes through the group route first: one
+  // write to plans.json, so a half-saved project can't happen. Only
+  // fires when one of the three actually changed, and only when the plan
+  // is in a named project at all.
+  const settingsChanged = editingPlanOriginalSettings && (
+    editingPlan.state !== editingPlanOriginalSettings.state
+    || editingPlan.priority !== editingPlanOriginalSettings.priority
+    || editingPlan.minimum_time_min !== editingPlanOriginalSettings.minimum_time_min
+  );
+  if (editingPlan.project_name && settingsChanged) {
+    const sr = await fetch(`/api/projects/${encodeURIComponent(editingPlan.project_name)}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        state: editingPlan.state,
+        priority: editingPlan.priority,
+        minimum_time_min: editingPlan.minimum_time_min,
+      }),
+    });
+    if (!sr.ok) {
+      const j = await sr.json().catch(() => ({}));
+      alert(j.error || `Project settings save failed (${sr.status}).`);
+      return false;
+    }
+  }
   const r = await fetch("/api/plans", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -6557,9 +6625,16 @@ async function savePlan() {
     return false;
   }
   const saved = await r.json();
-  const idx = plans.findIndex(p => p.id === saved.id);
-  if (idx >= 0) plans[idx] = saved; else plans.push(saved);
   editingPlan = saved;
+  editingPlanOriginalSettings = {
+    state: saved.state || "active",
+    priority: saved.priority || "normal",
+    minimum_time_min: saved.minimum_time_min ?? 0,
+  };
+  // Reload the full list rather than patching one entry in place: when the
+  // settings route above just changed this plan's project-mates too, the
+  // in-memory `plans` array has to pick that up, not just this plan.
+  await loadPlans();
   const btn = document.getElementById("planSave");
   if (btn) { const orig = btn.textContent; btn.textContent = "Saved ✓"; setTimeout(() => { if (btn.textContent === "Saved ✓") btn.textContent = orig; }, 1500); }
   // Plan list changed, refresh inventory tile rendering so the

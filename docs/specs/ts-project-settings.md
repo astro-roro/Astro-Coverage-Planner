@@ -327,6 +327,8 @@ Nothing in TS is edited from the first step to the last.
 
 ## Decisions for Rohan
 
+Approved by Rohan 2026-09-25, all three as recommended.
+
 1. Meridian window stays owned by ACP. Recommended: yes. ACP already has the field in the editor, the import and the diff, and the rule from PR #12 says ACP owns what it has a setting for. Making it TS-only means removing the field from the editor.
 2. A new plan starts as active, not draft. Recommended: active. Every plan you have made was left as draft and you expected it to image. Starting as draft makes each new plan sit unscheduled in TS until you change it.
 3. When ACP and TS both change a setting between syncs, the push from the rig writes ACP's value. Recommended: yes, ACP wins. The push can run unattended at dusk, so the other choice would stop it to ask. The cost is that a change made at the rig can be undone. The dock says when that happens.
