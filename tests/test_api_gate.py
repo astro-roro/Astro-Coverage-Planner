@@ -179,13 +179,28 @@ class TestSigningIn(TokenCase):
 
     def test_an_offsite_next_is_refused(self):
         for hostile in ("https://evil.example/", "//evil.example/",
-                         "/\\evil.example", "https://evil.example"):
+                         "/\\evil.example", "https://evil.example",
+                         "///evil.example", "/%5c%5cevil.example",
+                         "/%2f%2fevil.example", "/\t/evil.example"):
             r = self.sign_in(next_path=hostile)
             self.assertNotIn("evil.example", r.headers["Location"], hostile)
 
     def test_an_empty_next_goes_to_the_app(self):
         r = self.sign_in(next_path="")
         self.assertTrue(r.headers["Location"].endswith("/"))
+
+    def test_a_normal_next_still_works(self):
+        r = self.sign_in(next_path="/plans")
+        self.assertTrue(r.headers["Location"].endswith("/plans"), r.headers["Location"])
+
+    def test_a_failed_sign_in_does_not_carry_a_newline_into_the_log(self):
+        with self.assertLogs(level="WARNING") as captured:
+            self.client.post(
+                "/login", data={"token": "not-the-token", "next": "/"},
+                environ_overrides={"REMOTE_ADDR": "1.2.3.4\r\nINJECTED: line"})
+        joined = "\n".join(captured.output)
+        self.assertNotIn("\r\nINJECTED", joined)
+        self.assertNotIn("\nINJECTED", joined)
 
     def test_logging_out_clears_the_cookie(self):
         self.sign_in()
