@@ -61,13 +61,8 @@ function pillClass(f) {
   return FILTER_COLORS[f] ? `fp-${f}` : "fp-other";
 }
 
-// Stable palette for telescope colors (ColorBrewer Set1 + extras)
-const TELESCOPE_PALETTE = [
-  "#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00",
-  "#a65628", "#f781bf", "#17becf", "#bcbd22", "#ff1493",
-  "#00ced1", "#ffd700", "#8b4513", "#6a5acd", "#2e8b57",
-];
-const TELESCOPE_FALLBACK = "#888";
+// Telescope palette, automatic colours and saved picks live in
+// ./telescope-colours.mjs (imported below).
 
 let manifest = null;
 let aladin = null;
@@ -618,6 +613,16 @@ import {
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import {
+  raDecToTangentOffset,
+  rectangleCorners,
+} from "./sky-geometry.mjs";
+import {
+  TELESCOPE_FALLBACK,
+  UNKNOWN_TELESCOPE,
+  assignTelescopeColours,
+  autoTelescopeColour,
+} from "./telescope-colours.mjs";
+import {
   DEFAULT_PLAN_STATES,
   PLAN_STATES,
   STATE_NAMES,
@@ -643,11 +648,11 @@ function deepestFilter(filters, minH = 0) {
 // it was turned to the angle it was shot at, so index 1 for a box square to north.
 function badgeAnchorIndex(corners, ra_c, dec_c) {
   if (!Number.isFinite(ra_c) || !Number.isFinite(dec_c)) return 1;
-  const cosD = Math.max(1e-6, Math.cos(dec_c * Math.PI / 180));
   let best = 1, bestScore = -Infinity;
   corners.forEach(([ra, dec], i) => {
-    const dra = ((ra - ra_c + 540) % 360) - 180;  // wrap across RA 0/360
-    const east = dra * cosD, north = dec - dec_c;
+    const off = raDecToTangentOffset(ra_c, dec_c, ra, dec);
+    if (!off) return;
+    const [east, north] = off;
     // Small bias to index 1 so an exact 45 degree tie keeps today's anchor.
     const score = north - east + (i === 1 ? 1e-9 : 0);
     if (score > bestScore) { bestScore = score; best = i; }
@@ -762,9 +767,8 @@ function filterBadgeShape(src, ctx /*, viewParams */) {
   ctx.restore();
 }
 
-const UNKNOWN_TELESCOPE = "Unknown";
-
-function assignTelescopeColors(targets) {
+// chosen: the saved picks from gear.json's telescope_colours, {name: "#rrggbb"}.
+function assignTelescopeColors(targets, chosen = {}) {
   const names = new Set();
   let anyUnknown = false;
   for (const t of targets) {
@@ -773,10 +777,7 @@ function assignTelescopeColors(targets) {
     for (const n of tel) names.add(n);
   }
   const sorted = [...names].sort();
-  const map = {};
-  for (let i = 0; i < sorted.length; i++) {
-    map[sorted[i]] = TELESCOPE_PALETTE[i % TELESCOPE_PALETTE.length];
-  }
+  const map = assignTelescopeColours(sorted, chosen);
   // Append "Unknown" at the end with the fallback grey so the user can still
   // filter those FOVs explicitly (e.g. NINA captures with no TELESCOP header).
   if (anyUnknown) {
@@ -784,6 +785,34 @@ function assignTelescopeColors(targets) {
     sorted.push(UNKNOWN_TELESCOPE);
   }
   return { map, sorted };
+}
+
+// Recolour from the manifest plus the saved picks, then refresh the legend and
+// the map. Called once gear has loaded and after every colour change.
+function applyTelescopeColours() {
+  if (!manifest) return;
+  const { map, sorted } = assignTelescopeColors(manifest.targets || [], gear.telescope_colours || {});
+  telescopeColor = map;
+  renderTelescopeLegend(sorted);
+}
+
+// Save one telescope's colour, or clear it with colour null so it goes back to
+// automatic. Keeps the local copy of gear in step with what the server holds.
+async function saveTelescopeColour(name, colour) {
+  try {
+    const r = await fetch("/api/gear/telescope-colour", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, colour }),
+    });
+    if (!r.ok) return false;
+    const j = await r.json();
+    gear.telescope_colours = j.telescope_colours || {};
+  } catch { return false; }
+  applyTelescopeColours();
+  redrawFootprints();
+  if (typeof redrawPlanFootprints === "function") redrawPlanFootprints();
+  return true;
 }
 
 function telescopeOf(t) {
@@ -5978,6 +6007,8 @@ function init() {
       loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides(),
       loadPublishConfig(), initSites(), catalogReady,
     ]);
+    // The legend was drawn before gear loaded; redraw it with the saved picks.
+    applyTelescopeColours();
 
     // Restore previous session state before the first draw so the map
     // reflects saved filters/telescopes/search immediately.
@@ -6003,16 +6034,33 @@ function renderTelescopeLegend(telescopes) {
   const host = document.getElementById("telescopeChips");
   if (!host) return;
   host.innerHTML = "";
+  const picked = gear?.telescope_colours || {};
   for (const name of telescopes) {
     const color = telescopeColor[name] || TELESCOPE_FALLBACK;
     const label = document.createElement("label");
     label.className = "fchip tele-chip";
+    // "Unknown" has no telescope to attach a colour to, so it keeps a plain swatch.
+    const swatch = name === UNKNOWN_TELESCOPE
+      ? `<span class="tele-swatch" style="background:${esc(color)}"></span>`
+      : `<input type="color" class="tele-swatch tele-swatch-pick" data-telescope-colour="${esc(name)}"
+           value="${esc(color)}" title="${picked[name]
+             ? "Your colour. Click to change it, right-click to go back to automatic."
+             : "Automatic colour. Click to pick your own."}" />`;
     label.innerHTML = `
-      <input type="checkbox" data-telescope="${esc(name)}" checked />
-      <span class="tele-swatch" style="background:${esc(color)}"></span>
+      <input type="checkbox" data-telescope="${esc(name)}" ${selectedTelescopes.has(name) ? "checked" : ""} />
+      ${swatch}
       ${esc(name)}`;
     host.appendChild(label);
   }
+  host.querySelectorAll("input[data-telescope-colour]").forEach(inp => {
+    const name = inp.dataset.telescopeColour;
+    inp.addEventListener("change", () => saveTelescopeColour(name, inp.value));
+    inp.addEventListener("contextmenu", evt => {
+      if (!picked[name]) return;
+      evt.preventDefault();
+      saveTelescopeColour(name, null);
+    });
+  });
   host.querySelectorAll("input[data-telescope]").forEach(cb => {
     cb.addEventListener("change", () => {
       const name = cb.dataset.telescope;
@@ -6038,8 +6086,11 @@ async function loadGear() {
   try {
     const r = await fetch("/api/gear");
     const g = await r.json();
-    gear = { version: g.version || 2, telescopes: g.telescopes || [], cameras: g.cameras || [] };
-  } catch { gear = { telescopes: [], cameras: [] }; }
+    gear = {
+      version: g.version || 2, telescopes: g.telescopes || [], cameras: g.cameras || [],
+      telescope_colours: g.telescope_colours || {},
+    };
+  } catch { gear = { telescopes: [], cameras: [], telescope_colours: {} }; }
 }
 
 // Merge telescopes/cameras discovered in the coverage manifest into gear.json.
@@ -6155,11 +6206,21 @@ function _normTelName(s) {
 
 // Resolve a plan's footprint color from its selected telescope, matching the
 // legend swatch used for existing coverage. Match order: exact → case-insensitive
-// → normalized substring (either direction). Falls back to a stable palette
-// index hashed from the telescope id/name for gear not present in the manifest.
+// → normalized substring (either direction). A colour picked for the gear
+// telescope's own name in the gear editor wins over all of that. Falls back to
+// the automatic colour for the name, for gear not present in the manifest.
 function planBorderColor(plan) {
   const tel = planTelescope(plan);
   if (!tel || !tel.name) return TELESCOPE_FALLBACK;
+  return gearTelescopeColour(tel.name);
+}
+
+// The colour for a gear telescope by name, shared by plan outlines and the
+// gear editor's swatches.
+function gearTelescopeColour(name) {
+  const tel = { name };
+  const picked = gear?.telescope_colours?.[tel.name];
+  if (picked) return picked;
   if (telescopeColor[tel.name]) return telescopeColor[tel.name];
   const want = tel.name.toLowerCase();
   for (const k of Object.keys(telescopeColor)) {
@@ -6173,10 +6234,7 @@ function planBorderColor(plan) {
       if (kN === wantN || kN.includes(wantN) || wantN.includes(kN)) return telescopeColor[k];
     }
   }
-  const key = tel.id || tel.name;
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  return TELESCOPE_PALETTE[h % TELESCOPE_PALETTE.length];
+  return autoTelescopeColour(tel.name);
 }
 
 function deriveFovArcmin(telescope, camera) {
@@ -6213,6 +6271,9 @@ function mosaicPanelCenters(plan) {
   const strideH = (fh / 60) * (1 - overlap);
   const R = (tg.rotation_deg || 0) * Math.PI / 180;
   const cosR = Math.cos(R), sinR = Math.sin(R);
+  // Panel centres keep the flat offset because _mosaic_panel_centers in app.py
+  // writes them into the NINA export the same way, and the preview must show
+  // what gets exported. Each panel's own corners use the true projection.
   const cosD = Math.max(1e-6, Math.cos((tg.center_dec_deg || 0) * Math.PI / 180));
   const panels = [];
   for (let i = 0; i < rows; i++) {
@@ -6254,26 +6315,10 @@ function planMosaicBoundsCorners(plan) {
 // given width/height in arcmin and rotation_deg (PA, degrees east of north for
 // the camera's +Y axis, NINA's convention). Returns [[ra, dec], ...] in
 // order SW, NW, NE, SE so the NE corner (index 2) can host a rotation handle.
+// The maths lives in ./sky-geometry.mjs as a true tangent-plane projection,
+// so a plan near a pole draws as a rectangle rather than a crossed outline.
 function computePlanCorners(ra_deg, dec_deg, fov_w_arcmin, fov_h_arcmin, rot_deg) {
-  const toRad = x => x * Math.PI / 180;
-  const half_w = fov_w_arcmin / 2 / 60;   // degrees
-  const half_h = fov_h_arcmin / 2 / 60;
-  const R = toRad(rot_deg || 0);
-  const cosR = Math.cos(R), sinR = Math.sin(R);
-  const cosD = Math.max(1e-6, Math.cos(toRad(dec_deg)));
-  const local = [
-    [-half_w, -half_h],
-    [-half_w, +half_h],
-    [+half_w, +half_h],
-    [+half_w, -half_h],
-  ];
-  return local.map(([lx, ly]) => {
-    // Camera-Y sits at PA = R east of north, so rotate the camera-plane
-    // offsets into (east, north) sky offsets:
-    const de =  lx * cosR + ly * sinR;
-    const dn = -lx * sinR + ly * cosR;
-    return [ra_deg + de / cosD, dec_deg + dn];
-  });
+  return rectangleCorners(ra_deg, dec_deg, fov_w_arcmin, fov_h_arcmin, rot_deg);
 }
 
 function newEmptyPlan() {
@@ -7369,6 +7414,9 @@ function renderGearEditor() {
         <td><input type="text" data-field="name"             value="${esc(t.name || "")}" placeholder="Telescope name"></td>
         <td><input type="number" data-field="focal_length_mm" value="${t.focal_length_mm ?? ""}" step="1" style="width:70px"></td>
         <td><input type="number" data-field="aperture_mm"     value="${t.aperture_mm ?? ""}" step="1" style="width:60px"></td>
+        <td><input type="color" class="tele-swatch tele-swatch-pick" data-tel-colour="${i}"
+              value="${esc(gearTelescopeColour(t.name || ""))}"
+              title="Colour for this telescope. Saved as soon as you pick it${gear.telescope_colours?.[t.name] ? "; right-click to go back to automatic" : ""}."></td>
         <td><button type="button" class="btn-danger" data-del-tel="${i}">✕</button></td>
       </tr>`).join("");
 
@@ -7425,8 +7473,8 @@ function renderGearEditor() {
       <fieldset>
         <legend>Telescopes <button type="button" id="addTel" class="btn-primary" style="float:right;font-size:10px;padding:2px 8px">+ Add</button></legend>
         <table class="goals-table" style="width:100%">
-          <thead><tr><th style="text-align:left">Name</th><th>Focal (mm)</th><th>Aperture (mm)</th><th></th></tr></thead>
-          <tbody>${telRows || `<tr><td colspan="4" style="color:#78839a">No telescopes yet.</td></tr>`}</tbody>
+          <thead><tr><th style="text-align:left">Name</th><th>Focal (mm)</th><th>Aperture (mm)</th><th>Colour</th><th></th></tr></thead>
+          <tbody>${telRows || `<tr><td colspan="5" style="color:#78839a">No telescopes yet.</td></tr>`}</tbody>
         </table>
       </fieldset>
       <fieldset>
@@ -7447,6 +7495,19 @@ function renderGearEditor() {
         const v = e.target.value;
         draft.telescopes[idx][key] = (key === "name") ? v : (parseFloat(v) || 0);
       }));
+    });
+    panel.querySelectorAll("input[data-tel-colour]").forEach(inp => {
+      const idx = parseInt(inp.dataset.telColour, 10);
+      const nameNow = () => (draft.telescopes[idx]?.name || "").trim();
+      inp.addEventListener("change", async () => {
+        if (nameNow()) { await saveTelescopeColour(nameNow(), inp.value); render(); }
+      });
+      inp.addEventListener("contextmenu", async evt => {
+        if (!gear.telescope_colours?.[nameNow()]) return;
+        evt.preventDefault();
+        await saveTelescopeColour(nameNow(), null);
+        render();
+      });
     });
     panel.querySelectorAll("[data-del-tel]").forEach(b => b.addEventListener("click", () => {
       draft.telescopes.splice(parseInt(b.dataset.delTel, 10), 1);

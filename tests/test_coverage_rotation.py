@@ -183,39 +183,24 @@ def _old_fov_corners(ra_c, dec_c, w, h):
     return out
 
 
-def _js_plan_corners(ra, dec, w, h, rot):
-    """computePlanCorners from static/app.js, transcribed line for line."""
-    hw, hh = w / 2 / 60, h / 2 / 60
-    r = np.radians(rot)
-    cos_d = max(1e-6, np.cos(np.radians(dec)))
-    out = []
-    for lx, ly in [(-hw, -hh), (-hw, hh), (hw, hh), (hw, -hh)]:
-        de = lx * np.cos(r) + ly * np.sin(r)
-        dn = -lx * np.sin(r) + ly * np.cos(r)
-        out.append([ra + de / cos_d, dec + dn])
-    return out
-
-
 class TestRotatedCorners(unittest.TestCase):
+    # Corners come from a true tangent-plane projection since 2026-09-25, so
+    # they sit a few arcsec from the old flat ones rather than exactly on them.
+    # The planner's side is pinned by tests/fixtures/tangent_corners.json.
 
-    def test_zero_matches_the_old_corners_exactly(self):
+    def test_zero_is_close_to_the_old_corners(self):
         icrs, _ = fov_corners(83.8, -5.4, 120.0, 80.0)
-        self.assertEqual(icrs, _old_fov_corners(83.8, -5.4, 120.0, 80.0))
-
-    def test_rotated_corners_match_the_planner(self):
-        for rot in (15.0, 90.0, 137.0):
-            icrs, _ = fov_corners(83.8, -5.4, 120.0, 80.0, rot_deg=rot)
-            for got, want in zip(icrs, _js_plan_corners(83.8, -5.4, 120.0, 80.0, rot)):
-                self.assertAlmostEqual(got[0], want[0], places=9)
-                self.assertAlmostEqual(got[1], want[1], places=9)
+        for got, old in zip(icrs, _old_fov_corners(83.8, -5.4, 120.0, 80.0)):
+            self.assertAlmostEqual(got[0], old[0], delta=5 / 3600)
+            self.assertAlmostEqual(got[1], old[1], delta=5 / 3600)
 
     def test_quarter_turn_swaps_the_extent(self):
         """A 120 x 60 frame turned 90 degrees spans 60' east-west and 120' north-south."""
         icrs, _ = fov_corners(100.0, 0.0, 120.0, 60.0, rot_deg=90.0)
         ras = [c[0] for c in icrs]
         decs = [c[1] for c in icrs]
-        self.assertAlmostEqual((max(ras) - min(ras)) * 60, 60.0, places=6)
-        self.assertAlmostEqual((max(decs) - min(decs)) * 60, 120.0, places=6)
+        self.assertAlmostEqual((max(ras) - min(ras)) * 60, 60.0, delta=0.05)
+        self.assertAlmostEqual((max(decs) - min(decs)) * 60, 120.0, delta=0.05)
 
     def test_rotation_across_ra_zero_stays_in_range(self):
         icrs, _ = fov_corners(0.1, 20.0, 120.0, 80.0, rot_deg=30.0)
@@ -232,7 +217,7 @@ class TestRotatedCorners(unittest.TestCase):
         for rot in (30.0, 100.0, 170.0):
             turned = signed_area(fov_corners(100.0, 0.0, 120.0, 80.0, rot_deg=rot)[0])
             self.assertEqual(np.sign(turned), np.sign(base))
-            self.assertAlmostEqual(turned, base, places=6)
+            self.assertAlmostEqual(turned / base, 1.0, delta=1e-3)
 
 
 def _m(rot, w=120.0, h=80.0, hours=1.0):

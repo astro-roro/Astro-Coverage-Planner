@@ -3234,6 +3234,7 @@ def api_gear():
             # sensor_px) still carry the scalar fields the NINA plugin
             # expects, not just ones seeded from a manifest scan.
             "cameras": [_with_sensor_scalars(c) for c in g.get("cameras", [])],
+            "telescope_colours": g.get("telescope_colours", {}),
         })
     payload = request.get_json(silent=True) or {}
     if "telescopes" not in payload or "cameras" not in payload:
@@ -3241,12 +3242,54 @@ def api_gear():
     err = _validate_gear_payload(payload)
     if err:
         return jsonify({"error": err}), 400
-    save_gear({
+    out = {
         "version": 2,
         "telescopes": payload.get("telescopes", []),
         "cameras": payload.get("cameras", []),
-    })
+    }
+    # Colours change only through /api/gear/telescope-colour, so a gear editor
+    # save (which sends telescopes and cameras) must not wipe them.
+    colours = load_gear().get("telescope_colours")
+    if colours:
+        out["telescope_colours"] = colours
+    save_gear(out)
     return jsonify({"ok": True})
+
+
+# A colour Rohan picked for a telescope, keyed by the telescope name shown next
+# to the swatch. Only #rrggbb gets in, because the value is written into a
+# style attribute on the page.
+_TELESCOPE_COLOUR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_TELESCOPE_COLOURS_MAX = 500
+
+
+@app.route("/api/gear/telescope-colour", methods=["POST"])
+def api_gear_telescope_colour():
+    """Set or clear one telescope's colour. Body: {"name": str, "colour": "#rrggbb" | null}.
+
+    A null colour removes the choice, so the telescope goes back to its
+    automatic colour. Returns the full colour map.
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "payload must be a JSON object"}), 400
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name) > 200:
+        return jsonify({"error": "name must be a non-empty string of at most 200 characters"}), 400
+    colour = payload.get("colour")
+    if colour is not None and (not isinstance(colour, str) or not _TELESCOPE_COLOUR_RE.match(colour)):
+        return jsonify({"error": "colour must be #rrggbb or null"}), 400
+    gear = dict(load_gear()) if GEAR_PATH.exists() else {"version": 2, "telescopes": [], "cameras": []}
+    colours = dict(gear.get("telescope_colours") or {})
+    if colour is None:
+        colours.pop(name, None)
+    else:
+        if name not in colours and len(colours) >= _TELESCOPE_COLOURS_MAX:
+            return jsonify({"error": "too many telescope colours"}), 400
+        colours[name] = colour.lower()
+    gear["telescope_colours"] = colours
+    save_gear(gear)
+    return jsonify({"ok": True, "telescope_colours": colours})
 
 
 def _validate_plan_payload(payload: dict) -> str | None:
