@@ -620,10 +620,22 @@ def _overrides_path() -> Path:
                 or (repo / "data" / "target_overrides.json"))
 
 
+def _combine_hidden(old: dict, new: dict | None) -> dict:
+    """Hidden marks: the merged target is hidden if either part was."""
+    return dict(new) if isinstance(new, dict) else dict(old)
+
+
+def _hidden_path() -> Path:
+    repo = Path(__file__).resolve().parent.parent
+    return Path(os.environ.get("HIDDEN_PATH")
+                or (repo / "data" / "hidden.json"))
+
+
 # Register any new per-target file here (hidden marks, for one) so a merge
 # carries its entries across. Each needs a combine rule for two entries.
 TARGET_STORES: list[TargetStore] = [
     TargetStore("finished marks", _overrides_path, "overrides", _combine_override),
+    TargetStore("hidden marks", _hidden_path, "targets", _combine_hidden),
 ]
 
 
