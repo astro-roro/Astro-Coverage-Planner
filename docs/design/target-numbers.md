@@ -1,6 +1,6 @@
 # Target numbers across rescans
 
-The scanner clusters masters and sub folders into targets from scratch on every run. Each target still keeps its number from the last scan, so anything the planner stores against a number (finished marks now, hidden marks soon) stays on the right target. The code is `scripts/target_ids.py`, called from `scripts/build_archive_manifest.py` once the target list is built.
+The scanner clusters masters and sub folders into targets from scratch on every run. Each target still keeps its number from the last scan, so anything the planner stores against a number (finished marks, hidden marks) stays on the right target. The code is `scripts/target_ids.py`, called from `scripts/build_archive_manifest.py` once the target list is built.
 
 ## How a target keeps its number
 
@@ -20,9 +20,12 @@ The first scan after this change adopts the numbers in the existing manifest as 
 
 ## Per-target files and merges
 
-When two targets merge, entries stored against the retired number move onto the surviving one. `TARGET_STORES` in `scripts/target_ids.py` lists the files this applies to. Today that is `data/target_overrides.json`, where a merged target is finished if either part was.
+When two targets merge, entries stored against the retired number move onto the surviving one. `TARGET_STORES` in `scripts/target_ids.py` lists the files this applies to:
 
-A new per-target file (hidden marks, for example) registers itself by adding a `TargetStore` to that list with its path, the key of the dict inside the file that is keyed by target number, and a function that combines two entries. Nothing else needs to change.
+- `data/target_overrides.json`, where a merged target is finished if either part was.
+- `data/hidden.json`'s `targets` section, where a merged target is hidden if either part was. The `plans` and `projects` sections of that file are not touched by a merge; they are not keyed by target number.
+
+A new per-target file registers itself by adding a `TargetStore` to that list with its path, the key of the dict inside the file that is keyed by target number, and a function that combines two entries. Nothing else needs to change.
 
 ## What the scan reports
 
