@@ -16,6 +16,13 @@ function startOfDay(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+// Pinned rather than left to the browser/runner's default locale, so the
+// wording is the same on Rohan's machine and on a CI runner regardless of
+// what locale each defaults to. See PR #100 CI failure: the GitHub
+// runner's default locale (en-US) formatted the date as "Sep 30" where
+// this repo's tests, and Rohan, expect "30 Sept".
+const LOCALE = "en-AU";
+
 // "3:40 pm today" / "3:40 pm tomorrow" / "3:40 pm on Mon 12 Oct", or null
 // for an unparseable timestamp. `now` is injectable so tests are not tied
 // to the clock.
@@ -23,11 +30,11 @@ export function formatExpiry(iso, now = new Date()) {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" }).toLowerCase();
   const dayDiff = Math.round((startOfDay(d) - startOfDay(now)) / 86400000);
   if (dayDiff === 0) return `${time} today`;
   if (dayDiff === 1) return `${time} tomorrow`;
-  const date = d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+  const date = d.toLocaleDateString(LOCALE, { weekday: "short", day: "numeric", month: "short" });
   return `${time} on ${date}`;
 }
 

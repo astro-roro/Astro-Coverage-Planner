@@ -72,8 +72,11 @@ describe("formatExpiry", () => {
   });
 
   it("names the date further out", () => {
+    // Locale is pinned to en-AU in formatExpiry, so this reads the same
+    // regardless of the machine's default locale (see PR #100 CI failure:
+    // the GitHub runner's en-US default produced "Sep 30" instead).
     const text = formatExpiry("2026-09-30T12:00:00", now);
-    assert.match(text, /^12:00 pm on Wed,? 30 Sept?$/);
+    assert.equal(text, "12:00 pm on Wed, 30 Sept");
   });
 
   it("returns null for a missing or unparseable timestamp", () => {
