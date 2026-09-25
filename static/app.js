@@ -619,6 +619,15 @@ import {
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import {
+  LABEL_PRETTY as _LABEL_PRETTY,
+  LABEL_RANK as _LABEL_RANK,
+  MONTH_LABELS as _MONTH_LABELS,
+  compactChip,
+  prettyLabel,
+  prettyLabelShort,
+  trendOf,
+} from "./target-chip.mjs";
+import {
   MENU_BTN_CLASS,
   menuButtonHtml,
   openMenu,
@@ -1048,17 +1057,16 @@ function renderTargetList() {
     const finishedMark = isTargetFinished(t) ? `<span class="finished-badge" title="marked finished">✓</span>` : "";
     const isHidden = isTargetHidden(t, hiddenMarks);
     const yc = yearCurveSparklineHtml(t.target_id);
-    const nowChip = nowChipHtml(t.target_id);
-    const trChip = trendChipHtml(t.target_id);
-    // Two-line layout: row 1 is name/dots/hours, row 2 (only when time-aware
-    // is on) carries Now + Trend chips and the 12-month sparkline.
+    const chip = targetRowChipHtml(t.target_id);
+    // Two-line layout: row 1 is swatch/name/hours, row 2 is the filter dots,
+    // then (only when time-aware is on) one Now+Trend chip and the 12-month
+    // sparkline. The ⋯ sits in its own column spanning both lines.
     const picked = t.target_id === lastPickedTargetId ? " is-picked" : "";
     return `<li class="target-row${isHidden ? " is-hidden" : ""}${picked}" data-target-id="${t.target_id}">
         <span class="tr-swatch" style="background:${esc(swatch)}" title="${esc(tel)}"></span>
         <span class="tr-name">#${t.target_id} ${name}${finishedMark}</span>
-        <span class="tr-dots">${dots}</span>
         <span class="tr-hours">${total}h</span>
-        <span class="tr-meta">${nowChip}${trChip}${yc}</span>
+        <span class="tr-meta"><span class="tr-dots">${dots}</span>${chip}${yc}</span>
         ${menuButtonHtml(`Target #${t.target_id} actions`, `data-menu-target="${t.target_id}"`)}
       </li>`;
   }).join("");
@@ -5489,31 +5497,6 @@ async function loadVisibility() {
   rerenderActivePanel();
 }
 
-const _MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const _LABEL_RANK = { not_visible: 0, partial: 1, fair: 2, good: 3, great: 4 };
-const _LABEL_PRETTY = {
-  not_visible: "Not visible",
-  partial: "Partial",
-  fair: "Fair",
-  good: "Good",
-  great: "Great",
-};
-
-// "Not visible" splits into two real states the user cares about: target
-// genuinely never rises (peak < 0°) vs target rises but doesn't clear the
-// site's min-altitude (0° ≤ peak < min). Same bin label internally, only
-// the display copy changes.
-function prettyLabel(label, peak_alt_deg) {
-  if (label !== "not_visible") return _LABEL_PRETTY[label];
-  if (peak_alt_deg == null || peak_alt_deg < 0) return "Below horizon";
-  return `Below min (peaks ${peak_alt_deg}°)`;
-}
-function prettyLabelShort(label, peak_alt_deg) {
-  if (label !== "not_visible") return _LABEL_PRETTY[label];
-  if (peak_alt_deg == null || peak_alt_deg < 0) return "Below horizon";
-  return `Max ${peak_alt_deg}°`;
-}
-
 function binsForTarget(targetId) {
   return visibilityData?.targets?.[String(targetId)] || null;
 }
@@ -5565,45 +5548,19 @@ function nowChipHtml(targetId) {
 }
 
 function trendChipHtml(targetId) {
-  const bins = binsForTarget(targetId);
-  if (!bins) return "";
-  const nowMonth = new Date().getUTCMonth() + 1;
-  const nowBin = _binFor(bins, nowMonth);
-  if (!nowBin) return "";
-  const nowRank = _LABEL_RANK[nowBin.label] ?? 0;
+  const tr = trendOf(binsForTarget(targetId), new Date().getUTCMonth() + 1);
+  if (!tr) return "";
+  return `<span class="nn-chip nn-trend-${tr.kind}" title="${esc(tr.title)}"><span class="nn-prefix">Trend</span> ${esc(tr.text)}</span>`;
+}
 
-  // 3-month lookahead average vs current rank, simple heuristic for
-  // "is the next quarter better/worse/the same".
-  const nextRanks = [];
-  for (let i = 1; i <= 3; i++) {
-    const m = ((nowMonth - 1 + i) % 12) + 1;
-    const b = _binFor(bins, m);
-    if (b) nextRanks.push(_LABEL_RANK[b.label] ?? 0);
-  }
-  if (!nextRanks.length) return "";
-  const avg = nextRanks.reduce((a, b) => a + b, 0) / nextRanks.length;
-  const diff = avg - nowRank;
-
-  if (diff > 0.5) {
-    return `<span class="nn-chip nn-trend-up" title="3-month forward avg rank is higher than current month."><span class="nn-prefix">Trend</span> ↑ Improving</span>`;
-  }
-  if (diff < -0.5) {
-    return `<span class="nn-chip nn-trend-down" title="3-month forward avg rank is lower than current month."><span class="nn-prefix">Trend</span> ↓ Declining</span>`;
-  }
-  // Steady. If we're currently in a poor state (rank < good=3), surface
-  // when the next decent month arrives instead of the uninformative
-  // "Steady", that's actually the more actionable signal.
-  if (nowRank < 3) {
-    for (let i = 1; i <= 12; i++) {
-      const m = ((nowMonth - 1 + i) % 12) + 1;
-      const b = _binFor(bins, m);
-      if (b && (_LABEL_RANK[b.label] ?? 0) >= 3) {
-        return `<span class="nn-chip nn-trend-wait" title="First Good-or-better month in the year ahead."><span class="nn-prefix">Trend</span> Peaks in ${i}m</span>`;
-      }
-    }
-    return `<span class="nn-chip nn-trend-flat" title="Stays poor across the year ahead."><span class="nn-prefix">Trend</span> Stays low</span>`;
-  }
-  return `<span class="nn-chip nn-trend-flat" title="3-month forward rank ≈ current."><span class="nn-prefix">Trend</span> → Steady</span>`;
+// The target list's one visibility chip: this month plus the trend arrow.
+// The full NOW and TREND wording sits in its tooltip and the detail panel.
+function targetRowChipHtml(targetId) {
+  const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
+  const c = compactChip(binsForTarget(targetId), new Date().getUTCMonth() + 1, minAlt);
+  if (!c) return "";
+  const arrow = c.arrow ? ` <span class="tr-arrow nn-trend-${c.trendKind}">${esc(c.arrow)}</span>` : "";
+  return `<span class="nn-chip tr-chip ${c.labelClass}" role="img" title="${esc(c.title)}" aria-label="${esc(c.ariaLabel)}">${esc(c.label)}${arrow}</span>`;
 }
 
 function yearCurveBarHtml(targetId) {
