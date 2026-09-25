@@ -106,6 +106,8 @@ class ScanCacheCase(unittest.TestCase):
         # Timestamps and wall-clock durations legitimately differ run to run.
         m.pop("scan_date", None)
         m.pop("scan_duration_sec", None)
+        # The first scan numbers its targets as new, a later one as kept.
+        m.pop("target_id_changes", None)
         return m
 
 
