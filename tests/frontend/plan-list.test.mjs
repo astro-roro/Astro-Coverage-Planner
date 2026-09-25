@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_PLAN_STATES,
   filterPlans,
+  hiddenPlanCount,
+  isPlanHidden,
+  isTargetHidden,
+  listablePlans,
+  parseHidden,
   parseSavedStates,
   planHoursLeft,
   planProgress,
@@ -172,5 +177,61 @@ describe("parseSavedStates", () => {
 
   it("falls back to the default when the save is empty", () => {
     assert.deepEqual([...parseSavedStates([])], ["active", "draft"]);
+  });
+});
+
+describe("hidden plans, projects and targets", () => {
+  const H = parseHidden({ plans: { b: {} }, projects: { Dark: {} }, targets: { "7": {} } });
+
+  it("parseHidden treats a missing or odd reply as nothing hidden", () => {
+    assert.deepEqual(parseHidden(null), { plans: {}, projects: {}, targets: {} });
+    assert.deepEqual(parseHidden({ plans: [], projects: "x" }), { plans: {}, projects: {}, targets: {} });
+  });
+
+  it("a plan is hidden by its own mark or its project's", () => {
+    assert.equal(isPlanHidden(PLANS[0], H), false);
+    assert.equal(isPlanHidden(PLANS[1], H), true);   // b, its own mark
+    assert.equal(isPlanHidden(PLANS[2], H), true);   // c, project Dark
+    assert.equal(isPlanHidden(PLANS[4], H), true);   // e, project Dark
+    assert.equal(isPlanHidden(PLANS[0], null), false);
+  });
+
+  it("hiding a project leaves each plan's state alone", () => {
+    const before = PLANS.map(planState);
+    listablePlans(PLANS, H, false);
+    filterPlans(PLANS, { hidden: H });
+    assert.deepEqual(PLANS.map(planState), before);
+  });
+
+  it("filterPlans leaves hidden plans out by default and keeps them with showHidden", () => {
+    const ids = r => r.map(p => p.id).sort();
+    assert.deepEqual(ids(filterPlans(PLANS, { hidden: H })), ["a", "d"]);
+    assert.deepEqual(ids(filterPlans(PLANS, { hidden: H, showHidden: true })), ["a", "b", "c", "d", "e"]);
+    assert.deepEqual(ids(filterPlans(PLANS)), ["a", "b", "c", "d", "e"]);
+  });
+
+  it("counts and project rollups leave hidden plans out", () => {
+    const pool = listablePlans(PLANS, H, false);
+    assert.deepEqual(stateCounts(pool), { active: 1, draft: 0, inactive: 0, closed: 1 });
+    assert.equal(hiddenPlanCount(PLANS, H), 3);
+    const rows = projectRollups(pool, filterPlans(pool, {}), "name", H);
+    assert.deepEqual(rows.map(r => r.name), ["(no project)", "PNe"]);
+    const pne = rows.find(r => r.name === "PNe");
+    assert.equal(pne.totalPlans, 1);
+    assert.equal(pne.hidden, false);
+  });
+
+  it("with showHidden the hidden project comes back, marked hidden", () => {
+    const pool = listablePlans(PLANS, H, true);
+    const rows = projectRollups(pool, filterPlans(pool, {}), "name", H);
+    const dark = rows.find(r => r.name === "Dark");
+    assert.equal(dark.hidden, true);
+    assert.equal(dark.totalPlans, 2);
+  });
+
+  it("isTargetHidden matches target_id as a string", () => {
+    assert.equal(isTargetHidden({ target_id: 7 }, H), true);
+    assert.equal(isTargetHidden({ target_id: 8 }, H), false);
+    assert.equal(isTargetHidden({ target_id: 7 }, null), false);
   });
 });

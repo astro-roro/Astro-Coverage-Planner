@@ -2126,3 +2126,35 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   border-left: 1px solid #2a3246;
 }
 .proj-kids .plan-row { padding: 5px 6px; font-size: 12px; }
+
+/* Hide and unhide. The per-row button sits at the row's right edge and
+   only shows on hover or keyboard focus, except on a hidden row where
+   Unhide is the thing you came for. Hidden rows are only listed while
+   Show hidden is on, and are drawn faded. */
+.target-row, .plan-row, .proj-group { position: relative; }
+.row-hide-btn {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  color: #a2aec2;
+  background: #141a26;
+  border: 1px solid #2a3246;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+}
+.proj-group > .row-hide-btn { top: 8px; bottom: auto; right: 40px; }
+.target-row:hover > .row-hide-btn,
+.plan-row:hover > .row-hide-btn,
+.proj-group:hover > .row-hide-btn,
+.row-hide-btn:focus-visible,
+.is-hidden > .row-hide-btn { opacity: 1; }
+.row-hide-btn:hover { color: #e0e4ea; border-color: #3a4458; }
+.is-hidden > :not(.row-hide-btn):not(.proj-kids) { opacity: 0.45; }
+.hidden-via { margin-left: 6px; font-size: 10px; color: #78839a; }
+.hidden-toggle-row { margin: 2px 0 6px; }
+.hidden-toggle[hidden] { display: none; }
+.hidden-toggle[aria-pressed="true"] { color: #e0e4ea; border-color: #4da6ff; }
+.hidden-note { font-size: 12px; color: #78839a; margin: 4px 0 8px; }
