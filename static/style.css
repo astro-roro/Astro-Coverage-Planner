@@ -87,6 +87,22 @@ body {
   border: 1px solid rgba(255,255,255,0.15);
 }
 
+/* A swatch you can click to pick the telescope's colour. The native colour
+   input is stripped back so it looks like the plain swatch it replaced. */
+input.tele-swatch-pick {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+input.tele-swatch-pick::-webkit-color-swatch-wrapper { padding: 0; }
+input.tele-swatch-pick::-webkit-color-swatch { border: none; border-radius: 2px; }
+input.tele-swatch-pick::-moz-color-swatch { border: none; border-radius: 2px; }
+input.tele-swatch-pick:hover { border-color: rgba(255,255,255,0.6); }
+
 .label {
   color: #78839a;
   font-size: 11px;

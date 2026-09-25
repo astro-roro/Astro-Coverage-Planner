@@ -3233,47 +3233,60 @@ def compute_fov_from_meta(meta: dict) -> tuple[list | None, float | None, str]:
     return [gw * pix / 60.0, gh * pix / 60.0], pix, method
 
 
+def tangent_offset_to_radec(ra_c: float, dec_c: float,
+                            east_deg: float, north_deg: float) -> tuple[float, float]:
+    """Deproject a tangent-plane offset from ra_c, dec_c back onto the sky.
+
+    ``east_deg`` and ``north_deg`` are gnomonic (TAN) standard coordinates in
+    degrees, on the plane that touches the sky at the centre, with north along
+    the centre's meridian. This is exact at any declination, including a
+    centre on the pole and a field that contains the pole. Returns RA in
+    [0, 360) and Dec in [-90, 90]. ``tangentOffsetToRaDec`` in
+    static/sky-geometry.mjs is the same formula.
+    """
+    a0 = np.radians(ra_c)
+    d0 = np.radians(dec_c)
+    xi = np.radians(east_deg)
+    eta = np.radians(north_deg)
+    denom = np.cos(d0) - eta * np.sin(d0)
+    ra = a0 + np.arctan2(xi, denom)
+    dec = np.arctan2(np.sin(d0) + eta * np.cos(d0), np.hypot(xi, denom))
+    return float(np.degrees(ra) % 360.0), float(np.degrees(dec))
+
+
 def fov_corners(ra_c: float, dec_c: float, w_arcmin: float, h_arcmin: float,
                 log=None, label: str = "", rot_deg: float = 0.0) -> tuple[list, list]:
     """Return (corners_icrs, corners_gal) for a rectangle of w x h arcmin on ra_c, dec_c.
 
     ``rot_deg`` turns the rectangle so its height runs along position angle
-    ``rot_deg`` east of north, with the same arithmetic as ``computePlanCorners``
-    in static/app.js, so a plan and the coverage it is compared with line up.
-    Corners come back in the order SW, NW, NE, SE of the unrotated box. At 0 the
-    result is exactly what this returned before rotation existed.
+    ``rot_deg`` east of north. The corners are laid out on the tangent plane
+    and deprojected with ``tangent_offset_to_radec``, the same maths as
+    ``rectangleCorners`` in static/sky-geometry.mjs, so a plan and the coverage
+    it is compared with line up. Corners come back in the order SW, NW, NE, SE
+    of the unrotated box.
 
-    The offset is a flat tangent-plane approximation, which is what the rest of
-    the planner draws. A field near a pole, or a wide lens pointed high, puts a
-    corner past +/-90 in that approximation and SkyCoord refuses the latitude.
-    The corner is clamped to the pole instead, and the clamp is logged, because
-    a crash here loses the whole manifest for one target.
+    Until 2026-09-25 this used a flat offset (RA offset divided by cos(dec))
+    and clamped any corner that went past a pole. Near the pole that drew a
+    crossed, self-intersecting outline. The true projection needs no clamp.
+    A field 180 degrees or more across cannot sit on one tangent plane, and
+    that case is logged.
     """
     corners_icrs = []
     corners_gal = []
-    clamped = False
     r = np.radians(rot_deg or 0.0)
     cos_r, sin_r = np.cos(r), np.sin(r)
+    if log and np.hypot(w_arcmin, h_arcmin) / 120.0 >= 90.0:
+        log(f"  WARN: footprint too wide for one tangent plane for {label or 'a target'} "
+            f"(fov {w_arcmin:.0f}x{h_arcmin:.0f} arcmin)")
     for dx, dy in [(-1, -1), (-1, 1), (1, 1), (1, -1)]:
         lx = dx * w_arcmin / 2.0
         ly = dy * h_arcmin / 2.0
         east = lx * cos_r + ly * sin_r
         north = -lx * sin_r + ly * cos_r
-        cos_dec = np.cos(np.radians(dec_c))
-        if abs(cos_dec) < 1e-9:
-            c_ra = ra_c
-        else:
-            c_ra = (ra_c + east / 60.0 / cos_dec) % 360.0
-        c_dec = dec_c + north / 60.0
-        if c_dec > 90.0 or c_dec < -90.0:
-            c_dec = max(-90.0, min(90.0, c_dec))
-            clamped = True
-        corners_icrs.append([float(c_ra), float(c_dec)])
+        c_ra, c_dec = tangent_offset_to_radec(ra_c, dec_c, east / 60.0, north / 60.0)
+        corners_icrs.append([c_ra, c_dec])
         sc2 = SkyCoord(c_ra * u.deg, c_dec * u.deg).galactic
         corners_gal.append([float(sc2.l.deg), float(sc2.b.deg)])
-    if clamped and log:
-        log(f"  WARN: footprint corner past the pole clamped for {label or 'a target'} "
-            f"(centre dec {dec_c:.2f}, fov {w_arcmin:.0f}x{h_arcmin:.0f} arcmin)")
     return corners_icrs, corners_gal
 
 
