@@ -618,6 +618,7 @@ import {
 } from "./init-error.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
+import { pickButtonState } from "./replaceable-buttons.mjs";
 import {
   LABEL_PRETTY as _LABEL_PRETTY,
   LABEL_RANK as _LABEL_RANK,
@@ -2336,10 +2337,21 @@ const REPLACEABLE_BUTTONS = {
     selector: "#planSync",
     baseLabel: "Manual Sync to NINA",
     defaultHandler: () => syncPlans(),
+    // The nina_ts_sync extension's replacement writes straight into a local
+    // Target Scheduler sqlite file, which only exists next to NINA. ACP
+    // running away from NINA (e.g. in Docker) has no such file, so its
+    // takeover is skipped and this button stays on the zip-export default.
+    requiresTsDb: true,
+    hintSelector: "#planSyncHint",
+    hintWhenUnavailable: "Plans reach NINA through the NINA TS sync extension on the imaging PC.",
   },
 };
 
 let extensionsManifest = []; // populated by loadExtensions()
+// Whether the global Target Scheduler database file exists on this
+// machine. Starts true (fail open) so a slow/failed /api/sync/config
+// fetch never hides a button that would otherwise work.
+let tsDbAvailable = true;
 const liveProgressTimers = new Map(); // action-id → setInterval handle
 const liveProgressState = new Map();  // action-id → {failures, lastIso}
 
@@ -2355,15 +2367,19 @@ function wireReplaceableButton(coreId) {
   if (!btn) return;
   const fresh = btn.cloneNode(true);
   btn.parentNode.replaceChild(fresh, btn);
-  for (const ext of extensionsManifest) {
-    for (const action of (ext.actions || [])) {
-      if (action.replaces === coreId) {
-        fresh.textContent = action.label;
-        fresh.dataset.extAction = action.id;
-        fresh.addEventListener("click", () => runExtensionAction(ext, action));
-        return;
-      }
-    }
+  const hintEl = meta.hintSelector ? document.querySelector(meta.hintSelector) : null;
+  if (hintEl) hintEl.hidden = true;
+
+  const state = pickButtonState({ id: coreId, ...meta }, extensionsManifest, tsDbAvailable);
+  if (state.mode === "extension") {
+    fresh.textContent = state.action.label;
+    fresh.dataset.extAction = state.action.id;
+    fresh.addEventListener("click", () => runExtensionAction(state.ext, state.action));
+    return;
+  }
+  if (state.hint && hintEl) {
+    hintEl.textContent = state.hint;
+    hintEl.hidden = false;
   }
   fresh.textContent = meta.baseLabel;
   fresh.addEventListener("click", meta.defaultHandler);
@@ -2383,6 +2399,14 @@ async function loadExtensions() {
   }
   if (!Array.isArray(entries)) entries = [];
   extensionsManifest = entries;
+
+  try {
+    const r = await fetch("/api/sync/config");
+    const body = await r.json();
+    tsDbAvailable = !!body.ts_db_available;
+  } catch (e) {
+    console.warn("sync config unavailable:", e);
+  }
 
   // (1) Re-wire every replaceable button against the freshly-loaded manifest.
   //     Handles both "extension just installed" and "manifest loaded after
@@ -6683,6 +6707,7 @@ function renderPlanList() {
       <button id="planSync">Sync to NINA</button>
       <button id="planGear">Edit gear</button>
     </div>
+    <div id="planSyncHint" class="ext-meta" hidden></div>
     <input id="planSearch" class="plan-search" type="search" autocomplete="off" spellcheck="false"
            placeholder="Search plans and projects" value="${esc(planQuery)}" />
     <div id="planStateChips" class="plan-state-chips" role="group" aria-label="Show plans that are"></div>

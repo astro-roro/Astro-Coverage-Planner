@@ -2817,6 +2817,14 @@ def api_sites():
     return jsonify({"ok": True, "sites": cleaned})
 
 
+def _ts_db_file_exists(path: str) -> bool:
+    """True when *path* (a ts_db_path, ``$VAR``-expanded) points at a file
+    that actually exists. Used to decide whether a direct-write NINA sync
+    is usable: ACP runs in places (Docker on a homelab box) that have no
+    Target Scheduler database at all, only a NINA imaging PC does."""
+    return Path(os.path.expandvars(path)).exists()
+
+
 _DESTINATION_KINDS = frozenset({"local_db", "shared_file"})
 
 
@@ -2886,7 +2894,13 @@ def api_destinations():
     cardinality, simpler UI).
     """
     if request.method == "GET":
-        return jsonify(load_destinations())
+        data = load_destinations()
+        out = {**data, "destinations": [
+            {**d, "ts_db_available": _ts_db_file_exists(d["ts_db_path"])}
+            if d.get("kind") == "local_db" else dict(d)
+            for d in data.get("destinations", [])
+        ]}
+        return jsonify(out)
     payload = request.get_json(silent=True) or {}
     dests = payload.get("destinations")
     if not isinstance(dests, list):
@@ -4338,6 +4352,19 @@ def api_hidden():
         new[kind].pop(key, None)
     save_hidden(new)
     return jsonify(new)
+
+
+@app.route("/api/sync/config")
+def api_sync_config():
+    """Tells the frontend whether the global Target Scheduler database is
+    reachable, so it can hide direct-to-NINA sync UI (the "Sync with NINA"
+    extension button) on a machine that has no TS database at all, such as
+    ACP running in Docker away from the imaging PC. The zip-export Manual
+    Sync always stays available: it never touches this file."""
+    return jsonify({
+        "ts_db_available": _ts_db_file_exists(TS_DB_PATH),
+        "ts_db_path": str(Path(os.path.expandvars(TS_DB_PATH))),
+    })
 
 
 @app.route("/api/ts-templates")
