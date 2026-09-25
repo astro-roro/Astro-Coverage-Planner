@@ -110,6 +110,11 @@ let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
 let completionFilter = "all"; // "all" | "finished" | "unfinished"
 let targetOverrides = {};     // target_id (string) → { finished: bool, updated_at: ... }
+let hiddenMarks = parseHidden(null); // GET /api/hidden: plans, projects and targets the user hid
+// Show hidden coverage targets, dimmed, instead of leaving them out.
+let showHiddenTargets = false;
+try { showHiddenTargets = localStorage.getItem("acp.show_hidden_targets") === "on"; }
+catch { /* localStorage disabled, keep the default */ }
 let _pressInfo = null;        // {x, y, t, dragged}, last mousedown over the map. The Aladin
                               // "click" event fires on every mouseup whether the user dragged
                               // or not, so we use this to suppress pan-clicks from selecting/deselecting.
@@ -627,6 +632,11 @@ import {
   PLAN_STATES,
   STATE_NAMES,
   filterPlans,
+  hiddenPlanCount,
+  isPlanHidden,
+  isTargetHidden,
+  listablePlans,
+  parseHidden,
   parseSavedStates,
   planHoursLeft,
   planProject,
@@ -820,6 +830,7 @@ function telescopeOf(t) {
 }
 
 function targetMatches(t) {
+  if (!showHiddenTargets && isTargetHidden(t, hiddenMarks)) return false;
   // Search tokens AND with the chip/telescope/depth predicates below.
   if (!targetMatchesSearch(t, searchTokens)) return false;
 
@@ -1025,17 +1036,20 @@ function renderTargetList() {
     const total = totalHoursOf(t).toFixed(1);
     const dots = filterDotsHtml(t.filters || {});
     const finishedMark = isTargetFinished(t) ? `<span class="finished-badge" title="marked finished">✓</span>` : "";
+    const isHidden = isTargetHidden(t, hiddenMarks);
     const yc = yearCurveSparklineHtml(t.target_id);
     const nowChip = nowChipHtml(t.target_id);
     const trChip = trendChipHtml(t.target_id);
     // Two-line layout: row 1 is name/dots/hours, row 2 (only when time-aware
     // is on) carries Now + Trend chips and the 12-month sparkline.
-    return `<li class="target-row" data-target-id="${t.target_id}">
+    return `<li class="target-row${isHidden ? " is-hidden" : ""}" data-target-id="${t.target_id}">
         <span class="tr-swatch" style="background:${esc(swatch)}" title="${esc(tel)}"></span>
         <span class="tr-name">#${t.target_id} ${name}${finishedMark}</span>
         <span class="tr-dots">${dots}</span>
         <span class="tr-hours">${total}h</span>
         <span class="tr-meta">${nowChip}${trChip}${yc}</span>
+        <button type="button" class="row-hide-btn" data-hide-target="${t.target_id}"
+                title="${isHidden ? "Show this target again" : "Hide this target, for test shots and the like"}">${isHidden ? "Unhide" : "Hide"}</button>
       </li>`;
   }).join("");
 
@@ -1047,14 +1061,39 @@ function renderTargetList() {
         <option value="up_tonight" ${sortBy==="up_tonight"?"selected":""} data-time-aware>up tonight</option>
       </select></span>`;
 
+  const nHidden = manifest.targets.filter(t => isTargetHidden(t, hiddenMarks)).length;
+  const nListable = showHiddenTargets ? manifest.targets.length : manifest.targets.length - nHidden;
+  const hiddenToggle = (nHidden || showHiddenTargets)
+    ? `<div class="hidden-toggle-row"><button type="button" id="targetHiddenToggle" class="link-btn hidden-toggle"
+         aria-pressed="${showHiddenTargets}">Show hidden (${nHidden})</button></div>`
+    : "";
+
   panel.innerHTML = `
     <div class="panel-list">
-      <h3>Targets <span class="tr-count">${matches.length} of ${manifest.targets.length}</span>${sortCtl}</h3>
+      <h3>Targets <span class="tr-count">${matches.length} of ${nListable}</span>${sortCtl}</h3>
+      ${hiddenToggle}
       <ul class="target-list">${rows || empty}</ul>
     </div>`;
 
+  panel.querySelector("#targetHiddenToggle")?.addEventListener("click", () => {
+    showHiddenTargets = !showHiddenTargets;
+    try { localStorage.setItem("acp.show_hidden_targets", showHiddenTargets ? "on" : "off"); }
+    catch { /* localStorage disabled, ignore */ }
+    redrawFootprints();
+    if (panelMode === "list") renderTargetList();
+  });
   panel.querySelectorAll(".target-row").forEach(row => {
-    row.addEventListener("click", () => {
+    row.addEventListener("click", async e => {
+      const hideBtn = e.target.closest(".row-hide-btn");
+      if (hideBtn) {
+        const id = parseInt(hideBtn.dataset.hideTarget, 10);
+        const t = manifest.targets.find(x => x.target_id === id);
+        if (t && await setHidden("targets", id, !isTargetHidden(t, hiddenMarks))) {
+          redrawFootprints();
+          if (panelMode === "list") renderTargetList();
+        }
+        return;
+      }
       const id = parseInt(row.dataset.targetId, 10);
       const t = manifest.targets.find(x => x.target_id === id);
       if (t) {
@@ -1138,6 +1177,10 @@ function renderTargetPanel(t) {
   const clearBtn = hasOverride
     ? `<button id="clearOverrideBtn" title="Remove manual override; fall back to plan-derived status">Clear override</button>`
     : "";
+  const targetHidden = isTargetHidden(t, hiddenMarks);
+  const hideBtn = targetHidden
+    ? `<button id="unhideTargetBtn" title="Show this target in the list and on the map again">Unhide</button>`
+    : `<button id="hideTargetBtn" title="Leave this target out of the list, the map and gap finding">Hide</button>`;
 
   // Visibility section, only renders when time-aware data is available.
   // The CSS rule on .vis-section keeps it hidden if the user toggles off.
@@ -1185,7 +1228,9 @@ function renderTargetPanel(t) {
         <span class="status-text">${finished ? "✓ " : ""}${esc(statusText)}</span>
         ${primaryBtn}
         ${clearBtn}
+        ${hideBtn}
       </div>
+      ${targetHidden ? `<p class="hidden-note">Hidden. It is left out of the target list, the map and gap finding unless Show hidden is on.</p>` : ""}
 
       ${visHtml}
 
@@ -1224,6 +1269,13 @@ function renderTargetPanel(t) {
   panel.querySelector("#markFinishedBtn")?.addEventListener("click", () => reopen(true));
   panel.querySelector("#markUnfinishedBtn")?.addEventListener("click", () => reopen(false));
   panel.querySelector("#clearOverrideBtn")?.addEventListener("click", () => reopen(null));
+  const rehide = async (flag) => {
+    if (!await setHidden("targets", t.target_id, flag)) return;
+    redrawFootprints();
+    renderTargetPanel(t);
+  };
+  panel.querySelector("#hideTargetBtn")?.addEventListener("click", () => rehide(true));
+  panel.querySelector("#unhideTargetBtn")?.addEventListener("click", () => rehide(false));
 
   // If catalog overlays loaded, show nearby entries
   showCatalogMatchesFor(t);
@@ -1503,12 +1555,15 @@ function redrawFootprints() {
     if (!deepest) continue;
 
     const tel = telescopeOf(t);
-    const borderColor = telescopeColor[tel] || TELESCOPE_FALLBACK;
-    const fillColor = (FILTER_COLORS[deepest] || "#888") + "20";
+    // A hidden target only gets here with Show hidden on: draw it faint.
+    const dim = isTargetHidden(t, hiddenMarks);
+    let borderColor = telescopeColor[tel] || TELESCOPE_FALLBACK;
+    if (dim && /^#[0-9a-f]{6}$/i.test(borderColor)) borderColor += "66";
+    const fillColor = (FILTER_COLORS[deepest] || "#888") + (dim ? "08" : "20");
 
     const poly = A.polygon(t.corners_icrs, {
       color: borderColor,
-      lineWidth: 2.5,
+      lineWidth: dim ? 1 : 2.5,
       fillColor,
     });
     poly._target = t;
@@ -1544,7 +1599,10 @@ function redrawFootprints() {
   if (filterBadgeCat) filterBadgeCat.addSources(badgeSources);
   const cs = document.getElementById("coverageStats");
   if (cs) {
-    cs.innerHTML = `<div style="margin-top:10px;font-size:12px;color:#a2aec2">Showing <strong>${shown}</strong> of ${manifest.targets.length} targets.</div>`;
+    const listable = showHiddenTargets
+      ? manifest.targets.length
+      : manifest.targets.filter(t => !isTargetHidden(t, hiddenMarks)).length;
+    cs.innerHTML = `<div style="margin-top:10px;font-size:12px;color:#a2aec2">Showing <strong>${shown}</strong> of ${listable} targets.</div>`;
   }
   if (panelMode === "list") renderTargetList();
 }
@@ -6004,7 +6062,7 @@ function init() {
     // first updateObsNow uses the saved active site rather than the hardcoded
     // Sydney fallback in `currentSite`).
     await Promise.all([
-      loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides(),
+      loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides(), loadHidden(),
       loadPublishConfig(), initSites(), catalogReady,
     ]);
     // The legend was drawn before gear loaded; redraw it with the saved picks.
@@ -6130,6 +6188,36 @@ async function loadTargetOverrides() {
     const j = await r.json();
     targetOverrides = j.overrides || {};
   } catch { targetOverrides = {}; }
+}
+
+async function loadHidden() {
+  try {
+    const r = await fetch("/api/hidden");
+    hiddenMarks = parseHidden(r.ok ? await r.json() : null);
+  } catch { hiddenMarks = parseHidden(null); }
+}
+
+// Hide or unhide one plan, project or coverage target. `kind` is "plans",
+// "projects" or "targets". Returns true once the server has saved it.
+async function setHidden(kind, key, hidden) {
+  try {
+    const r = await fetch("/api/hidden", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, key, hidden }),
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok) {
+      alert(`Couldn't ${hidden ? "hide" : "unhide"} that: ${j?.error || r.status}`);
+      return false;
+    }
+    hiddenMarks = parseHidden(j);
+    return true;
+  } catch (e) {
+    console.warn("hidden write failed", e);
+    alert(`Couldn't ${hidden ? "hide" : "unhide"} that: ${e}`);
+    return false;
+  }
 }
 
 async function setTargetFinished(targetId, finished) {
@@ -6358,18 +6446,21 @@ let planListView = "plans";            // "plans" | "projects"
 let planStates = new Set(DEFAULT_PLAN_STATES);
 let planQuery = "";
 let openProjects = new Set();
+let showHiddenPlans = false;
 try {
   const s = JSON.parse(localStorage.getItem(PLAN_LIST_KEY) || "{}") || {};
   if (s.view === "projects") planListView = "projects";
   planStates = parseSavedStates(s.states);
   if (typeof s.query === "string") planQuery = s.query;
   if (Array.isArray(s.open)) openProjects = new Set(s.open.filter(x => typeof x === "string"));
+  showHiddenPlans = s.showHidden === true;
 } catch { /* localStorage disabled or bad JSON, keep defaults */ }
 
 function savePlanListState() {
   try {
     localStorage.setItem(PLAN_LIST_KEY, JSON.stringify({
       view: planListView, states: [...planStates], query: planQuery, open: [...openProjects],
+      showHidden: showHiddenPlans,
     }));
   } catch { /* localStorage full / disabled, ignore */ }
 }
@@ -6412,16 +6503,28 @@ function planRowHtml(pl, { withProject = true } = {}) {
   const state = pl.state || "active";
   const stateLabel = planStateBadgeLabel(state);
   const stateBadge = stateLabel ? `<span class="plan-state-badge plan-state-${state}">${stateLabel}</span>` : "";
-  const rowClass = state === "closed" ? "plan-row plan-state-closed" : "plan-row";
+  let rowClass = state === "closed" ? "plan-row plan-state-closed" : "plan-row";
+  // Hidden rows only show with Show hidden on. A plan hidden through its
+  // project is unhidden from the project row, so it gets a note, not a button.
+  const selfHidden = Object.hasOwn(hiddenMarks.plans, pl.id);
+  const projHidden = Object.hasOwn(hiddenMarks.projects, planProject(pl));
+  if (selfHidden || projHidden) rowClass += " is-hidden";
+  const hideCtl = selfHidden
+    ? `<button type="button" class="row-hide-btn" data-hide-plan="${esc(pl.id)}" title="Show this plan again">Unhide</button>`
+    : projHidden
+      ? ""
+      : `<button type="button" class="row-hide-btn" data-hide-plan="${esc(pl.id)}" title="Hide this plan from the list and the map. Its state is not changed.">Hide</button>`;
   return `<li class="${rowClass}" data-plan-id="${esc(pl.id)}" tabindex="0">
       <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
-      <span class="plan-name">${name}${stateBadge}</span>
+      <span class="plan-name">${name}${stateBadge}${projHidden && !selfHidden
+        ? `<span class="hidden-via" title="Unhide the project to show this plan">project hidden</span>` : ""}</span>
       ${visCell}
       <div class="plan-row-line2">
         ${withProject ? `<span class="plan-project">${proj}</span>` : ""}
         <span class="plan-goals">${dots}</span>
         <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
       </div>
+      ${hideCtl}
     </li>`;
 }
 
@@ -6450,7 +6553,9 @@ function projectRowHtml(r) {
   const kids = open
     ? `<ul class="proj-kids">${sortedPlansForList(r.plans).map(p => planRowHtml(p, { withProject: false })).join("")}</ul>`
     : "";
-  return `<li class="proj-group" data-open="${open}">
+  const hideBtn = `<button type="button" class="row-hide-btn" data-hide-project="${esc(r.name)}"
+      title="${r.hidden ? "Show this project and its plans again" : "Hide this project and its plans from the list. Their states are not changed."}">${r.hidden ? "Unhide" : "Hide"}</button>`;
+  return `<li class="proj-group${r.hidden ? " is-hidden" : ""}" data-open="${open}">
       <button type="button" class="proj-row" data-project="${esc(r.name)}" aria-expanded="${open}">
         <span class="proj-caret" aria-hidden="true">&#9656;</span>
         <span class="proj-name">${esc(r.name)}</span>
@@ -6461,6 +6566,7 @@ function projectRowHtml(r) {
           <span class="plan-remaining">${_fmtHours(r.hoursLeft)} left</span>
         </span>
       </button>
+      ${hideBtn}
       ${kids}
     </li>`;
 }
@@ -6474,7 +6580,8 @@ function renderPlanList() {
   const panel = document.getElementById("panelBody");
   if (!panel) return;
 
-  const nProjects = new Set(plans.map(planProject)).size;
+  const pool = listablePlans(plans, hiddenMarks, showHiddenPlans);
+  const nProjects = new Set(pool.map(planProject)).size;
   const sortCtl = `<label class="sort-control">sort by
       <select id="planSortSel">
         <option value="priority" ${planSortBy==="priority"?"selected":""}>priority</option>
@@ -6488,7 +6595,7 @@ function renderPlanList() {
   // is drawn larger than the status chips so it reads as the main switch.
   panel.innerHTML = `
     <div class="plan-view-toggle" role="group" aria-label="List by">
-      <button type="button" data-view="plans" aria-pressed="${planListView === "plans"}">Plans<span class="n">${plans.length}</span></button>
+      <button type="button" data-view="plans" aria-pressed="${planListView === "plans"}">Plans<span class="n">${pool.length}</span></button>
       <button type="button" data-view="projects" aria-pressed="${planListView === "projects"}">Projects<span class="n">${nProjects}</span></button>
     </div>
     <div class="planner-toolbar">
@@ -6500,6 +6607,7 @@ function renderPlanList() {
            placeholder="Search plans and projects" value="${esc(planQuery)}" />
     <div id="planStateChips" class="plan-state-chips" role="group" aria-label="Show plans that are"></div>
     <div class="plan-list-meta"><span id="planListSummary"></span>${sortCtl}</div>
+    <div class="hidden-toggle-row"><button type="button" id="planHiddenToggle" class="link-btn hidden-toggle" hidden></button></div>
     <div class="panel-list">
       <ul class="target-list" id="planListItems"></ul>
     </div>
@@ -6554,6 +6662,12 @@ function renderPlanList() {
     savePlanListState();
     renderPlanListItems();
   });
+  panel.querySelector("#planHiddenToggle").addEventListener("click", () => {
+    showHiddenPlans = !showHiddenPlans;
+    savePlanListState();
+    renderPlanListItems();
+    redrawPlanFootprints();
+  });
   const list = panel.querySelector("#planListItems");
   const openPlan = row => {
     const pl = plans.find(p => p.id === row.dataset.planId);
@@ -6563,7 +6677,20 @@ function renderPlanList() {
       renderPlanEditor(pl);
     }
   };
-  list.addEventListener("click", e => {
+  list.addEventListener("click", async e => {
+    const hideBtn = e.target.closest(".row-hide-btn");
+    if (hideBtn) {
+      const planId = hideBtn.dataset.hidePlan;
+      const proj = hideBtn.dataset.hideProject;
+      const ok = planId != null
+        ? await setHidden("plans", planId, !Object.hasOwn(hiddenMarks.plans, planId))
+        : await setHidden("projects", proj, !Object.hasOwn(hiddenMarks.projects, proj));
+      if (ok) {
+        renderPlanListItems();
+        redrawPlanFootprints();
+      }
+      return;
+    }
     const proj = e.target.closest(".proj-row");
     if (proj) {
       const name = proj.dataset.project;
@@ -6594,7 +6721,22 @@ function renderPlanListItems() {
   const list = document.getElementById("planListItems");
   if (!chipsEl || !list) return;
 
-  const searched = filterPlans(plans, { states: PLAN_STATES, query: planQuery });
+  // Hidden plans (and plans in hidden projects) are left out of the counts,
+  // the chips and the rows unless Show hidden is on.
+  const pool = listablePlans(plans, hiddenMarks, showHiddenPlans);
+  const nHidden = hiddenPlanCount(plans, hiddenMarks);
+  const toggle = document.getElementById("planHiddenToggle");
+  if (toggle) {
+    toggle.hidden = !(nHidden || showHiddenPlans);
+    toggle.textContent = `Show hidden (${nHidden})`;
+    toggle.setAttribute("aria-pressed", String(showHiddenPlans));
+  }
+  const viewN = document.querySelectorAll(".plan-view-toggle .n");
+  if (viewN.length === 2) {
+    viewN[0].textContent = pool.length;
+    viewN[1].textContent = new Set(pool.map(planProject)).size;
+  }
+  const searched = filterPlans(pool, { states: PLAN_STATES, query: planQuery });
   const counts = stateCounts(searched);
   const allOn = PLAN_STATES.every(s => planStates.has(s));
   chipsEl.innerHTML = PLAN_STATES.map(s => {
@@ -6606,16 +6748,16 @@ function renderPlanListItems() {
     ? `<button type="button" class="link-btn" data-act="default">Active and draft only</button>`
     : `<button type="button" class="link-btn" data-act="all">Show all</button>`);
 
-  const shown = filterPlans(plans, { states: planStates, query: planQuery });
+  const shown = filterPlans(pool, { states: planStates, query: planQuery });
   let html;
   if (!plans.length) {
     html = `<li class="tr-empty">No plans yet. Click "+ New plan" to start.</li>`;
   } else if (planListView === "projects") {
-    const rows = projectRollups(plans, shown, planSortBy);
+    const rows = projectRollups(pool, shown, planSortBy, hiddenMarks);
     if (summaryEl) summaryEl.textContent = `${rows.length} project${rows.length === 1 ? "" : "s"}, ${shown.length} plan${shown.length === 1 ? "" : "s"}`;
     html = rows.map(projectRowHtml).join("") || `<li class="tr-empty">No projects match. Try Show all.</li>`;
   } else {
-    if (summaryEl) summaryEl.textContent = `${shown.length} of ${plans.length} plans`;
+    if (summaryEl) summaryEl.textContent = `${shown.length} of ${pool.length} plans`;
     html = sortedPlansForList(shown).map(pl => planRowHtml(pl)).join("") || `<li class="tr-empty">No plans match. Try Show all.</li>`;
   }
   if (!plans.length && summaryEl) summaryEl.textContent = "";
@@ -6879,6 +7021,7 @@ function renderPlanEditor(plan) {
       <div class="plan-editor-actions">
         <button type="button" id="planSave" class="btn-primary">Save</button>
         <button type="button" id="planCancel">Cancel</button>
+        <button type="button" id="planHide" hidden></button>
         <button type="button" id="planDelete" class="btn-danger">Delete</button>
       </div>
     </form>`;
@@ -7035,6 +7178,26 @@ function renderPlanEditor(plan) {
     const orig = plans.find(p => p.id === editingPlan.id);
     if (orig && !orig.guid) plans = plans.filter(p => p !== orig);
     renderPlanList();
+  });
+  // Hide or unhide a saved plan without leaving the editor, so unsaved
+  // edits stay put. Hiding never touches the plan's state.
+  const hideBtn = panel.querySelector("#planHide");
+  const drawHideBtn = () => {
+    if (!hideBtn) return;
+    const self = Object.hasOwn(hiddenMarks.plans, editingPlan.id);
+    const viaProject = Object.hasOwn(hiddenMarks.projects, planProject(editingPlan));
+    hideBtn.hidden = !editingPlan.guid;
+    hideBtn.textContent = self ? "Unhide" : "Hide";
+    hideBtn.title = self
+      ? "Show this plan in the list again"
+      : viaProject
+        ? "This plan's project is hidden too; unhide it from the Projects view"
+        : "Hide this plan from the list and the map. Its state is not changed.";
+  };
+  drawHideBtn();
+  hideBtn?.addEventListener("click", async () => {
+    const self = Object.hasOwn(hiddenMarks.plans, editingPlan.id);
+    if (await setHidden("plans", editingPlan.id, !self)) drawHideBtn();
   });
   panel.querySelector("#planDelete")?.addEventListener("click", async () => {
     if (!editingPlan.guid) {
@@ -7206,6 +7369,7 @@ function redrawPlanFootprints() {
   for (const pl of plans) {
     if (pl.target?.center_ra_deg == null) continue;
     const isEditing = editingPlan && editingPlan.id === pl.id;
+    if (!isEditing && !showHiddenPlans && isPlanHidden(pl, hiddenMarks)) continue;
     const actual = isEditing ? editingPlan : pl;
     const color = planBorderColor(actual);
     const hasData = planHasData(actual);

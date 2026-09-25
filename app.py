@@ -22,6 +22,7 @@ Endpoints:
 - GET /api/visibility/point      same bins for an arbitrary (ra, dec) point
 - POST /api/visibility/panels    aggregated bins for a list of mosaic panels
 - GET /api/sites, POST           CRUD for saved observing sites
+- GET /api/hidden, POST          hide or unhide a plan, project or coverage target
 - GET /api/export/priority       CSV of gap-mode candidates
 - GET /api/gaps                  multi-source gap-finder (JSON)
 - GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
@@ -117,6 +118,10 @@ SAVED_SEARCHES_PATH = Path(os.environ.get(
     "SAVED_SEARCHES_PATH", REPO_ROOT / "data" / "saved_searches.json"))
 TARGET_OVERRIDES_PATH = Path(os.environ.get(
     "TARGET_OVERRIDES_PATH", REPO_ROOT / "data" / "target_overrides.json"))
+# Plans, projects and coverage targets the user has hidden (test shots and
+# the like). Its own file, not a key in plans.json, because the plan save
+# route replaces the whole plan and would drop a flag the editor never sent.
+HIDDEN_PATH = Path(os.environ.get("HIDDEN_PATH", REPO_ROOT / "data" / "hidden.json"))
 TS_DB_PATH = os.environ.get(
     "TS_DB_PATH",
     str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
@@ -417,6 +422,8 @@ _fingerprints_cache: dict | None = None
 _fingerprints_cache_mtime: float | None = None
 _target_overrides_cache: dict | None = None
 _target_overrides_cache_mtime: float | None = None
+_hidden_cache: dict | None = None
+_hidden_cache_mtime: float | None = None
 _sites_cache: dict | None = None
 _sites_cache_mtime: float | None = None
 _destinations_cache: dict | None = None
@@ -787,6 +794,50 @@ def save_target_overrides(data: dict) -> None:
     _target_overrides_cache_mtime = TARGET_OVERRIDES_PATH.stat().st_mtime
 
 
+HIDDEN_KINDS = ("plans", "projects", "targets")
+_HIDDEN_KEY_MAX = 200
+
+
+def load_hidden() -> dict:
+    """Hidden marks as {"version": 1, "plans": {...}, "projects": {...},
+    "targets": {...}}, each keyed by plan id, project name or target_id
+    (as a string). A missing or unreadable file means nothing is hidden."""
+    global _hidden_cache, _hidden_cache_mtime
+    empty = {"version": 1, **{k: {} for k in HIDDEN_KINDS}}
+    if not HIDDEN_PATH.exists():
+        return empty
+    mtime = HIDDEN_PATH.stat().st_mtime
+    if _hidden_cache is None or _hidden_cache_mtime != mtime:
+        try:
+            raw = json.loads(HIDDEN_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logging.warning("hidden marks at %s are unreadable (%s): showing everything",
+                            HIDDEN_PATH, exc)
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        data = {"version": raw.get("version", 1)}
+        for k in HIDDEN_KINDS:
+            v = raw.get(k)
+            data[k] = v if isinstance(v, dict) else {}
+        _hidden_cache = data
+        _hidden_cache_mtime = mtime
+    return _hidden_cache
+
+
+def save_hidden(data: dict) -> None:
+    global _hidden_cache, _hidden_cache_mtime
+    HIDDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(HIDDEN_PATH, data, indent=2)
+    _hidden_cache = data
+    _hidden_cache_mtime = HIDDEN_PATH.stat().st_mtime
+
+
+def hidden_target_ids() -> set[str]:
+    """Target ids (as strings) the user has hidden from coverage."""
+    return set(load_hidden().get("targets", {}))
+
+
 def load_sites() -> dict:
     global _sites_cache, _sites_cache_mtime
     if not SITES_PATH.exists():
@@ -889,8 +940,11 @@ class JsonManifestSource:
 
     def __init__(self, *, source_id: str, label: str, color: str,
                  attribution: str, enabled_default: bool, path: Path | str,
-                 kind: str = "manifest") -> None:
+                 kind: str = "manifest", hidden_ids=None) -> None:
         self._source_id = source_id
+        # Callable returning target ids (strings) to leave out of coverage.
+        # Only the user's own archive passes one; friend manifests don't.
+        self._hidden_ids = hidden_ids
         self._label = label
         self._color = color
         self._attribution = attribution
@@ -960,7 +1014,8 @@ class JsonManifestSource:
         manifest = self._load()
         if not manifest:
             return None
-        cache_key = (filter_name, self._cache_mtime or 0.0)
+        hidden = frozenset(self._hidden_ids()) if self._hidden_ids else frozenset()
+        cache_key = (filter_name, self._cache_mtime or 0.0, hidden)
         if cache_key in self._moc_cache:
             return self._moc_cache[cache_key]
 
@@ -969,6 +1024,8 @@ class JsonManifestSource:
 
         per_target: list = []
         for t in manifest.get("targets", []) or []:
+            if hidden and str(t.get("target_id")) in hidden:
+                continue
             f = (t.get("filters") or {}).get(filter_name)
             if not f or float(f.get("total_hours", 0.0)) <= 0.0:
                 continue
@@ -1001,6 +1058,7 @@ def ManifestCoverageSource() -> JsonManifestSource:
         enabled_default=True,
         path=MANIFEST_PATH,
         kind="manifest",
+        hidden_ids=hidden_target_ids,
     )
 
 
@@ -4240,6 +4298,46 @@ def api_target_overrides():
         }
     save_target_overrides({"version": data.get("version", 1), "overrides": overrides})
     return jsonify({"ok": True, "overrides": overrides})
+
+
+@app.route("/api/hidden", methods=["GET", "POST"])
+def api_hidden():
+    """Hide or unhide a plan, a project or a coverage target.
+
+    POST {"kind": "plans"|"projects"|"targets", "key": <id>, "hidden": bool}.
+    Hiding only changes what the web UI lists, draws and counts by default.
+    It never changes a plan's state, and it never deletes anything.
+    Target keys are the manifest target_id, stored as a string.
+    """
+    data = load_hidden()
+    if request.method == "GET":
+        return jsonify(data)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "payload must be a JSON object"}), 400
+    kind = payload.get("kind")
+    if kind not in HIDDEN_KINDS:
+        return jsonify({"error": f"kind must be one of {', '.join(HIDDEN_KINDS)}"}), 400
+    key = payload.get("key")
+    if kind == "targets":
+        if isinstance(key, bool) or not ((isinstance(key, int) and key >= 0)
+                                         or (isinstance(key, str) and key.strip().isascii()
+                                             and key.strip().isdigit())):
+            return jsonify({"error": "key must be a target_id (a whole number)"}), 400
+        key = str(int(key))
+    else:
+        if not isinstance(key, str) or not key.strip() or len(key) > _HIDDEN_KEY_MAX:
+            return jsonify({"error": f"key must be a non-empty string of at most {_HIDDEN_KEY_MAX} characters"}), 400
+    hidden = payload.get("hidden")
+    if not isinstance(hidden, bool):
+        return jsonify({"error": "hidden must be true or false"}), 400
+    new = {"version": data.get("version", 1), **{k: dict(data.get(k, {})) for k in HIDDEN_KINDS}}
+    if hidden:
+        new[kind][key] = {"hidden_at": datetime.now(timezone.utc).isoformat()}
+    else:
+        new[kind].pop(key, None)
+    save_hidden(new)
+    return jsonify(new)
 
 
 @app.route("/api/ts-templates")
