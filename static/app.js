@@ -153,6 +153,36 @@ function setupOnboardingBanner(manifest) {
   }
 }
 
+// --- TS upload banner (nina-ts-sync extension, when loaded) ---
+// Fetched once on load, independent of the manifest/Aladin startup chain,
+// so it shows up even if the sky map is slow or fails to start. The route
+// belongs to an optional extension. A 404 (extension not loaded), a
+// network error, or an empty list all mean "show nothing", silently, this
+// is not an ACP failure, so it doesn't warrant a console warning.
+async function loadTsSyncBanner() {
+  const el = document.getElementById("tsSyncBanner");
+  if (!el) return;
+  let data;
+  try {
+    const r = await fetch("/api/ext/nina-ts-sync/import/uploads/pending");
+    if (!r.ok) { el.hidden = true; return; }
+    data = await r.json();
+  } catch {
+    el.hidden = true;
+    return;
+  }
+  const { lines, more } = summariseUploads(data && data.uploads);
+  if (!lines.length) { el.hidden = true; return; }
+  el.innerHTML = lines.map(({ text, url }) => {
+    const safeText = esc(text);
+    const link = url
+      ? ` <a href="${esc(url)}" class="ts-sync-link">Review and apply</a>`
+      : "";
+    return `<span class="ts-sync-line">${safeText}${link}</span>`;
+  }).join("") + (more ? `<span class="ts-sync-more">and ${more} more</span>` : "");
+  el.hidden = false;
+}
+
 // --- localStorage persistence ---
 // Bump the version suffix if the shape of the saved state ever changes
 // incompatibly, so stale saves from older clients get ignored.
@@ -543,6 +573,7 @@ import {
   webgl2Available,
   withTimeout,
 } from "./init-error.mjs";
+import { summariseUploads } from "./ts-sync-banner.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -5414,6 +5445,10 @@ function positionCatTooltip() {
 }
 
 function init() {
+  // Independent of everything below: don't let a slow or failed sky map
+  // hide a pending TS upload the user needs to go review.
+  loadTsSyncBanner();
+
   const showInitError = err => {
     // Without this, any exception during startup left the "Loading
     // targets…" placeholder on screen forever with nothing but an
