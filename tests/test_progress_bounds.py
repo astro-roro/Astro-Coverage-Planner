@@ -33,7 +33,7 @@ class ProgressBoundsCase(unittest.TestCase):
         for cache in ("_plans_cache", "_plans_cache_mtime"):
             setattr(app_module, cache, None)
         app_module.PLANS_PATH.write_text(
-            json.dumps({"version": 1, "plans": [json.loads(json.dumps(PLAN))]}),
+            json.dumps({"version": 1, "settings_migrated": 1, "plans": [json.loads(json.dumps(PLAN))]}),
             encoding="utf-8",
         )
         self.client = app.test_client()

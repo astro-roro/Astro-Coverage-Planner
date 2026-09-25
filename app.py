@@ -598,6 +598,64 @@ def _heal_plan_list(plans: list) -> list:
     return healed_plans
 
 
+# The four TS project states ACP now owns, per docs/specs/ts-project-settings.md
+# section 1. Absent on a plan means "active", the same as TS.
+PLAN_STATES = ("draft", "active", "inactive", "closed")
+
+
+def _backup_plans_json() -> None:
+    """Timestamped copy of plans.json, taken once before the draft->active
+    migration touches it. Best-effort: a backup failure is logged, not
+    fatal, because refusing to migrate over a backup problem would leave
+    the 47 plans permanently stuck under the old draft meaning."""
+    if not PLANS_PATH.exists():
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = PLANS_PATH.with_name(f"{PLANS_PATH.name}.bak-{stamp}")
+    try:
+        backup_path.write_bytes(PLANS_PATH.read_bytes())
+    except OSError as exc:
+        logging.warning("could not back up %s before migration: %s", PLANS_PATH, exc)
+
+
+def _maybe_migrate_draft_plans_to_active() -> None:
+    """One-shot: every plan left as `state: "draft"` under the old meaning
+    becomes `"active"`, the first time ACP loads plans.json after this
+    version starts. See docs/specs/ts-project-settings.md section 1 for
+    why: the NINA plugin never honoured draft, so 46 of Rohan's 47 draft
+    plans were already live in TS. Leaving them "draft" under the new
+    meaning (TS keeps the project but never schedules it) would pause
+    them on the next push. The 9 plans TS itself has inactive are not
+    touched here; they come back into ACP as inactive on the next upload,
+    per the push rule in section 5 (a push never writes a setting ACP
+    hasn't changed since the last sync).
+
+    Guarded by a `settings_migrated: 1` key on the plans.json document
+    itself, so it runs once ever and a second load changes nothing. Takes
+    a timestamped backup first, because the migration is the one step in
+    this change that's hard to undo by hand.
+    """
+    global _plans_cache
+    if not isinstance(_plans_cache, dict) or _plans_cache.get("settings_migrated"):
+        return
+    plans = _plans_cache.get("plans")
+    if not isinstance(plans, list):
+        plans = []
+    _backup_plans_json()
+    moved = 0
+    for p in plans:
+        if isinstance(p, dict) and p.get("state") == "draft":
+            p["state"] = "active"
+            moved += 1
+    _plans_cache["plans"] = plans
+    _plans_cache["settings_migrated"] = 1
+    logging.info(
+        "Moved %d plans from draft to active, because the NINA plugin was already syncing them",
+        moved,
+    )
+    save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
+
+
 def load_plans() -> dict:
     global _plans_cache, _plans_cache_mtime
     if not PLANS_PATH.exists():
@@ -609,6 +667,7 @@ def load_plans() -> dict:
         plans = _plans_cache.get("plans")
         if isinstance(plans, list):
             _plans_cache["plans"] = _heal_plan_list(plans)
+        _maybe_migrate_draft_plans_to_active()
     # One-shot backfill: the first time someone declares destinations,
     # every existing plan without a destination_id picks up the first
     # destination's id and gets persisted. Flag stored in destinations.json
@@ -649,7 +708,7 @@ def _maybe_backfill_plan_destinations() -> None:
     dests_doc["backfilled_at"] = datetime.now(timezone.utc).isoformat()
     save_destinations(dests_doc)
     if changed:
-        save_plans({"version": _plans_cache.get("version", 1), "plans": plans})
+        save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
 
 
 def save_plans(data: dict) -> None:
@@ -3282,6 +3341,23 @@ def _validate_plan_payload(payload: dict) -> str | None:
                     return f"filter_goals[{fname!r}].actual_hours must be a number"
                 if not math.isfinite(ah) or ah < 0:
                     return f"filter_goals[{fname!r}].actual_hours must be ≥ 0"
+    # TS project state (docs/specs/ts-project-settings.md section 1). Absent
+    # means "active". "parked" is a held PR #97 value that never shipped;
+    # normalise it to "inactive" (TS's meaning for a plan paused by hand)
+    # rather than writing a fifth, unrecognised state.
+    state = payload.get("state")
+    if state == "parked":
+        state = payload["state"] = "inactive"
+    if state is not None and state not in PLAN_STATES:
+        return f"state must be one of {', '.join(PLAN_STATES)}"
+    # Minimum time, in minutes, the same TS-owned rule as min altitude:
+    # absent means 0, and a group's largest value wins (_build_ts_export).
+    if "minimum_time_min" in payload:
+        mt = payload["minimum_time_min"]
+        if isinstance(mt, bool) or not isinstance(mt, int):
+            return "minimum_time_min must be an integer"
+        if mt < 0:
+            return "minimum_time_min must be ≥ 0"
     # Live-page fields (docs/specs/shooting-page.md). Absent means private,
     # so anything other than the two known values is rejected, never coerced.
     vis = payload.get("visibility")
@@ -3388,7 +3464,7 @@ def api_plans():
     payload["updated_at"] = now
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
-    save_plans({"version": data.get("version", 1), "plans": plans})
+    save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return jsonify(payload), 201
 
 
@@ -3403,7 +3479,7 @@ def api_plan(plan_id: str):
         return jsonify(plans[idx])
     if request.method == "DELETE":
         plans.pop(idx)
-        save_plans({"version": data.get("version", 1), "plans": plans})
+        save_plans({**data, "version": data.get("version", 1), "plans": plans})
         return ("", 204)
     payload = request.get_json(silent=True) or {}
     payload["id"] = plan_id  # URL is authoritative; validator runs after
@@ -3416,8 +3492,70 @@ def api_plan(plan_id: str):
     payload.setdefault("last_synced_at", existing.get("last_synced_at"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     plans[idx] = payload
-    save_plans({"version": data.get("version", 1), "plans": plans})
+    save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
+
+
+@app.route("/api/projects/<project_name>/settings", methods=["PUT"])
+def api_project_settings(project_name: str):
+    """Save state, priority and minimum_time_min across every plan that
+    shares this project_name, in one write to plans.json.
+
+    ACP has no project entity: a TS project is the group of plans that
+    share `project_name`, the same grouping `_build_ts_export` uses. The
+    editor calls this route instead of saving each plan separately so a
+    change to one of these three fields can never land on some of a
+    project's plans and not others. See docs/specs/ts-project-settings.md
+    section 1. Any subset of the three body keys can be given; a key left
+    out is left unchanged on every plan in the group.
+    """
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "payload must be a JSON object"}), 400
+
+    state = payload.get("state")
+    if state == "parked":
+        state = "inactive"
+    if state is not None and state not in PLAN_STATES:
+        return jsonify({"error": f"state must be one of {', '.join(PLAN_STATES)}"}), 400
+
+    priority = payload.get("priority")
+    if priority is not None and priority not in PRIORITY_RANK:
+        return jsonify({"error": f"priority must be one of {', '.join(PRIORITY_RANK)}"}), 400
+
+    minimum_time_min = None
+    has_minimum_time = "minimum_time_min" in payload
+    if has_minimum_time:
+        minimum_time_min = payload["minimum_time_min"]
+        if isinstance(minimum_time_min, bool) or not isinstance(minimum_time_min, int):
+            return jsonify({"error": "minimum_time_min must be an integer"}), 400
+        if minimum_time_min < 0:
+            return jsonify({"error": "minimum_time_min must be ≥ 0"}), 400
+
+    data = load_plans()
+    plans = data.get("plans", [])
+    group = [p for p in plans if isinstance(p, dict) and p.get("project_name") == project_name]
+    if not group:
+        return jsonify({"error": f"no plans in project {project_name!r}"}), 404
+
+    now = datetime.now(timezone.utc).isoformat()
+    for p in group:
+        if state is not None:
+            p["state"] = state
+        if priority is not None:
+            p["priority"] = priority
+        if has_minimum_time:
+            p["minimum_time_min"] = minimum_time_min
+        p["updated_at"] = now
+    save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    return jsonify({
+        "ok": True,
+        "project_name": project_name,
+        "plan_count": len(group),
+        "state": state,
+        "priority": priority,
+        "minimum_time_min": minimum_time_min if has_minimum_time else None,
+    })
 
 
 # --- NINA plugin v3: gear fingerprint matching --------------------------
@@ -3748,6 +3886,18 @@ def api_plans_match():
     Returns all verdicts, not just the fits: the caller decides what to
     show. The fingerprint itself is stored under its profile name so ACP's
     own planning rail can say what each NINA install last reported.
+
+    This is what the NINA plugin's "Sync for tonight" calls to decide what
+    to load onto the rig. A plugin that sends `supports_state: true` gets
+    every plan back, including draft, inactive and closed ones, because
+    the plugin still has to write a paused plan's state to its TS row even
+    though it won't load it (see docs/specs/ts-project-settings.md section
+    6): those plans come back with `match: {"verdict": "held", "state":
+    "<state>"}` and don't count in `summary`. Only `"active"` plans (or a
+    plan with no `state` at all) get a real verdict. Without the flag, an
+    older plugin or ACP's own planning rail sees only active plans, same
+    as this endpoint behaved before state existed: an old plugin writes
+    state 1 on every push, so it must never be shown a paused plan.
     """
     fp = request.get_json(silent=True) or {}
     err = _validate_fingerprint(fp)
@@ -3761,11 +3911,20 @@ def api_plans_match():
     optics = _fingerprint_optics(fp)
     bands = _fingerprint_bands(fp)
     want = frozenset({"gear", "panels"})
+    supports_state = bool(fp.get("supports_state"))
 
     out_plans = []
     summary = {"fit": 0, "fit_with_warnings": 0, "no_fit": 0, "unconstrained": 0}
     for plan in load_plans().get("plans", []):
         if not isinstance(plan, dict):
+            continue
+        state = plan.get("state") or "active"
+        if state != "active":
+            if not supports_state:
+                continue
+            entry = _expand_plan(plan, want, gear, None)
+            entry["match"] = {"verdict": "held", "state": state}
+            out_plans.append(entry)
             continue
         match = _match_plan(plan, optics, bands, telescopes_by_id, cameras_by_id)
         summary[match["verdict"]] += 1
@@ -3943,7 +4102,7 @@ def api_plan_progress(plan_id: str):
         plan["filter_goals"] = goals
         plan["updated_at"] = datetime.now(timezone.utc).isoformat()
         plans[idx] = plan
-        save_plans({"version": data.get("version", 1), "plans": plans})
+        save_plans({**data, "version": data.get("version", 1), "plans": plans})
 
     return jsonify({
         "ok": True,
@@ -4080,6 +4239,13 @@ PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
 # "Inactive" / "Closed" and "Low" / "Normal" / "High".
 _TS_PRIORITY_NAME = {0: "Low", 1: "Normal", 2: "High"}
 
+# Group-resolution order for state, per docs/specs/ts-project-settings.md
+# section 1: "the most running value wins ... one active plan keeps the
+# project imaging." Higher rank wins when plans sharing a project_name
+# disagree. TS's own enum name string is what the export writes.
+STATE_RANK = {"active": 3, "inactive": 2, "draft": 1, "closed": 0}
+_TS_STATE_NAME = {"draft": "Draft", "active": "Active", "inactive": "Inactive", "closed": "Closed"}
+
 
 def _ts_database_version(ts_db_path: str | None = None) -> str:
     """Read PRAGMA user_version from a TS sqlite DB.
@@ -4211,6 +4377,9 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
         nonzero = [v for v in merid_vals if v > 0]
         meridian = min(nonzero) if nonzero else 0.0
         pri_name = max(group, key=lambda p: PRIORITY_RANK.get(p.get("priority", "normal"), 1)).get("priority", "normal")
+        state_vals = [p.get("state") or "active" for p in group]
+        resolved_state = max(state_vals, key=lambda s: STATE_RANK.get(s, STATE_RANK["active"]))
+        min_time = max(int(p.get("minimum_time_min") or 0) for p in group)
 
         if len(set(p.get("min_altitude_deg") or 0 for p in group)) > 1:
             _warn("min_altitude", pname, min_alt, group, "strict",
@@ -4221,6 +4390,12 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
         if len(set(p.get("priority", "normal") for p in group)) > 1:
             _warn("priority", pname, pri_name, group, pri_name,
                   f"Priority differed; using '{pri_name}'.")
+        if len(set(state_vals)) > 1:
+            _warn("state", pname, resolved_state, group, resolved_state,
+                  f"State differed across plans; the most running value wins: '{resolved_state}'.")
+        if len(set(int(p.get("minimum_time_min") or 0) for p in group)) > 1:
+            _warn("minimum_time", pname, min_time, group, "strict",
+                  f"Minimum time differed; using the largest ({min_time} min).")
 
         ts_targets: list[dict] = []
         project_is_mosaic = False
@@ -4350,14 +4525,14 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             "Guid": str(uuid.uuid4()),
             "Name": pname,
             "Description": "",
-            "State": "Active",
+            "State": _TS_STATE_NAME.get(resolved_state, "Active"),
             "Priority": _TS_PRIORITY_NAME.get(PRIORITY_RANK.get(pri_name, 1), "Normal"),
             "CreateDate": datetime.now(timezone.utc).isoformat(),
             "ActiveDate": None,
             "InactiveDate": None,
             "IsMosaic": project_is_mosaic,
             "FlatsHandling": 0,
-            "MinimumTime": 0,
+            "MinimumTime": min_time,
             "MinimumAltitude": float(min_alt),
             "MaximumAltitude": 90.0,
             "UseCustomHorizon": False,
@@ -4380,18 +4555,22 @@ def api_sync():
     projects.json into a zip. Returns the zip path and any strictest-wins
     warnings so the UI can offer an inline rename and re-sync.
 
-    Draft plans (plan.state == "draft") never sync: they're work in
-    progress the user hasn't committed to yet. Plans with no `state` field
-    (everything written before this field existed) are treated as
-    committed, so upgrading ACP doesn't silently stop syncing anyone's
-    existing plans. The response reports how many were skipped as drafts.
+    Closed plans (plan.state == "closed") never sync: TS imports this zip
+    as new projects every time (see section 6 of the spec), so a closed
+    plan re-syncing here would recreate a project Rohan already finished
+    and deleted from TS. Active, inactive and draft plans are all
+    included, each with the matching TS State name, because draft and
+    inactive projects still have to exist in TS for a later push to find
+    them. Plans with no `state` field (everything written before this
+    field existed) are treated as active. The response reports how many
+    were skipped as closed.
 
     Optional `destination_id` (JSON body or `?destination_id=` query param)
     scopes the sync to one entry from /api/destinations: only plans with a
     matching plan.destination_id are bundled, and that destination's own
     ts_db_path / export_path is used instead of the global TS_DB_PATH /
     ZIP_OUTPUT_DIR. Omitting it preserves the pre-multi-rig behaviour (all
-    non-draft plans, global paths) so the existing NINA plugin integration
+    non-closed plans, global paths) so the existing NINA plugin integration
     keeps working unchanged.
     """
     body = request.get_json(silent=True) or {}
@@ -4406,8 +4585,8 @@ def api_sync():
 
     data = load_plans()
     all_plans = data.get("plans", [])
-    drafts = [p for p in all_plans if p.get("state") == "draft"]
-    pls = [p for p in all_plans if p.get("state") != "draft"]
+    closed = [p for p in all_plans if p.get("state") == "closed"]
+    pls = [p for p in all_plans if p.get("state") != "closed"]
     if destination is not None:
         pls = [p for p in pls if p.get("destination_id") == destination_id]
     if not pls:
@@ -4462,12 +4641,12 @@ def api_sync():
     now = datetime.now(timezone.utc).isoformat()
     for pl in pls:
         pl["last_synced_at"] = now
-    save_plans({"version": data.get("version", 1), "plans": all_plans})
+    save_plans({**data, "version": data.get("version", 1), "plans": all_plans})
 
     return jsonify({
         "ok": True,
         "plan_count": len(pls),
-        "skipped_draft_count": len(drafts),
+        "skipped_closed_count": len(closed),
         "destination_id": destination_id or None,
         "project_count": len(payload["projects"]),
         "template_count": len(payload["exposureTemplates"]),

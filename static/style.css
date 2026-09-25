@@ -697,6 +697,18 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
   color: #78839a;
   font-size: 11px;
 }
+.plan-state-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #a2aec2;
+  background: #232a3a;
+  vertical-align: middle;
+}
+.plan-row.plan-state-closed { opacity: 0.5; }
 .plan-goals {
   display: inline-flex;
   gap: 2px;

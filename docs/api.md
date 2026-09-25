@@ -186,7 +186,9 @@ ACP lets you sketch imaging plans against the sky map, then export them as a NIN
 
 `GET /api/plans?expand=gear,site,panels` is an opt-in enrichment for the NINA plugin: `gear` resolves `telescope_id` / `camera_id` against `gear.json` and adds the pair's `fov_arcmin` and `pixel_scale_arcsec`, `site` is the observing site (the plan's `site_id` if it has one, otherwise the first site), and `panels` is the mosaic's per-panel centres. Any subset of the names can be given. Without the parameter the response is unchanged. The response always carries a `Last-Modified` header taken from `plans.json`, so a client can poll cheaply.
 
-A plan's optional `state` field controls whether it's eligible for sync. `state: "draft"` marks a plan as still being worked on, and draft plans are excluded from `/api/sync` (see below). Plans with no `state` field at all (anything written before this field existed) are treated as committed and keep syncing.
+A plan's optional `state` field is one of `"draft"`, `"active"`, `"inactive"` or `"closed"`, the four Target Scheduler project states; any other value is a 400. Plans with no `state` field at all (anything written before this field existed) are treated as `"active"`. `minimum_time_min` is an optional non-negative integer, minutes, defaulting to 0 when absent. Both fields sync both ways with TS: see `docs/specs/ts-project-settings.md`. Only `"closed"` plans are excluded from `/api/sync` (see below); draft and inactive plans still sync, because TS needs the project row to exist so a later push can pause or unpause it.
+
+`PUT /api/projects/<project_name>/settings` saves `state`, `priority` and `minimum_time_min` on every plan that shares that `project_name`, in one write, so a group of plans in one TS project can never end up half-saved. Body: `{"state": "inactive", "priority": "high", "minimum_time_min": 30}`; any subset of the three keys can be given. An unknown `project_name` (no plan carries it) is a 404.
 
 ### Matching plans to connected gear: `POST /api/plans/match`
 
@@ -208,6 +210,8 @@ The companion NINA plugin posts a *fingerprint* of whatever gear is connected ri
 ```
 
 Only `camera` (with `sensor_px` and `pixel_size_um`) and `focal_length_mm` are required: a rig with no filter wheel, no mount driver and no site set still gets an answer. `focal_length_mm` can be a plain number or the `{profile, solved}` pair, in which case the solved value wins, because a reducer, a different back focus or simply a stale profile entry all show up in the plate solve and nowhere else. `pixel_scale_arcsec` is used when given and derived from pixel size, bin and focal length otherwise. `mode` is `"fit"` or `"everything"`; it is echoed back and stored with the fingerprint but never changes a verdict, since all verdicts are returned and the caller decides what to show.
+
+`supports_state: true` tells this endpoint the caller (the NINA plugin's "Sync for tonight") understands plan state. With it, every plan comes back, including draft, inactive and closed ones; only `"active"` plans get a real verdict and count in `summary`, the rest get `"match": {"verdict": "held", "state": "<state>"}`. Without it (an older plugin, or ACP's own planning rail), only active plans are returned at all, same as before this field existed.
 
 The response wraps each plan (in the same shape as `GET /api/plans?expand=gear,panels`) with a `match` block:
 
@@ -288,7 +292,7 @@ Builds a Target Scheduler import zip (`metadata.json`, `exposureTemplates.json`,
 {
   "ok": true,
   "plan_count": 3,
-  "skipped_draft_count": 1,
+  "skipped_closed_count": 1,
   "destination_id": null,
   "project_count": 2,
   "template_count": 4,
@@ -300,11 +304,11 @@ Builds a Target Scheduler import zip (`metadata.json`, `exposureTemplates.json`,
 }
 ```
 
-Draft plans (`state: "draft"`) are always excluded; `skipped_draft_count` reports how many so the UI can surface it. Plans are grouped into TS Projects by `project_name` (or, when blank, one Project per plan named after its target); a mosaic plan's `rows`/`cols` expand into per-panel Targets and the Project's `IsMosaic` flag is set accordingly. RA is normalised with `% 360` on export as a defence for any plan written before RA-range validation existed.
+Only closed plans (`state: "closed"`) are excluded; `skipped_closed_count` reports how many so the UI can surface it. TS imports this zip as new projects every time, so a closed plan re-syncing here would recreate a project Rohan already finished and deleted from TS. Active, inactive and draft plans are all included, each project's `State` set from the plans sharing its `project_name`: the most-running value wins in the order active, inactive, draft (a project with plans in more than one state gets a warning, same as a priority or minimum-time disagreement). Plans are grouped into TS Projects by `project_name` (or, when blank, one Project per plan named after its target); a mosaic plan's `rows`/`cols` expand into per-panel Targets and the Project's `IsMosaic` flag is set accordingly. `MinimumTime` is the group's largest `minimum_time_min`, the same strictest-wins rule as `MinimumAltitude`. RA is normalised with `% 360` on export as a defence for any plan written before RA-range validation existed.
 
-By default (no `destination_id`) every non-draft plan is bundled and the zip is written under `ZIP_OUTPUT_DIR`, downloadable via `download_url`. This is the pre-multi-rig behaviour and is what the existing NINA plugin integration expects.
+By default (no `destination_id`) every non-closed plan is bundled and the zip is written under `ZIP_OUTPUT_DIR`, downloadable via `download_url`. This is the pre-multi-rig behaviour and is what the existing NINA plugin integration expects.
 
-Pass an optional `destination_id` (JSON body `{"destination_id": "victoria"}` or query param `?destination_id=victoria`) to scope the sync to one rig: only plans whose `destination_id` matches are bundled, and that destination's own configured path is used instead of the global one. That's `ts_db_path` for the `PRAGMA user_version` probe on a `local_db` destination, or `export_path` as the zip's own output path (no `download_url`, no `zip_path` under `ZIP_OUTPUT_DIR`) on a `shared_file` destination. An unknown `destination_id` returns 400; a destination with no matching plans (after draft exclusion) returns the same "no plans to sync" 400 as an empty sync. `destinations.json` isn't validated on load (only `POST /api/destinations` validates), so a hand-edited entry with a `kind` other than `local_db`/`shared_file` also returns 400 naming the bad kind, rather than silently falling back to the global paths.
+Pass an optional `destination_id` (JSON body `{"destination_id": "victoria"}` or query param `?destination_id=victoria`) to scope the sync to one rig: only plans whose `destination_id` matches are bundled, and that destination's own configured path is used instead of the global one. That's `ts_db_path` for the `PRAGMA user_version` probe on a `local_db` destination, or `export_path` as the zip's own output path (no `download_url`, no `zip_path` under `ZIP_OUTPUT_DIR`) on a `shared_file` destination. An unknown `destination_id` returns 400; a destination with no matching plans (after closed exclusion) returns the same "no plans to sync" 400 as an empty sync. `destinations.json` isn't validated on load (only `POST /api/destinations` validates), so a hand-edited entry with a `kind` other than `local_db`/`shared_file` also returns 400 naming the bad kind, rather than silently falling back to the global paths.
 
 ### Download: `GET /api/sync/download/<filename>`
 

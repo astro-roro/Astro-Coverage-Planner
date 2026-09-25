@@ -84,30 +84,46 @@ def _plan(plan_id, **kwargs):
     return base
 
 
-class TestSyncDraftExclusion(unittest.TestCase):
-    """Draft plans never sync: they're work in progress, not committed
-    to a session. Legacy plans with no `state` field at all must keep
-    syncing (pre-feature data)."""
+class TestSyncClosedExclusion(unittest.TestCase):
+    """Only closed plans never sync: TS imports this zip as new projects
+    every time, so a closed plan re-syncing would recreate a project
+    Rohan already finished and deleted from TS
+    (docs/specs/ts-project-settings.md section 6). Draft and inactive
+    plans DO sync now (unlike the old draft-only-work-in-progress
+    meaning): TS needs the project row to exist so a later push can pause
+    or unpause it. Legacy plans with no `state` field at all are treated
+    as active."""
 
     def setUp(self):
         _fresh_state()
         _save_gear()
         self.client = app.test_client()
 
-    def test_draft_plan_excluded_from_sync(self):
+    def test_closed_plan_excluded_from_sync(self):
         app_module.save_plans({"version": 1, "plans": [
             _plan("p1", state="active"),
-            _plan("p2", state="draft"),
+            _plan("p2", state="closed"),
         ]})
         r = self.client.post("/api/sync")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         body = r.get_json()
         self.assertEqual(body["plan_count"], 1)
-        self.assertEqual(body["skipped_draft_count"], 1)
+        self.assertEqual(body["skipped_closed_count"], 1)
 
-    def test_all_drafts_returns_400_no_plans(self):
+    def test_draft_and_inactive_plans_still_sync(self):
         app_module.save_plans({"version": 1, "plans": [
             _plan("p1", state="draft"),
+            _plan("p2", state="inactive"),
+        ]})
+        r = self.client.post("/api/sync")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["plan_count"], 2)
+        self.assertEqual(body["skipped_closed_count"], 0)
+
+    def test_all_closed_returns_400_no_plans(self):
+        app_module.save_plans({"version": 1, "plans": [
+            _plan("p1", state="closed"),
         ]})
         r = self.client.post("/api/sync")
         self.assertEqual(r.status_code, 400)
@@ -123,32 +139,67 @@ class TestSyncDraftExclusion(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         body = r.get_json()
         self.assertEqual(body["plan_count"], 1)
-        self.assertEqual(body["skipped_draft_count"], 0)
+        self.assertEqual(body["skipped_closed_count"], 0)
 
-    def test_draft_plan_not_dropped_from_plans_json(self):
-        # Syncing must not delete the draft from storage: only exclude
-        # it from THIS sync's zip. Regression guard: an earlier version
-        # of the filtering logic wrote the filtered subset back over
-        # the full plans list.
+    def test_closed_plan_not_dropped_from_plans_json(self):
+        # Syncing must not delete the closed plan from storage: only
+        # exclude it from THIS sync's zip. Regression guard: an earlier
+        # version of the filtering logic wrote the filtered subset back
+        # over the full plans list.
         app_module.save_plans({"version": 1, "plans": [
             _plan("p1", state="active"),
-            _plan("p2", state="draft"),
+            _plan("p2", state="closed"),
         ]})
         r = self.client.post("/api/sync")
         self.assertEqual(r.status_code, 200)
         stored = app_module.load_plans()["plans"]
         self.assertEqual({p["id"] for p in stored}, {"p1", "p2"})
 
-    def test_synced_plan_gets_last_synced_at_draft_does_not(self):
+    def test_synced_plan_gets_last_synced_at_closed_does_not(self):
         app_module.save_plans({"version": 1, "plans": [
             _plan("p1", state="active"),
-            _plan("p2", state="draft"),
+            _plan("p2", state="closed"),
         ]})
         r = self.client.post("/api/sync")
         self.assertEqual(r.status_code, 200)
         stored = {p["id"]: p for p in app_module.load_plans()["plans"]}
         self.assertIsNotNone(stored["p1"].get("last_synced_at"))
         self.assertIsNone(stored["p2"].get("last_synced_at"))
+
+
+class TestSyncProjectSettingsExport(unittest.TestCase):
+    """State and minimum time as they land in the TS export payload,
+    per docs/specs/ts-project-settings.md section 6."""
+
+    def setUp(self):
+        _fresh_state()
+        _save_gear()
+        self.client = app.test_client()
+
+    def test_inactive_plan_exports_state_inactive(self):
+        payload, _warnings = app_module._build_ts_export(
+            [_plan("p1", state="inactive", project_name="Solo")], app_module.load_gear())
+        self.assertEqual(payload["projects"][0]["State"], "Inactive")
+
+    def test_two_plans_one_project_minimum_time_largest_wins_with_warning(self):
+        group = [
+            _plan("p1", project_name="M31", minimum_time_min=20),
+            _plan("p2", project_name="M31", minimum_time_min=45),
+        ]
+        payload, warnings = app_module._build_ts_export(group, app_module.load_gear())
+        self.assertEqual(payload["projects"][0]["MinimumTime"], 45)
+        self.assertTrue(any(w["kind"] == "minimum_time" for w in warnings))
+
+    def test_closed_plan_left_out_and_counted(self):
+        app_module.save_plans({"version": 1, "plans": [
+            _plan("p1", state="active", project_name="A"),
+            _plan("p2", state="closed", project_name="B"),
+        ]})
+        r = self.client.post("/api/sync")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["project_count"], 1)
+        self.assertEqual(body["skipped_closed_count"], 1)
 
 
 class TestSyncDestinationScoping(unittest.TestCase):
@@ -235,18 +286,18 @@ class TestSyncDestinationScoping(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("destination_id", r.get_json().get("error", ""))
 
-    def test_destination_scoped_and_draft_excluded_together(self):
+    def test_destination_scoped_and_closed_excluded_together(self):
         self._write_two_destinations()
         app_module.save_plans({"version": 1, "plans": [
             _plan("p1", destination_id="home", state="active"),
-            _plan("p2", destination_id="home", state="draft"),
+            _plan("p2", destination_id="home", state="closed"),
             _plan("p3", destination_id="remote", state="active"),
         ]})
         r = self.client.post("/api/sync", json={"destination_id": "home"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         body = r.get_json()
         self.assertEqual(body["plan_count"], 1)
-        self.assertEqual(body["skipped_draft_count"], 1)
+        self.assertEqual(body["skipped_closed_count"], 1)
 
     def test_unsupported_destination_kind_returns_400(self):
         # destinations.json isn't validated on load (only the POST /api
