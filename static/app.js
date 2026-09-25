@@ -108,6 +108,7 @@ let catalogRegistry = [];      // [{id, data_key, label, color, marker, size, ..
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
+let lastPickedTargetId = null; // last target opened, marked in the list on the way back
 let completionFilter = "all"; // "all" | "finished" | "unfinished"
 let targetOverrides = {};     // target_id (string) → { finished: bool, updated_at: ... }
 let hiddenMarks = parseHidden(null); // GET /api/hidden: plans, projects and targets the user hid
@@ -618,6 +619,15 @@ import {
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import {
+  MENU_BTN_CLASS,
+  menuButtonHtml,
+  openMenu,
+  planMenuItems,
+  projectMenuItems,
+  targetMenuItems,
+  targetStatusText,
+} from "./row-menu.mjs";
+import {
   raDecToTangentOffset,
   rectangleCorners,
 } from "./sky-geometry.mjs";
@@ -1042,14 +1052,14 @@ function renderTargetList() {
     const trChip = trendChipHtml(t.target_id);
     // Two-line layout: row 1 is name/dots/hours, row 2 (only when time-aware
     // is on) carries Now + Trend chips and the 12-month sparkline.
-    return `<li class="target-row${isHidden ? " is-hidden" : ""}" data-target-id="${t.target_id}">
+    const picked = t.target_id === lastPickedTargetId ? " is-picked" : "";
+    return `<li class="target-row${isHidden ? " is-hidden" : ""}${picked}" data-target-id="${t.target_id}">
         <span class="tr-swatch" style="background:${esc(swatch)}" title="${esc(tel)}"></span>
         <span class="tr-name">#${t.target_id} ${name}${finishedMark}</span>
         <span class="tr-dots">${dots}</span>
         <span class="tr-hours">${total}h</span>
         <span class="tr-meta">${nowChip}${trChip}${yc}</span>
-        <button type="button" class="row-hide-btn" data-hide-target="${t.target_id}"
-                title="${isHidden ? "Show this target again" : "Hide this target, for test shots and the like"}">${isHidden ? "Unhide" : "Hide"}</button>
+        ${menuButtonHtml(`Target #${t.target_id} actions`, `data-menu-target="${t.target_id}"`)}
       </li>`;
   }).join("");
 
@@ -1074,6 +1084,7 @@ function renderTargetList() {
       ${hiddenToggle}
       <ul class="target-list">${rows || empty}</ul>
     </div>`;
+  panel.querySelector(".target-row.is-picked")?.scrollIntoView?.({ block: "nearest" });
 
   panel.querySelector("#targetHiddenToggle")?.addEventListener("click", () => {
     showHiddenTargets = !showHiddenTargets;
@@ -1083,19 +1094,20 @@ function renderTargetList() {
     if (panelMode === "list") renderTargetList();
   });
   panel.querySelectorAll(".target-row").forEach(row => {
-    row.addEventListener("click", async e => {
-      const hideBtn = e.target.closest(".row-hide-btn");
-      if (hideBtn) {
-        const id = parseInt(hideBtn.dataset.hideTarget, 10);
-        const t = manifest.targets.find(x => x.target_id === id);
-        if (t && await setHidden("targets", id, !isTargetHidden(t, hiddenMarks))) {
-          redrawFootprints();
-          if (panelMode === "list") renderTargetList();
-        }
+    const rowTarget = () => manifest.targets.find(x => x.target_id === parseInt(row.dataset.targetId, 10));
+    row.addEventListener("contextmenu", e => {
+      const t = rowTarget();
+      if (e.shiftKey || !t) return;
+      e.preventDefault();
+      showRowMenu(targetMenuSpec(t), { point: { x: e.clientX, y: e.clientY } });
+    });
+    row.addEventListener("click", e => {
+      const t = rowTarget();
+      const menuBtn = e.target.closest(`.${MENU_BTN_CLASS}`);
+      if (menuBtn) {
+        if (t) showRowMenu(targetMenuSpec(t), { anchor: menuBtn });
         return;
       }
-      const id = parseInt(row.dataset.targetId, 10);
-      const t = manifest.targets.find(x => x.target_id === id);
       if (t) {
         // Pan first so even a render throw doesn't swallow the pan.
         panMapTo(t.center_ra_deg, t.center_dec_deg);
@@ -1115,6 +1127,7 @@ function renderTargetPanel(t) {
   panelMode = "detail";
   updateSearchVisibility();
   selectedTargetId = t.target_id;
+  lastPickedTargetId = t.target_id;
   saveUiState();
   const panel = document.getElementById("panelBody");
   // LRGBHOS order everywhere, header pills, coverage rows. Extras (non-canonical
@@ -1168,19 +1181,8 @@ function renderTargetPanel(t) {
   const overrideKey = String(t.target_id);
   const hasOverride = !!targetOverrides[overrideKey];
   const hasPlans = plans.some(p => String(p.target?.target_id) === overrideKey);
-  const statusText = finished
-    ? (hasOverride ? "Marked finished manually." : "All plan goals met.")
-    : (hasPlans ? "Plan goals not yet met." : "No plan set, treated as unfinished.");
-  const primaryBtn = finished
-    ? `<button id="markUnfinishedBtn">Mark in-progress</button>`
-    : `<button id="markFinishedBtn">Mark finished</button>`;
-  const clearBtn = hasOverride
-    ? `<button id="clearOverrideBtn" title="Remove manual override; fall back to plan-derived status">Clear override</button>`
-    : "";
+  const statusText = targetStatusText({ finished, hasOverride, hasPlans });
   const targetHidden = isTargetHidden(t, hiddenMarks);
-  const hideBtn = targetHidden
-    ? `<button id="unhideTargetBtn" title="Show this target in the list and on the map again">Unhide</button>`
-    : `<button id="hideTargetBtn" title="Leave this target out of the list, the map and gap finding">Hide</button>`;
 
   // Visibility section, only renders when time-aware data is available.
   // The CSS rule on .vis-section keeps it hidden if the user toggles off.
@@ -1226,9 +1228,7 @@ function renderTargetPanel(t) {
 
       <div class="mark-finished-row">
         <span class="status-text">${finished ? "✓ " : ""}${esc(statusText)}</span>
-        ${primaryBtn}
-        ${clearBtn}
-        ${hideBtn}
+        ${menuButtonHtml(`Target #${t.target_id} actions`, `data-menu-target="${t.target_id}"`)}
       </div>
       ${targetHidden ? `<p class="hidden-note">Hidden. It is left out of the target list, the map and gap finding unless Show hidden is on.</p>` : ""}
 
@@ -1261,24 +1261,100 @@ function renderTargetPanel(t) {
   const back = document.getElementById("backToList");
   if (back) back.addEventListener("click", (e) => { e.preventDefault(); renderTargetList(); });
 
-  const reopen = async (flag) => {
-    await setTargetFinished(t.target_id, flag);
-    redrawFootprints();
-    renderTargetPanel(t);
-  };
-  panel.querySelector("#markFinishedBtn")?.addEventListener("click", () => reopen(true));
-  panel.querySelector("#markUnfinishedBtn")?.addEventListener("click", () => reopen(false));
-  panel.querySelector("#clearOverrideBtn")?.addEventListener("click", () => reopen(null));
-  const rehide = async (flag) => {
-    if (!await setHidden("targets", t.target_id, flag)) return;
-    redrawFootprints();
-    renderTargetPanel(t);
-  };
-  panel.querySelector("#hideTargetBtn")?.addEventListener("click", () => rehide(true));
-  panel.querySelector("#unhideTargetBtn")?.addEventListener("click", () => rehide(false));
+  const menuBtn = panel.querySelector(`.mark-finished-row .${MENU_BTN_CLASS}`);
+  menuBtn?.addEventListener("click", () => showRowMenu(targetMenuSpec(t), { anchor: menuBtn }));
 
   // If catalog overlays loaded, show nearby entries
   showCatalogMatchesFor(t);
+}
+
+// Row menus. Each kind of row gets its items from row-menu.mjs; the chosen
+// item runs through the same routes the old per-row buttons used.
+function showRowMenu(spec, { anchor = null, point = null } = {}) {
+  openMenu({ ...spec, anchor, point, returnFocus: anchor });
+}
+
+function targetMenuSpec(t) {
+  return {
+    label: `Target #${t.target_id} actions`,
+    items: targetMenuItems({
+      hidden: isTargetHidden(t, hiddenMarks),
+      finished: isTargetFinished(t),
+      hasOverride: !!targetOverrides[String(t.target_id)],
+    }),
+    onSelect: async id => {
+      if (id === "hide" || id === "unhide") {
+        if (!await setHidden("targets", t.target_id, id === "hide")) return;
+      } else {
+        await setTargetFinished(t.target_id,
+          id === "mark-finished" ? true : id === "mark-in-progress" ? false : null);
+      }
+      redrawFootprints();
+      if (panelMode === "list") renderTargetList();
+      else if (panelMode === "detail" && selectedTargetId === t.target_id) renderTargetPanel(t);
+    },
+  };
+}
+
+function planMenuSpec(pl) {
+  return {
+    label: `${pl.target?.name || pl.id} actions`,
+    items: planMenuItems({
+      selfHidden: Object.hasOwn(hiddenMarks.plans, pl.id),
+      projectHidden: Object.hasOwn(hiddenMarks.projects, planProject(pl)),
+    }),
+    onSelect: async id => {
+      if (id === "open") {
+        const go = () => {
+          revealMainSidePanel();
+          if (!planningMode) setPlanningMode(true);
+          panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+          renderPlanEditor(pl);
+        };
+        // From the map, another plan may be open with unsaved edits.
+        if (panelMode === "plan-edit" && editingPlan?.id !== pl.id) requestNavigateAwayFromPlanEdit(go);
+        else if (panelMode !== "plan-edit") go();
+        return;
+      }
+      if (!await setHidden("plans", pl.id, id === "hide")) return;
+      renderPlanListItems();
+      redrawPlanFootprints();
+    },
+  };
+}
+
+function projectMenuSpec(name) {
+  return {
+    label: `Project ${name} actions`,
+    items: projectMenuItems({ hidden: Object.hasOwn(hiddenMarks.projects, name) }),
+    onSelect: async id => {
+      if (!await setHidden("projects", name, id === "hide")) return;
+      renderPlanListItems();
+      redrawPlanFootprints();
+    },
+  };
+}
+
+// Right-click on a coverage outline or plan footprint opens that row's menu
+// at the pointer. Shift+right-click, or empty sky, leaves the browser's own.
+function onMapContextMenu(ev) {
+  if (ev.shiftKey || !aladin?.pix2world) return;
+  const r = ev.currentTarget.getBoundingClientRect();
+  let w;
+  try { w = aladin.pix2world(ev.clientX - r.left, ev.clientY - r.top); } catch { return; }
+  if (!w) return;
+  const hit = hitPolygonsAt(w[0], w[1]).find(h => h.target || h.plan);
+  if (!hit) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  // Unsaved plan edits would raise their prompt under the menu, so a
+  // right-click then only opens the menu.
+  const inDetail = panelMode === "detail" && selectedTargetId === hit.target?.target_id;
+  if (hit.target && !inDetail && !(panelMode === "plan-edit" && planIsDirty())) {
+    showTargetFromMap(hit.target);
+  }
+  const spec = hit.target ? targetMenuSpec(hit.target) : planMenuSpec(hit.plan);
+  showRowMenu(spec, { point: { x: ev.clientX, y: ev.clientY } });
 }
 
 function showCatalogMatchesFor(t) {
@@ -1386,11 +1462,30 @@ function hitPolygonsAt(ra, dec) {
     .filter(h => _ptInRaDecPoly(ra, dec, h.corners))
     .map(h => ({ ...h, area: _polyBBoxArea(h.corners) }))
     .sort((a, b) => a.area - b.area);
-  const base = (planningMode ? planHitList : coverageHitList)
+  const under = list => list
     .filter(h => _ptInRaDecPoly(ra, dec, h.corners))
     .map(h => ({ ...h, area: _polyBBoxArea(h.corners) }))
     .sort((a, b) => a.area - b.area);
-  return [...tile, ...base];
+  // Planning mode still draws coverage outlines, so they stay clickable
+  // there, but behind plan footprints so a plan click keeps its plan.
+  return planningMode
+    ? [...tile, ...under(planHitList), ...under(coverageHitList)]
+    : [...tile, ...under(coverageHitList)];
+}
+
+// Show a coverage target picked on the map: its details in the panel, and
+// its row marked for when the list comes back. An open plan with unsaved
+// edits gets the usual prompt first.
+function showTargetFromMap(t) {
+  revealMainSidePanel();
+  lastPickedTargetId = t.target_id;
+  if (panelMode !== "plan-edit") { renderTargetPanel(t); return; }
+  requestNavigateAwayFromPlanEdit(() => {
+    editingPlan = null;
+    selectedPlanId = null;
+    renderTargetPanel(t);
+    redrawPlanFootprints();
+  });
 }
 
 function _hitId(h) {
@@ -1511,7 +1606,7 @@ function onMapPolyClick(ra, dec) {
   if (chosen.tile) {
     renderTilePanel(chosen.tile, chosen.source_id);
   } else if (chosen.target) {
-    renderTargetPanel(chosen.target);
+    showTargetFromMap(chosen.target);
   } else if (chosen.plan) {
     if (!planningMode) setPlanningMode(true);
     renderPlanEditor(chosen.plan);
@@ -6009,6 +6104,9 @@ function init() {
         _pressInfo = { x: ev.clientX, y: ev.clientY, t: performance.now(), dragged: false };
       });
       mapEl.addEventListener("mouseleave", () => { setHoverHit(null); hideCatTooltip(); });
+      // Capture phase, so Aladin's own right-click handling never sees a
+      // right-click that opened one of ours.
+      mapEl.addEventListener("contextmenu", onMapContextMenu, true);
     }
 
     // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
@@ -6505,15 +6603,10 @@ function planRowHtml(pl, { withProject = true } = {}) {
   const stateBadge = stateLabel ? `<span class="plan-state-badge plan-state-${state}">${stateLabel}</span>` : "";
   let rowClass = state === "closed" ? "plan-row plan-state-closed" : "plan-row";
   // Hidden rows only show with Show hidden on. A plan hidden through its
-  // project is unhidden from the project row, so it gets a note, not a button.
+  // project is unhidden from the project row, so it gets a note here.
   const selfHidden = Object.hasOwn(hiddenMarks.plans, pl.id);
   const projHidden = Object.hasOwn(hiddenMarks.projects, planProject(pl));
   if (selfHidden || projHidden) rowClass += " is-hidden";
-  const hideCtl = selfHidden
-    ? `<button type="button" class="row-hide-btn" data-hide-plan="${esc(pl.id)}" title="Show this plan again">Unhide</button>`
-    : projHidden
-      ? ""
-      : `<button type="button" class="row-hide-btn" data-hide-plan="${esc(pl.id)}" title="Hide this plan from the list and the map. Its state is not changed.">Hide</button>`;
   return `<li class="${rowClass}" data-plan-id="${esc(pl.id)}" tabindex="0">
       <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
       <span class="plan-name">${name}${stateBadge}${projHidden && !selfHidden
@@ -6524,7 +6617,7 @@ function planRowHtml(pl, { withProject = true } = {}) {
         <span class="plan-goals">${dots}</span>
         <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
       </div>
-      ${hideCtl}
+      ${menuButtonHtml(`${name} actions`, `data-menu-plan="${esc(pl.id)}"`)}
     </li>`;
 }
 
@@ -6553,8 +6646,6 @@ function projectRowHtml(r) {
   const kids = open
     ? `<ul class="proj-kids">${sortedPlansForList(r.plans).map(p => planRowHtml(p, { withProject: false })).join("")}</ul>`
     : "";
-  const hideBtn = `<button type="button" class="row-hide-btn" data-hide-project="${esc(r.name)}"
-      title="${r.hidden ? "Show this project and its plans again" : "Hide this project and its plans from the list. Their states are not changed."}">${r.hidden ? "Unhide" : "Hide"}</button>`;
   return `<li class="proj-group${r.hidden ? " is-hidden" : ""}" data-open="${open}">
       <button type="button" class="proj-row" data-project="${esc(r.name)}" aria-expanded="${open}">
         <span class="proj-caret" aria-hidden="true">&#9656;</span>
@@ -6566,7 +6657,7 @@ function projectRowHtml(r) {
           <span class="plan-remaining">${_fmtHours(r.hoursLeft)} left</span>
         </span>
       </button>
-      ${hideBtn}
+      ${menuButtonHtml(`Project ${esc(r.name)} actions`, `data-menu-project="${esc(r.name)}"`)}
       ${kids}
     </li>`;
 }
@@ -6677,18 +6768,29 @@ function renderPlanList() {
       renderPlanEditor(pl);
     }
   };
-  list.addEventListener("click", async e => {
-    const hideBtn = e.target.closest(".row-hide-btn");
-    if (hideBtn) {
-      const planId = hideBtn.dataset.hidePlan;
-      const proj = hideBtn.dataset.hideProject;
-      const ok = planId != null
-        ? await setHidden("plans", planId, !Object.hasOwn(hiddenMarks.plans, planId))
-        : await setHidden("projects", proj, !Object.hasOwn(hiddenMarks.projects, proj));
-      if (ok) {
-        renderPlanListItems();
-        redrawPlanFootprints();
-      }
+  // The menu for whichever plan or project row `el` sits in, or null.
+  const menuSpecFor = el => {
+    const planRow = el.closest(".plan-row");
+    if (planRow) {
+      const pl = plans.find(p => p.id === planRow.dataset.planId);
+      return pl ? planMenuSpec(pl) : null;
+    }
+    const group = el.closest(".proj-group");
+    const name = group?.querySelector(":scope > .proj-row")?.dataset.project;
+    return name != null ? projectMenuSpec(name) : null;
+  };
+  list.addEventListener("contextmenu", e => {
+    if (e.shiftKey) return;
+    const spec = menuSpecFor(e.target);
+    if (!spec) return;
+    e.preventDefault();
+    showRowMenu(spec, { point: { x: e.clientX, y: e.clientY } });
+  });
+  list.addEventListener("click", e => {
+    const menuBtn = e.target.closest(`.${MENU_BTN_CLASS}`);
+    if (menuBtn) {
+      const spec = menuSpecFor(menuBtn);
+      if (spec) showRowMenu(spec, { anchor: menuBtn });
       return;
     }
     const proj = e.target.closest(".proj-row");
@@ -7458,6 +7560,8 @@ function _pixelIn(mapDiv, evt) {
 }
 
 function onMapMouseDown(evt) {
+  // Right-click opens the footprint's menu; only the primary button drags.
+  if (evt.button !== 0) return;
   if (!planningMode || !editingPlan || !aladin?.world2pix) return;
   const mapDiv = document.getElementById("aladin-lite-div");
   if (!mapDiv) return;
