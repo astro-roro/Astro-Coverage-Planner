@@ -37,7 +37,7 @@ _LEAK_PATTERNS = (
 _TARGET_KEEP = {
     "target_id", "objects",
     "center_ra_deg", "center_dec_deg", "center_l_deg", "center_b_deg",
-    "fov_arcmin", "pix_arcsec",
+    "fov_arcmin", "pix_arcsec", "rotation_deg",
     "corners_icrs", "corners_galactic",
     "telescopes", "filters",
 }
@@ -192,7 +192,7 @@ def _clean_target(t: dict) -> dict:
     out["objects"] = _clean_objects(t.get("objects"))
 
     for k in ("center_ra_deg", "center_dec_deg", "center_l_deg", "center_b_deg",
-              "pix_arcsec"):
+              "pix_arcsec", "rotation_deg"):
         if k in t:
             out[k] = t[k]
     if "fov_arcmin" in t:

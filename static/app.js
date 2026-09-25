@@ -625,6 +625,23 @@ function deepestFilter(filters, minH = 0) {
   return null;
 }
 
+// Index of the corner furthest north-west of the centre, where the filter badge
+// sits. Corners come from the manifest in SW, NW, NE, SE order of the box before
+// it was turned to the angle it was shot at, so index 1 for a box square to north.
+function badgeAnchorIndex(corners, ra_c, dec_c) {
+  if (!Number.isFinite(ra_c) || !Number.isFinite(dec_c)) return 1;
+  const cosD = Math.max(1e-6, Math.cos(dec_c * Math.PI / 180));
+  let best = 1, bestScore = -Infinity;
+  corners.forEach(([ra, dec], i) => {
+    const dra = ((ra - ra_c + 540) % 360) - 180;  // wrap across RA 0/360
+    const east = dra * cosD, north = dec - dec_c;
+    // Small bias to index 1 so an exact 45 degree tie keeps today's anchor.
+    const score = north - east + (i === 1 ? 1e-9 : 0);
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  return best;
+}
+
 // Custom shape drawer for the filter-coverage badge.
 // Builds a local 2-D basis from the anchor corner + top-edge corner + inside
 // corner, so the badge rotates with the FOV on screen and lives inside the
@@ -1060,6 +1077,11 @@ function renderTargetPanel(t) {
   const objs = esc((t.objects && t.objects.length) ? t.objects.join(" / ") : "(no OBJECT tag)");
   const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : ", ";
   const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : ", ";
+  // Manifests built before rotation was recorded carry no angle: say nothing
+  // rather than claim north up.
+  const shotAngle = Number.isFinite(t.rotation_deg) && t.rotation_source && t.rotation_source !== "none"
+    ? `, rotated ${t.rotation_deg.toFixed(1)}°${t.rotation_source === "wcs_mixed" ? " (masters differ)" : ""}`
+    : "";
 
   const finished = isTargetFinished(t);
   const overrideKey = String(t.target_id);
@@ -1129,7 +1151,7 @@ function renderTargetPanel(t) {
       <table>
         <tr><td>RA / Dec</td><td class="num">${t.center_ra_deg.toFixed(3)}° / ${t.center_dec_deg.toFixed(3)}°</td></tr>
         <tr><td>l / b</td><td class="num">${t.center_l_deg.toFixed(2)}° / ${t.center_b_deg.toFixed(2)}°</td></tr>
-        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : ', '}</td></tr>
+        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : ', '}${shotAngle}</td></tr>
         <tr><td>Telescope</td><td class="num">${telescopes}</td></tr>
         <tr><td>Camera</td><td class="num">${cameras}</td></tr>
         <tr><td>Date range</td><td class="num">${dateRange}</td></tr>
@@ -1451,15 +1473,17 @@ function redrawFootprints() {
     overlay.add(poly);
     coverageHitList.push({ poly, target: t, corners: t.corners_icrs });
 
-    // Filter badge: anchor at corners_icrs[1] (the NW corner, on standard N-up
-    // E-left sky renders, NW is the top-right of the FOV on screen). Store the
-    // adjacent top-edge corner (corners_icrs[2], NE = screen top-left) AND the
-    // opposite-along-the-side corner (corners_icrs[0], SW = screen bottom-right)
-    // so the drawer can build a basis (edge, inside) and rotate + scale correctly.
+    // Filter badge: anchor at the most north-westerly corner (on standard N-up
+    // E-left sky renders, the top-right of the FOV on screen). Store the next
+    // corner round (along the top edge, screen-left) AND the previous one
+    // (down the side edge) so the drawer can build a basis (edge, inside) and
+    // rotate + scale correctly. For a box square to north that is corners 1,
+    // 2 and 0; a box shot at an angle has its corners turned with it.
     if (t.corners_icrs.length === 4) {
-      const corner_nw = t.corners_icrs[1];  // anchor = screen top-right
-      const corner_ne = t.corners_icrs[2];  // along top edge = screen top-left
-      const corner_sw = t.corners_icrs[0];  // along side edge = screen bottom-right
+      const k = badgeAnchorIndex(t.corners_icrs, t.center_ra_deg, t.center_dec_deg);
+      const corner_nw = t.corners_icrs[k];            // anchor = screen top-right
+      const corner_ne = t.corners_icrs[(k + 1) % 4];  // along top edge = screen top-left
+      const corner_sw = t.corners_icrs[(k + 3) % 4];  // along side edge = screen bottom-right
       const [ra, dec] = corner_nw;
       const badge = A.source(ra, dec, {
         target_id: t.target_id,
