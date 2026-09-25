@@ -108,7 +108,7 @@ let _obsIntervalId = null;     // setInterval handle for the rolling obsNow refr
 let visibilityData = null;     // {site_id, year, targets: {<id>: [12 bins]}} | null
 let currentAlts = {};          // {<target_id>: alt_deg} from latest /api/observability, for sort=tonight
 let sortBy = "hours";          // "hours" | "best_month" | "up_tonight"
-let planSortBy = "priority";   // "priority" | "name" | "panels_up_now" | "peak_panels_month"
+let planSortBy = "priority";   // "priority" | "name" | "hours_left" | "panels_up_now" | "peak_panels_month"
 let catalogRegistry = [];      // [{id, data_key, label, color, marker, size, ...}] from /api/catalog-registry
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
 let searchTokens = [];  // parsed tokens from the search box
@@ -579,14 +579,14 @@ function saveUiState() {
   } catch { /* localStorage full / disabled, ignore */ }
 }
 
-// Show the search box only while browsing a top-level list (targets or plans).
-// Inside a single target/plan/gear editor there's nothing to search for, so
-// we hide it to reclaim vertical space for the detail content.
+// Show the target search box only while browsing the target list. Inside a
+// single target/plan/gear editor there's nothing to search for, and the
+// plan list has its own search for plan and project names, so we hide it
+// there to reclaim vertical space.
 function updateSearchVisibility() {
   const wrap = document.getElementById("panelSearchWrap");
   if (!wrap) return;
-  const topLevel = panelMode === "list" || panelMode === "plan-list";
-  wrap.style.display = topLevel ? "" : "none";
+  wrap.style.display = panelMode === "list" ? "" : "none";
 }
 
 // --- Search tokenizer + matchers ---
@@ -617,6 +617,19 @@ import {
 } from "./init-error.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
+import {
+  DEFAULT_PLAN_STATES,
+  PLAN_STATES,
+  STATE_NAMES,
+  filterPlans,
+  parseSavedStates,
+  planHoursLeft,
+  planProject,
+  projectRollups,
+  sortPlans,
+  stateCounts,
+  stateMixText,
+} from "./plan-list.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -1413,6 +1426,7 @@ function onMapPolyClick(ra, dec) {
   lastClickStack = { ra, dec, ids, cycleIdx: idx };
 
   const chosen = hits[idx];
+  revealMainSidePanel();
   if (chosen.tile) {
     renderTilePanel(chosen.tile, chosen.source_id);
   } else if (chosen.target) {
@@ -5429,7 +5443,7 @@ function initTimeAware() {
     sortBy = savedSort;
   }
   const savedPlanSort = localStorage.getItem("acp.plan_sort_by");
-  if (savedPlanSort && ["priority", "name", "panels_up_now", "peak_panels_month"].includes(savedPlanSort)) {
+  if (savedPlanSort && ["priority", "name", "hours_left", "panels_up_now", "peak_panels_month"].includes(savedPlanSort)) {
     planSortBy = savedPlanSort;
   }
   applyTimeAwareState(/*fireImmediate=*/true);
@@ -5511,7 +5525,207 @@ function positionCatTooltip() {
   el.style.top  = `${Math.max(0, y)}px`;
 }
 
+// === Side panel and icon rail ===
+// The rail sits on the far right. Each button opens one full-height panel
+// to its left; clicking the open one hides it. The panel floats over the
+// map rather than taking width from it, so the sky never resizes or
+// recentres when the panel opens, closes, is resized or changes tab.
+// Open/closed, tab and width are remembered under SIDE_PANEL_KEY.
+const SIDE_PANEL_KEY = "acp.sidePanel.v1";
+const SIDE_PANEL_TABS = ["main", "filters", "library"];
+const SIDE_PANEL_MIN_W = 300;
+const SIDE_PANEL_MAX_W = 760;
+const sidePanelState = { open: true, tab: "main", width: 380 };
+
+function loadSidePanelState() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SIDE_PANEL_KEY) || "{}") || {};
+    if (typeof s.open === "boolean") sidePanelState.open = s.open;
+    if (SIDE_PANEL_TABS.includes(s.tab)) sidePanelState.tab = s.tab;
+    if (Number.isFinite(s.width)) sidePanelState.width = s.width;
+  } catch { /* localStorage disabled or bad JSON, keep defaults */ }
+}
+
+function saveSidePanelState() {
+  try { localStorage.setItem(SIDE_PANEL_KEY, JSON.stringify(sidePanelState)); }
+  catch { /* localStorage full / disabled, ignore */ }
+}
+
+function clampSidePanelWidth(w) {
+  const area = document.getElementById("mapArea");
+  // Leave at least 120px of sky showing beside the panel.
+  const room = area ? area.clientWidth - 120 : SIDE_PANEL_MAX_W;
+  return Math.round(Math.max(SIDE_PANEL_MIN_W, Math.min(SIDE_PANEL_MAX_W, room, w)));
+}
+
+function sidePanelTitle(tab) {
+  if (tab === "filters") return "Map filters";
+  if (tab === "library") return "Library";
+  return planningMode ? "Plans" : "Targets";
+}
+
+function applySidePanel() {
+  const panel = document.getElementById("sidePanel");
+  if (!panel) return;
+  const { open, tab } = sidePanelState;
+  panel.hidden = !open;
+  panel.style.setProperty("--side-panel-w", `${clampSidePanelWidth(sidePanelState.width)}px`);
+  for (const sec of panel.querySelectorAll(".side-tab")) sec.hidden = sec.dataset.tab !== tab;
+  for (const btn of document.querySelectorAll("#panelRail .rail-btn")) {
+    btn.setAttribute("aria-pressed", String(open && btn.dataset.tab === tab));
+  }
+  const title = document.getElementById("sidePanelTitle");
+  if (title) title.textContent = sidePanelTitle(tab);
+  const mainLbl = document.getElementById("railMainLabel");
+  if (mainLbl) mainLbl.textContent = planningMode ? "Plans" : "Targets";
+  const mainTip = document.getElementById("railMainTip");
+  if (mainTip) mainTip.textContent = planningMode ? "Plans and projects" : "Targets in your archive";
+  nudgeMapControls();
+}
+
+function openSidePanelTab(tab) {
+  if (sidePanelState.open && sidePanelState.tab === tab) {
+    sidePanelState.open = false;
+  } else {
+    sidePanelState.open = true;
+    sidePanelState.tab = tab;
+    // A Filters tab showing one collapsed accordion would look empty.
+    if (tab === "filters") {
+      const f = document.getElementById("railFilters");
+      if (f && !f.open) f.open = true;
+    }
+  }
+  saveSidePanelState();
+  applySidePanel();
+}
+
+// Show the main panel after a click on the map chose a target, tile or
+// plan, so the detail or editor it just drew isn't hidden.
+function revealMainSidePanel() {
+  if (sidePanelState.open && sidePanelState.tab === "main") return;
+  sidePanelState.open = true;
+  sidePanelState.tab = "main";
+  saveSidePanelState();
+  applySidePanel();
+}
+
+// Aladin draws some of its own buttons along the map's right edge (zoom,
+// fullscreen and the like). The panel floats over that edge, so shift any
+// control hugging it to the left of the panel. Aladin's class names change
+// between releases, so this measures positions instead of naming them. It
+// uses the `translate` property, which leaves Aladin's own transforms be.
+function nudgeMapControls() {
+  const map = document.getElementById("aladin-lite-div");
+  const panel = document.getElementById("sidePanel");
+  if (!map || !panel) return;
+  const phone = window.matchMedia?.("(max-width: 640px)").matches;
+  const shift = !panel.hidden && !phone ? panel.getBoundingClientRect().width : 0;
+  for (const el of map.querySelectorAll("[data-acp-nudged]")) {
+    el.style.translate = "";
+    delete el.dataset.acpNudged;
+  }
+  if (!shift) return;
+  const mr = map.getBoundingClientRect();
+  if (!mr.width) return;
+  for (const el of map.querySelectorAll("[class*='aladin-']")) {
+    if (el.tagName === "CANVAS" || el.closest("[data-acp-nudged]")) continue;
+    const pos = getComputedStyle(el).position;
+    if (pos !== "absolute" && pos !== "fixed") continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    if (r.width > mr.width * 0.5) continue;          // bars spanning the map
+    if (r.left < mr.left + mr.width / 2) continue;    // left-hand controls
+    if (r.right < mr.right - 80) continue;            // not near the right edge
+    el.style.translate = `${-shift}px 0`;
+    el.dataset.acpNudged = "";
+  }
+}
+
+function setupSidePanelResize() {
+  const handle = document.getElementById("panelResizer");
+  const panel = document.getElementById("sidePanel");
+  if (!handle || !panel) return;
+  let startX = 0, startW = 0;
+  const onMove = e => {
+    // The panel grows leftwards, so dragging left widens it.
+    sidePanelState.width = clampSidePanelWidth(startW + (startX - e.clientX));
+    panel.style.setProperty("--side-panel-w", `${sidePanelState.width}px`);
+    nudgeMapControls();
+  };
+  const onUp = () => {
+    handle.classList.remove("dragging");
+    document.body.classList.remove("panel-resizing");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    saveSidePanelState();
+  };
+  handle.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    startX = e.clientX;
+    startW = panel.getBoundingClientRect().width;
+    handle.classList.add("dragging");
+    document.body.classList.add("panel-resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    e.preventDefault();
+  });
+  handle.addEventListener("keydown", e => {
+    const step = e.shiftKey ? 64 : 16;
+    const w = panel.getBoundingClientRect().width;
+    if (e.key === "ArrowLeft") sidePanelState.width = clampSidePanelWidth(w + step);
+    else if (e.key === "ArrowRight") sidePanelState.width = clampSidePanelWidth(w - step);
+    else return;
+    e.preventDefault();
+    saveSidePanelState();
+    applySidePanel();
+  });
+}
+
+// Mirror the Scan health badge onto the Library rail button, so flags show
+// even while the Library panel is closed.
+function mirrorScanHealthBadge() {
+  const src = document.getElementById("scanHealthBadge");
+  const acc = document.getElementById("railHealth");
+  const dst = document.getElementById("railLibraryBadge");
+  if (!src || !dst) return;
+  const sync = () => {
+    const on = !src.hidden && !(acc && acc.hidden) && src.textContent.trim() !== "";
+    dst.hidden = !on;
+    dst.textContent = on ? src.textContent.trim() : "";
+    dst.title = on ? "Scan health flags" : "";
+  };
+  const mo = new MutationObserver(sync);
+  mo.observe(src, { attributes: true, childList: true, characterData: true, subtree: true });
+  if (acc) mo.observe(acc, { attributes: true, attributeFilter: ["hidden"] });
+  sync();
+}
+
+function setupSidePanel() {
+  loadSidePanelState();
+  for (const btn of document.querySelectorAll("#panelRail .rail-btn")) {
+    btn.addEventListener("click", () => openSidePanelTab(btn.dataset.tab));
+  }
+  document.getElementById("sidePanelHide")?.addEventListener("click", () => {
+    sidePanelState.open = false;
+    saveSidePanelState();
+    applySidePanel();
+  });
+  setupSidePanelResize();
+  mirrorScanHealthBadge();
+  window.addEventListener("resize", () => applySidePanel());
+  // Aladin opens some of its own menus on a click, so re-check the nudge
+  // after one. Not a MutationObserver: Aladin rewrites its coordinate
+  // readout on every mouse move, and re-measuring each frame would cost a
+  // layout pass per frame. init() also calls this once Aladin has built
+  // its controls.
+  const map = document.getElementById("aladin-lite-div");
+  if (map) map.addEventListener("pointerup", () => setTimeout(nudgeMapControls, 50));
+  applySidePanel();
+}
+
 function init() {
+  setupSidePanel();
+
   // Independent of everything below: don't let a slow or failed sky map
   // hide a pending TS upload the user needs to go review.
   loadTsSyncBanner();
@@ -5563,6 +5777,11 @@ function init() {
       showFrame: true,
       target: "galactic center",
     });
+
+    // Aladin's controls exist now; move any on the right edge clear of
+    // the side panel. The second pass catches controls it adds late.
+    requestAnimationFrame(nudgeMapControls);
+    setTimeout(nudgeMapControls, 1500);
 
     installAladinIdleThrottle(aladin);
     guardAladinPix2world(aladin);
@@ -6086,25 +6305,119 @@ function newEmptyPlan() {
   };
 }
 
-const _PRIORITY_RANK = { high: 3, normal: 2, low: 1 };
+// Plan list view state: Plans or Projects, which status chips are on, the
+// plan search text and which projects are expanded. Remembered in
+// localStorage under PLAN_LIST_KEY; the sort stays in acp.plan_sort_by.
+const PLAN_LIST_KEY = "acp.planList.v1";
+let planListView = "plans";            // "plans" | "projects"
+let planStates = new Set(DEFAULT_PLAN_STATES);
+let planQuery = "";
+let openProjects = new Set();
+try {
+  const s = JSON.parse(localStorage.getItem(PLAN_LIST_KEY) || "{}") || {};
+  if (s.view === "projects") planListView = "projects";
+  planStates = parseSavedStates(s.states);
+  if (typeof s.query === "string") planQuery = s.query;
+  if (Array.isArray(s.open)) openProjects = new Set(s.open.filter(x => typeof x === "string"));
+} catch { /* localStorage disabled or bad JSON, keep defaults */ }
 
-function sortedPlansForList() {
-  const arr = plans.slice();
-  if (planSortBy === "name") {
-    arr.sort((a, b) => (a.target?.name || a.id).localeCompare(b.target?.name || b.id));
-  } else if (planSortBy === "panels_up_now" && timeAware) {
-    arr.sort((a, b) => planPanelsUpNow(b) - planPanelsUpNow(a));
-  } else if (planSortBy === "peak_panels_month" && timeAware) {
-    arr.sort((a, b) => planPeakPanelsMonth(b) - planPeakPanelsMonth(a));
-  } else {
-    // Default "priority": high → normal → low, then name.
-    arr.sort((a, b) => {
-      const dp = (_PRIORITY_RANK[b.priority] || 2) - (_PRIORITY_RANK[a.priority] || 2);
-      if (dp !== 0) return dp;
-      return (a.target?.name || a.id).localeCompare(b.target?.name || b.id);
-    });
+function savePlanListState() {
+  try {
+    localStorage.setItem(PLAN_LIST_KEY, JSON.stringify({
+      view: planListView, states: [...planStates], query: planQuery, open: [...openProjects],
+    }));
+  } catch { /* localStorage full / disabled, ignore */ }
+}
+
+const PLAN_STATE_COLOURS = { active: "#5bb6ff", draft: "#d6a04a", inactive: "#78839a", closed: "#4a5366" };
+
+function sortedPlansForList(list = plans) {
+  if (planSortBy === "panels_up_now" && timeAware) {
+    return list.slice().sort((a, b) => planPanelsUpNow(b) - planPanelsUpNow(a));
   }
-  return arr;
+  if (planSortBy === "peak_panels_month" && timeAware) {
+    return list.slice().sort((a, b) => planPeakPanelsMonth(b) - planPeakPanelsMonth(a));
+  }
+  // "priority" (high, normal, low, then name), "name" and "hours_left".
+  return sortPlans(list, planSortBy);
+}
+
+function planRowHtml(pl, { withProject = true } = {}) {
+  const name = esc(pl.target?.name || pl.id);
+  const proj = esc(pl.project_name || "(no project)");
+  const pri = pl.priority || "normal";
+  const goals = pl.filter_goals || {};
+  const dots = FILTER_DOT_ORDER.map(f => {
+    const g = goals[f];
+    const color = FILTER_COLORS[f] || "#888";
+    if (!g || !(g.target_hours > 0)) {
+      return `<span class="plan-goal-dot todo" style="background:${color}" title="${f}: no goal"></span>`;
+    }
+    const th = g.target_hours;
+    const ah = g.actual_hours || 0;
+    const cls = ah >= th ? "done" : (ah > 0 ? "partial" : "todo");
+    return `<span class="plan-goal-dot ${cls}" style="background:${color}" title="${f}: ${ah.toFixed(1)}/${th}h"></span>`;
+  }).join("");
+  const remaining = planHoursLeft(pl);
+  const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
+  const priLabel = pri.charAt(0).toUpperCase() + pri.slice(1);
+  // Active (or no state at all, pre-existing plans) shows no badge so the
+  // usual list looks as it always has; any other state gets a small
+  // label. Closed plans are drawn faded via the row's own class.
+  const state = pl.state || "active";
+  const stateLabel = planStateBadgeLabel(state);
+  const stateBadge = stateLabel ? `<span class="plan-state-badge plan-state-${state}">${stateLabel}</span>` : "";
+  const rowClass = state === "closed" ? "plan-row plan-state-closed" : "plan-row";
+  return `<li class="${rowClass}" data-plan-id="${esc(pl.id)}" tabindex="0">
+      <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
+      <span class="plan-name">${name}${stateBadge}</span>
+      ${visCell}
+      <div class="plan-row-line2">
+        ${withProject ? `<span class="plan-project">${proj}</span>` : ""}
+        <span class="plan-goals">${dots}</span>
+        <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
+      </div>
+    </li>`;
+}
+
+function _fmtHours(h) {
+  return (h >= 100 ? Math.round(h) : h.toFixed(1)) + "h";
+}
+
+function _progressBarHtml(done, total) {
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  return `<span class="plan-progress" title="${done.toFixed(1)} of ${total.toFixed(1)}h shot (${pct}%)"><i style="width:${pct}%"></i></span>`;
+}
+
+function _stateMixHtml(mix) {
+  const tot = PLAN_STATES.reduce((a, s) => a + (mix[s] || 0), 0) || 1;
+  const txt = stateMixText(mix);
+  const segs = PLAN_STATES.filter(s => mix[s])
+    .map(s => `<i style="width:${(mix[s] / tot) * 100}%;background:${PLAN_STATE_COLOURS[s]}"></i>`).join("");
+  return `<span class="state-mix" title="${esc(txt)}">${segs}</span><span class="state-mix-txt">${esc(txt)}</span>`;
+}
+
+function projectRowHtml(r) {
+  const open = openProjects.has(r.name);
+  const count = r.plans.length === r.totalPlans
+    ? `${r.totalPlans} plan${r.totalPlans === 1 ? "" : "s"}`
+    : `${r.plans.length} of ${r.totalPlans} plans`;
+  const kids = open
+    ? `<ul class="proj-kids">${sortedPlansForList(r.plans).map(p => planRowHtml(p, { withProject: false })).join("")}</ul>`
+    : "";
+  return `<li class="proj-group" data-open="${open}">
+      <button type="button" class="proj-row" data-project="${esc(r.name)}" aria-expanded="${open}">
+        <span class="proj-caret" aria-hidden="true">&#9656;</span>
+        <span class="proj-name">${esc(r.name)}</span>
+        <span class="proj-count">${count}</span>
+        <span class="proj-line2">
+          ${_stateMixHtml(r.stateMix)}
+          ${_progressBarHtml(r.done, r.total)}
+          <span class="plan-remaining">${_fmtHours(r.hoursLeft)} left</span>
+        </span>
+      </button>
+      ${kids}
+    </li>`;
 }
 
 function renderPlanList() {
@@ -6116,67 +6429,34 @@ function renderPlanList() {
   const panel = document.getElementById("panelBody");
   if (!panel) return;
 
-  const sorted = sortedPlansForList();
-  const rows = sorted.map(pl => {
-    const name = esc(pl.target?.name || pl.id);
-    const proj = esc(pl.project_name || "(no project)");
-    const pri = pl.priority || "normal";
-    const goals = pl.filter_goals || {};
-    const dots = FILTER_DOT_ORDER.map(f => {
-      const g = goals[f];
-      const color = FILTER_COLORS[f] || "#888";
-      if (!g || !(g.target_hours > 0)) {
-        return `<span class="plan-goal-dot todo" style="background:${color}" title="${f}: no goal"></span>`;
-      }
-      const th = g.target_hours;
-      const ah = g.actual_hours || 0;
-      const cls = ah >= th ? "done" : (ah > 0 ? "partial" : "todo");
-      return `<span class="plan-goal-dot ${cls}" style="background:${color}" title="${f}: ${ah.toFixed(1)}/${th}h"></span>`;
-    }).join("");
-    const { rows, cols } = planMosaic(pl);
-    const panelCount = Math.max(1, rows * cols);
-    let remaining = 0;
-    for (const g of Object.values(goals)) remaining += Math.max(0, (g.target_hours || 0) - (g.actual_hours || 0));
-    remaining *= panelCount;
-    const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
-    const priLabel = pri.charAt(0).toUpperCase() + pri.slice(1);
-    // Active (or no state at all, pre-existing plans) shows no badge so the
-    // usual list looks as it always has; any other state gets a small
-    // label. Closed plans are drawn faded via the row's own class.
-    const state = pl.state || "active";
-    const stateLabel = planStateBadgeLabel(state);
-    const stateBadge = stateLabel ? `<span class="plan-state-badge">${stateLabel}</span>` : "";
-    const rowClass = state === "closed" ? "plan-row plan-state-closed" : "plan-row";
-    return `<li class="${rowClass}" data-plan-id="${esc(pl.id)}">
-        <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
-        <span class="plan-name">${name}${stateBadge}</span>
-        ${visCell}
-        <div class="plan-row-line2">
-          <span class="plan-project">${proj}</span>
-          <span class="plan-goals">${dots}</span>
-          <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
-        </div>
-      </li>`;
-  }).join("");
-
-  const empty = `<li class="tr-empty">No plans yet. Click "+ New plan" to start.</li>`;
-  const sortCtl = `<span class="sort-control">sort by
+  const nProjects = new Set(plans.map(planProject)).size;
+  const sortCtl = `<label class="sort-control">sort by
       <select id="planSortSel">
         <option value="priority" ${planSortBy==="priority"?"selected":""}>priority</option>
         <option value="name" ${planSortBy==="name"?"selected":""}>name</option>
+        <option value="hours_left" ${planSortBy==="hours_left"?"selected":""}>hours left</option>
         <option value="panels_up_now" ${planSortBy==="panels_up_now"?"selected":""} data-time-aware>panels up now</option>
         <option value="peak_panels_month" ${planSortBy==="peak_panels_month"?"selected":""} data-time-aware>peak season</option>
-      </select></span>`;
+      </select></label>`;
 
+  // Plans / Projects sits at the very top, above the action buttons, and
+  // is drawn larger than the status chips so it reads as the main switch.
   panel.innerHTML = `
+    <div class="plan-view-toggle" role="group" aria-label="List by">
+      <button type="button" data-view="plans" aria-pressed="${planListView === "plans"}">Plans<span class="n">${plans.length}</span></button>
+      <button type="button" data-view="projects" aria-pressed="${planListView === "projects"}">Projects<span class="n">${nProjects}</span></button>
+    </div>
     <div class="planner-toolbar">
       <button id="planNew" class="btn-primary">+ New plan</button>
       <button id="planSync">Sync to NINA</button>
       <button id="planGear">Edit gear</button>
     </div>
+    <input id="planSearch" class="plan-search" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Search plans and projects" value="${esc(planQuery)}" />
+    <div id="planStateChips" class="plan-state-chips" role="group" aria-label="Show plans that are"></div>
+    <div class="plan-list-meta"><span id="planListSummary"></span>${sortCtl}</div>
     <div class="panel-list">
-      <h3>Plans <span class="tr-count">${plans.length}</span>${sortCtl}</h3>
-      <ul class="target-list">${rows || empty}</ul>
+      <ul class="target-list" id="planListItems"></ul>
     </div>
     <div id="syncResult"></div>`;
 
@@ -6191,24 +6471,110 @@ function renderPlanList() {
   // claims this slot.
   wireReplaceableButton("sync-to-nina");
   panel.querySelector("#planGear").addEventListener("click", () => renderGearEditor());
-  panel.querySelectorAll(".plan-row").forEach(row => {
-    row.addEventListener("click", () => {
-      const pl = plans.find(p => p.id === row.dataset.planId);
-      if (pl) {
-        // Pan first so even a render throw doesn't swallow the pan.
-        panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
-        renderPlanEditor(pl);
+  for (const btn of panel.querySelectorAll(".plan-view-toggle button")) {
+    btn.addEventListener("click", () => {
+      planListView = btn.dataset.view === "projects" ? "projects" : "plans";
+      for (const b of panel.querySelectorAll(".plan-view-toggle button")) {
+        b.setAttribute("aria-pressed", String(b === btn));
       }
+      savePlanListState();
+      renderPlanListItems();
     });
+  }
+  panel.querySelector("#planSearch").addEventListener("input", e => {
+    planQuery = e.target.value;
+    savePlanListState();
+    renderPlanListItems();
   });
-  const planSortSel = panel.querySelector("#planSortSel");
-  if (planSortSel) planSortSel.addEventListener("change", e => {
+  panel.querySelector("#planSortSel").addEventListener("change", e => {
     planSortBy = e.target.value;
     localStorage.setItem("acp.plan_sort_by", planSortBy);
-    renderPlanList();
+    renderPlanListItems();
   });
+  // Delegated, because renderPlanListItems() redraws the chips and rows
+  // without touching the search box (so typing keeps focus).
+  panel.querySelector("#planStateChips").addEventListener("click", e => {
+    const chip = e.target.closest("[data-state]");
+    const act = e.target.closest("[data-act]");
+    if (chip) {
+      const s = chip.dataset.state;
+      if (planStates.has(s)) planStates.delete(s); else planStates.add(s);
+    } else if (act?.dataset.act === "all") {
+      planStates = new Set(PLAN_STATES);
+    } else if (act?.dataset.act === "default") {
+      planStates = new Set(DEFAULT_PLAN_STATES);
+    } else {
+      return;
+    }
+    savePlanListState();
+    renderPlanListItems();
+  });
+  const list = panel.querySelector("#planListItems");
+  const openPlan = row => {
+    const pl = plans.find(p => p.id === row.dataset.planId);
+    if (pl) {
+      // Pan first so even a render throw doesn't swallow the pan.
+      panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+      renderPlanEditor(pl);
+    }
+  };
+  list.addEventListener("click", e => {
+    const proj = e.target.closest(".proj-row");
+    if (proj) {
+      const name = proj.dataset.project;
+      if (openProjects.has(name)) openProjects.delete(name); else openProjects.add(name);
+      savePlanListState();
+      renderPlanListItems();
+      return;
+    }
+    const row = e.target.closest(".plan-row");
+    if (row) openPlan(row);
+  });
+  list.addEventListener("keydown", e => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const row = e.target.closest?.(".plan-row");
+    if (row && row === e.target) { e.preventDefault(); openPlan(row); }
+  });
+
+  renderPlanListItems();
   redrawPlanFootprints();
   if (timeAware) loadAllPlanVisibility();
+}
+
+// Redraw the chips, the summary line and the rows, leaving the rest of the
+// plan list (and the search box's focus) alone.
+function renderPlanListItems() {
+  const chipsEl = document.getElementById("planStateChips");
+  const summaryEl = document.getElementById("planListSummary");
+  const list = document.getElementById("planListItems");
+  if (!chipsEl || !list) return;
+
+  const searched = filterPlans(plans, { states: PLAN_STATES, query: planQuery });
+  const counts = stateCounts(searched);
+  const allOn = PLAN_STATES.every(s => planStates.has(s));
+  chipsEl.innerHTML = PLAN_STATES.map(s => {
+    const n = counts[s] || 0;
+    return `<button type="button" class="state-chip${n ? "" : " zero"}" data-state="${s}" aria-pressed="${planStates.has(s)}"
+        title="${n} ${STATE_NAMES[s].toLowerCase()} plan${n === 1 ? "" : "s"}">
+        <span class="sw" style="background:${PLAN_STATE_COLOURS[s]}"></span>${STATE_NAMES[s]}<span class="c">${n}</span></button>`;
+  }).join("") + (allOn
+    ? `<button type="button" class="link-btn" data-act="default">Active and draft only</button>`
+    : `<button type="button" class="link-btn" data-act="all">Show all</button>`);
+
+  const shown = filterPlans(plans, { states: planStates, query: planQuery });
+  let html;
+  if (!plans.length) {
+    html = `<li class="tr-empty">No plans yet. Click "+ New plan" to start.</li>`;
+  } else if (planListView === "projects") {
+    const rows = projectRollups(plans, shown, planSortBy);
+    if (summaryEl) summaryEl.textContent = `${rows.length} project${rows.length === 1 ? "" : "s"}, ${shown.length} plan${shown.length === 1 ? "" : "s"}`;
+    html = rows.map(projectRowHtml).join("") || `<li class="tr-empty">No projects match. Try Show all.</li>`;
+  } else {
+    if (summaryEl) summaryEl.textContent = `${shown.length} of ${plans.length} plans`;
+    html = sortedPlansForList(shown).map(pl => planRowHtml(pl)).join("") || `<li class="tr-empty">No plans match. Try Show all.</li>`;
+  }
+  if (!plans.length && summaryEl) summaryEl.textContent = "";
+  list.innerHTML = html;
 }
 
 // Build the list of TS-template <option> tags for a filter row.
@@ -6851,6 +7217,7 @@ function setPlanningMode(on) {
   const mp = document.getElementById("modePlanning");
   if (mc) { mc.classList.toggle("active", !on); mc.setAttribute("aria-selected", String(!on)); }
   if (mp) { mp.classList.toggle("active",  on); mp.setAttribute("aria-selected", String( on)); }
+  applySidePanel();
   saveUiState();
   if (on) {
     if (selectedPlanId) {

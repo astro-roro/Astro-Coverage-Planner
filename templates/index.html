@@ -60,160 +60,200 @@
   </header>
 
   <main class="layout">
-    <div id="aladin-lite-div"></div>
-    <div id="catTooltip" class="cat-tooltip" hidden></div>
+    <!-- The map keeps one size whatever the side panel does: the panel
+         floats over its right edge, so opening, closing, resizing or
+         switching tabs never resizes or recentres the sky. -->
+    <div id="mapArea" class="map-area">
+      <div id="aladin-lite-div"></div>
+      <div id="catTooltip" class="cat-tooltip" hidden></div>
 
-    <div id="onboardingBanner" class="onboarding-banner" hidden>
-      <div class="onboarding-banner-inner">
-        <h2>Welcome to Astro Coverage Planner</h2>
-        <p>You don't have a manifest yet — your imaging archive will appear here once you build one.</p>
-        <p class="onboarding-step">
-          <strong>Next step:</strong> point ACP at your FITS/XISF library. See the
-          <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">archive setup guide</a>
-          for the manifest builder. Once it's done, refresh this page.
-        </p>
-        <p class="onboarding-demo">
-          Just want to look around? Run
-          <code>python scripts/make_demo_manifest.py</code>
-          to load sample data, then refresh.
-        </p>
-        <button type="button" id="onboardingDismiss" class="onboarding-dismiss" aria-label="Dismiss welcome message">Dismiss</button>
+      <div id="onboardingBanner" class="onboarding-banner" hidden>
+        <div class="onboarding-banner-inner">
+          <h2>Welcome to Astro Coverage Planner</h2>
+          <p>You don't have a manifest yet — your imaging archive will appear here once you build one.</p>
+          <p class="onboarding-step">
+            <strong>Next step:</strong> point ACP at your FITS/XISF library. See the
+            <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">archive setup guide</a>
+            for the manifest builder. Once it's done, refresh this page.
+          </p>
+          <p class="onboarding-demo">
+            Just want to look around? Run
+            <code>python scripts/make_demo_manifest.py</code>
+            to load sample data, then refresh.
+          </p>
+          <button type="button" id="onboardingDismiss" class="onboarding-dismiss" aria-label="Dismiss welcome message">Dismiss</button>
+        </div>
       </div>
+
+      <aside id="sidePanel" class="panel side-panel" aria-labelledby="sidePanelTitle">
+        <div id="panelResizer" class="panel-resizer" role="separator" aria-orientation="vertical"
+             aria-label="Panel width" tabindex="0" title="Drag to resize, or use the arrow keys"></div>
+        <div class="sheet-grab" aria-hidden="true"></div>
+        <div class="side-panel-head">
+          <h2 id="sidePanelTitle">Plans</h2>
+          <button type="button" id="sidePanelHide" class="icon-btn" aria-label="Hide panel" title="Hide panel">&#x203A;&#x203A;</button>
+        </div>
+
+        <section class="side-tab" data-tab="main">
+          <div id="panelSearchWrap" class="panel-search">
+            <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
+                   placeholder="Search: name, or key:value (e.g. camera:asi2600 filter:Ha hours&gt;3)" />
+            <div class="search-hint">keys: object · filter · telescope · camera · fov&gt;N · fov&lt;N · hours&gt;N · hours&lt;N</div>
+          </div>
+          <div id="panelBody">
+            <div class="panel-loading">Loading targets…</div>
+          </div>
+        </section>
+
+        <section class="side-tab" data-tab="filters" hidden>
+          <details id="railFilters" class="rail-accordion filters" open>
+            <summary>Filters</summary>
+            <div class="accordion-body">
+              <div class="row" id="filterChips">
+                <span class="label">Filters:</span>
+                <!-- Chips rendered dynamically from the manifest in setupFilterUI(). -->
+              </div>
+              <div class="row">
+                <span class="label">Logic:</span>
+                <select id="filterLogic">
+                  <option value="any">ANY selected filter</option>
+                  <option value="all">ALL selected filters</option>
+                  <option value="ha_not_sii">Have Ha but NOT SII</option>
+                </select>
+              </div>
+              <div class="row">
+                <span class="label">Min hours/filter:</span>
+                <input type="range" id="depthSlider" min="0" max="10" step="0.5" value="0" />
+                <span id="depthValue">0h</span>
+              </div>
+              <div class="row">
+                <span class="label">Telescopes:</span>
+                <div id="telescopeChips" class="tele-chips"></div>
+              </div>
+              <div class="row" id="completionFilterRow">
+                <span class="label">Completion:</span>
+                <label class="fchip"><input type="radio" name="completionFilter" value="all" checked /> All</label>
+                <label class="fchip"><input type="radio" name="completionFilter" value="unfinished" /> Unfinished</label>
+                <label class="fchip"><input type="radio" name="completionFilter" value="finished" /> Finished</label>
+              </div>
+            </div>
+          </details>
+
+        </section>
+
+        <section class="side-tab" data-tab="library" hidden>
+          <details id="railSources" class="rail-accordion sources">
+            <summary>Sources</summary>
+            <div class="accordion-body">
+              <div id="sourcesList"></div>
+            </div>
+          </details>
+
+          <!-- Scan health: the scanner's integrity flags. Hidden when the
+               manifest predates them. Filled by renderScanHealth(). -->
+          <details id="railHealth" class="rail-accordion health" hidden>
+            <summary>Scan health <span id="scanHealthBadge" class="health-badge" hidden></span></summary>
+            <div class="accordion-body">
+              <div id="scanHealthBody"></div>
+            </div>
+          </details>
+
+          <!-- Hidden until at least one PrioritisedTilesSource is registered.
+               Populated dynamically by initInventory() from /api/tile-sources. -->
+          <details id="railInventory" class="rail-accordion inventory" hidden>
+            <summary>Inventory</summary>
+            <div class="accordion-body">
+              <div id="inventoryList"></div>
+            </div>
+          </details>
+
+          <!-- Read-only summary of what each NINA install last reported to
+               /api/plans/match. Hidden until at least one has, so a stock
+               checkout with no plugin connected shows no Rigs rail at all. -->
+          <details id="railProfiles" class="rail-accordion profiles" hidden>
+            <summary>NINA rigs</summary>
+            <div class="accordion-body">
+              <div id="profilesList"></div>
+            </div>
+          </details>
+
+          <!-- Hidden until at least one extension registers a manifest entry.
+               Populated dynamically by loadExtensions() from /api/extensions/manifest. -->
+          <details id="railExtensions" class="rail-accordion extensions" hidden>
+            <summary>Extensions</summary>
+            <div class="accordion-body">
+              <div id="extensionsList"></div>
+            </div>
+          </details>
+
+          <details id="railCatalogs" class="rail-accordion catalogs">
+            <summary>Catalogues <span class="broken-note" style="display:none"></span></summary>
+            <div class="accordion-body">
+              <div class="row" id="catChips">
+                <!-- Populated dynamically from /api/catalog-registry; empty until
+                     setupCatalogOverlays() resolves. -->
+              </div>
+              <!-- Cross-catalogue Object filter. Type chips aggregate
+                   classes across all enabled catalogues; the filter input
+                   accepts the standard token syntax (class:PNe -tag:fully-done
+                   -name:foo "phrase"). Hidden until at least one
+                   categorised catalogue is enabled. -->
+              <div id="catObjects" class="cat-objects" hidden>
+                <div class="cat-objects-row" id="catObjectsTypesRow" hidden>
+                  <span class="cat-objects-lbl">Types</span>
+                  <div id="catObjectsTypes" class="cat-objects-chips"></div>
+                </div>
+                <div class="cat-objects-row">
+                  <input id="catObjectsFilter" type="search"
+                         placeholder="Filter: class:PNe -tag:fully-done"
+                         autocomplete="off" spellcheck="false" />
+                </div>
+                <div id="catObjectsHint" class="cat-objects-hint" hidden></div>
+              </div>
+              <div class="gap-finder">
+                <div class="row gap-row">
+                  <label class="gap-label">Have <select id="gapHave"></select></label>
+                  <label class="gap-label">Missing <select id="gapMissing"></select></label>
+                </div>
+                <div class="row gap-row">
+                  <label class="gap-label small">&ge; <input id="gapMinHave" type="number" step="0.1" min="0" style="width:5em" /> h</label>
+                  <label class="gap-label small">&lt; <input id="gapMaxMissing" type="number" step="0.1" min="0" style="width:5em" /> h</label>
+                </div>
+                <div class="gap-sources">
+                  <div class="gap-sources-label">Use sources:</div>
+                  <div id="gapSourcesList"></div>
+                </div>
+                <div class="row gap-row">
+                  <button id="gapMode">Find gaps</button>
+                  <button id="exportCsv">Export priority CSV</button>
+                </div>
+                <div id="gapStats" class="gap-stats"></div>
+              </div>
+            </div>
+          </details>
+
+        </section>
+      </aside>
     </div>
 
-    <aside id="sidePanel" class="panel">
-      <details id="railFilters" class="rail-accordion filters" open>
-        <summary>Filters</summary>
-        <div class="accordion-body">
-          <div class="row" id="filterChips">
-            <span class="label">Filters:</span>
-            <!-- Chips rendered dynamically from the manifest in setupFilterUI(). -->
-          </div>
-          <div class="row">
-            <span class="label">Logic:</span>
-            <select id="filterLogic">
-              <option value="any">ANY selected filter</option>
-              <option value="all">ALL selected filters</option>
-              <option value="ha_not_sii">Have Ha but NOT SII</option>
-            </select>
-          </div>
-          <div class="row">
-            <span class="label">Min hours/filter:</span>
-            <input type="range" id="depthSlider" min="0" max="10" step="0.5" value="0" />
-            <span id="depthValue">0h</span>
-          </div>
-          <div class="row">
-            <span class="label">Telescopes:</span>
-            <div id="telescopeChips" class="tele-chips"></div>
-          </div>
-          <div class="row" id="completionFilterRow">
-            <span class="label">Completion:</span>
-            <label class="fchip"><input type="radio" name="completionFilter" value="all" checked /> All</label>
-            <label class="fchip"><input type="radio" name="completionFilter" value="unfinished" /> Unfinished</label>
-            <label class="fchip"><input type="radio" name="completionFilter" value="finished" /> Finished</label>
-          </div>
-        </div>
-      </details>
-
-      <details id="railSources" class="rail-accordion sources">
-        <summary>Sources</summary>
-        <div class="accordion-body">
-          <div id="sourcesList"></div>
-        </div>
-      </details>
-
-      <!-- Scan health: the scanner's integrity flags. Hidden when the
-           manifest predates them. Filled by renderScanHealth(). -->
-      <details id="railHealth" class="rail-accordion health" hidden>
-        <summary>Scan health <span id="scanHealthBadge" class="health-badge" hidden></span></summary>
-        <div class="accordion-body">
-          <div id="scanHealthBody"></div>
-        </div>
-      </details>
-
-      <!-- Hidden until at least one PrioritisedTilesSource is registered.
-           Populated dynamically by initInventory() from /api/tile-sources. -->
-      <details id="railInventory" class="rail-accordion inventory" hidden>
-        <summary>Inventory</summary>
-        <div class="accordion-body">
-          <div id="inventoryList"></div>
-        </div>
-      </details>
-
-      <!-- Read-only summary of what each NINA install last reported to
-           /api/plans/match. Hidden until at least one has, so a stock
-           checkout with no plugin connected shows no Rigs rail at all. -->
-      <details id="railProfiles" class="rail-accordion profiles" hidden>
-        <summary>NINA rigs</summary>
-        <div class="accordion-body">
-          <div id="profilesList"></div>
-        </div>
-      </details>
-
-      <!-- Hidden until at least one extension registers a manifest entry.
-           Populated dynamically by loadExtensions() from /api/extensions/manifest. -->
-      <details id="railExtensions" class="rail-accordion extensions" hidden>
-        <summary>Extensions</summary>
-        <div class="accordion-body">
-          <div id="extensionsList"></div>
-        </div>
-      </details>
-
-      <details id="railCatalogs" class="rail-accordion catalogs">
-        <summary>Catalogues <span class="broken-note" style="display:none"></span></summary>
-        <div class="accordion-body">
-          <div class="row" id="catChips">
-            <!-- Populated dynamically from /api/catalog-registry; empty until
-                 setupCatalogOverlays() resolves. -->
-          </div>
-          <!-- Cross-catalogue Object filter. Type chips aggregate
-               classes across all enabled catalogues; the filter input
-               accepts the standard token syntax (class:PNe -tag:fully-done
-               -name:foo "phrase"). Hidden until at least one
-               categorised catalogue is enabled. -->
-          <div id="catObjects" class="cat-objects" hidden>
-            <div class="cat-objects-row" id="catObjectsTypesRow" hidden>
-              <span class="cat-objects-lbl">Types</span>
-              <div id="catObjectsTypes" class="cat-objects-chips"></div>
-            </div>
-            <div class="cat-objects-row">
-              <input id="catObjectsFilter" type="search"
-                     placeholder="Filter: class:PNe -tag:fully-done"
-                     autocomplete="off" spellcheck="false" />
-            </div>
-            <div id="catObjectsHint" class="cat-objects-hint" hidden></div>
-          </div>
-          <div class="gap-finder">
-            <div class="row gap-row">
-              <label class="gap-label">Have <select id="gapHave"></select></label>
-              <label class="gap-label">Missing <select id="gapMissing"></select></label>
-            </div>
-            <div class="row gap-row">
-              <label class="gap-label small">&ge; <input id="gapMinHave" type="number" step="0.1" min="0" style="width:5em" /> h</label>
-              <label class="gap-label small">&lt; <input id="gapMaxMissing" type="number" step="0.1" min="0" style="width:5em" /> h</label>
-            </div>
-            <div class="gap-sources">
-              <div class="gap-sources-label">Use sources:</div>
-              <div id="gapSourcesList"></div>
-            </div>
-            <div class="row gap-row">
-              <button id="gapMode">Find gaps</button>
-              <button id="exportCsv">Export priority CSV</button>
-            </div>
-            <div id="gapStats" class="gap-stats"></div>
-          </div>
-        </div>
-      </details>
-
-      <div id="panelSearchWrap" class="panel-search">
-        <input id="searchInput" type="search" autocomplete="off" spellcheck="false"
-               placeholder="Search: name, or key:value (e.g. camera:asi2600 filter:Ha hours&gt;3)" />
-        <div class="search-hint">keys: object · filter · telescope · camera · fov&gt;N · fov&lt;N · hours&gt;N · hours&lt;N</div>
-      </div>
-      <div id="panelBody">
-        <div class="panel-loading">Loading targets…</div>
-      </div>
-    </aside>
+    <nav id="panelRail" class="side-rail" aria-label="Side panels">
+      <button type="button" class="rail-btn" data-tab="main" aria-pressed="false" aria-controls="sidePanel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span class="rail-lbl" id="railMainLabel">Plans</span>
+        <span class="rail-tip" id="railMainTip">Plans and projects</span>
+      </button>
+      <button type="button" class="rail-btn" data-tab="filters" aria-pressed="false" aria-controls="sidePanel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 8v6l-4-2v-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        <span class="rail-lbl">Filters</span>
+        <span class="rail-tip">Map filters</span>
+      </button>
+      <button type="button" class="rail-btn" data-tab="library" aria-pressed="false" aria-controls="sidePanel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v16M10 4v16M15 5l4 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span class="rail-lbl">Library</span>
+        <span id="railLibraryBadge" class="rail-badge" hidden></span>
+        <span class="rail-tip">Sources, scan health, rigs, catalogues</span>
+      </button>
+    </nav>
   </main>
 
   <dialog id="siteModal" class="acp-modal">

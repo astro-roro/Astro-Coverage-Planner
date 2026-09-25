@@ -176,28 +176,199 @@ button:active { background: #262e40; }
   min-height: 0;     /* allow children with overflow:auto to shrink properly */
 }
 
+/* The map area never changes size when the side panel opens, closes, is
+   resized or switches tab: the panel floats over the map's right edge
+   instead of taking width from it, so Aladin never resizes or recentres. */
+.map-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
 #aladin-lite-div {
   flex: 1;
   min-width: 0;
   background: #0a0d12;
+  /* Own stacking context, so Aladin's high z-index controls stay under
+     the side panel rather than poking through it. */
+  isolation: isolate;
 }
 
 .panel {
-  flex: 0 0 380px;   /* wider too, since font is bigger */
-  /* Pin both min and max so the rail width is invariant across panel modes
-     (target list / detail / plan list / plan edit). Without these, flex's
-     implicit `min-width: auto` lets a wide child (e.g. a long input or an
-     unbreakable coord string in the plan editor) expand the panel and shift
-     the sky map sideways when the user navigates between modes. */
-  min-width: 380px;
-  max-width: 380px;
+  --side-panel-w: 380px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: var(--side-panel-w);
+  max-width: calc(100% - 120px);
   background: #0f1319;
   border-left: 1px solid #1f2937;
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.45);
   display: flex;
   flex-direction: column;
   min-height: 0;
   font-size: 15.5px; /* ~20% larger than body (13 → 15.5) */
   line-height: 1.4;
+}
+.panel[hidden] { display: none; }
+
+.side-panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid #1f2937;
+}
+.side-panel-head h2 {
+  margin: 0;
+  flex: 1;
+  font-size: 14px;
+  color: #e8ecf3;
+}
+.side-panel-head .icon-btn { font-size: 16px; line-height: 1; }
+
+.side-tab {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.side-tab[hidden] { display: none; }
+.side-tab[data-tab="filters"],
+.side-tab[data-tab="library"] { overflow-y: auto; }
+
+/* Drag handle on the panel's left edge. Arrow keys work when focused. */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.1s;
+}
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after,
+.panel-resizer.dragging::after { background: #4da6ff; }
+.panel-resizer:focus-visible { outline: none; }
+body.panel-resizing { cursor: col-resize; user-select: none; }
+.sheet-grab { display: none; }
+
+/* Icon rail on the far right edge. One panel open at a time. */
+.side-rail {
+  flex: 0 0 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  background: #0c1016;
+  border-left: 1px solid #1f2937;
+  z-index: 31;
+}
+.rail-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 9px 2px 7px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: #78839a;
+  font-size: 10px;
+  cursor: pointer;
+}
+.rail-btn svg { width: 22px; height: 22px; }
+.rail-btn:hover { color: #e0e4ea; }
+.rail-btn[aria-pressed="true"] {
+  color: #fff;
+  background: #121926;
+  box-shadow: inset -3px 0 0 #4da6ff;
+}
+.rail-badge {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: #b8862b;
+  color: #0a0d12;
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+}
+.rail-badge[hidden] { display: none; }
+.rail-tip {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: #232a3a;
+  color: #e0e4ea;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s;
+  z-index: 40;
+}
+.rail-btn:hover .rail-tip,
+.rail-btn:focus-visible .rail-tip { opacity: 1; }
+
+/* Phone width: the rail becomes a bottom tab bar and the panel a sheet
+   over the map. The map's height doesn't change when the sheet opens. */
+@media (max-width: 640px) {
+  .layout { flex-direction: column; }
+  .side-rail {
+    flex: 0 0 56px;
+    flex-direction: row;
+    padding: 0;
+    border-left: 0;
+    border-top: 1px solid #1f2937;
+  }
+  .rail-btn { flex: 1; padding: 7px 2px 5px; }
+  .rail-btn[aria-pressed="true"] { box-shadow: inset 0 3px 0 #4da6ff; }
+  .rail-tip { display: none; }
+  .panel {
+    left: 0;
+    right: 0;
+    top: auto;
+    width: auto;
+    max-width: none;
+    height: 68%;
+    border-left: 0;
+    border-top: 1px solid #2a3246;
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.5);
+  }
+  .panel-resizer { display: none; }
+  .sheet-grab {
+    display: block;
+    width: 44px;
+    height: 4px;
+    margin: 7px auto 0;
+    border-radius: 2px;
+    background: #3a4458;
+  }
 }
 /* Anything inside the panel that overflows horizontally should clip rather
    than stretch the rail. Belt-and-braces with the .panel max-width above. */
@@ -1778,3 +1949,164 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .health-table td.num { text-align: right; color: #9aa3b5; white-space: nowrap; }
 .health-report { display: inline-block; margin-top: 6px; font-size: 11px; color: #8fb4ff; }
 .health-badge { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 6px; border-radius: 8px; background: #b8862b; color: #0a0d12; font-size: 10px; font-weight: 700; text-align: center; }
+
+/* --- Plan list: Plans / Projects switch, status chips, project rows --- */
+
+/* The main switch for the plan list, so it is full width, taller than the
+   chips below it and filled when active. */
+.plan-view-toggle {
+  display: flex;
+  margin-bottom: 10px;
+  border: 1px solid #3a4458;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.plan-view-toggle button {
+  flex: 1 1 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: #141a24;
+  color: #a2aec2;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.plan-view-toggle button + button { border-left: 1px solid #3a4458; }
+.plan-view-toggle button:hover { background: #1a2030; color: #e0e4ea; }
+.plan-view-toggle button[aria-pressed="true"] { background: #2d4a7c; color: #fff; }
+.plan-view-toggle .n {
+  margin-left: 6px;
+  font-weight: 400;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-search {
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+  background: #0a0d12;
+  border: 1px solid #2a3246;
+  color: #e0e4ea;
+  border-radius: 3px;
+}
+.plan-search:focus { outline: none; border-color: #4da6ff; }
+
+.plan-state-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 5px;
+  margin-bottom: 6px;
+}
+.state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #a2aec2;
+  cursor: pointer;
+}
+.state-chip .sw { width: 7px; height: 7px; border-radius: 50%; }
+.state-chip .c { color: #78839a; font-variant-numeric: tabular-nums; }
+.state-chip[aria-pressed="true"] { background: #223150; border-color: #3a5a94; color: #fff; }
+.state-chip[aria-pressed="true"] .c { color: #b9c8e6; }
+.state-chip.zero:not([aria-pressed="true"]) { opacity: 0.55; }
+.plan-state-chips .link-btn { border: 0; color: #7fb3ff; text-decoration: underline; }
+
+.plan-list-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #78839a;
+}
+.plan-list-meta .sort-control { margin-left: auto; }
+
+.plan-row:focus-visible { outline: 2px solid #4da6ff; outline-offset: -2px; }
+.plan-state-badge.plan-state-draft { color: #f0c98a; background: #3a2e17; }
+
+.proj-group { border-bottom: 1px solid #1f2937; }
+.proj-row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  column-gap: 8px;
+  row-gap: 5px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #e0e4ea;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.proj-row:hover { background: #1a2030; }
+.proj-caret {
+  display: inline-block;
+  color: #78839a;
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+.proj-group[data-open="true"] .proj-caret { transform: rotate(90deg); }
+.proj-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8ecf3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proj-count {
+  font-size: 12px;
+  color: #a2aec2;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.proj-line2 {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: #78839a;
+}
+.proj-line2 .plan-remaining { margin-left: auto; white-space: nowrap; }
+.state-mix {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 46px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #1d2433;
+}
+.state-mix i { display: block; height: 100%; }
+.state-mix-txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.plan-progress {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #1d2433;
+}
+.plan-progress i { display: block; height: 100%; background: #4f8a5f; }
+.proj-kids {
+  list-style: none;
+  margin: 0 0 6px 20px;
+  padding: 0 0 0 6px;
+  border-left: 1px solid #2a3246;
+}
+.proj-kids .plan-row { padding: 5px 6px; font-size: 12px; }
