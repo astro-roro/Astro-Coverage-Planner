@@ -469,11 +469,13 @@ body.panel-resizing { cursor: col-resize; user-select: none; }
 
 .target-row {
   display: grid;
-  /* row 1: swatch · name · filter-dots · hours
-     row 2: (swatch col empty) · meta-strip (now + trend + sparkline)
-     The 4-col grid keeps swatch and the right-edge widgets aligned across
-     rows; row 2's meta cell spans columns 2-4 so it can flex-pack chips. */
-  grid-template-columns: 10px 1fr auto auto;
+  /* row 1: swatch · name · hours
+     row 2: (swatch col empty) · meta-strip (filter dots, Now+Trend chip,
+            sparkline)
+     The last column holds the ⋯ across both rows, as on plan rows. The
+     name column may shrink below its content so long names ellipsise
+     instead of pushing the hours off the row. */
+  grid-template-columns: 10px minmax(0, 1fr) auto 22px;
   grid-template-rows: auto auto;
   column-gap: 8px;
   row-gap: 2px;
@@ -486,27 +488,39 @@ body.panel-resizing { cursor: col-resize; user-select: none; }
 }
 .tr-swatch { grid-row: 1; grid-column: 1; align-self: center; }
 .tr-name   { grid-row: 1; grid-column: 2; }
-.tr-dots   { grid-row: 1; grid-column: 3; }
-.tr-hours  { grid-row: 1; grid-column: 4; }
+.tr-hours  { grid-row: 1; grid-column: 3; }
 .tr-meta {
   grid-row: 2;
-  grid-column: 2 / -1;       /* span name → hours columns */
+  grid-column: 2 / -2;       /* span name → hours columns, not the menu */
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 3px 8px;
+  min-width: 0;
+  /* At the narrowest panel a long chip can leave no room for the strip;
+     it then drops below, right aligned, rather than running under the ⋯. */
+  flex-wrap: wrap;
   font-size: 11px;
   color: #78839a;
 }
-/* Push the year-curve sparkline to the right edge of the row so the chips
-   keep their leading position and the empty middle absorbs the slack. */
+/* Push the year-curve sparkline to the right edge of the row so the dots
+   and chip keep their leading position and the middle absorbs the slack.
+   Slightly smaller cells than elsewhere so line 2 fits a narrow panel. */
 .tr-meta .yc-sparkline {
   margin-left: auto;
   margin-right: 0;
+  grid-template-columns: repeat(12, 7px);
 }
-/* When time-aware is off the meta strip is empty + collapsed by CSS, so
-   the row collapses back to its single-line natural height. */
-body:not([data-time-aware="on"]) .tr-meta { display: none; }
+.tr-meta .yc-sparkline .yc-cell { width: 7px; height: 8px; }
+/* One chip for this month plus the trend arrow. Never wraps: the label is
+   short by construction and the full wording lives in the tooltip. */
+.tr-chip { white-space: nowrap; flex-shrink: 0; }
+.tr-arrow { font-weight: 600; }
+.tr-arrow.nn-trend-up   { color: #8fc485; }
+.tr-arrow.nn-trend-down { color: #e0876f; }
+.tr-arrow.nn-trend-flat { color: #9aa3b3; }
+.tr-arrow.nn-trend-wait { color: #d6b35c; }
 .target-row:hover { background: #1a2030; }
+.target-row.is-picked { background: #1c2a44; box-shadow: inset 2px 0 0 #4da6ff; }
 
 .tr-swatch {
   display: inline-block;
@@ -730,10 +744,7 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
   color: #a2aec2;
   font-size: 12px;
 }
-.mark-finished-row button {
-  font-size: 12px;
-  padding: 3px 8px;
-}
+.mark-finished-row .row-menu-btn { padding: 0; font-size: 16px; }
 
 /* --- Unsaved-edits modal (fires on Esc / empty-sky deselect from plan-edit) --- */
 
@@ -832,7 +843,7 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
      plan-row-line2 packs project + filter dots on the left and right-anchors
      the time-aware visibility chips under the "h left" column so the eye can
      scan all the "right edge" info as one column. */
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr auto 22px;
   grid-template-rows: auto auto;
   column-gap: 8px;
   row-gap: 3px;
@@ -849,7 +860,7 @@ body:not([data-time-aware="on"]) .tr-meta { display: none; }
 .plan-vis .yc-sparkline { margin-right: 0; }
 .plan-row-line2 {
   grid-row: 2;
-  grid-column: 2 / -1;
+  grid-column: 2 / -2;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2126,3 +2137,78 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   border-left: 1px solid #2a3246;
 }
 .proj-kids .plan-row { padding: 5px 6px; font-size: 12px; }
+
+/* The "⋯" row menu. The button has its own narrow column at the row's far
+   right, centred across both lines, so it never sits on top of the hours,
+   the filter dots or the time-aware column. Always there, faint until the
+   row is hovered or the button has focus. Hidden rows are only listed
+   while Show hidden is on, and are drawn faded. */
+.row-menu-btn {
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  color: #a2aec2;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.4;
+}
+.target-row:hover > .row-menu-btn,
+.plan-row:hover > .row-menu-btn,
+.proj-group:hover > .row-menu-btn,
+.mark-finished-row .row-menu-btn { opacity: 0.75; }
+.row-menu-btn:hover,
+.row-menu-btn:focus-visible,
+.row-menu-btn[aria-expanded="true"] {
+  opacity: 1;
+  color: #e0e4ea;
+  background: #232b3c;
+  border-color: #3a4458;
+}
+.target-row > .row-menu-btn,
+.plan-row > .row-menu-btn { grid-column: -2; grid-row: 1 / -1; align-self: center; }
+.proj-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  column-gap: 4px;
+  align-items: center;
+}
+.proj-group > .proj-row { grid-column: 1; }
+.proj-group > .row-menu-btn { grid-column: 2; grid-row: 1; }
+.proj-group > .proj-kids { grid-column: 1 / -1; }
+.is-hidden > :not(.row-menu-btn):not(.proj-kids) { opacity: 0.45; }
+
+.row-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px;
+  background: #141a26;
+  border: 1px solid #3a4458;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+.row-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: #e0e4ea;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.row-menu-item:hover,
+.row-menu-item:focus { background: #232b3c; outline: none; }
+.row-menu-item[aria-disabled="true"] { color: #78839a; cursor: default; background: none; font-style: italic; }
+.hidden-via { margin-left: 6px; font-size: 10px; color: #78839a; }
+.hidden-toggle-row { margin: 2px 0 6px; }
+.hidden-toggle[hidden] { display: none; }
+.hidden-toggle[aria-pressed="true"] { color: #e0e4ea; border-color: #4da6ff; }
+.hidden-note { font-size: 12px; color: #78839a; margin: 4px 0 8px; }
