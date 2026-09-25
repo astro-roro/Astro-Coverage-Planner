@@ -155,11 +155,28 @@ function setupOnboardingBanner(manifest) {
 }
 
 // --- TS upload banner (nina-ts-sync extension, when loaded) ---
-// Fetched once on load, independent of the manifest/Aladin startup chain,
-// so it shows up even if the sky map is slow or fails to start. The route
+// Fetched on load, independent of the manifest/Aladin startup chain, so it
+// shows up even if the sky map is slow or fails to start. The route
 // belongs to an optional extension. A 404 (extension not loaded), a
 // network error, or an empty list all mean "show nothing", silently, this
 // is not an ACP failure, so it doesn't warrant a console warning.
+//
+// A pending upload times out server-side, so a banner left open in a
+// background tab can go stale: someone clicks nothing, leaves, and the
+// upload has since expired or been superseded. TS_SYNC_POLL_MS re-fetches
+// while the tab is visible so the banner tracks that; initTsSyncBannerPolling
+// starts and stops the interval on visibilitychange so a hidden tab does not
+// poll for nothing.
+//
+// Manual check for the refresh behaviour (no DOM test harness in this repo,
+// see tests/frontend/ conventions): with the nina-ts-sync extension running,
+// open ACP, trigger an upload from another machine, then switch to another
+// tab and back within a minute. The banner should appear without a reload.
+// Leaving the tab in the foreground past TS_SYNC_POLL_MS should update or
+// clear the banner as the upload's state changes, again with no reload.
+const TS_SYNC_POLL_MS = 60000;
+let tsSyncPollTimer = null;
+
 async function loadTsSyncBanner() {
   const el = document.getElementById("tsSyncBanner");
   if (!el) return;
@@ -182,6 +199,30 @@ async function loadTsSyncBanner() {
     return `<span class="ts-sync-line">${safeText}${link}</span>`;
   }).join("") + (more ? `<span class="ts-sync-more">and ${more} more</span>` : "");
   el.hidden = false;
+}
+
+function stopTsSyncPoll() {
+  if (tsSyncPollTimer) { clearInterval(tsSyncPollTimer); tsSyncPollTimer = null; }
+}
+
+function startTsSyncPoll() {
+  if (tsSyncPollTimer) return;
+  tsSyncPollTimer = setInterval(loadTsSyncBanner, TS_SYNC_POLL_MS);
+}
+
+// Re-fetches when the tab regains visibility, and keeps polling every
+// TS_SYNC_POLL_MS while it stays visible; stops the interval while hidden
+// so a background tab doesn't poll for nothing.
+function initTsSyncBannerPolling() {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopTsSyncPoll();
+    } else {
+      loadTsSyncBanner();
+      startTsSyncPoll();
+    }
+  });
+  if (!document.hidden) startTsSyncPoll();
 }
 
 // --- localStorage persistence ---
@@ -5450,6 +5491,7 @@ function init() {
   // Independent of everything below: don't let a slow or failed sky map
   // hide a pending TS upload the user needs to go review.
   loadTsSyncBanner();
+  initTsSyncBannerPolling();
 
   const showInitError = err => {
     // Without this, any exception during startup left the "Loading
