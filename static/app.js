@@ -6067,9 +6067,12 @@ function renderPlanList() {
     remaining *= panelCount;
     const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
     const priLabel = pri.charAt(0).toUpperCase() + pri.slice(1);
+    const parkedBadge = pl.state === "parked"
+      ? `<span class="plan-parked-badge" title="On hold: excluded from tonight's suggestions, still syncs to TS">Parked</span>`
+      : "";
     return `<li class="plan-row" data-plan-id="${esc(pl.id)}">
         <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
-        <span class="plan-name">${name}</span>
+        <span class="plan-name">${name}${parkedBadge}</span>
         ${visCell}
         <div class="plan-row-line2">
           <span class="plan-project">${proj}</span>
@@ -6249,9 +6252,13 @@ function renderPlanEditor(plan) {
 
   const tg = editingPlan.target;
 
+  const parkedBadge = editingPlan.state === "parked"
+    ? `<span class="plan-parked-badge" title="On hold: excluded from tonight's suggestions, still syncs to TS">Parked</span>`
+    : "";
+
   panel.innerHTML = `
     <a class="back-link" id="backToPlans" href="#">← Back to plans</a>
-    <h3>Plan: ${esc(tg.name || "(unnamed)")}</h3>
+    <h3>Plan: ${esc(tg.name || "(unnamed)")} ${parkedBadge}</h3>
     <form class="plan-form" id="planForm" onsubmit="return false">
       <fieldset>
         <legend>Target</legend>
@@ -6365,6 +6372,7 @@ function renderPlanEditor(plan) {
       <div class="plan-editor-actions">
         <button type="button" id="planSave" class="btn-primary">Save</button>
         <button type="button" id="planCancel">Cancel</button>
+        <button type="button" id="planPark">${editingPlan.state === "parked" ? "Unpark" : "Park"}</button>
         <button type="button" id="planDelete" class="btn-danger">Delete</button>
       </div>
     </form>`;
@@ -6513,6 +6521,15 @@ function renderPlanEditor(plan) {
     renderPlanList();
   });
   panel.querySelector("#planSave")?.addEventListener("click", savePlan);
+  panel.querySelector("#planPark")?.addEventListener("click", async () => {
+    // Park sets state: "parked". Unpark returns to committed (no state
+    // field at all), never back to "draft" - parking and drafting are
+    // independent, unrelated holds on a plan.
+    if (editingPlan.state === "parked") delete editingPlan.state;
+    else editingPlan.state = "parked";
+    const ok = await savePlan();
+    if (ok) renderPlanEditor(editingPlan);
+  });
   panel.querySelector("#planCancel")?.addEventListener("click", () => {
     const orig = plans.find(p => p.id === editingPlan.id);
     if (orig && !orig.guid) plans = plans.filter(p => p !== orig);

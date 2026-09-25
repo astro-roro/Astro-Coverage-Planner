@@ -186,7 +186,7 @@ ACP lets you sketch imaging plans against the sky map, then export them as a NIN
 
 `GET /api/plans?expand=gear,site,panels` is an opt-in enrichment for the NINA plugin: `gear` resolves `telescope_id` / `camera_id` against `gear.json` and adds the pair's `fov_arcmin` and `pixel_scale_arcsec`, `site` is the observing site (the plan's `site_id` if it has one, otherwise the first site), and `panels` is the mosaic's per-panel centres. Any subset of the names can be given. Without the parameter the response is unchanged. The response always carries a `Last-Modified` header taken from `plans.json`, so a client can poll cheaply.
 
-A plan's optional `state` field controls whether it's eligible for sync. `state: "draft"` marks a plan as still being worked on, and draft plans are excluded from `/api/sync` (see below). Plans with no `state` field at all (anything written before this field existed) are treated as committed and keep syncing.
+A plan's optional `state` field is `"draft"`, `"parked"`, or absent (committed, the normal case); any other value is rejected with a 400. `state: "draft"` marks a plan as still being worked on, and draft plans are excluded from `/api/sync` (see below). `state: "parked"` marks a committed plan as on hold: it still syncs to TS unchanged, but `/api/plans/match` (see below) leaves it out entirely, so it never appears in tonight's suggestions. Plans with no `state` field at all (anything written before this field existed) are treated as committed and keep syncing.
 
 ### Matching plans to connected gear: `POST /api/plans/match`
 
@@ -235,6 +235,8 @@ The verdict is one of:
 `pixel_scale_ratio` is connected divided by plan, and `fov_ratio` is the same ratio per axis. Both are `null` on an `unconstrained` plan.
 
 Filter names are canonicalised with the same rules the archive scanner uses, so "Antlia Ha" and "Ha" are the same filter here and in the manifest, a colour camera with no filter wheel credits R, G and B, and a dual band filter credits Ha and OIII (a quad band adds SII). A plan goal with `target_hours` of zero is not something the rig has to be able to shoot.
+
+A plan with `state: "parked"` is left out of `plans` and `summary` entirely: it gets no verdict, because a parked plan is on hold and shouldn't be suggested for tonight. Draft plans are unaffected and are still scored here.
 
 ### Reported rigs: `GET /api/fingerprints`
 

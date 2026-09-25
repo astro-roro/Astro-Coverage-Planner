@@ -409,5 +409,35 @@ class TestFingerprintStore(unittest.TestCase):
         self.assertEqual(list(stored), [body["fingerprint_id"]])
 
 
+class TestParkedPlansExcludedFromMatch(unittest.TestCase):
+    """/api/plans/match is what the NINA plugin's "Sync for tonight"
+    instruction calls to decide what to load onto the rig, so a parked
+    plan must not appear here at all, not even as a verdict. Draft plans
+    are unaffected: this endpoint scored them before parked existed and
+    still does, only parked is a tonight-suggestion exclusion."""
+
+    def setUp(self):
+        _redirect_state()
+        self.client = app.test_client()
+
+    def test_parked_plan_missing_from_plans_and_summary(self):
+        _write_gear([TEL_540], [CAM_2600MM])
+        _write_plans([
+            _plan("p-fit", "tel-540", "cam-2600", ["Ha"]),
+            _plan("p-parked", "tel-540", "cam-2600", ["Ha"], state="parked"),
+        ])
+        body = _match(self.client, _fingerprint())
+        self.assertEqual({p["id"] for p in body["plans"]}, {"p-fit"})
+        self.assertEqual(sum(body["summary"].values()), 1)
+
+    def test_draft_plan_still_scored(self):
+        # Draft was already included here before parked existed; adding
+        # parked must not change that.
+        _write_gear([TEL_540], [CAM_2600MM])
+        _write_plans([_plan("p-draft", "tel-540", "cam-2600", ["Ha"], state="draft")])
+        body = _match(self.client, _fingerprint())
+        self.assertEqual({p["id"] for p in body["plans"]}, {"p-draft"})
+
+
 if __name__ == "__main__":
     unittest.main()

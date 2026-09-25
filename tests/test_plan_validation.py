@@ -532,5 +532,64 @@ class TestPublicPageFields(unittest.TestCase):
         self.assertEqual(r.status_code, 201)
 
 
+class TestParkedState(unittest.TestCase):
+    """`state: "parked"` is a plan on hold: committed (not draft), excluded
+    from tonight's suggestions (see test_plan_match.py), still synced to TS.
+    Round-trips through save/load and park/unpark, same as any other field."""
+
+    def setUp(self):
+        _fresh_plans_path()
+        self.client = app.test_client()
+
+    def test_parked_state_accepted(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(state="parked"))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["state"], "parked")
+
+    def test_unknown_state_rejected(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(state="archived"))
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("state", r.get_json()["error"])
+
+    def test_draft_state_still_accepted(self):
+        # Guard against the new whitelist accidentally narrowing to just
+        # "parked" and dropping the pre-existing "draft" value.
+        r = self.client.post("/api/plans", json=_valid_plan_payload(state="draft"))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["state"], "draft")
+
+    def test_no_state_field_still_accepted(self):
+        payload = _valid_plan_payload()
+        del payload["state"]
+        r = self.client.post("/api/plans", json=payload)
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertNotIn("state", r.get_json())
+
+    def test_parked_state_round_trips_through_save_and_load(self):
+        self.client.post("/api/plans", json=_valid_plan_payload(plan_id="p1", state="parked"))
+        stored = app_module.load_plans()["plans"]
+        self.assertEqual(stored[0]["state"], "parked")
+        r = self.client.get("/api/plans/p1")
+        self.assertEqual(r.get_json()["state"], "parked")
+
+    def test_park_via_put(self):
+        self.client.post("/api/plans", json=_valid_plan_payload(plan_id="p1"))
+        r = self.client.put("/api/plans/p1", json=_valid_plan_payload(plan_id="p1", state="parked"))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["state"], "parked")
+
+    def test_unpark_via_put_returns_to_committed_not_draft(self):
+        # Unparking drops the state field entirely: a parked plan returns
+        # to committed, never to draft. The editor sends a payload with no
+        # `state` key at all, same as _valid_plan_payload() with the key
+        # removed (PUT replaces the plan wholesale, it doesn't merge).
+        self.client.post("/api/plans", json=_valid_plan_payload(plan_id="p1", state="parked"))
+        payload = _valid_plan_payload(plan_id="p1")
+        del payload["state"]
+        r = self.client.put("/api/plans/p1", json=payload)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertNotIn("state", r.get_json())
+
+
 if __name__ == "__main__":
     unittest.main()

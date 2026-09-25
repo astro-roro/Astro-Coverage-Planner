@@ -3282,6 +3282,14 @@ def _validate_plan_payload(payload: dict) -> str | None:
                     return f"filter_goals[{fname!r}].actual_hours must be a number"
                 if not math.isfinite(ah) or ah < 0:
                     return f"filter_goals[{fname!r}].actual_hours must be ≥ 0"
+    # A plan's state: absent means committed (the normal case). "draft"
+    # is work in progress; "parked" is committed but on hold, set by hand
+    # in the editor or by an extension importing an inactive TS project.
+    # Any other value is rejected rather than silently written, so a typo
+    # doesn't create a third unrecognised state.
+    state = payload.get("state")
+    if state is not None and state not in ("draft", "parked"):
+        return "state must be 'draft' or 'parked'"
     # Live-page fields (docs/specs/shooting-page.md). Absent means private,
     # so anything other than the two known values is rejected, never coerced.
     vis = payload.get("visibility")
@@ -3748,6 +3756,13 @@ def api_plans_match():
     Returns all verdicts, not just the fits: the caller decides what to
     show. The fingerprint itself is stored under its profile name so ACP's
     own planning rail can say what each NINA install last reported.
+
+    This is what the NINA plugin's "Sync for tonight" instruction calls to
+    decide what to load onto the rig, so a parked plan (on hold, whether
+    parked by hand or because the linked TS project came in inactive) is
+    left out entirely: it never appears in `plans` and never counts toward
+    `summary`. Draft plans are still scored here, same as before this
+    state existed; only parked is a tonight-suggestion exclusion.
     """
     fp = request.get_json(silent=True) or {}
     err = _validate_fingerprint(fp)
@@ -3765,7 +3780,7 @@ def api_plans_match():
     out_plans = []
     summary = {"fit": 0, "fit_with_warnings": 0, "no_fit": 0, "unconstrained": 0}
     for plan in load_plans().get("plans", []):
-        if not isinstance(plan, dict):
+        if not isinstance(plan, dict) or plan.get("state") == "parked":
             continue
         match = _match_plan(plan, optics, bands, telescopes_by_id, cameras_by_id)
         summary[match["verdict"]] += 1
@@ -4385,6 +4400,11 @@ def api_sync():
     (everything written before this field existed) are treated as
     committed, so upgrading ACP doesn't silently stop syncing anyone's
     existing plans. The response reports how many were skipped as drafts.
+
+    Parked plans (plan.state == "parked") are committed, so they still
+    sync here unchanged: parking only takes a plan out of tonight's
+    suggestions (see /api/plans/match), it does not withdraw it from TS.
+    Pushing the parked state itself to TS is a separate, later step.
 
     Optional `destination_id` (JSON body or `?destination_id=` query param)
     scopes the sync to one entry from /api/destinations: only plans with a

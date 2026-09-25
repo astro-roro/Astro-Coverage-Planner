@@ -686,6 +686,23 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .plan-pri-dot.plan-pri-normal { background: #3a9658; }
 .plan-pri-dot.plan-pri-low    { background: #5a657a; }
 
+/* On hold: committed, still syncs to TS, but left out of tonight's
+   suggestions. Amber rather than the priority dot's blue/green/grey so it
+   reads as a status, not a priority level. */
+.plan-parked-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: #4a3a1a;
+  color: #e0b060;
+  vertical-align: middle;
+}
+
 .plan-name {
   color: #e8ecf3;
   font-weight: 500;

@@ -150,6 +150,22 @@ class TestSyncDraftExclusion(unittest.TestCase):
         self.assertIsNotNone(stored["p1"].get("last_synced_at"))
         self.assertIsNone(stored["p2"].get("last_synced_at"))
 
+    def test_parked_plan_still_syncs(self):
+        # Parked only takes a plan out of tonight's suggestions
+        # (test_plan_match.py); it's still committed, so /api/sync must
+        # keep bundling it unchanged, same as any other committed plan.
+        app_module.save_plans({"version": 1, "plans": [
+            _plan("p1", state="active"),
+            _plan("p2", state="parked"),
+        ]})
+        r = self.client.post("/api/sync")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual(body["plan_count"], 2)
+        self.assertEqual(body["skipped_draft_count"], 0)
+        stored = {p["id"]: p for p in app_module.load_plans()["plans"]}
+        self.assertIsNotNone(stored["p2"].get("last_synced_at"))
+
 
 class TestSyncDestinationScoping(unittest.TestCase):
     """Optional destination_id scopes the sync to one rig's plans and
