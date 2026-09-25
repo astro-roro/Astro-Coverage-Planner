@@ -65,10 +65,49 @@ export function stateCounts(plans) {
   return c;
 }
 
-// Plans that pass the search box and the ticked status chips.
-export function filterPlans(plans, { states, query } = {}) {
+// Hidden marks as served by GET /api/hidden, read back defensively so a
+// missing or odd reply just means nothing is hidden.
+export function parseHidden(raw) {
+  const out = { plans: {}, projects: {}, targets: {} };
+  for (const k of Object.keys(out)) {
+    const v = raw?.[k];
+    if (v && typeof v === "object" && !Array.isArray(v)) out[k] = v;
+  }
+  return out;
+}
+
+// A plan is hidden when it was hidden itself or its project was. Hiding a
+// project leaves each plan's own state alone; it only drops them from lists.
+export function isPlanHidden(plan, hidden) {
+  if (!hidden) return false;
+  return Object.hasOwn(hidden.plans || {}, plan?.id ?? "")
+    || Object.hasOwn(hidden.projects || {}, planProject(plan));
+}
+
+export function isProjectHidden(name, hidden) {
+  return !!hidden && Object.hasOwn(hidden.projects || {}, name);
+}
+
+export function isTargetHidden(target, hidden) {
+  return !!hidden && Object.hasOwn(hidden.targets || {}, String(target?.target_id));
+}
+
+// Plans the list should consider at all: everything when Show hidden is on,
+// otherwise everything not hidden.
+export function listablePlans(plans, hidden, showHidden) {
+  return showHidden ? plans.slice() : plans.filter(p => !isPlanHidden(p, hidden));
+}
+
+export function hiddenPlanCount(plans, hidden) {
+  return plans.filter(p => isPlanHidden(p, hidden)).length;
+}
+
+// Plans that pass the search box and the ticked status chips. With
+// `hidden` given, hidden plans drop out unless `showHidden` is set.
+export function filterPlans(plans, { states, query, hidden, showHidden } = {}) {
   const want = states instanceof Set ? states : new Set(states || PLAN_STATES);
-  return plans.filter(p => want.has(planState(p)) && planMatchesQuery(p, query));
+  return listablePlans(plans, hidden, showHidden)
+    .filter(p => want.has(planState(p)) && planMatchesQuery(p, query));
 }
 
 function planName(p) {
@@ -97,7 +136,8 @@ export function sortPlans(plans, by) {
 // One row per project that still has a plan showing after the filters.
 // `plans` counts toward the state mix and the "n of m" total; `shown` is
 // the filtered list the row sums its hours and progress over.
-export function projectRollups(allPlans, shown, by) {
+// With `hidden` given, each row also says whether its project is hidden.
+export function projectRollups(allPlans, shown, by, hidden) {
   const shownIds = new Set(shown.map(p => p.id));
   const groups = new Map();
   for (const p of allPlans) {
@@ -126,6 +166,7 @@ export function projectRollups(allPlans, shown, by) {
       done,
       total,
       topPriority,
+      hidden: isProjectHidden(name, hidden),
     });
   }
   const nm = (a, b) => a.name.localeCompare(b.name, "en-AU", { numeric: true });
