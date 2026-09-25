@@ -102,7 +102,7 @@ let timeAware = false;         // localStorage acp.time_aware, default off
 let _obsIntervalId = null;     // setInterval handle for the rolling obsNow refresh
 let visibilityData = null;     // {site_id, year, targets: {<id>: [12 bins]}} | null
 let currentAlts = {};          // {<target_id>: alt_deg} from latest /api/observability, for sort=tonight
-let sortBy = "hours";          // "hours" | "best_month" | "up_tonight"
+let sortBy = "hours";          // "number" | "hours" | "name" | "best_month" | "up_tonight" | "best_upcoming"
 let planSortBy = "priority";   // "priority" | "name" | "hours_left" | "panels_up_now" | "peak_panels_month"
 let catalogRegistry = [];      // [{id, data_key, label, color, marker, size, ...}] from /api/catalog-registry
 let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
@@ -623,9 +623,11 @@ import {
   LABEL_RANK as _LABEL_RANK,
   MONTH_LABELS as _MONTH_LABELS,
   compactChip,
+  currentMonthScore,
   prettyLabel,
   prettyLabelShort,
   trendOf,
+  upcomingSeasonScore,
 } from "./target-chip.mjs";
 import {
   MENU_BTN_CLASS,
@@ -1013,20 +1015,40 @@ function filterDotsHtml(filters) {
   }).join("");
 }
 
-function _bestMonthScore(t) {
-  // Combined score for sort=best_month: rank * 100 + hours_at_best (so two
-  // "great" targets break tie by who has more dark-time at peak).
-  const bins = binsForTarget(t.target_id);
-  if (!bins) return -1;
-  const best = bestBinFor(bins);
-  if (!best) return -1;
-  const rank = _LABEL_RANK[best.label] ?? 0;
-  return rank * 100 + (best.hours_above_min || 0);
+function _bestMonthCompare(a, b) {
+  // sort=best_month ranks by THIS month's bin, not the target's best month
+  // of the year: label rank first, that month's hours above minimum as the
+  // tie break, then total integration hours already banked.
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const sa = currentMonthScore(binsForTarget(a.target_id), nowMonth);
+  const sb = currentMonthScore(binsForTarget(b.target_id), nowMonth);
+  if (sb.rank !== sa.rank) return sb.rank - sa.rank;
+  if (sb.hours !== sa.hours) return sb.hours - sa.hours;
+  return totalHoursOf(b) - totalHoursOf(a);
 }
 
 function _tonightAlt(t) {
   const v = currentAlts[t.target_id];
   return (typeof v === "number") ? v : -999;
+}
+
+function _targetName(t) {
+  return t.objects?.[0] || "(no name)";
+}
+
+function _nameCompare(a, b) {
+  return _targetName(a).localeCompare(_targetName(b), "en-AU", { numeric: true });
+}
+
+function _upcomingCompare(a, b) {
+  // sort=best_upcoming: summed label-rank + hours over the three months
+  // after this one, so a target great for the whole coming season beats
+  // one that's only great this single month. Ties by total hours.
+  const nowMonth = new Date().getUTCMonth() + 1;
+  const sa = upcomingSeasonScore(binsForTarget(a.target_id), nowMonth);
+  const sb = upcomingSeasonScore(binsForTarget(b.target_id), nowMonth);
+  if (sb !== sa) return sb - sa;
+  return totalHoursOf(b) - totalHoursOf(a);
 }
 
 function renderTargetList() {
@@ -1038,12 +1060,19 @@ function renderTargetList() {
   if (!panel || !manifest) return;
 
   const matches = manifest.targets.filter(targetMatches);
-  // Sort modes: hours = legacy default; best_month + up_tonight require
+  // Sort modes: hours = legacy default; number and name are plain and
+  // always available; best_month, up_tonight and best_upcoming need
   // time-aware data and degrade to hours when that data isn't loaded.
-  if (sortBy === "best_month" && visibilityData) {
-    matches.sort((a, b) => _bestMonthScore(b) - _bestMonthScore(a));
+  if (sortBy === "number") {
+    matches.sort((a, b) => (a.target_id || 0) - (b.target_id || 0));
+  } else if (sortBy === "name") {
+    matches.sort(_nameCompare);
+  } else if (sortBy === "best_month" && visibilityData) {
+    matches.sort(_bestMonthCompare);
   } else if (sortBy === "up_tonight" && Object.keys(currentAlts).length) {
     matches.sort((a, b) => _tonightAlt(b) - _tonightAlt(a));
+  } else if (sortBy === "best_upcoming" && visibilityData) {
+    matches.sort(_upcomingCompare);
   } else {
     matches.sort((a, b) => totalHoursOf(b) - totalHoursOf(a));
   }
@@ -1074,9 +1103,12 @@ function renderTargetList() {
   const empty = `<li class="tr-empty">No targets match current filters.</li>`;
   const sortCtl = `<span class="sort-control">sort by
       <select id="sortSel">
+        <option value="number" ${sortBy==="number"?"selected":""}>number</option>
         <option value="hours" ${sortBy==="hours"?"selected":""}>hours</option>
-        <option value="best_month" ${sortBy==="best_month"?"selected":""} data-time-aware>best month</option>
-        <option value="up_tonight" ${sortBy==="up_tonight"?"selected":""} data-time-aware>up tonight</option>
+        <option value="name" ${sortBy==="name"?"selected":""}>name</option>
+        <option value="best_month" ${sortBy==="best_month"?"selected":""} data-time-aware>best this month</option>
+        <option value="up_tonight" ${sortBy==="up_tonight"?"selected":""} data-time-aware>best tonight</option>
+        <option value="best_upcoming" ${sortBy==="best_upcoming"?"selected":""} data-time-aware>best upcoming</option>
       </select></span>`;
 
   const nHidden = manifest.targets.filter(t => isTargetHidden(t, hiddenMarks)).length;
@@ -5578,7 +5610,7 @@ function yearCurveBarHtml(targetId) {
 function initTimeAware() {
   timeAware = localStorage.getItem("acp.time_aware") === "on";
   const savedSort = localStorage.getItem("acp.sort_by");
-  if (savedSort && ["hours", "best_month", "up_tonight"].includes(savedSort)) {
+  if (savedSort && ["number", "hours", "name", "best_month", "up_tonight", "best_upcoming"].includes(savedSort)) {
     sortBy = savedSort;
   }
   const savedPlanSort = localStorage.getItem("acp.plan_sort_by");

@@ -31,6 +31,31 @@ function binFor(bins, month1) {
   return bins.find(x => x.month === month1) || null;
 }
 
+// Score for sort=best_month ("best this month"): the label rank of THIS
+// month's bin, plus that month's hours above minimum. Deliberately not the
+// target's best month of the year, a target whose peak is six months away
+// should not outrank one that's great right now.
+export function currentMonthScore(bins, nowMonth) {
+  const b = bins ? binFor(bins, nowMonth) : null;
+  if (!b) return { rank: -1, hours: 0 };
+  return { rank: LABEL_RANK[b.label] ?? 0, hours: b.hours_above_min || 0 };
+}
+
+// Score for sort=best_upcoming ("best upcoming"): summed over the three
+// months AFTER this one (wrapping past December), label rank * 100 plus
+// hours above minimum. A target great across the whole coming season
+// outranks one that's merely great this one month.
+export function upcomingSeasonScore(bins, nowMonth) {
+  if (!bins) return -1;
+  let score = 0;
+  for (let i = 1; i <= 3; i++) {
+    const b = binFor(bins, ((nowMonth - 1 + i) % 12) + 1);
+    if (!b) continue;
+    score += (LABEL_RANK[b.label] ?? 0) * 100 + (b.hours_above_min || 0);
+  }
+  return score;
+}
+
 // The next quarter against this month. `kind` picks the colour class
 // (nn-trend-<kind>), `arrow` is what the compact chip shows, `text` is the
 // full wording for the detail panel.
