@@ -51,6 +51,12 @@
       <span id="skyCaptionText"></span>
       <button type="button" id="skyMore" class="link-btn sky-more" title="Search and browse every survey Aladin can show. Picking one there replaces the sky.">More surveys</button>
     </div>
+
+    <!-- Filled by loadTsSyncBanner() in app.js from the nina-ts-sync
+         extension's /api/ext/nina-ts-sync/import/uploads/pending route.
+         Hidden by default: stays that way when the extension isn't
+         loaded, the route 404s, or there's nothing pending. -->
+    <div id="tsSyncBanner" class="ts-sync-banner" role="status" aria-live="polite" hidden></div>
   </header>
 
   <main class="layout">
