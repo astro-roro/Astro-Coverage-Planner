@@ -12,11 +12,42 @@
 // "and N more" so a busy install can't push the banner into a wall of text.
 const MAX_LINES = 3;
 
-// One upload -> its banner line text (no HTML, no link).
-export function describeUpload(upload) {
+function startOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+// Pinned rather than left to the browser/runner's default locale, so the
+// wording is the same on Rohan's machine and on a CI runner regardless of
+// what locale each defaults to. See PR #100 CI failure: the GitHub
+// runner's default locale (en-US) formatted the date as "Sep 30" where
+// this repo's tests, and Rohan, expect "30 Sept".
+const LOCALE = "en-AU";
+
+// "3:40 pm today" / "3:40 pm tomorrow" / "3:40 pm on Mon 12 Oct", or null
+// for an unparseable timestamp. `now` is injectable so tests are not tied
+// to the clock.
+export function formatExpiry(iso, now = new Date()) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const time = d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  const dayDiff = Math.round((startOfDay(d) - startOfDay(now)) / 86400000);
+  if (dayDiff === 0) return `${time} today`;
+  if (dayDiff === 1) return `${time} tomorrow`;
+  const date = d.toLocaleDateString(LOCALE, { weekday: "short", day: "numeric", month: "short" });
+  return `${time} on ${date}`;
+}
+
+// One upload -> its banner line text (no HTML, no link). `now` is
+// injectable for tests; the caller never needs to pass it.
+export function describeUpload(upload, now = new Date()) {
   const machine = (upload && upload.machine) || "A NINA machine";
+  const expiry = upload && upload.expires_iso ? formatExpiry(upload.expires_iso, now) : null;
+  // Absent before the extension update starts sending expires_iso, so
+  // this is a no-op until that lands.
+  const expiryText = expiry ? ` Expires ${expiry}.` : "";
   if (upload && upload.state === "checking") {
-    return `${machine} sent TS changes. ACP is still reading them.`;
+    return `${machine} sent TS changes. ACP is still reading them.${expiryText}`;
   }
   const counts = (upload && upload.counts) || {};
   const parts = [];
@@ -24,18 +55,18 @@ export function describeUpload(upload) {
   if (counts.updated) parts.push(`${counts.updated} updated`);
   if (counts.conflicts) parts.push(`${counts.conflicts} need a choice`);
   const detail = parts.length ? `: ${parts.join(", ")}.` : ".";
-  return `${machine} sent TS changes to review${detail}`;
+  return `${machine} sent TS changes to review${detail}${expiryText}`;
 }
 
 // uploads[] (already filtered to checking/ready by the server, newest
 // first) -> { lines: [{text, url}], more: <count beyond MAX_LINES> }.
 // `url` is the review link for a ready upload, null for one still
-// checking (there's nothing to review yet).
-export function summariseUploads(uploads) {
+// checking (there's nothing to review yet). `now` is injectable for tests.
+export function summariseUploads(uploads, now = new Date()) {
   const list = Array.isArray(uploads) ? uploads : [];
   const shown = list.slice(0, MAX_LINES);
   const lines = shown.map(u => ({
-    text: describeUpload(u),
+    text: describeUpload(u, now),
     url: u && u.state === "ready" ? (u.review_url || null) : null,
   }));
   return { lines, more: Math.max(0, list.length - shown.length) };
