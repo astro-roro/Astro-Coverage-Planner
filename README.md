@@ -2,7 +2,7 @@
 
 **See what you've already imaged. Plan what's next. Hand it to NINA.**
 
-https://github.com/user-attachments/assets/b5051d71-84d9-4fcb-97a4-4a469166d09c
+https://github.com/user-attachments/assets/40cbe54b-40c5-47ed-baac-2224e370d5b9
 
 It's your astrophotography catalogue, visualised. ACP reads your entire FITS library and draws every field you've ever shot onto one sky map — coloured by telescope, badged by filter, with integration hours on every target. Useful from your first handful of targets and only gets more valuable as your library grows, especially if you're shooting narrowband or multi-night projects and want to see at a glance which targets are finished, which still owe you an OIII pass, and where your different rigs overlap. Plan your next session, next month, or next whole *year* in the same view — and export it straight to NINA Target Scheduler.
 

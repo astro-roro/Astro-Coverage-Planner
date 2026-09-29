@@ -30,13 +30,13 @@ End-to-end planning demo: Planning tab → + New plan → click sky → pick tel
 
 ### Hero video — hosted on GitHub's user-attachments CDN
 
-Top of README. ~15s screen capture of dragging and zooming around the all-sky map with FOV polygons covering the southern Milky Way. Mellinger optical background. Captured at 3831×1690 as a 398MB GIF, then re-encoded to H.264 MP4 (1600px wide, CRF 27, yuv420p, faststart) at **3.7MB**.
+Top of README. A 60 second captioned reel, replaced on 29 September 2026: the whole library on one sky, a search, the filter dots, the survey backgrounds, a mosaic plan built on the Gum Nebula, the NINA plugin and an end card. It was built in Remotion from frame-by-frame captures of a throwaway ACP instance with demo plans and vivid telescope colours. The project, capture scripts and storyboard live in the separate `astro-videos` repo (`src/acp-hero/`, `scripts/acp-capture/`). Music is "Space Ambient" by Monume under the Pixabay Content License, which needs no attribution. The upload is a two-pass H.264 encode at 1600 px wide with AAC audio and faststart, **8.9 MB**, kept under GitHub's 10 MB attachment limit.
 
 **Hosting**: rather than committing the MP4 into the repo (which kept hitting GitHub's ~5MB inline video render threshold), the file lives on GitHub's user-attachments CDN at:
 
-    https://github.com/user-attachments/assets/b5051d71-84d9-4fcb-97a4-4a469166d09c
+    https://github.com/user-attachments/assets/40cbe54b-40c5-47ed-baac-2224e370d5b9
 
-The README's `<video>` tag points at that URL, with the static `hero-coverage-map.png` as the `poster` fallback. This pattern keeps the repo lightweight and lets us use higher-quality video without bumping into GitHub's blob-viewer limits.
+The README puts that URL on a line of its own, which GitHub renders as an inline player. `hero-coverage-map.png` is no longer referenced by the README. This pattern keeps the repo lightweight and lets us use higher-quality video without bumping into GitHub's blob-viewer limits.
 
 **To replace the hero video later**: re-encode locally, then drag the new .mp4 into a fresh GitHub issue body (don't submit the issue), copy the resulting URL, and swap it in the README and in this doc. Delete the old asset URL from a prior issue/comment if you want to free CDN storage (otherwise it persists indefinitely).
 
