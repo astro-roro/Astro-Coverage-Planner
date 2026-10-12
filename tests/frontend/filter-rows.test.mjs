@@ -185,7 +185,7 @@ describe("U9: the grid at 380 px and 300 px", () => {
   it("keeps the progress block out of the remove button's column", () => {
     assert.match(css, /\.fr-progress \{ grid-column: 3; grid-row: 2; \}/);
     assert.match(css, /\.fr-remove \{ grid-column: 4; grid-row: 1;/);
-    assert.match(css, /\.fr-pos \{ grid-column: 1; grid-row: 1 \/ span 2;/);
+    assert.match(css, /\.fr-handle \{ grid-column: 1; grid-row: 1 \/ span 2;/);
   });
   it("carries the full name on the select and the long template in its option", () => {
     const html = cardHtml(long, 0, { camera: CAMERA, templates: [] });
