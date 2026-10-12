@@ -49,6 +49,15 @@ def _plan(goals, plan_id="p1"):
     }
 
 
+def _row(plan, filt, template=None):
+    """The stored row for *filt* (and *template*), after the filter row
+    migration has turned the fixture's goals into rows."""
+    hits = [r for r in plan["filter_rows"]
+            if r["filter"] == filt and (template is None or r["template"] == template)]
+    assert len(hits) == 1, hits
+    return hits[0]
+
+
 class TestProgressUpdates(unittest.TestCase):
     def setUp(self):
         _redirect_state()
@@ -67,7 +76,7 @@ class TestProgressUpdates(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         body = r.get_json()
         self.assertEqual(body["updated"], {"Ha": 2.5})
-        self.assertEqual(body["plan"]["filter_goals"]["Ha"]["actual_hours"], 2.5)
+        self.assertEqual(_row(body["plan"], "Ha")["actual_hours"], 2.5)
         # The updated plan comes back, and the write landed.
         stored = self.client.get("/api/plans/p1").get_json()
         self.assertEqual(stored["filter_goals"]["Ha"]["actual_hours"], 2.5)
@@ -87,7 +96,7 @@ class TestProgressUpdates(unittest.TestCase):
         body = self._post({"filters": {"Ha": {"acquired_hours": 0.25}}}).get_json()
         self.assertEqual(body["updated"], {})
         self.assertEqual(body["not_lowered"], ["Ha"])
-        self.assertEqual(body["plan"]["filter_goals"]["Ha"]["actual_hours"], 1.0)
+        self.assertEqual(_row(body["plan"], "Ha")["actual_hours"], 1.0)
         self.assertEqual(
             self.client.get("/api/plans/p1").get_json()["updated_at"],
             "2020-01-01T00:00:00+00:00")
@@ -111,7 +120,7 @@ class TestProgressUpdates(unittest.TestCase):
                                        "SII": {"acquired_hours": 4.0}}}).get_json()
         self.assertEqual(body["unknown_filters"], ["SII"])
         self.assertEqual(body["updated"], {"Ha": 2.0})
-        self.assertNotIn("SII", body["plan"]["filter_goals"])
+        self.assertNotIn("SII", [r["filter"] for r in body["plan"]["filter_rows"]])
 
     def test_branded_filter_name_matches_the_plan_goal(self):
         body = self._post({"filters": {"Antlia Ha": {"acquired_hours": 2.0}}}).get_json()
@@ -129,12 +138,72 @@ class TestProgressUpdates(unittest.TestCase):
         derives the count from hours and sub exposure."""
         body = self._post({"filters": {"Ha": {"acquired_hours": 2.0,
                                               "acquired_count": 24}}}).get_json()
-        self.assertNotIn("actual_count", body["plan"]["filter_goals"]["Ha"])
-        self.assertNotIn("acquired_count", body["plan"]["filter_goals"]["Ha"])
+        self.assertNotIn("actual_count", _row(body["plan"], "Ha"))
+        self.assertNotIn("acquired_count", _row(body["plan"], "Ha"))
 
     def test_unknown_plan_is_404(self):
         self.assertEqual(
             self._post({"filters": {"Ha": {"acquired_hours": 1.0}}}, "nope").status_code, 404)
+
+
+class TestProgressPerRow(unittest.TestCase):
+    """docs/specs/goal-panel-and-ts-order.md section 3, "Progress from the
+    plugin", and tests S6 and S7: R and R Stars are two rows of one filter."""
+
+    def setUp(self):
+        _redirect_state()
+        self.client = app.test_client()
+
+    def _rows_plan(self, rows, plan_id="p1"):
+        plan = _plan({}, plan_id)
+        plan.pop("filter_goals")
+        plan["filter_rows"] = rows
+        return plan
+
+    def _post(self, body, plan_id="p1"):
+        return self.client.post(f"/api/plans/{plan_id}/progress", json=body)
+
+    R = {"id": "row-r", "filter": "R", "template": "R", "template_sub_s": 120,
+         "unit": "h", "target_hours": 2.0}
+    R_STARS = {"id": "row-rs", "filter": "R", "template": "R Stars", "template_sub_s": 15,
+               "unit": "fr", "target_frames": 20}
+
+    def test_s6_each_entry_lands_on_its_own_row(self):
+        _write_plans([self._rows_plan([dict(self.R), dict(self.R_STARS)])])
+        body = self._post({"entries": [
+            {"filter": "R", "template": "R", "acquired_hours": 0.3333, "acquired_count": 10},
+            {"filter": "R", "template": "R Stars", "acquired_hours": 0.0417, "acquired_count": 10},
+        ], "filters": {"R": {"acquired_hours": 0.375}}}).get_json()
+        self.assertEqual(body["updated"], {"R": 0.3333, "R Stars": 0.0417})
+        stored = self.client.get("/api/plans/p1").get_json()
+        self.assertEqual(_row(stored, "R", "R")["actual_hours"], 0.3333)
+        self.assertEqual(_row(stored, "R", "R Stars")["actual_hours"], 0.0417)
+
+    def test_entry_for_a_template_the_plan_lacks_is_unknown(self):
+        _write_plans([self._rows_plan([dict(self.R)])])
+        body = self._post({"entries": [
+            {"filter": "R", "template": "R Stars", "acquired_hours": 0.1}]}).get_json()
+        self.assertEqual(body["updated"], {})
+        self.assertEqual(body["unknown_filters"], ["R (R Stars)"])
+
+    def test_s7_no_template_matches_the_only_row_of_the_filter(self):
+        _write_plans([self._rows_plan([dict(self.R)])])
+        body = self._post({"filters": {"R": {"acquired_hours": 0.5}}}).get_json()
+        self.assertEqual(body["updated"], {"R": 0.5})
+        self.assertEqual(_row(body["plan"], "R")["actual_hours"], 0.5)
+
+    def test_s7_no_template_with_two_rows_of_the_filter_is_unknown(self):
+        _write_plans([self._rows_plan([dict(self.R), dict(self.R_STARS)])])
+        body = self._post({"filters": {"R": {"acquired_hours": 0.5}}}).get_json()
+        self.assertEqual(body["updated"], {})
+        self.assertEqual(body["unknown_filters"], ["R"])
+        self.assertNotIn("actual_hours", _row(body["plan"], "R", "R"))
+
+    def test_entries_are_validated(self):
+        _write_plans([self._rows_plan([dict(self.R)])])
+        self.assertEqual(self._post({"entries": []}).status_code, 400)
+        self.assertEqual(self._post({"entries": [{"template": "R", "acquired_hours": 1}]}).status_code, 400)
+        self.assertEqual(self._post({"entries": [{"filter": "R", "acquired_hours": -1}]}).status_code, 400)
 
 
 class TestProgressValidation(unittest.TestCase):
