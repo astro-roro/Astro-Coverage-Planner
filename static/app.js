@@ -13,6 +13,10 @@ function esc(s) {
     .replace(/'/g, "&#39;");
 }
 
+// Placeholder shown where a value is missing. This is data, not prose: it is an
+// en dash (U+2013) on purpose, so do not "tidy" it into a comma or a hyphen.
+const EMPTY_CELL = "–";
+
 const FILTER_COLORS = {
   Ha:   "#ff4d4d",
   SII:  "#ffd84d",
@@ -1204,14 +1208,14 @@ function renderTargetPanel(t) {
       <td><span class="filter-pill ${pillClass(f)}">${esc(f)}</span>${viaText(f, d)}</td>
       <td class="num">${(d.total_hours || 0).toFixed(2)}h</td>
       <td class="num">${d.files || 0}</td>
-      <td class="num">${d.db_sub_hours ? (d.db_sub_hours).toFixed(1) + "h" : ", "}</td>
+      <td class="num">${d.db_sub_hours ? (d.db_sub_hours).toFixed(1) + "h" : EMPTY_CELL}</td>
     </tr>`).join("");
 
-  const telescopes = esc((t.telescopes || []).join(", ") || ", ");
-  const cameras = esc((t.cameras || []).join(", ") || ", ");
+  const telescopes = esc((t.telescopes || []).join(", ") || EMPTY_CELL);
+  const cameras = esc((t.cameras || []).join(", ") || EMPTY_CELL);
   const objs = esc((t.objects && t.objects.length) ? t.objects.join(" / ") : "(no OBJECT tag)");
-  const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : ", ";
-  const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : ", ";
+  const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : EMPTY_CELL;
+  const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : EMPTY_CELL;
   // Manifests built before rotation was recorded carry no angle: say nothing
   // rather than claim north up.
   const shotAngle = Number.isFinite(t.rotation_deg) && t.rotation_source && t.rotation_source !== "none"
@@ -1279,7 +1283,7 @@ function renderTargetPanel(t) {
       <table>
         <tr><td>RA / Dec</td><td class="num">${t.center_ra_deg.toFixed(3)}° / ${t.center_dec_deg.toFixed(3)}°</td></tr>
         <tr><td>l / b</td><td class="num">${t.center_l_deg.toFixed(2)}° / ${t.center_b_deg.toFixed(2)}°</td></tr>
-        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : ', '}${shotAngle}</td></tr>
+        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : EMPTY_CELL}${shotAngle}</td></tr>
         <tr><td>Telescope</td><td class="num">${telescopes}</td></tr>
         <tr><td>Camera</td><td class="num">${cameras}</td></tr>
         <tr><td>Date range</td><td class="num">${dateRange}</td></tr>
@@ -3593,8 +3597,8 @@ function wireBidiInteractions(root, decisions, newImports, onChange) {
 //                              "what we'll change it TO, sourced from TS"
 function renderChangeDirectional(c, dir) {
   const u = c.unit ? esc(c.unit) : "";
-  const fromV = c.from === null || c.from === undefined ? ", " : `${esc(formatValue(c.from))}${u}`;
-  const toV   = c.to   === null || c.to   === undefined ? ", " : `${esc(formatValue(c.to))}${u}`;
+  const fromV = c.from === null || c.from === undefined ? EMPTY_CELL : `${esc(formatValue(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? EMPTY_CELL : `${esc(formatValue(c.to))}${u}`;
   if (dir === "in") {
     return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-to">${toV}</span> <span class="ext-diff-arrow ext-diff-arrow-in">←</span> <span class="ext-diff-from">${fromV}</span></div>`;
   }
@@ -3627,7 +3631,7 @@ function humanFieldLabel(path) {
 }
 
 function formatValue(v) {
-  if (v === null || v === undefined) return ", ";
+  if (v === null || v === undefined) return EMPTY_CELL;
   if (typeof v === "number") {
     return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
   }
@@ -3775,8 +3779,8 @@ function renderDiffReport(preview, opts = {}) {
 
 function renderChange(c) {
   const u = c.unit ? esc(c.unit) : "";
-  const fromV = c.from === null || c.from === undefined ? ", " : `${esc(String(c.from))}${u}`;
-  const toV   = c.to   === null || c.to   === undefined ? ", " : `${esc(String(c.to))}${u}`;
+  const fromV = c.from === null || c.from === undefined ? EMPTY_CELL : `${esc(String(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? EMPTY_CELL : `${esc(String(c.to))}${u}`;
   return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-from">${fromV}</span> <span class="ext-diff-arrow">→</span> <span class="ext-diff-to">${toV}</span></div>`;
 }
 
@@ -4648,7 +4652,7 @@ function _tilePassesFilters(tile, st, getPlanInfo) {
 
 function _tileTooltip(tile) {
   const parts = [tile.id ? `Tile ${tile.id}` : null,
-                 `Priority ${tile.priority_level ?? ", "}`];
+                 `Priority ${tile.priority_level ?? EMPTY_CELL}`];
   if (tile.score != null) parts.push(`Score ${tile.score}`);
   const pb = tile.per_band || {};
   const missing = Object.keys(pb).filter(k => !pb[k]?.covered);
@@ -4739,13 +4743,13 @@ function renderTilePanel(tile, sourceId) {
 
   const fov = Array.isArray(tile.fov_arcmin) && tile.fov_arcmin.length === 2
     ? `${Number(tile.fov_arcmin[0]).toFixed(1)}' × ${Number(tile.fov_arcmin[1]).toFixed(1)}'`
-    : ", ";
+    : EMPTY_CELL;
 
   // Per-band coverage table, band, covered marker, source label, hours if present.
   const pb = tile.per_band || {};
   const bandRows = Object.entries(pb).map(([band, info]) => {
     const cov = info?.covered;
-    const mark = cov ? "<span style='color:#6fcc52'>✓</span>" : "<span style='color:#888'>, </span>";
+    const mark = cov ? "<span style='color:#6fcc52'>✓</span>" : "<span style='color:#888'>" + EMPTY_CELL + "</span>";
     const src = info?.source ? esc(info.source) : "<span style='color:#666'>none</span>";
     const hrs = (info && typeof info.hours === "number") ? `${info.hours.toFixed(1)}h` : "";
     return `<tr><td>${esc(band)}</td><td>${mark}</td><td class="num">${src}</td><td class="num">${esc(hrs)}</td></tr>`;
@@ -4806,7 +4810,7 @@ function renderTilePanel(tile, sourceId) {
       <table>
         <tr><td>RA / Dec</td><td class="num">${Number(tile.ra_deg).toFixed(3)}° / ${Number(tile.dec_deg).toFixed(3)}°</td></tr>
         <tr><td>FOV</td><td class="num">${fov}</td></tr>
-        <tr><td>Priority</td><td class="num">P${tile.priority_level ?? ", "}</td></tr>
+        <tr><td>Priority</td><td class="num">P${tile.priority_level ?? EMPTY_CELL}</td></tr>
         ${tile.score != null ? `<tr><td>Score</td><td class="num">${tile.score}</td></tr>` : ""}
       </table>
 
@@ -5571,7 +5575,7 @@ function bestBinFor(bins) {
 function _cellTooltip(b) {
   // 3-line tooltip, \n renders as a real linebreak in browser title tooltips.
   const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
-  const peak = b.peak_alt_deg == null ? ", " : `${b.peak_alt_deg}°`;
+  const peak = b.peak_alt_deg == null ? EMPTY_CELL : `${b.peak_alt_deg}°`;
   return `${_MONTH_LABELS[b.month-1]}: ${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}\nAbove ${minAlt}°: ${b.hours_above_min}h`;
 }
 
@@ -5598,7 +5602,7 @@ function nowChipHtml(targetId) {
   if (!b) return "";
   const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
   const labelTxt = prettyLabelShort(b.label, b.peak_alt_deg);
-  const peak = b.peak_alt_deg == null ? ", " : `${b.peak_alt_deg}°`;
+  const peak = b.peak_alt_deg == null ? EMPTY_CELL : `${b.peak_alt_deg}°`;
   const tip = `Current month, ${_MONTH_LABELS[nowMonth-1]}\n${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}, ${b.hours_above_min}h above ${minAlt}°`;
   return `<span class="nn-chip nn-${b.label}" title="${tip}"><span class="nn-prefix">Now</span> ${esc(labelTxt)}</span>`;
 }
