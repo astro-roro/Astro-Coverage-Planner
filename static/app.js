@@ -13,6 +13,10 @@ function esc(s) {
     .replace(/'/g, "&#39;");
 }
 
+// Placeholder shown where a value is missing. This is data, not prose: it is an
+// en dash (U+2013) on purpose, so do not "tidy" it into a comma or a hyphen.
+const EMPTY_CELL = "–";
+
 const FILTER_COLORS = {
   Ha:   "#ff4d4d",
   SII:  "#ffd84d",
@@ -122,13 +126,14 @@ let _pressInfo = null;        // {x, y, t, dragged}, last mousedown over the map
 
 // --- Planner mode globals ---
 let planningMode = false;      // false = Coverage mode, true = Planning mode
-let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_goals, priority, ...}]
+let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_rows, priority, ...}]
 let gear = { telescopes: [], cameras: [] };  // /api/gear response (v2)
 let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on the server
 let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
-let editingPlanOriginalSettings = null; // {state, priority, minimum_time_min} as loaded, so savePlan() knows whether to also hit the project settings route
+let editingPlanOriginalSettings = null; // {state, priority, minimum_time_min, filter_switch_frequency, smart_exposure_order} as loaded, so savePlan() knows whether to also hit the project settings route
+let editingRotateN = ROTATE_DEFAULT;   // N shown beside "Rotate every" while the switch is on "Finish each"
 let planOverlay = null;        // Aladin overlay for plan footprints (solid, plans with data)
 let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed, not-started plans)
 let planCenterCat = null;      // Aladin catalog for plan center + rotation handle markers
@@ -619,6 +624,7 @@ import {
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
+import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
   LABEL_PRETTY as _LABEL_PRETTY,
   LABEL_RANK as _LABEL_RANK,
@@ -667,6 +673,28 @@ import {
   stateCounts,
   stateMixText,
 } from "./plan-list.mjs";
+import {
+  cardHtml,
+  SIDE_PANEL_DEFAULT_W,
+  NEW_TEMPLATE_VALUE,
+  filterListHtml,
+  hoursByFilter,
+  newFilterRow,
+  orderExplanation,
+  moveRow,
+  dropTarget,
+  keyMoveTarget,
+  dropLineHtml,
+  clampRotate,
+  ROTATE_DEFAULT,
+  rowDiffLabel,
+  setRowGoal,
+  setRowTemplate,
+  setRowUnit,
+  templateSub,
+  templatesForFilter,
+  usualTemplate,
+} from "./filter-rows.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -894,7 +922,7 @@ function isTargetFinished(t) {
 }
 
 function planGoalsMet(plan) {
-  const goals = plan?.filter_goals || {};
+  const goals = hoursByFilter(plan);
   const filterNames = Object.keys(goals);
   if (filterNames.length === 0) return false;
   const target = manifest?.targets?.find(x => String(x.target_id) === String(plan.target?.target_id));
@@ -925,7 +953,8 @@ function planIsDirty() {
   if (!editingPlan) return false;
   const orig = plans.find(p => p.id === editingPlan.id);
   if (!orig) return true; // detached, treat as dirty so we don't silently lose work
-  return JSON.stringify(editingPlan) !== JSON.stringify(orig);
+  const { filter_goals: _legacy, ...origRest } = orig;
+  return JSON.stringify(editingPlan) !== JSON.stringify(origRest);
 }
 
 // Pre-flight for any "leave plan-edit" navigation. If the user has unsaved
@@ -1204,14 +1233,14 @@ function renderTargetPanel(t) {
       <td><span class="filter-pill ${pillClass(f)}">${esc(f)}</span>${viaText(f, d)}</td>
       <td class="num">${(d.total_hours || 0).toFixed(2)}h</td>
       <td class="num">${d.files || 0}</td>
-      <td class="num">${d.db_sub_hours ? (d.db_sub_hours).toFixed(1) + "h" : ", "}</td>
+      <td class="num">${d.db_sub_hours ? (d.db_sub_hours).toFixed(1) + "h" : EMPTY_CELL}</td>
     </tr>`).join("");
 
-  const telescopes = esc((t.telescopes || []).join(", ") || ", ");
-  const cameras = esc((t.cameras || []).join(", ") || ", ");
+  const telescopes = esc((t.telescopes || []).join(", ") || EMPTY_CELL);
+  const cameras = esc((t.cameras || []).join(", ") || EMPTY_CELL);
   const objs = esc((t.objects && t.objects.length) ? t.objects.join(" / ") : "(no OBJECT tag)");
-  const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : ", ";
-  const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : ", ";
+  const dateRange = t.date_range ? `${esc(t.date_range[0])} → ${esc(t.date_range[1])}` : EMPTY_CELL;
+  const fov = t.fov_arcmin ? `${t.fov_arcmin[0].toFixed(1)}' × ${t.fov_arcmin[1].toFixed(1)}'` : EMPTY_CELL;
   // Manifests built before rotation was recorded carry no angle: say nothing
   // rather than claim north up.
   const shotAngle = Number.isFinite(t.rotation_deg) && t.rotation_source && t.rotation_source !== "none"
@@ -1279,7 +1308,7 @@ function renderTargetPanel(t) {
       <table>
         <tr><td>RA / Dec</td><td class="num">${t.center_ra_deg.toFixed(3)}° / ${t.center_dec_deg.toFixed(3)}°</td></tr>
         <tr><td>l / b</td><td class="num">${t.center_l_deg.toFixed(2)}° / ${t.center_b_deg.toFixed(2)}°</td></tr>
-        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : ', '}${shotAngle}</td></tr>
+        <tr><td>FOV</td><td class="num">${fov} @ ${t.pix_arcsec ? t.pix_arcsec.toFixed(2) + '"/px' : EMPTY_CELL}${shotAngle}</td></tr>
         <tr><td>Telescope</td><td class="num">${telescopes}</td></tr>
         <tr><td>Camera</td><td class="num">${cameras}</td></tr>
         <tr><td>Date range</td><td class="num">${dateRange}</td></tr>
@@ -1611,7 +1640,7 @@ function setHoverHit(hit) {
     } else if (hit?.plan) {
       const pl = hit.plan;
       const panels = (planPanelCorners(pl) || []).length;
-      const goals = Object.keys(pl.filter_goals || {}).join("/");
+      const goals = [...new Set((pl.filter_rows || []).map(r => r.filter))].join("/");
       const mosaicBit = panels > 1 ? ` · ${panels}-panel mosaic` : "";
       tip.textContent = `${pl.target?.name || pl.id}${pl.project_name ? ` · ${pl.project_name}` : ""}${goals ? ` · ${goals}` : ""}${mosaicBit}`;
     } else {
@@ -3472,7 +3501,7 @@ function renderIncomingAutoPull(autoPullDiffs, decisions) {
   return autoPullDiffs.map(d => {
     const pid = d.plan_id;
     const fields = (d.auto_pull || []).map(path => ({
-      label: humanFieldLabel(path),
+      label: humanFieldLabel(path, plans.find(p => p.id === pid)),
       from: d.local && d.local[path],
       to: d.remote && d.remote[path],
     }));
@@ -3505,7 +3534,7 @@ function renderConflictCards(conflicts, decisions) {
     const decision = decisions.get(pid) || "skip";
     const fieldRows = (d.conflict || []).map(path => `
       <div class="ext-conflict-field">
-        <span class="ext-diff-label">${esc(humanFieldLabel(path))}</span>
+        <span class="ext-diff-label">${esc(humanFieldLabel(path, plans.find(p => p.id === pid)))}</span>
         <span class="ext-conflict-acp">ACP: ${esc(formatValue(d.local && d.local[path]))}</span>
         <span class="ext-conflict-ts">TS: ${esc(formatValue(d.remote && d.remote[path]))}</span>
       </div>
@@ -3593,8 +3622,8 @@ function wireBidiInteractions(root, decisions, newImports, onChange) {
 //                              "what we'll change it TO, sourced from TS"
 function renderChangeDirectional(c, dir) {
   const u = c.unit ? esc(c.unit) : "";
-  const fromV = c.from === null || c.from === undefined ? ", " : `${esc(formatValue(c.from))}${u}`;
-  const toV   = c.to   === null || c.to   === undefined ? ", " : `${esc(formatValue(c.to))}${u}`;
+  const fromV = c.from === null || c.from === undefined ? EMPTY_CELL : `${esc(formatValue(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? EMPTY_CELL : `${esc(formatValue(c.to))}${u}`;
   if (dir === "in") {
     return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-to">${toV}</span> <span class="ext-diff-arrow ext-diff-arrow-in">←</span> <span class="ext-diff-from">${fromV}</span></div>`;
   }
@@ -3603,7 +3632,7 @@ function renderChangeDirectional(c, dir) {
 
 // Map a dotted field path (from /import/diff) to a human label that matches
 // the wording on the outgoing side of the modal.
-function humanFieldLabel(path) {
+function humanFieldLabel(path, plan) {
   const map = {
     "priority": "priority",
     "min_altitude_deg": "min altitude",
@@ -3616,18 +3645,13 @@ function humanFieldLabel(path) {
     "target.mosaic.overlap_pct": "mosaic overlap",
   };
   if (map[path]) return map[path];
-  // filter_goals.Ha.target_hours → "Ha target hours"
-  if (path.startsWith("filter_goals.")) {
-    const parts = path.split(".");
-    const fname = parts[1] || "";
-    const sub = parts.slice(2).join(".").replace(/_/g, " ");
-    return `${fname} ${sub}`;
-  }
+  // filter_rows.<row id>.target_frames → "R Stars target frames"
+  if (path.startsWith("filter_rows.")) return rowDiffLabel(path, plan);
   return path;
 }
 
 function formatValue(v) {
-  if (v === null || v === undefined) return ", ";
+  if (v === null || v === undefined) return EMPTY_CELL;
   if (typeof v === "number") {
     return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
   }
@@ -3775,8 +3799,8 @@ function renderDiffReport(preview, opts = {}) {
 
 function renderChange(c) {
   const u = c.unit ? esc(c.unit) : "";
-  const fromV = c.from === null || c.from === undefined ? ", " : `${esc(String(c.from))}${u}`;
-  const toV   = c.to   === null || c.to   === undefined ? ", " : `${esc(String(c.to))}${u}`;
+  const fromV = c.from === null || c.from === undefined ? EMPTY_CELL : `${esc(String(c.from))}${u}`;
+  const toV   = c.to   === null || c.to   === undefined ? EMPTY_CELL : `${esc(String(c.to))}${u}`;
   return `<div class="ext-diff-change"><span class="ext-diff-label">${esc(c.label)}:</span> <span class="ext-diff-from">${fromV}</span> <span class="ext-diff-arrow">→</span> <span class="ext-diff-to">${toV}</span></div>`;
 }
 
@@ -3866,7 +3890,7 @@ async function startLiveAction(ext, action) {
       st.failures = 0;
       st.lastIso = new Date().toISOString();
       liveProgressState.set(action.id, st);
-      const updated = body.updated_filter_goals ?? body.updated ?? 0;
+      const updated = body.updated_rows ?? body.updated_filter_goals ?? body.updated ?? 0;
       setLiveStatus(statusKey, `Last refresh just now · ${updated} goal${updated === 1 ? "" : "s"} updated`, "running");
       // Server rewrote plans.json with the new actual_hours. Reload the
       // in-memory `plans` array and repaint the rail if we're on it, without
@@ -3921,22 +3945,24 @@ function stopLiveAction(actionId) {
 function updatePlanEditorActuals() {
   if (panelMode !== "plan-edit" || !editingPlan) return;
   const fresh = plans.find(p => p.id === editingPlan.id);
-  if (!fresh || !fresh.filter_goals) return;
-  for (const [fname, freshGoal] of Object.entries(fresh.filter_goals)) {
-    if (typeof freshGoal.actual_hours !== "number") continue;
-    if (editingPlan.filter_goals && editingPlan.filter_goals[fname]) {
-      editingPlan.filter_goals[fname].actual_hours = freshGoal.actual_hours;
-    }
-    const span = document.querySelector(
-      `.goal-status[data-actual-filter="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(fname) : fname}"]`
+  if (!fresh || !fresh.filter_rows) return;
+  const ctx = filterRowsContext();
+  for (const freshRow of fresh.filter_rows) {
+    const row = (editingPlan.filter_rows || []).find(r => r.id === freshRow.id);
+    if (!row) continue;
+    if (typeof freshRow.actual_hours === "number") row.actual_hours = freshRow.actual_hours;
+    if (freshRow.aac) row.aac = freshRow.aac;
+    else delete row.aac;
+    const card = document.querySelector(
+      `.fr-card[data-row-id="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(row.id) : row.id}"]`
     );
-    if (!span) continue;
-    const th = (editingPlan.filter_goals && editingPlan.filter_goals[fname]?.target_hours) || 0;
-    const ah = freshGoal.actual_hours || 0;
-    const cls = (th > 0 && ah >= th) ? "done" : (ah > 0 ? "partial" : "todo");
-    span.textContent = `${ah.toFixed(1)}h`;
-    span.className = `goal-status ${cls}`;
-    span.dataset.actualFilter = fname;
+    if (!card) continue;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = cardHtml(row, 0, ctx);
+    const next = tmp.firstElementChild;
+    card.classList.toggle("fr-done", next.classList.contains("fr-done"));
+    const prog = card.querySelector(".fr-progress");
+    if (prog) prog.innerHTML = next.querySelector(".fr-progress").innerHTML;
   }
 }
 
@@ -4535,7 +4561,7 @@ function _tileColorFor(tile, st) {
 // mosaic bounds; if the tile centre falls inside, the tile inherits the
 // plan's state. ~40 tiles × ~10 plans = 400 polygon point-tests, sub-ms.
 function _planAllGoalsMet(plan) {
-  const goals = plan?.filter_goals || {};
+  const goals = hoursByFilter(plan);
   const entries = Object.entries(goals);
   if (!entries.length) return false;     // no goals → can't be "done"
   for (const [, g] of entries) {
@@ -4648,7 +4674,7 @@ function _tilePassesFilters(tile, st, getPlanInfo) {
 
 function _tileTooltip(tile) {
   const parts = [tile.id ? `Tile ${tile.id}` : null,
-                 `Priority ${tile.priority_level ?? ", "}`];
+                 `Priority ${tile.priority_level ?? EMPTY_CELL}`];
   if (tile.score != null) parts.push(`Score ${tile.score}`);
   const pb = tile.per_band || {};
   const missing = Object.keys(pb).filter(k => !pb[k]?.covered);
@@ -4739,13 +4765,13 @@ function renderTilePanel(tile, sourceId) {
 
   const fov = Array.isArray(tile.fov_arcmin) && tile.fov_arcmin.length === 2
     ? `${Number(tile.fov_arcmin[0]).toFixed(1)}' × ${Number(tile.fov_arcmin[1]).toFixed(1)}'`
-    : ", ";
+    : EMPTY_CELL;
 
   // Per-band coverage table, band, covered marker, source label, hours if present.
   const pb = tile.per_band || {};
   const bandRows = Object.entries(pb).map(([band, info]) => {
     const cov = info?.covered;
-    const mark = cov ? "<span style='color:#6fcc52'>✓</span>" : "<span style='color:#888'>, </span>";
+    const mark = cov ? "<span style='color:#6fcc52'>✓</span>" : "<span style='color:#888'>" + EMPTY_CELL + "</span>";
     const src = info?.source ? esc(info.source) : "<span style='color:#666'>none</span>";
     const hrs = (info && typeof info.hours === "number") ? `${info.hours.toFixed(1)}h` : "";
     return `<tr><td>${esc(band)}</td><td>${mark}</td><td class="num">${src}</td><td class="num">${esc(hrs)}</td></tr>`;
@@ -4806,7 +4832,7 @@ function renderTilePanel(tile, sourceId) {
       <table>
         <tr><td>RA / Dec</td><td class="num">${Number(tile.ra_deg).toFixed(3)}° / ${Number(tile.dec_deg).toFixed(3)}°</td></tr>
         <tr><td>FOV</td><td class="num">${fov}</td></tr>
-        <tr><td>Priority</td><td class="num">P${tile.priority_level ?? ", "}</td></tr>
+        <tr><td>Priority</td><td class="num">P${tile.priority_level ?? EMPTY_CELL}</td></tr>
         ${tile.score != null ? `<tr><td>Score</td><td class="num">${tile.score}</td></tr>` : ""}
       </table>
 
@@ -5571,7 +5597,7 @@ function bestBinFor(bins) {
 function _cellTooltip(b) {
   // 3-line tooltip, \n renders as a real linebreak in browser title tooltips.
   const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
-  const peak = b.peak_alt_deg == null ? ", " : `${b.peak_alt_deg}°`;
+  const peak = b.peak_alt_deg == null ? EMPTY_CELL : `${b.peak_alt_deg}°`;
   return `${_MONTH_LABELS[b.month-1]}: ${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}\nAbove ${minAlt}°: ${b.hours_above_min}h`;
 }
 
@@ -5598,7 +5624,7 @@ function nowChipHtml(targetId) {
   if (!b) return "";
   const minAlt = visibilityData?.site?.min_alt_deg ?? 30;
   const labelTxt = prettyLabelShort(b.label, b.peak_alt_deg);
-  const peak = b.peak_alt_deg == null ? ", " : `${b.peak_alt_deg}°`;
+  const peak = b.peak_alt_deg == null ? EMPTY_CELL : `${b.peak_alt_deg}°`;
   const tip = `Current month, ${_MONTH_LABELS[nowMonth-1]}\n${prettyLabel(b.label, b.peak_alt_deg)}\nPeak: ${peak}, ${b.hours_above_min}h above ${minAlt}°`;
   return `<span class="nn-chip nn-${b.label}" title="${tip}"><span class="nn-prefix">Now</span> ${esc(labelTxt)}</span>`;
 }
@@ -5730,7 +5756,7 @@ const SIDE_PANEL_KEY = "acp.sidePanel.v1";
 const SIDE_PANEL_TABS = ["main", "filters", "library"];
 const SIDE_PANEL_MIN_W = 300;
 const SIDE_PANEL_MAX_W = 760;
-const sidePanelState = { open: true, tab: "main", width: 380 };
+const sidePanelState = { open: true, tab: "main", width: SIDE_PANEL_DEFAULT_W };
 
 function loadSidePanelState() {
   try {
@@ -6384,8 +6410,7 @@ function planCamera(plan) {
 
 // True if the plan has any logged actual hours on any filter.
 function planHasData(plan) {
-  const goals = plan?.filter_goals || {};
-  for (const g of Object.values(goals)) {
+  for (const g of plan?.filter_rows || []) {
     if ((Number(g?.actual_hours) || 0) > 0) return true;
   }
   return false;
@@ -6536,7 +6561,7 @@ function newEmptyPlan() {
     },
     telescope_id: tel?.id || "",
     camera_id: cam?.id || "",
-    filter_goals: {},
+    filter_rows: [],
     priority: "normal",
     min_altitude_deg: 30,
     meridian_window_min: 0,
@@ -6593,7 +6618,7 @@ function planRowHtml(pl, { withProject = true } = {}) {
   const name = esc(pl.target?.name || pl.id);
   const proj = esc(pl.project_name || "(no project)");
   const pri = pl.priority || "normal";
-  const goals = pl.filter_goals || {};
+  const goals = hoursByFilter(pl);
   const dots = FILTER_DOT_ORDER.map(f => {
     const g = goals[f];
     const color = FILTER_COLORS[f] || "#888";
@@ -6880,78 +6905,211 @@ function renderPlanListItems() {
   list.innerHTML = html;
 }
 
-// Build the list of TS-template <option> tags for a filter row.
-//
-// Returns the inner HTML for a <select>, OR null when no template UI should
-// render at all (e.g. /api/ts-templates wasn't available, caller falls
-// back to an em-dash).
-//
-// Filtering steps:
-//   1. By filter name (case-insensitive).
-//   2. Then by selected camera, using a normalised-name "contains" check so
-//      a template called "Ha (ZWO ASI6200MM Pro)" matches a gear camera
-//      named "ZWO ASI6200MM Pro". If the camera-narrow returns empty, we
-//      fall back to filter-only, better to show something than nothing.
-//
-// Option labels: when multiple templates remain, we show only the *varying*
-// fields (gain / sub-exposure / offset / bin) instead of the full template
-// name, so the user sees the meaningful axis of choice (e.g. "100s" / "300s"
-// when only exposure differs, or "gain 0" / "gain 100" when only gain
-// differs). When a single template remains we just show its name.
-//
-// Single-match behaviour: the lone option is rendered as `selected` so the
-// auto-persist hook in renderPlanEditor picks it up, user doesn't have to
-// open the dropdown to confirm.
-function buildTsTemplateOptions(filterName, cameraObj, filtCfg) {
-  if (!tsTemplates || !tsTemplates.available) return null;
-  let matching = (tsTemplates.templates || []).filter(
-    t => (t.filter || "").toLowerCase() === filterName.toLowerCase(),
-  );
-  if (matching.length === 0) {
-    return `<option value="">(no ${esc(filterName)} template)</option>`;
-  }
-  if (cameraObj && cameraObj.name && matching.length > 1) {
-    const camNorm = _normalizeForMatch(cameraObj.name);
-    const narrowed = matching.filter(t => _normalizeForMatch(t.name).includes(camNorm));
-    if (narrowed.length) matching = narrowed;
-  }
-  const diffs = _differingTemplateFields(matching);
-  // Allow clearing an existing pick when the user wants to fall back to ACP's
-  // own derivation. Only show "(none)" when something is currently stored , 
-  // for fresh plans we don't want the empty choice cluttering the dropdown.
-  const opts = [];
-  if (filtCfg && filtCfg.ts_template_id) {
-    opts.push(`<option value="">(none)</option>`);
-  }
-  opts.push(...matching.map((t, i) => {
-    const label = diffs.length ? _templateOptionLabel(t, diffs) : t.name;
-    const stored = filtCfg && String(filtCfg.ts_template_id || "") === String(t.id);
-    // Auto-default the lone option when nothing's stored yet so the
-    // post-render auto-persist hook fires for it.
-    const autoDefault = matching.length === 1 && !(filtCfg && filtCfg.ts_template_id);
-    const selected = stored || autoDefault ? "selected" : "";
-    return `<option value="${esc(t.id)}" ${selected}>${esc(label)}</option>`;
-  }));
-  return opts.join("");
+// What the filter-row cards need to draw: the plan's camera, the TS template
+// list (empty when none has loaded), the dot colours, and for the controls
+// above the list the N to offer for "Rotate every" and the project note.
+function filterRowsContext() {
+  return {
+    camera: editingPlan ? planCamera(editingPlan) : null,
+    templates: tsTemplates && tsTemplates.available ? (tsTemplates.templates || []) : [],
+    colors: FILTER_COLORS,
+    rotateN: editingRotateN,
+    projectNote: orderProjectNote(editingPlan),
+  };
 }
 
-function _normalizeForMatch(s) {
-  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+// Switching and smart order belong to the TS project, like state and
+// priority, so a plan sharing its project says so (goal-panel-and-ts-order.md
+// section 4).
+function orderProjectNote(plan) {
+  if (!plan || !plan.project_name) return "";
+  const mates = plans.filter(p => p.id !== plan.id && p.project_name === plan.project_name).length;
+  return mates > 0
+    ? `Filter switching and smart order apply to all ${mates + 1} plans in project ${plan.project_name}.`
+    : "";
 }
 
-function _differingTemplateFields(templates) {
-  // Order matters, exposure first is what users notice; gain/offset/bin
-  // tail off in significance. We list the differing ones in that order so
-  // the option label reads naturally.
-  const fields = ["default_exposure_s", "gain", "offset", "bin"];
-  return fields.filter(f => new Set(templates.map(t => t[f])).size > 1);
+// The project settings as loaded or saved, so savePlan() can tell whether
+// any changed. The two order settings stay as stored: absent means unknown,
+// and only a change in the editor gives them a value.
+function originalSettingsOf(plan) {
+  return {
+    state: plan.state || "active",
+    priority: plan.priority || "normal",
+    minimum_time_min: plan.minimum_time_min ?? 0,
+    filter_switch_frequency: plan.filter_switch_frequency,
+    smart_exposure_order: plan.smart_exposure_order,
+  };
 }
 
-function _templateOptionLabel(template, diffs) {
-  return diffs.map(f => {
-    if (f === "default_exposure_s") return `${template[f]}s`;
-    return `${f.replace(/_/g, " ")} ${template[f]}`;
-  }).join(" · ");
+// Redraw the card list after a structural change (add, remove, filter or
+// template or unit change). Goal typing only touches the row's own card.
+function redrawFilterRows(panel) {
+  const host = panel.querySelector("#filterRows");
+  if (host) host.innerHTML = filterListHtml(editingPlan, filterRowsContext());
+}
+
+function wireFilterRows(panel) {
+  const host = panel.querySelector("#filterRows");
+  if (!host) return;
+  const rowOf = el => {
+    const id = el.closest(".fr-card")?.dataset.rowId;
+    return (editingPlan.filter_rows || []).find(r => r.id === id);
+  };
+  host.addEventListener("click", e => {
+    if (e.target.closest(".fr-add")) {
+      editingPlan.filter_rows.push(newFilterRow({
+        rows: editingPlan.filter_rows,
+        camera: planCamera(editingPlan),
+        templates: filterRowsContext().templates,
+        id: crypto.randomUUID(),
+      }));
+      redrawFilterRows(panel);
+      return;
+    }
+    if (e.target.closest(".fr-remove")) {
+      const row = rowOf(e.target);
+      if (!row) return;
+      editingPlan.filter_rows = editingPlan.filter_rows.filter(r => r !== row);
+      redrawFilterRows(panel);
+    }
+  });
+  // Reordering. Only the handle starts a drag or takes arrow keys; the cards
+  // are drop targets. Smart order switches all of it off and keeps the order.
+  let dragFrom = -1;
+  const smartOn = () => editingPlan.smart_exposure_order === true;
+  const indexOf = el => {
+    const id = el.closest(".fr-card")?.dataset.rowId;
+    return (editingPlan.filter_rows || []).findIndex(r => r.id === id);
+  };
+  const clearDrop = () => {
+    host.querySelectorAll(".fr-drop-line").forEach(n => n.remove());
+    host.querySelectorAll(".fr-dragging").forEach(n => n.classList.remove("fr-dragging"));
+  };
+  const endDrag = () => { dragFrom = -1; clearDrop(); };
+  const applyMove = (from, to) => {
+    editingPlan.filter_rows = moveRow(editingPlan.filter_rows, from, to);
+    redrawFilterRows(panel);
+  };
+  host.addEventListener("dragstart", e => {
+    const handle = e.target.closest?.(".fr-handle");
+    if (!handle || smartOn()) { e.preventDefault(); return; }
+    dragFrom = indexOf(handle);
+    if (dragFrom < 0) { e.preventDefault(); return; }
+    const card = handle.closest(".fr-card");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(dragFrom));
+    if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(card, 10, 10);
+    card.classList.add("fr-dragging");
+  });
+  host.addEventListener("dragover", e => {
+    if (dragFrom < 0 || smartOn()) return;
+    const card = e.target.closest?.(".fr-card");
+    const t = card ? dropTarget(dragFrom, indexOf(card)) : null;
+    e.preventDefault();
+    host.querySelectorAll(".fr-drop-line").forEach(n => n.remove());
+    if (!t) return;
+    card.insertAdjacentHTML(t.placement === "before" ? "beforebegin" : "afterend", dropLineHtml());
+  });
+  host.addEventListener("dragleave", e => {
+    if (!e.relatedTarget || !host.contains(e.relatedTarget)) clearDrop();
+  });
+  host.addEventListener("drop", e => {
+    if (dragFrom < 0 || smartOn()) return;
+    e.preventDefault();
+    const card = e.target.closest?.(".fr-card");
+    const t = card ? dropTarget(dragFrom, indexOf(card)) : null;
+    const from = dragFrom;
+    endDrag();
+    if (t) applyMove(from, t.to);
+  });
+  host.addEventListener("dragend", endDrag);
+  host.addEventListener("keydown", e => {
+    const handle = e.target.closest?.(".fr-handle");
+    if (!handle) return;
+    const from = indexOf(handle);
+    const to = keyMoveTarget(e.key, from, editingPlan.filter_rows.length, smartOn());
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
+    if (to === null || from < 0) return;
+    const id = editingPlan.filter_rows[from].id;
+    applyMove(from, to);
+    const sel = `.fr-card[data-row-id="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(id) : id}"] .fr-handle`;
+    host.querySelector(sel)?.focus();
+  });
+  // The switch, N and smart order. Typing N updates the plan and the line
+  // under the controls only, so the input keeps focus.
+  const setOrderText = () => {
+    const text = host.querySelector(".fr-order-text");
+    if (text) text.textContent = orderExplanation(editingPlan.filter_switch_frequency || 0, editingPlan.smart_exposure_order === true);
+  };
+  const readRotateN = () => {
+    const input = host.querySelector(".fr-rotate-n");
+    editingRotateN = clampRotate(input ? input.value : editingRotateN);
+    return editingRotateN;
+  };
+  host.addEventListener("input", e => {
+    if (e.target.classList.contains("fr-rotate-n")) {
+      const v = parseInt(e.target.value, 10);
+      if (Number.isFinite(v) && v >= 1 && v <= 99) {
+        editingRotateN = v;
+        editingPlan.filter_switch_frequency = v;
+        setOrderText();
+      }
+      return;
+    }
+  });
+  host.addEventListener("change", e => {
+    if (e.target.name === "fr-switch") {
+      editingPlan.filter_switch_frequency = e.target.value === "rotate" ? readRotateN() : 0;
+      redrawFilterRows(panel);
+    } else if (e.target.classList.contains("fr-rotate-n")) {
+      editingPlan.filter_switch_frequency = readRotateN();
+      redrawFilterRows(panel);
+    } else if (e.target.classList.contains("fr-smart-cb")) {
+      // The list order is kept either way; smart order only switches
+      // reordering off.
+      editingPlan.smart_exposure_order = !!e.target.checked;
+      redrawFilterRows(panel);
+    }
+  });
+  host.addEventListener("input", e => {
+    if (!e.target.classList.contains("fr-goal-input")) return;
+    const row = rowOf(e.target);
+    if (!row) return;
+    const v = parseFloat(e.target.value);
+    setRowGoal(row, isFinite(v) ? v : 0);
+    // Repaint only the progress block, so the input keeps focus and cursor.
+    const card = e.target.closest(".fr-card");
+    const tmp = document.createElement("div");
+    tmp.innerHTML = cardHtml(row, 0, filterRowsContext());
+    const next = tmp.firstElementChild;
+    card.classList.toggle("fr-done", next.classList.contains("fr-done"));
+    card.querySelector(".fr-progress").innerHTML = next.querySelector(".fr-progress").innerHTML;
+  });
+  host.addEventListener("change", e => {
+    const row = rowOf(e.target);
+    if (!row) return;
+    const ctx = filterRowsContext();
+    if (e.target.classList.contains("fr-unit-sel")) {
+      setRowUnit(row, e.target.value);
+    } else if (e.target.classList.contains("fr-filter-sel")) {
+      const { template, sub } = usualTemplate(e.target.value, ctx.camera, ctx.templates);
+      row.filter = e.target.value;
+      setRowTemplate(row, template, sub);
+    } else if (e.target.classList.contains("fr-tmpl-sel")) {
+      if (e.target.value === NEW_TEMPLATE_VALUE) {
+        const name = (window.prompt("New template name?") || "").trim();
+        const sub = parseFloat(window.prompt("Sub length in seconds?", String(row.template_sub_s || 300)));
+        if (name && isFinite(sub) && sub > 0) setRowTemplate(row, name, sub);
+      } else {
+        const t = templatesForFilter(ctx.templates, row.filter).find(x => x.name === e.target.value);
+        if (t) setRowTemplate(row, t.name, templateSub(t));
+      }
+    } else {
+      return;
+    }
+    redrawFilterRows(panel);
+  });
 }
 
 function renderPlanEditor(plan) {
@@ -6959,21 +7117,18 @@ function renderPlanEditor(plan) {
   updateSearchVisibility();
   selectedPlanId = plan.id;
   editingPlan = JSON.parse(JSON.stringify(plan));
-  editingPlanOriginalSettings = {
-    state: editingPlan.state || "active",
-    priority: editingPlan.priority || "normal",
-    minimum_time_min: editingPlan.minimum_time_min ?? 0,
-  };
+  // GET /api/plans still carries a derived filter_goals for older plugins.
+  // The editor reads and writes filter_rows only.
+  delete editingPlan.filter_goals;
+  if (!Array.isArray(editingPlan.filter_rows)) editingPlan.filter_rows = [];
+  editingPlanOriginalSettings = originalSettingsOf(editingPlan);
+  editingRotateN = editingPlan.filter_switch_frequency > 0 ? editingPlan.filter_switch_frequency : ROTATE_DEFAULT;
   saveUiState();
 
   const panel = document.getElementById("panelBody");
   const telescope = planTelescope(editingPlan);
   const camera = planCamera(editingPlan);
   const [fw, fh] = planFovArcmin(editingPlan);
-  // LRGBHOS order, keep only the canonical 7 the camera has configured;
-  // any extras are hidden for now (same rule as the sky-map chip rail).
-  const camFilters = camera?.filters ? Object.keys(camera.filters) : FILTER_DOT_ORDER;
-  const filters = FILTER_DOT_ORDER.filter(f => camFilters.includes(f));
   const mos = planMosaic(editingPlan);
   // Other plans sharing this project_name: state, priority and minimum
   // time apply to the whole TS project, not just this plan (see
@@ -6989,24 +7144,6 @@ function renderPlanEditor(plan) {
     `<option value="${esc(c.id)}" ${c.id === editingPlan.camera_id ? "selected" : ""}>${esc(c.name)}</option>`
   ).join("") || `<option value="">(no cameras, open Edit gear)</option>`;
 
-  const goalRows = filters.map(f => {
-    const g = editingPlan.filter_goals[f] || {};
-    const color = FILTER_COLORS[f] || "#888";
-    const filtCfg = camera?.filters?.[f] || {};
-    const th = g.target_hours ?? "";
-    const sub = g.sub_exposure_s ?? filtCfg.default_sub_s ?? 300;
-    const ah = g.actual_hours || 0;
-    const ahClass = (g.target_hours > 0 && ah >= g.target_hours) ? "done" : (ah > 0 ? "partial" : "todo");
-    const tsOpts = buildTsTemplateOptions(f, camera, filtCfg);
-    return `<tr>
-      <td><span class="filter-pill fp-${esc(f)}" style="background:${color};color:#000">${esc(f)}</span></td>
-      <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${esc(f)}" value="${th}" placeholder="hrs"></td>
-      <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${esc(f)}" value="${sub}"></td>
-      <td><span class="goal-status ${ahClass}" data-actual-filter="${esc(f)}">${ah.toFixed(1)}h</span></td>
-      <td>${tsOpts !== null ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">, </span>`}</td>
-    </tr>`;
-  }).join("");
-
   const tg = editingPlan.target;
 
   panel.innerHTML = `
@@ -7021,6 +7158,7 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Project</span>
           <input type="text" class="wide" id="f_project" value="${esc(editingPlan.project_name)}" placeholder="groups plans into a TS project">
         </label>
+        ${targetClassFieldHtml(editingPlan)}
         <div class="coord-row">
           <label style="flex:1"><span class="lab">RA (deg)</span>
             <input type="number" step="0.1" id="f_ra" value="${Number(tg.center_ra_deg).toFixed(3)}">
@@ -7078,10 +7216,7 @@ function renderPlanEditor(plan) {
 
       <fieldset>
         <legend>Filter goals</legend>
-        <table class="goals-table">
-          <thead><tr><th>Filter</th><th>Target h</th><th>Sub (s)</th><th>Done</th><th>TS template</th></tr></thead>
-          <tbody>${goalRows}</tbody>
-        </table>
+        <div id="filterRows">${filterListHtml(editingPlan, filterRowsContext())}</div>
       </fieldset>
 
       <fieldset>
@@ -7145,6 +7280,7 @@ function renderPlanEditor(plan) {
   // Wire live-edit handlers
   panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
+  panel.querySelector("#f_target_class")?.addEventListener("change", e => { setTargetClass(editingPlan, e.target.value); });
   panel.querySelector("#f_ra")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value);
     if (isFinite(v)) { editingPlan.target.center_ra_deg = v; document.getElementById("f_ra_hms").textContent = deg2hms(v); redrawPlanFootprints(); schedulePlanVisRefresh(); }
@@ -7193,57 +7329,7 @@ function renderPlanEditor(plan) {
     editingPlan.target.mosaic.overlap_pct = Math.max(0, Math.min(90, parseFloat(e.target.value) || 0));
     updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
   });
-  panel.querySelectorAll(".goal-target-hours").forEach(el => el.addEventListener("input", e => {
-    const f = e.target.dataset.f;
-    const v = parseFloat(e.target.value);
-    editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
-    if (isFinite(v) && v > 0) {
-      editingPlan.filter_goals[f].target_hours = v;
-      // The sub-exposure field shows a sensible default (stored value, gear
-      // default, or 300s) whether or not the user ever touches it. Commit
-      // that displayed value here so a plan saved right after setting a
-      // target-hours goal still carries sub_exposure_s.
-      if (!editingPlan.filter_goals[f].sub_exposure_s) {
-        const subEl = panel.querySelector(`.goal-sub-s[data-f="${CSS.escape(f)}"]`);
-        const sub = parseFloat(subEl?.value);
-        if (isFinite(sub) && sub > 0) editingPlan.filter_goals[f].sub_exposure_s = sub;
-      }
-    } else {
-      delete editingPlan.filter_goals[f];
-    }
-  }));
-  panel.querySelectorAll(".goal-sub-s").forEach(el => el.addEventListener("input", e => {
-    const f = e.target.dataset.f;
-    const v = parseFloat(e.target.value);
-    if (isFinite(v) && v > 0) {
-      editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
-      editingPlan.filter_goals[f].sub_exposure_s = v;
-    }
-  }));
-  panel.querySelectorAll(".tmpl-sel").forEach(el => el.addEventListener("change", async e => {
-    const f = e.target.dataset.f;
-    const cam = planCamera(editingPlan);
-    if (!cam) return;
-    cam.filters = cam.filters || {};
-    cam.filters[f] = cam.filters[f] || {};
-    cam.filters[f].ts_template_id = e.target.value || null;
-    const opt = e.target.selectedOptions[0];
-    cam.filters[f].ts_template_name = opt?.textContent?.split(" (")[0] || null;
-    // Persist to data/gear.json so the mapping survives a reload
-    await saveGear();
-  }));
-  // Auto-persist single-match template defaults: when buildTsTemplateOptions
-  // pre-selects the only candidate, fire a synthetic change so the handler
-  // above writes it to gear.json without the user opening the dropdown.
-  // Skips selects where the pre-selected value already matches storage.
-  panel.querySelectorAll(".tmpl-sel").forEach(el => {
-    const f = el.dataset.f;
-    const cam = planCamera(editingPlan);
-    const stored = String(cam?.filters?.[f]?.ts_template_id || "");
-    if (el.value && el.value !== stored) {
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  });
+  wireFilterRows(panel);
   panel.querySelector("#f_state")?.addEventListener("change", e => { editingPlan.state = e.target.value; });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
   panel.querySelector("#f_mintime")?.addEventListener("input", e => {
@@ -7349,10 +7435,15 @@ async function savePlan() {
   // write to plans.json, so a half-saved project can't happen. Only
   // fires when one of the three actually changed, and only when the plan
   // is in a named project at all.
+  const orderChanged = editingPlanOriginalSettings && (
+    editingPlan.filter_switch_frequency !== editingPlanOriginalSettings.filter_switch_frequency
+    || editingPlan.smart_exposure_order !== editingPlanOriginalSettings.smart_exposure_order
+  );
   const settingsChanged = editingPlanOriginalSettings && (
     editingPlan.state !== editingPlanOriginalSettings.state
     || editingPlan.priority !== editingPlanOriginalSettings.priority
     || editingPlan.minimum_time_min !== editingPlanOriginalSettings.minimum_time_min
+    || orderChanged
   );
   if (editingPlan.project_name && settingsChanged) {
     const sr = await fetch(`/api/projects/${encodeURIComponent(editingPlan.project_name)}/settings`, {
@@ -7362,6 +7453,12 @@ async function savePlan() {
         state: editingPlan.state,
         priority: editingPlan.priority,
         minimum_time_min: editingPlan.minimum_time_min,
+        // Switching and smart order each go only when changed here: a value
+        // never set stays unknown, and the sync leaves TS's alone.
+        ...(editingPlan.filter_switch_frequency !== editingPlanOriginalSettings.filter_switch_frequency
+          ? { filter_switch_frequency: editingPlan.filter_switch_frequency ?? 0 } : {}),
+        ...(editingPlan.smart_exposure_order !== editingPlanOriginalSettings.smart_exposure_order
+          ? { smart_exposure_order: editingPlan.smart_exposure_order === true } : {}),
       }),
     });
     if (!sr.ok) {
@@ -7382,11 +7479,7 @@ async function savePlan() {
   }
   const saved = await r.json();
   editingPlan = saved;
-  editingPlanOriginalSettings = {
-    state: saved.state || "active",
-    priority: saved.priority || "normal",
-    minimum_time_min: saved.minimum_time_min ?? 0,
-  };
+  editingPlanOriginalSettings = originalSettingsOf(saved);
   // Reload the full list rather than patching one entry in place: when the
   // settings route above just changed this plan's project-mates too, the
   // in-memory `plans` array has to pick that up, not just this plan.

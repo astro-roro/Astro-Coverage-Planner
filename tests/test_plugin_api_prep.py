@@ -1,6 +1,6 @@
 """Tests for the four NINA-plugin-prep changes tracked in
 docs/nina-plugin-api-audit.md: GET /api/version, ?expand= on GET
-/api/plans, persisting filter_goals.<f>.sub_exposure_s, and optional
+/api/plans, persisting a goal's sub length (now filter_rows[].template_sub_s), and optional
 bearer-token auth + CORS on /api/*.
 
 Each test redirects PLANS_PATH / GEAR_PATH / SITES_PATH / MANIFEST_PATH
@@ -75,7 +75,8 @@ def _plan(plan_id="p1", **overrides):
         },
         "telescope_id": "tel-1",
         "camera_id": "cam-1",
-        "filter_goals": {"OIII": {"target_hours": 1.5, "sub_exposure_s": 300}},
+        "filter_rows": [{"id": "row-oiii", "filter": "OIII", "template": "OIII",
+                         "template_sub_s": 300, "unit": "h", "target_hours": 1.5}],
         "priority": "normal",
         "min_altitude_deg": 30,
         "state": "draft",
@@ -171,22 +172,28 @@ class TestPlansExpand(unittest.TestCase):
 
 class TestSubExposurePersists(unittest.TestCase):
     """docs/nina-plugin-api-audit.md found 0/31 real plans had
-    sub_exposure_s stored. The validator already accepts it; these
-    confirm the save path actually keeps it, both via POST (create)
-    and PUT (update)."""
+    sub_exposure_s stored. Goals are now filter rows
+    (docs/specs/goal-panel-and-ts-order.md section 3), and the sub length
+    a row carries is `template_sub_s`. These confirm the save path keeps it,
+    via POST and PUT, and that the `filter_goals` older plugins read still
+    carries it as `sub_exposure_s`."""
 
     def setUp(self):
         _fresh_state()
         self.client = app.test_client()
 
+    @staticmethod
+    def _rows(sub):
+        return [{"id": "row-1", "filter": "OIII", "template": "OIII", "template_sub_s": sub,
+                 "unit": "h", "target_hours": 2.0}]
+
     def test_round_trips_through_post_and_get(self):
-        r = self.client.post("/api/plans", json=_plan(filter_goals={
-            "OIII": {"target_hours": 2.0, "sub_exposure_s": 180},
-        }))
-        self.assertEqual(r.status_code, 201)
-        self.assertEqual(r.get_json()["filter_goals"]["OIII"]["sub_exposure_s"], 180)
+        r = self.client.post("/api/plans", json=_plan(filter_rows=self._rows(180)))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["filter_rows"][0]["template_sub_s"], 180)
 
         r2 = self.client.get("/api/plans/p1")
+        self.assertEqual(r2.get_json()["filter_rows"][0]["template_sub_s"], 180)
         self.assertEqual(r2.get_json()["filter_goals"]["OIII"]["sub_exposure_s"], 180)
 
         r3 = self.client.get("/api/plans")
@@ -194,11 +201,9 @@ class TestSubExposurePersists(unittest.TestCase):
         self.assertEqual(plan["filter_goals"]["OIII"]["sub_exposure_s"], 180)
 
     def test_round_trips_through_put(self):
-        self.client.post("/api/plans", json=_plan())
-        r = self.client.put("/api/plans/p1", json=_plan(filter_goals={
-            "OIII": {"target_hours": 2.0, "sub_exposure_s": 240},
-        }))
-        self.assertEqual(r.get_json()["filter_goals"]["OIII"]["sub_exposure_s"], 240)
+        self.client.post("/api/plans", json=_plan(filter_rows=self._rows(300)))
+        r = self.client.put("/api/plans/p1", json=_plan(filter_rows=self._rows(240)))
+        self.assertEqual(r.get_json()["filter_rows"][0]["template_sub_s"], 240)
 
 
 class TestApiAuth(unittest.TestCase):

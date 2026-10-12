@@ -87,6 +87,7 @@ except ImportError:
         "Install with `pip install mocpy>=0.13` to enable /api/moc/<id>."
     )
 
+import filter_rows as fr
 from gaps import candidates_in_moc, compute_gap_moc
 
 # Ceiling on a single acquired-hours report. Ten years of continuous imaging is
@@ -122,6 +123,8 @@ TARGET_OVERRIDES_PATH = Path(os.environ.get(
 # the like). Its own file, not a key in plans.json, because the plan save
 # route replaces the whole plan and would drop a flag the editor never sent.
 HIDDEN_PATH = Path(os.environ.get("HIDDEN_PATH", REPO_ROOT / "data" / "hidden.json"))
+TS_TEMPLATES_PATH = Path(os.environ.get(
+    "TS_TEMPLATES_PATH", REPO_ROOT / "data" / "ts_templates.json"))
 TS_DB_PATH = os.environ.get(
     "TS_DB_PATH",
     str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
@@ -163,6 +166,26 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE
 # /api/plans/match then wrote to disk and kept forever.
 MAX_BODY_BYTES = int(os.environ.get("ACP_MAX_BODY_BYTES", 1024 * 1024))
 app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
+
+# Every route that reads plans.json, changes it and writes it back holds this
+# lock, and so does the NINA Target Scheduler extension's push and import,
+# which adopts it in register(app). Without it AAC's /accepted could write
+# back an older copy over a push's, and the reverse. ACP runs as one process
+# under waitress, so a thread lock is enough.
+PLANS_LOCK = threading.RLock()
+app.plans_lock = PLANS_LOCK
+
+
+def _holds_plans_lock(fn):
+    """Run a plans.json read-modify-write route under PLANS_LOCK. Looked up
+    per call, so a test can swap the lock."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with PLANS_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 # NINA profiles that have reported a fingerprint. A real user has a handful.
 # The key is caller-supplied, so without a ceiling anyone on the LAN can grow
@@ -619,19 +642,26 @@ def _heal_plan_list(plans: list) -> list:
 PLAN_STATES = ("draft", "active", "inactive", "closed")
 
 
-def _backup_plans_json() -> None:
-    """Timestamped copy of plans.json, taken once before the draft->active
-    migration touches it. Best-effort: a backup failure is logged, not
-    fatal, because refusing to migrate over a backup problem would leave
-    the 47 plans permanently stuck under the old draft meaning."""
+def _backup_plans_json() -> bool:
+    """Timestamped copy of plans.json, taken before a one-shot migration
+    touches it. Returns whether the copy was made (a missing plans.json has
+    nothing to lose and counts as made). The draft->active migration goes
+    ahead without one, because refusing would leave the 47 plans stuck under
+    the old draft meaning; the filter row migration does not."""
     if not PLANS_PATH.exists():
-        return
+        return True
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = PLANS_PATH.with_name(f"{PLANS_PATH.name}.bak-{stamp}")
+    n = 2
+    while backup_path.exists():
+        backup_path = PLANS_PATH.with_name(f"{PLANS_PATH.name}.bak-{stamp}-{n}")
+        n += 1
     try:
         backup_path.write_bytes(PLANS_PATH.read_bytes())
     except OSError as exc:
         logging.warning("could not back up %s before migration: %s", PLANS_PATH, exc)
+        return False
+    return True
 
 
 def _maybe_migrate_draft_plans_to_active() -> None:
@@ -672,6 +702,48 @@ def _maybe_migrate_draft_plans_to_active() -> None:
     save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
 
 
+def _maybe_migrate_filter_rows() -> None:
+    """One-shot: every plan's `filter_goals` becomes `filter_rows`.
+
+    docs/specs/goal-panel-and-ts-order.md section 3. Each goal key becomes a
+    row with a new id, ordered L, R, G, B, Ha, OIII, SII, and `ts_links`
+    exposure plan keys move from "<target id>_<goal key>" to
+    "<target id>_<row id>" so the next push finds the plans it wrote.
+    Guarded by `filter_rows_migrated: 1` on the plans.json document, so it
+    runs once ever, and takes a timestamped backup first. It ships with the
+    importer change in the sync, because a push between the two would write
+    a second exposure plan for every star row.
+    """
+    global _plans_cache
+    if not isinstance(_plans_cache, dict) or _plans_cache.get("filter_rows_migrated"):
+        return
+    plans = _plans_cache.get("plans")
+    if not isinstance(plans, list):
+        plans = []
+    todo = [p for p in plans if isinstance(p, dict) and not isinstance(p.get("filter_rows"), list)]
+    cameras = {}
+    if any(isinstance(p.get("filter_goals"), dict) and p["filter_goals"] for p in todo):
+        if not _backup_plans_json():
+            # No backup, no migration: it is the step that is hard to undo.
+            # Plans keep their filter_goals, which GET still serves, and the
+            # next load tries again.
+            logging.error(
+                "Not moving filter goals into filter rows, because %s could not be backed up first",
+                PLANS_PATH,
+            )
+            return
+        cameras = {c.get("id"): c for c in (load_gear().get("cameras") or []) if isinstance(c, dict)}
+    moved = 0
+    for p in todo:
+        id_by_key = fr.migrate_plan(p, cameras.get(p.get("camera_id") or ""))
+        fr.rekey_links(p, id_by_key)
+        moved += len(id_by_key)
+    _plans_cache["plans"] = plans
+    _plans_cache["filter_rows_migrated"] = 1
+    logging.info("Moved %d filter goals into filter rows", moved)
+    save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
+
+
 def load_plans() -> dict:
     global _plans_cache, _plans_cache_mtime
     if not PLANS_PATH.exists():
@@ -684,6 +756,7 @@ def load_plans() -> dict:
         if isinstance(plans, list):
             _plans_cache["plans"] = _heal_plan_list(plans)
         _maybe_migrate_draft_plans_to_active()
+        _maybe_migrate_filter_rows()
     # One-shot backfill: the first time someone declares destinations,
     # every existing plan without a destination_id picks up the first
     # destination's id and gets persisted. Flag stored in destinations.json
@@ -3382,9 +3455,8 @@ def _validate_plan_payload(payload: dict) -> str | None:
       - mosaic rows/cols not positive integers (sync expansion would
         crash or emit zero panels)
       - mosaic overlap_pct outside [0, 99]
-      - filter_goals with negative target_hours (meaningless)
-      - filter_goals.<f>.sub_exposure_s ≤ 0 (would div-by-zero in
-        the desired-count calc on sync)
+      - filter_rows that break the rules in section 3 of
+        docs/specs/goal-panel-and-ts-order.md (see filter_rows.validate_rows)
 
     All sub-checks are optional: a draft plan with no target / filters
     is fine. Returns None on success, an error string otherwise.
@@ -3437,34 +3509,19 @@ def _validate_plan_payload(payload: dict) -> str | None:
                     return "target.mosaic.overlap_pct must be a number"
                 if not math.isfinite(op) or not (0.0 <= op <= 99.0):
                     return "target.mosaic.overlap_pct out of range [0, 99]"
-    fg = payload.get("filter_goals")
-    if fg is not None:
-        if not isinstance(fg, dict):
-            return "filter_goals must be an object"
-        for fname, fcfg in fg.items():
-            if not isinstance(fcfg, dict):
-                return f"filter_goals[{fname!r}] must be an object"
-            if "target_hours" in fcfg:
-                try:
-                    th = float(fcfg["target_hours"])
-                except (TypeError, ValueError):
-                    return f"filter_goals[{fname!r}].target_hours must be a number"
-                if not math.isfinite(th) or th < 0:
-                    return f"filter_goals[{fname!r}].target_hours must be ≥ 0"
-            if "sub_exposure_s" in fcfg:
-                try:
-                    se = float(fcfg["sub_exposure_s"])
-                except (TypeError, ValueError):
-                    return f"filter_goals[{fname!r}].sub_exposure_s must be a number"
-                if not math.isfinite(se) or se <= 0:
-                    return f"filter_goals[{fname!r}].sub_exposure_s must be > 0"
-            if "actual_hours" in fcfg:
-                try:
-                    ah = float(fcfg["actual_hours"])
-                except (TypeError, ValueError):
-                    return f"filter_goals[{fname!r}].actual_hours must be a number"
-                if not math.isfinite(ah) or ah < 0:
-                    return f"filter_goals[{fname!r}].actual_hours must be ≥ 0"
+    # filter_goals is the old shape. GET /api/plans still serves a derived
+    # copy to older plugins, so a client may echo it back; it is never
+    # stored (docs/specs/goal-panel-and-ts-order.md section 3).
+    payload.pop("filter_goals", None)
+    if "filter_rows" in payload:
+        cameras = {c.get("id"): c for c in (load_gear().get("cameras") or []) if isinstance(c, dict)}
+        err = fr.validate_rows(payload["filter_rows"], cameras.get(payload.get("camera_id") or ""))
+        if err:
+            return err
+    # What AAC reads (section 6). Absent means survey.
+    tclass = payload.get("target_class")
+    if tclass is not None and tclass not in fr.TARGET_CLASSES:
+        return f"target_class must be one of {', '.join(fr.TARGET_CLASSES)}"
     # TS project state (docs/specs/ts-project-settings.md section 1). Absent
     # means "active". "parked" is a held PR #97 value that never shipped;
     # normalise it to "inactive" (TS's meaning for a plan paused by hand)
@@ -3482,6 +3539,14 @@ def _validate_plan_payload(payload: dict) -> str | None:
             return "minimum_time_min must be an integer"
         if mt < 0:
             return "minimum_time_min must be ≥ 0"
+    # The TS project's shooting-order settings
+    # (docs/specs/goal-panel-and-ts-order.md section 4). Absent means
+    # unknown, so neither is required.
+    for key in ORDER_SETTING_KEYS:
+        if key in payload:
+            err = _order_setting_error(key, payload[key])
+            if err:
+                return err
     # Live-page fields (docs/specs/shooting-page.md). Absent means private,
     # so anything other than the two known values is rejected, never coerced.
     vis = payload.get("visibility")
@@ -3558,7 +3623,21 @@ def _expand_plan(plan: dict, tokens: frozenset[str], gear_data: dict | None, sit
     return out
 
 
+def _with_goals_view(plan):
+    """A copy of *plan* carrying the derived `filter_goals` older plugins
+    read (filter_rows.filter_goals_view). Never stored."""
+    if not isinstance(plan, dict):
+        return plan
+    # A plan with no target_class reads as survey (section 6), for AAC.
+    plan = {**plan, "target_class": fr.target_class_of(plan)}
+    if not isinstance(plan.get("filter_rows"), list):
+        # Not migrated yet (the backup failed): its own filter_goals stand.
+        return plan
+    return {**plan, "filter_goals": fr.filter_goals_view(plan)}
+
+
 @app.route("/api/plans", methods=["GET", "POST"])
+@_holds_plans_lock
 def api_plans():
     data = load_plans()
     if request.method == "GET":
@@ -3570,10 +3649,11 @@ def api_plans():
             sites_data = load_sites() if "site" in tokens else None
             resp = jsonify({
                 "version": data.get("version", 1),
-                "plans": [_expand_plan(p, tokens, gear_data, sites_data) for p in data.get("plans", [])],
+                "plans": [_with_goals_view(_expand_plan(p, tokens, gear_data, sites_data))
+                          for p in data.get("plans", [])],
             })
         else:
-            resp = jsonify(data)
+            resp = jsonify({**data, "plans": [_with_goals_view(p) for p in data.get("plans", [])]})
         if PLANS_PATH.exists():
             resp.last_modified = datetime.fromtimestamp(PLANS_PATH.stat().st_mtime, tz=timezone.utc)
         return resp
@@ -3586,6 +3666,7 @@ def api_plans():
     payload.setdefault("created_at", now)
     payload.setdefault("last_synced_at", None)
     payload["updated_at"] = now
+    fr.keep_aac(payload, next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None))
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -3593,6 +3674,7 @@ def api_plans():
 
 
 @app.route("/api/plans/<plan_id>", methods=["GET", "PUT", "DELETE"])
+@_holds_plans_lock
 def api_plan(plan_id: str):
     data = load_plans()
     plans = data.get("plans", [])
@@ -3600,7 +3682,7 @@ def api_plan(plan_id: str):
     if idx is None:
         return jsonify({"error": "not found"}), 404
     if request.method == "GET":
-        return jsonify(plans[idx])
+        return jsonify(_with_goals_view(plans[idx]))
     if request.method == "DELETE":
         plans.pop(idx)
         save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -3615,23 +3697,46 @@ def api_plan(plan_id: str):
     payload["created_at"] = existing.get("created_at") or datetime.now(timezone.utc).isoformat()
     payload.setdefault("last_synced_at", existing.get("last_synced_at"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    fr.keep_aac(payload, existing)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
 
 
+# The TS project's filter switch frequency and smart exposure order
+# (docs/specs/goal-panel-and-ts-order.md section 4). "Finish each" stores a
+# switch frequency of 0, "Rotate every N" stores N from 1 to 99. Absent on a
+# plan means unknown: the sync never writes it on update.
+ORDER_SETTING_KEYS = ("filter_switch_frequency", "smart_exposure_order")
+SWITCH_FREQUENCY_MAX = 99
+
+
+def _order_setting_error(key: str, value) -> str | None:
+    if key == "smart_exposure_order":
+        return None if isinstance(value, bool) else "smart_exposure_order must be true or false"
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "filter_switch_frequency must be an integer"
+    if not 0 <= value <= SWITCH_FREQUENCY_MAX:
+        return f"filter_switch_frequency must be between 0 and {SWITCH_FREQUENCY_MAX}"
+    return None
+
+
 @app.route("/api/projects/<project_name>/settings", methods=["PUT"])
+@_holds_plans_lock
 def api_project_settings(project_name: str):
-    """Save state, priority and minimum_time_min across every plan that
-    shares this project_name, in one write to plans.json.
+    """Save state, priority, minimum_time_min, filter_switch_frequency and
+    smart_exposure_order across every plan that shares this project_name,
+    in one write to plans.json. The last two are the TS project's
+    shooting-order settings (docs/specs/goal-panel-and-ts-order.md
+    section 4).
 
     ACP has no project entity: a TS project is the group of plans that
     share `project_name`, the same grouping `_build_ts_export` uses. The
     editor calls this route instead of saving each plan separately so a
     change to one of these three fields can never land on some of a
     project's plans and not others. See docs/specs/ts-project-settings.md
-    section 1. Any subset of the three body keys can be given; a key left
-    out is left unchanged on every plan in the group.
+    section 1. Any subset of the body keys can be given; a key left out is
+    left unchanged on every plan in the group.
     """
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -3656,6 +3761,14 @@ def api_project_settings(project_name: str):
         if minimum_time_min < 0:
             return jsonify({"error": "minimum_time_min must be ≥ 0"}), 400
 
+    order_settings = {}
+    for key in ORDER_SETTING_KEYS:
+        if key in payload:
+            err = _order_setting_error(key, payload[key])
+            if err:
+                return jsonify({"error": err}), 400
+            order_settings[key] = payload[key]
+
     data = load_plans()
     plans = data.get("plans", [])
     group = [p for p in plans if isinstance(p, dict) and p.get("project_name") == project_name]
@@ -3670,6 +3783,7 @@ def api_project_settings(project_name: str):
             p["priority"] = priority
         if has_minimum_time:
             p["minimum_time_min"] = minimum_time_min
+        p.update(order_settings)
         p["updated_at"] = now
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return jsonify({
@@ -3679,6 +3793,7 @@ def api_project_settings(project_name: str):
         "state": state,
         "priority": priority,
         "minimum_time_min": minimum_time_min if has_minimum_time else None,
+        **{key: order_settings.get(key) for key in ORDER_SETTING_KEYS},
     })
 
 
@@ -3833,15 +3948,9 @@ def _plan_goal_filters(plan: dict) -> list[str]:
     """Canonical names of the filters a plan actually asks for. A goal with
     no hours on it isn't something the rig has to be able to shoot."""
     canon_filter, _ = _filter_helpers()
-    goals = plan.get("filter_goals") or {}
-    if not isinstance(goals, dict):
-        return []
     out = []
-    for name, cfg in goals.items():
-        if not isinstance(cfg, dict):
-            continue
-        hours = _num(cfg.get("target_hours"))
-        if hours is not None and hours <= 0:
+    for name, totals in fr.hours_by_filter(plan).items():
+        if totals["target_hours"] <= 0:
             continue
         canon = canon_filter(name) or str(name)
         if canon not in out:
@@ -4133,31 +4242,49 @@ def _validate_progress_payload(payload) -> str | None:
     if not isinstance(payload, dict):
         return "payload must be a JSON object"
     filters = payload.get("filters")
-    if not isinstance(filters, dict) or not filters:
+    entries = payload.get("entries")
+    if entries is not None:
+        # One entry per exposure plan, from a plugin that knows filter rows
+        # (docs/specs/goal-panel-and-ts-order.md section 3). It also sends
+        # the old `filters` object for an ACP that predates rows.
+        if not isinstance(entries, list) or not entries:
+            return "entries must be a non-empty list"
+        items = []
+        for i, cfg in enumerate(entries):
+            if not isinstance(cfg, dict):
+                return f"entries[{i}] must be an object"
+            if not isinstance(cfg.get("filter"), str) or not cfg["filter"].strip():
+                return f"entries[{i}].filter must be a non-empty string"
+            if cfg.get("template") is not None and not isinstance(cfg["template"], str):
+                return f"entries[{i}].template must be a string"
+            items.append((f"entries[{i}]", cfg))
+    elif isinstance(filters, dict) and filters:
+        items = [(f"filters[{name!r}]", cfg) for name, cfg in filters.items()]
+    else:
         return "filters object required"
-    for name, cfg in filters.items():
+    for name, cfg in items:
         if not isinstance(cfg, dict):
-            return f"filters[{name!r}] must be an object"
+            return f"{name} must be an object"
         # A JSON string is refused rather than coerced. _num would happily
         # turn "1e6" into a million, and this value is written straight into
         # a plan, so the caller has to mean it as a number.
         raw_hours = cfg.get("acquired_hours")
         if isinstance(raw_hours, bool) or not isinstance(raw_hours, (int, float)):
-            return f"filters[{name!r}].acquired_hours must be a number >= 0"
+            return f"{name}.acquired_hours must be a number >= 0"
         hours = _num(raw_hours)
         if hours is None or hours < 0:
-            return f"filters[{name!r}].acquired_hours must be a number >= 0"
+            return f"{name}.acquired_hours must be a number >= 0"
         # An upper bound, because hours only ever go up without `force`: one
         # absurd value writes a goal that can never be corrected through this
         # endpoint again. The cap is far past any real integration time, so it
         # rejects nonsense without ever rejecting an honest report.
         if hours > MAX_ACQUIRED_HOURS:
-            return (f"filters[{name!r}].acquired_hours must be <= "
+            return (f"{name}.acquired_hours must be <= "
                     f"{MAX_ACQUIRED_HOURS} (got {hours!r})")
         if "acquired_count" in cfg and cfg["acquired_count"] is not None:
             count = cfg["acquired_count"]
             if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-                return f"filters[{name!r}].acquired_count must be an integer >= 0"
+                return f"{name}.acquired_count must be an integer >= 0"
     if "force" in payload and not isinstance(payload["force"], bool):
         return "force must be a boolean"
     for field in ("source", "at"):
@@ -4167,8 +4294,9 @@ def _validate_progress_payload(payload) -> str | None:
 
 
 @app.route("/api/plans/<plan_id>/progress", methods=["POST"])
+@_holds_plans_lock
 def api_plan_progress(plan_id: str):
-    """Record acquired hours against a plan's per-filter goals.
+    """Record acquired hours against a plan's filter rows.
 
     Called by the plugin after an imaging session, and by anything else
     that knows what was actually shot. Hours only ever go up: NINA's own
@@ -4179,7 +4307,9 @@ def api_plan_progress(plan_id: str):
 
     Filters the plan has no goal for are ignored rather than invented, and
     named in the response so the caller can tell the difference between
-    "recorded" and "quietly dropped".
+    "recorded" and "quietly dropped". An entry naming a template lands on the
+    row with that filter and template; one without (an older plugin) lands on
+    the filter's only row, and is unknown when the filter has two.
     """
     err = _validate_progress_payload(request.get_json(silent=True) or {})
     if err:
@@ -4194,36 +4324,41 @@ def api_plan_progress(plan_id: str):
     plan = plans[idx]
 
     canon_filter, _ = _filter_helpers()
-    goals = plan.get("filter_goals")
-    if not isinstance(goals, dict):
-        goals = {}
-    # Canonical name -> the key the plan actually uses, so a plugin
-    # reporting "Antlia Ha" updates the plan's "Ha" goal.
-    by_canon = {}
-    for key in goals:
-        by_canon.setdefault(canon_filter(key) or str(key), key)
+    rows = fr.rows_of(plan)
+
+    if payload.get("entries") is not None:
+        reports = [(e["filter"], e.get("template"), e) for e in payload["entries"]]
+    else:
+        reports = [(name, None, cfg) for name, cfg in payload["filters"].items()]
 
     force = bool(payload.get("force"))
     updated, unknown, not_lowered = {}, [], []
-    for name, cfg in (payload.get("filters") or {}).items():
-        key = name if name in goals else by_canon.get(canon_filter(name) or str(name))
-        if key is None:
-            unknown.append(name)
+    for name, template, cfg in reports:
+        # "Antlia Ha" from the plugin lands on the plan's Ha rows.
+        canon = canon_filter(name) or str(name)
+        same_filter = [r for r in rows if r.get("filter") in (canon, name)]
+        if template is not None:
+            hits = [r for r in same_filter if r.get("template") == template]
+            label = f"{canon} ({template})"
+        else:
+            # An older plugin sends no template. It can only mean the one
+            # row of that filter; with two, which one is a guess.
+            hits = same_filter
+            label = name
+        if len(hits) != 1:
+            unknown.append(label)
             continue
-        goal = goals[key]
-        if not isinstance(goal, dict):
-            unknown.append(name)
-            continue
+        row = hits[0]
+        key = row.get("template") if template is not None else row.get("filter")
         new_hours = _num(cfg.get("acquired_hours"))
-        current = _num(goal.get("actual_hours")) or 0.0
+        current = _num(row.get("actual_hours")) or 0.0
         if new_hours < current and not force:
             not_lowered.append(key)
             continue
-        goal["actual_hours"] = new_hours
+        row["actual_hours"] = new_hours
         updated[key] = new_hours
 
     if updated:
-        plan["filter_goals"] = goals
         plan["updated_at"] = datetime.now(timezone.utc).isoformat()
         plans[idx] = plan
         save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -4235,6 +4370,37 @@ def api_plan_progress(plan_id: str):
         "unknown_filters": unknown,
         "not_lowered": not_lowered,
     })
+
+
+@app.route("/api/plans/<plan_id>/accepted", methods=["POST"])
+@_holds_plans_lock
+def api_plan_accepted(plan_id: str):
+    """Store AAC's accepted counts against a plan's filter rows.
+
+    AAC is the only caller (docs/specs/goal-panel-and-ts-order.md section 6,
+    and its own spec, incremental-master-builds.md section 7). The access gate
+    has already checked the bearer token. A row lands only when its id, echoed
+    filter and echoed template match the plan; the rest come back in
+    `unknown_rows` with a reason, and AAC does not retry them until its figures
+    change. Values may go down, and `actual_hours` is never touched.
+    """
+    body = request.get_json(silent=True)
+    data = load_plans()
+    plans = data.get("plans", [])
+    idx = next((i for i, p in enumerate(plans) if p.get("id") == plan_id), None)
+    if idx is None:
+        return jsonify({"error": "not found"}), 404
+    err = fr.validate_accepted(body)
+    if err:
+        return jsonify({"error": err}), 400
+    plan = plans[idx]
+    canon_filter, _ = _filter_helpers()
+    now = datetime.now(timezone.utc).isoformat()
+    unknown = fr.apply_accepted(plan, body, now, canon_filter)
+    plans[idx] = plan
+    save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    return jsonify({"ok": True, "unknown_rows": unknown,
+                    "filed_through_night": body["filed_through_night"]})
 
 
 def _build_live_document() -> dict:
@@ -4367,11 +4533,114 @@ def api_sync_config():
     })
 
 
+_TS_TEMPLATE_NUMBER_FIELDS = ("default_exposure_s", "gain", "offset", "bin")
+
+
+def _load_ts_templates_store() -> dict:
+    """The per-profile template lists the plugin posted, or {} when none."""
+    try:
+        data = json.loads(TS_TEMPLATES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    return profiles if isinstance(profiles, dict) else {}
+
+
+def _plugin_templates_response(path: Path, error: str):
+    """Answer from the lists the plugin posted, or None when there are none.
+
+    The server case: ACP on Brutix has no TS database file, so the plugin
+    sends the list instead (docs/specs/goal-panel-and-ts-order.md section 2).
+    """
+    profiles = _load_ts_templates_store()
+    if not profiles:
+        return None
+    templates = []
+    for pid, entry in profiles.items():
+        for t in entry.get("templates", []):
+            templates.append({**t, "profile_id": pid, "received_at": entry.get("received_at")})
+    return jsonify({
+        "available": True,
+        "source": "plugin",
+        "path": str(path),
+        "profiles": {
+            pid: {"received_at": e.get("received_at"), "sent_at": e.get("sent_at")}
+            for pid, e in profiles.items()
+        },
+        "templates": templates,
+    })
+
+
+def _validate_ts_templates_payload(payload) -> str | None:
+    if not isinstance(payload, dict):
+        return "body must be a JSON object"
+    pid = payload.get("profile_id")
+    if not isinstance(pid, str) or not pid.strip():
+        return "profile_id is required"
+    if "sent_at" in payload and payload["sent_at"] is not None and not isinstance(payload["sent_at"], str):
+        return "sent_at must be a string"
+    templates = payload.get("templates")
+    if not isinstance(templates, list):
+        return "templates must be a list"
+    for i, t in enumerate(templates):
+        if not isinstance(t, dict):
+            return f"templates[{i}] must be an object"
+        if not isinstance(t.get("name"), str) or not t["name"].strip():
+            return f"templates[{i}].name is required"
+        if "filter" in t and t["filter"] is not None and not isinstance(t["filter"], str):
+            return f"templates[{i}].filter must be a string"
+        for f in _TS_TEMPLATE_NUMBER_FIELDS:
+            v = t.get(f)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
+                return f"templates[{i}].{f} must be a number"
+    return None
+
+
+@app.route("/api/ts-templates", methods=["POST"])
+def api_ts_templates_post():
+    """Store the plugin's exposure template list for one profile.
+
+    The latest post for a profile replaces that profile's list. The bearer
+    token gate that covers every /api route applies, as it does to /progress.
+    """
+    payload = request.get_json(silent=True)
+    err = _validate_ts_templates_payload(payload)
+    if err:
+        return jsonify({"error": err}), 400
+    pid = payload["profile_id"].strip()
+    templates = [{
+        "name": t["name"],
+        "filter": t.get("filter"),
+        **{f: t.get(f) for f in _TS_TEMPLATE_NUMBER_FIELDS},
+    } for t in payload["templates"]]
+    received_at = datetime.now(timezone.utc).isoformat()
+    with _ts_templates_lock:
+        profiles = _load_ts_templates_store()
+        profiles[pid] = {
+            "received_at": received_at,
+            "sent_at": payload.get("sent_at"),
+            "templates": templates,
+        }
+        TS_TEMPLATES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(TS_TEMPLATES_PATH, {"profiles": profiles}, indent=2)
+    return jsonify({"profile_id": pid, "count": len(templates), "received_at": received_at})
+
+
+_ts_templates_lock = threading.Lock()
+
+
 @app.route("/api/ts-templates")
 def api_ts_templates():
-    """Read-only dump of user's Target Scheduler ExposureTemplates. Falls back gracefully if DB unreachable."""
+    """Read-only dump of user's Target Scheduler ExposureTemplates.
+
+    Reads the TS database when it is readable ("source": "database"). Where it
+    is not, as on a server away from the imaging PC, falls back to the lists
+    the plugin posted ("source": "plugin")."""
     path = Path(os.path.expandvars(TS_DB_PATH))
     if not path.exists():
+        fallback = _plugin_templates_response(path, "")
+        if fallback is not None:
+            return fallback
         return jsonify({
             "available": False,
             "path": str(path),
@@ -4389,6 +4658,9 @@ def api_ts_templates():
         conn.close()
     except sqlite3.Error:
         logging.exception("sqlite read failed for %r", _safe_log(path))
+        fallback = _plugin_templates_response(path, "")
+        if fallback is not None:
+            return fallback
         return jsonify({
             "available": False,
             "path": str(path),
@@ -4405,7 +4677,7 @@ def api_ts_templates():
         "offset": r["offset"],
         "bin": r["bin"],
     } for r in rows]
-    return jsonify({"available": True, "path": str(path), "templates": templates})
+    return jsonify({"available": True, "source": "database", "path": str(path), "templates": templates})
 
 
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
@@ -4597,20 +4869,19 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             # (sub_s, desired, acquired, template_id) so all panels of the
             # mosaic share the same set.
             exp_plan_specs: list[dict] = []
-            for fname, goal in (pl.get("filter_goals") or {}).items():
-                th = float(goal.get("target_hours") or 0)
-                if th <= 0:
+            for row in fr.rows_of(pl):
+                desired = fr.desired_for(row, pl)
+                if desired <= 0:
                     continue
-                sub_s = int(goal.get("sub_exposure_s") or 300)
-                desired = max(1, int(math.ceil(th * 3600.0 / max(1, sub_s))))
-                acquired = int(round(float(goal.get("actual_hours") or 0) * 3600.0 / max(1, sub_s)))
-                # Dedupe ExposureTemplate by (camera_id, filter): gain/offset/etc live on the camera.
-                key = (pl.get("camera_id") or "", fname)
+                fname = str(row.get("filter") or "")
+                sub_s = fr.sub_s(row)
+                acquired = int(round(float(row.get("actual_hours") or 0) * 3600.0 / max(1.0, sub_s)))
+                # Dedupe ExposureTemplate by (camera_id, template name): the
+                # row names its template, and gain/offset/etc live on the camera.
+                tpl_name = str(row.get("template") or fname)
+                key = (pl.get("camera_id") or "", tpl_name)
                 if key not in template_seen:
                     filt_cfg = (camera or {}).get("filters", {}).get(fname, {}) if camera else {}
-                    tpl_name = filt_cfg.get("ts_template_name") or (
-                        f"{fname} ({camera['name']})" if camera else fname
-                    )
                     tpl = {
                         # Synthetic ID: TS's importer rewrites these through
                         # exposureTemplateIdMap. Only needs to be unique within
@@ -4620,7 +4891,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                         "Guid": str(uuid.uuid4()),
                         "Name": tpl_name,
                         "FilterName": fname,
-                        "DefaultExposure": float(filt_cfg.get("default_sub_s") or sub_s),
+                        "DefaultExposure": float(sub_s),
                         "Gain": int(filt_cfg.get("gain", -1)),
                         "Offset": int(filt_cfg.get("offset", -1)),
                         "bin": int(filt_cfg.get("bin", 1)),       # lowercase per TS schema
@@ -4725,6 +4996,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
 
 
 @app.route("/api/sync", methods=["POST"])
+@_holds_plans_lock
 def api_sync():
     """Build a Target Scheduler Import Profile zip from current plans.
 

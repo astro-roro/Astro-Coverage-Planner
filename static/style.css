@@ -1011,6 +1011,60 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .goal-status.partial  { background: #605530; color: #fff8e0; }
 .goal-status.todo     { background: #2a3246; color: #a2aec2; }
 
+/* Filter rows: one card per row, a four-column grid shared by both lines.
+   Columns are position (22px), filter (104px), template (the rest, allowed
+   to shrink to nothing so long names truncate) and remove (26px). Keep the
+   column string in step with CARD_GRID_COLUMNS in static/filter-rows.mjs. */
+.fr-list { display: flex; flex-direction: column; gap: 6px; max-width: 100%; overflow-x: hidden; padding: 6px 0; margin: -6px 0; }
+.fr-empty { font-size: 11px; color: #78839a; }
+.fr-card {
+  display: grid;
+  grid-template-columns: 22px 104px minmax(0, 1fr) 26px;
+  grid-template-rows: auto auto;
+  column-gap: 6px;
+  row-gap: 4px;
+  align-items: center;
+  padding: 6px;
+  background: #1c2332;
+  border: 1px solid #2a3246;
+  border-radius: 6px;
+  min-width: 0;
+}
+.fr-card > * { min-width: 0; }
+.fr-card.fr-done { opacity: 0.55; }
+.fr-handle { grid-column: 1; grid-row: 1 / span 2; align-self: stretch; width: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #6c788d; cursor: grab; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+.fr-handle:disabled { cursor: default; opacity: 0.5; }
+.fr-pos { text-align: center; font-size: 11px; color: #78839a; }
+.fr-card.fr-dragging { opacity: 0.5; }
+.fr-drop-line { display: flex; align-items: center; height: 4px; margin: -5px 0 -5px; pointer-events: none; }
+.fr-drop-mark { width: 8px; height: 8px; border-radius: 50%; border: 2px solid #4da6ff; box-sizing: border-box; }
+.fr-drop-rule { flex: 1; height: 2px; background: #4da6ff; }
+.fr-filter { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 4px; }
+.fr-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; }
+.fr-card select, .fr-card input { font-size: 11px; min-width: 0; }
+.fr-card select.fr-filter-sel { flex: 1 1 0; width: 0; }
+.fr-card select.fr-tmpl-sel { grid-column: 3; grid-row: 1; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fr-remove { grid-column: 4; grid-row: 1; width: 26px; padding: 0; }
+.fr-goal { grid-column: 2; grid-row: 2; display: flex; gap: 3px; }
+.fr-card input.fr-goal-input { flex: 1 1 0; width: 0; }
+.fr-card select.fr-unit-sel { flex: 0 0 auto; width: 42px; }
+.fr-progress { grid-column: 3; grid-row: 2; }
+.fr-bar { height: 5px; background: #2a3246; border-radius: 3px; overflow: hidden; }
+.fr-bar > i { display: block; height: 100%; background: #4da6ff; }
+.fr-prog-text { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; color: #a2aec2; white-space: nowrap; overflow: hidden; }
+.fr-add { align-self: flex-start; font-size: 11px; }
+
+/* Above the list: the "Finish each" / "Rotate every N" switch, "Smart order"
+   and one line saying what Target Scheduler will do. */
+.fr-order { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-bottom: 6px; font-size: 11px; max-width: 100%; }
+.fr-switch { display: inline-flex; border: 1px solid #2a3246; border-radius: 6px; overflow: hidden; }
+.fr-switch-opt { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; white-space: nowrap; cursor: pointer; }
+.fr-switch-opt:has(input[type=radio]:checked) { background: #24324a; color: #e6edf7; }
+.fr-switch-opt input[type=radio] { margin: 0; }
+.fr-rotate-n { width: 42px; font-size: 11px; }
+.fr-smart { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.fr-order-text, .fr-order-note { flex: 1 0 100%; color: #78839a; }
+
 .plan-editor-actions {
   display: flex;
   gap: 8px;

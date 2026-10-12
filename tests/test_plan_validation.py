@@ -35,6 +35,13 @@ def _fresh_plans_path():
     return app_module.PLANS_PATH
 
 
+def _row(**overrides):
+    row = {"id": "row-oiii", "filter": "OIII", "template": "OIII 3nm",
+           "template_sub_s": 300, "unit": "h", "target_hours": 1.5}
+    row.update(overrides)
+    return row
+
+
 def _valid_plan_payload(plan_id="p1", **overrides):
     base = {
         "id": plan_id,
@@ -48,7 +55,7 @@ def _valid_plan_payload(plan_id="p1", **overrides):
         },
         "telescope_id": "tel-x",
         "camera_id": "cam-y",
-        "filter_goals": {"OIII": {"target_hours": 1.5, "sub_exposure_s": 300}},
+        "filter_rows": [_row()],
         "priority": "normal",
         "min_altitude_deg": 30,
         "state": "draft",
@@ -208,40 +215,11 @@ class TestPlanPostValidation(unittest.TestCase):
             "mosaic": {"rows": 1, "cols": 1, "overlap_pct": float("nan")},
         }), "overlap_pct")
 
-    def test_filter_goal_target_hours_nan_rejected(self):
-        # The old `th < 0` check was silently False for NaN, so this
-        # previously passed validation and poisoned plans.json: every
-        # later /api/sync then 500'd on int(math.ceil(nan)).
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": float("nan")}},
-        ), "target_hours")
 
-    def test_filter_goal_target_hours_infinity_rejected(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": float("inf")}},
-        ), "target_hours")
 
-    def test_filter_goal_sub_exposure_nan_rejected(self):
-        # Same silent-False-comparison bug as target_hours, on the
-        # `se <= 0` check.
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": 5, "sub_exposure_s": float("nan")}},
-        ), "sub_exposure_s")
 
-    def test_filter_goal_sub_exposure_infinity_rejected(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": 5, "sub_exposure_s": float("inf")}},
-        ), "sub_exposure_s")
 
-    def test_filter_goal_actual_hours_nan_rejected(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": 5, "actual_hours": float("nan")}},
-        ), "actual_hours")
 
-    def test_filter_goal_actual_hours_negative_rejected(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": 5, "actual_hours": -1}},
-        ), "actual_hours")
 
     def test_ra_non_numeric(self):
         self._post_expect_400(_valid_plan_payload(target={
@@ -298,35 +276,115 @@ class TestPlanPostValidation(unittest.TestCase):
             "mosaic": {"rows": 1, "cols": 1, "overlap_pct": 150},
         }), "overlap_pct")
 
-    def test_filter_goals_not_dict(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals="not a dict",
-        ), "filter_goals")
 
-    def test_filter_goal_value_not_dict(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": "5h"},
-        ), "Ha")
 
-    def test_filter_goal_negative_target_hours(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": -3}},
-        ), "target_hours")
 
-    def test_filter_goal_non_numeric_target_hours(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": "three"}},
-        ), "target_hours")
 
-    def test_filter_goal_zero_sub_exposure(self):
-        self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": 5, "sub_exposure_s": 0}},
-        ), "sub_exposure_s")
 
-    def test_filter_goal_negative_sub_exposure(self):
+
+    # filter_rows (docs/specs/goal-panel-and-ts-order.md section 3)
+
+    def test_rows_not_a_list(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows="R"), "filter_rows")
+
+    def test_row_not_an_object(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=["5h"]), "filter_rows[0]")
+
+    def test_v1_same_filter_and_template_twice_rejected(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=[
+            _row(id="a", filter="R", template="R Stars", template_sub_s=15, unit="fr", target_frames=20),
+            _row(id="b", filter="R", template="R Stars", template_sub_s=15, unit="fr", target_frames=40),
+        ]), "R Stars")
+
+    def test_v1_same_filter_with_two_templates_saves(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(filter_rows=[
+            _row(id="a", filter="R", template="R", template_sub_s=180),
+            _row(id="b", filter="R", template="R Stars", template_sub_s=15, unit="fr",
+                 target_frames=20, target_hours=None),
+        ]))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+
+    def test_duplicate_row_id_rejected(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=[
+            _row(id="a"), _row(id="a", filter="Ha", template="Ha 3nm"),
+        ]), "id")
+
+    def test_row_without_id_gets_one(self):
+        row = _row()
+        del row["id"]
+        r = self.client.post("/api/plans", json=_valid_plan_payload(filter_rows=[row]))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        self.assertTrue(r.get_json()["filter_rows"][0]["id"])
+
+    def test_v2_frame_row_without_target_frames_rejected(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=[
+            _row(unit="fr")]), "target_frames")
+
+    def test_v2_fractional_target_frames_rejected(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=[
+            _row(unit="fr", target_frames=2.5)]), "target_frames")
+
+    def test_v2_empty_template_rejected(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=[
+            _row(template="")]), "template")
+
+    def test_unknown_unit_rejected(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=[_row(unit="min")]), "unit")
+
+    def test_hour_row_without_target_hours_rejected(self):
+        row = _row()
+        del row["target_hours"]
+        self._post_expect_400(_valid_plan_payload(filter_rows=[row]), "target_hours")
+
+    def test_negative_target_hours_rejected(self):
+        self._post_expect_400(_valid_plan_payload(filter_rows=[_row(target_hours=-3)]), "target_hours")
+
+    def test_nan_target_hours_rejected(self):
+        # A NaN comparison is silently False, which is how a NaN goal once
+        # passed validation and poisoned plans.json.
         self._post_expect_400(_valid_plan_payload(
-            filter_goals={"Ha": {"target_hours": 5, "sub_exposure_s": -1}},
-        ), "sub_exposure_s")
+            filter_rows=[_row(target_hours=float("nan"))]), "target_hours")
+
+    def test_negative_target_frames_rejected(self):
+        self._post_expect_400(_valid_plan_payload(
+            filter_rows=[_row(unit="fr", target_frames=-1)]), "target_frames")
+
+    def test_zero_or_nan_template_sub_rejected(self):
+        for bad in (0, -1, float("nan"), float("inf"), "300"):
+            with self.subTest(bad=bad):
+                self._post_expect_400(_valid_plan_payload(
+                    filter_rows=[_row(template_sub_s=bad)]), "template_sub_s")
+
+    def test_negative_or_nan_actual_hours_rejected(self):
+        for bad in (-1, float("nan")):
+            with self.subTest(bad=bad):
+                self._post_expect_400(_valid_plan_payload(
+                    filter_rows=[_row(actual_hours=bad)]), "actual_hours")
+
+    def test_filter_the_camera_lacks_rejected(self):
+        gear = Path(tempfile.mkdtemp()) / "gear.json"
+        gear.write_text(json.dumps({"cameras": [{
+            "id": "cam-y", "name": "Cam", "filters": {"OIII": {}, "Ha": {}},
+        }]}), encoding="utf-8")
+        saved = app_module.GEAR_PATH
+        app_module.GEAR_PATH = gear
+        app_module._gear_cache = None
+        try:
+            self._post_expect_400(_valid_plan_payload(filter_rows=[
+                _row(filter="SII", template="SII 3nm")]), "SII")
+            r = self.client.post("/api/plans", json=_valid_plan_payload())
+            self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        finally:
+            app_module.GEAR_PATH = saved
+            app_module._gear_cache = None
+
+    def test_filter_goals_sent_by_a_client_are_not_stored(self):
+        r = self.client.post("/api/plans", json=_valid_plan_payload(
+            filter_goals={"Ha": {"target_hours": 5, "sub_exposure_s": 300}}))
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        stored = json.loads(app_module.PLANS_PATH.read_text(encoding="utf-8"))["plans"][0]
+        self.assertNotIn("filter_goals", stored)
+        self.assertEqual([row["filter"] for row in stored["filter_rows"]], ["OIII"])
 
     def test_target_not_dict(self):
         self._post_expect_400(_valid_plan_payload(
@@ -454,7 +512,9 @@ class TestLegacyNaNHealingOnLoad(unittest.TestCase):
         data = app_module.load_plans()
         plans = {p["id"]: p for p in data["plans"]}
         self.assertIsNone(plans["poisoned"]["target"]["center_ra_deg"])
-        self.assertIsNone(plans["poisoned"]["filter_goals"]["Ha"]["target_hours"])
+        # The healed goal then went through the filter row migration, which
+        # reads a missing goal as 0.
+        self.assertEqual(plans["poisoned"]["filter_rows"][0]["target_hours"], 0.0)
         # Untouched fields on the same plan survive.
         self.assertEqual(plans["poisoned"]["target"]["center_dec_deg"], -30.0)
         # The clean plan is unaffected.
