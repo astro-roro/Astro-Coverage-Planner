@@ -157,7 +157,11 @@ mimetypes.add_type("text/javascript", ".js")
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
-app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 3600))  # 1h default; set 0 for dev to force revalidation every request
+# 0 makes browsers revalidate every load (a 304 when unchanged). The page's
+# modules carry no version in their URLs, so any cache lifetime lets a
+# reload after a deploy run old scripts against the new API, which wiped a
+# plan's filters on 13 Oct 2026.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE_S", 0))
 
 # Every write endpoint takes a small JSON document. The largest legitimate
 # body is a 400-panel mosaic sent to /api/visibility/panels, around 25 KB,
