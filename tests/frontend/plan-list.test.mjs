@@ -19,9 +19,10 @@ import {
 } from "../../static/plan-list.mjs";
 
 function plan(id, { name = id, project = "", state, priority = "normal", goals = {}, mosaic } = {}) {
-  const filter_goals = {};
-  for (const [f, [t, a]] of Object.entries(goals)) filter_goals[f] = { target_hours: t, actual_hours: a };
-  const p = { id, project_name: project, priority, filter_goals, target: { name } };
+  const filter_rows = Object.entries(goals).map(([f, [t, a]]) => (
+    { id: `${id}-${f}`, filter: f, template: f, template_sub_s: 300, unit: "h", target_hours: t, actual_hours: a }
+  ));
+  const p = { id, project_name: project, priority, filter_rows, target: { name } };
   if (state) p.state = state;
   if (mosaic) p.target.mosaic = mosaic;
   return p;

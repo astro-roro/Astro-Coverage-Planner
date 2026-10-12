@@ -13,10 +13,6 @@ const COMMA_PLACEHOLDER = [
   /<(span|td)[^>]*>, <\/(span|td)>/,
 ];
 
-// The old goal table's "no TS template" cell. It goes away with the table in
-// phase 3 of docs/specs/goal-panel-and-ts-order.md, so it is not fixed here.
-const GOAL_TABLE_LINE = /class="tmpl-sel"/;
-
 describe("EMPTY_CELL", () => {
   it("is an en dash", () => {
     assert.match(src, /^const EMPTY_CELL = "–";$/m);
@@ -30,7 +26,6 @@ describe("EMPTY_CELL", () => {
   it("leaves no lone comma standing in for a missing value", () => {
     const bad = [];
     lines.forEach((line, i) => {
-      if (GOAL_TABLE_LINE.test(line)) return;
       if (COMMA_PLACEHOLDER.some(re => re.test(line))) bad.push(`${i + 1}: ${line.trim()}`);
     });
     assert.deepEqual(bad, []);

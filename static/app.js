@@ -126,7 +126,7 @@ let _pressInfo = null;        // {x, y, t, dragged}, last mousedown over the map
 
 // --- Planner mode globals ---
 let planningMode = false;      // false = Coverage mode, true = Planning mode
-let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_goals, priority, ...}]
+let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_rows, priority, ...}]
 let gear = { telescopes: [], cameras: [] };  // /api/gear response (v2)
 let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on the server
 let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
@@ -671,6 +671,21 @@ import {
   stateCounts,
   stateMixText,
 } from "./plan-list.mjs";
+import {
+  cardHtml,
+  SIDE_PANEL_DEFAULT_W,
+  NEW_TEMPLATE_VALUE,
+  filterListHtml,
+  hoursByFilter,
+  newFilterRow,
+  rowDiffLabel,
+  setRowGoal,
+  setRowTemplate,
+  setRowUnit,
+  templateSub,
+  templatesForFilter,
+  usualTemplate,
+} from "./filter-rows.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -898,7 +913,7 @@ function isTargetFinished(t) {
 }
 
 function planGoalsMet(plan) {
-  const goals = plan?.filter_goals || {};
+  const goals = hoursByFilter(plan);
   const filterNames = Object.keys(goals);
   if (filterNames.length === 0) return false;
   const target = manifest?.targets?.find(x => String(x.target_id) === String(plan.target?.target_id));
@@ -929,7 +944,8 @@ function planIsDirty() {
   if (!editingPlan) return false;
   const orig = plans.find(p => p.id === editingPlan.id);
   if (!orig) return true; // detached, treat as dirty so we don't silently lose work
-  return JSON.stringify(editingPlan) !== JSON.stringify(orig);
+  const { filter_goals: _legacy, ...origRest } = orig;
+  return JSON.stringify(editingPlan) !== JSON.stringify(origRest);
 }
 
 // Pre-flight for any "leave plan-edit" navigation. If the user has unsaved
@@ -1615,7 +1631,7 @@ function setHoverHit(hit) {
     } else if (hit?.plan) {
       const pl = hit.plan;
       const panels = (planPanelCorners(pl) || []).length;
-      const goals = Object.keys(pl.filter_goals || {}).join("/");
+      const goals = [...new Set((pl.filter_rows || []).map(r => r.filter))].join("/");
       const mosaicBit = panels > 1 ? ` · ${panels}-panel mosaic` : "";
       tip.textContent = `${pl.target?.name || pl.id}${pl.project_name ? ` · ${pl.project_name}` : ""}${goals ? ` · ${goals}` : ""}${mosaicBit}`;
     } else {
@@ -3476,7 +3492,7 @@ function renderIncomingAutoPull(autoPullDiffs, decisions) {
   return autoPullDiffs.map(d => {
     const pid = d.plan_id;
     const fields = (d.auto_pull || []).map(path => ({
-      label: humanFieldLabel(path),
+      label: humanFieldLabel(path, plans.find(p => p.id === pid)),
       from: d.local && d.local[path],
       to: d.remote && d.remote[path],
     }));
@@ -3509,7 +3525,7 @@ function renderConflictCards(conflicts, decisions) {
     const decision = decisions.get(pid) || "skip";
     const fieldRows = (d.conflict || []).map(path => `
       <div class="ext-conflict-field">
-        <span class="ext-diff-label">${esc(humanFieldLabel(path))}</span>
+        <span class="ext-diff-label">${esc(humanFieldLabel(path, plans.find(p => p.id === pid)))}</span>
         <span class="ext-conflict-acp">ACP: ${esc(formatValue(d.local && d.local[path]))}</span>
         <span class="ext-conflict-ts">TS: ${esc(formatValue(d.remote && d.remote[path]))}</span>
       </div>
@@ -3607,7 +3623,7 @@ function renderChangeDirectional(c, dir) {
 
 // Map a dotted field path (from /import/diff) to a human label that matches
 // the wording on the outgoing side of the modal.
-function humanFieldLabel(path) {
+function humanFieldLabel(path, plan) {
   const map = {
     "priority": "priority",
     "min_altitude_deg": "min altitude",
@@ -3620,13 +3636,8 @@ function humanFieldLabel(path) {
     "target.mosaic.overlap_pct": "mosaic overlap",
   };
   if (map[path]) return map[path];
-  // filter_goals.Ha.target_hours → "Ha target hours"
-  if (path.startsWith("filter_goals.")) {
-    const parts = path.split(".");
-    const fname = parts[1] || "";
-    const sub = parts.slice(2).join(".").replace(/_/g, " ");
-    return `${fname} ${sub}`;
-  }
+  // filter_rows.<row id>.target_frames → "R Stars target frames"
+  if (path.startsWith("filter_rows.")) return rowDiffLabel(path, plan);
   return path;
 }
 
@@ -3870,7 +3881,7 @@ async function startLiveAction(ext, action) {
       st.failures = 0;
       st.lastIso = new Date().toISOString();
       liveProgressState.set(action.id, st);
-      const updated = body.updated_filter_goals ?? body.updated ?? 0;
+      const updated = body.updated_rows ?? body.updated_filter_goals ?? body.updated ?? 0;
       setLiveStatus(statusKey, `Last refresh just now · ${updated} goal${updated === 1 ? "" : "s"} updated`, "running");
       // Server rewrote plans.json with the new actual_hours. Reload the
       // in-memory `plans` array and repaint the rail if we're on it, without
@@ -3925,22 +3936,24 @@ function stopLiveAction(actionId) {
 function updatePlanEditorActuals() {
   if (panelMode !== "plan-edit" || !editingPlan) return;
   const fresh = plans.find(p => p.id === editingPlan.id);
-  if (!fresh || !fresh.filter_goals) return;
-  for (const [fname, freshGoal] of Object.entries(fresh.filter_goals)) {
-    if (typeof freshGoal.actual_hours !== "number") continue;
-    if (editingPlan.filter_goals && editingPlan.filter_goals[fname]) {
-      editingPlan.filter_goals[fname].actual_hours = freshGoal.actual_hours;
-    }
-    const span = document.querySelector(
-      `.goal-status[data-actual-filter="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(fname) : fname}"]`
+  if (!fresh || !fresh.filter_rows) return;
+  const ctx = filterRowsContext();
+  for (const freshRow of fresh.filter_rows) {
+    const row = (editingPlan.filter_rows || []).find(r => r.id === freshRow.id);
+    if (!row) continue;
+    if (typeof freshRow.actual_hours === "number") row.actual_hours = freshRow.actual_hours;
+    if (freshRow.aac) row.aac = freshRow.aac;
+    else delete row.aac;
+    const card = document.querySelector(
+      `.fr-card[data-row-id="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(row.id) : row.id}"]`
     );
-    if (!span) continue;
-    const th = (editingPlan.filter_goals && editingPlan.filter_goals[fname]?.target_hours) || 0;
-    const ah = freshGoal.actual_hours || 0;
-    const cls = (th > 0 && ah >= th) ? "done" : (ah > 0 ? "partial" : "todo");
-    span.textContent = `${ah.toFixed(1)}h`;
-    span.className = `goal-status ${cls}`;
-    span.dataset.actualFilter = fname;
+    if (!card) continue;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = cardHtml(row, 0, ctx);
+    const next = tmp.firstElementChild;
+    card.classList.toggle("fr-done", next.classList.contains("fr-done"));
+    const prog = card.querySelector(".fr-progress");
+    if (prog) prog.innerHTML = next.querySelector(".fr-progress").innerHTML;
   }
 }
 
@@ -4539,7 +4552,7 @@ function _tileColorFor(tile, st) {
 // mosaic bounds; if the tile centre falls inside, the tile inherits the
 // plan's state. ~40 tiles × ~10 plans = 400 polygon point-tests, sub-ms.
 function _planAllGoalsMet(plan) {
-  const goals = plan?.filter_goals || {};
+  const goals = hoursByFilter(plan);
   const entries = Object.entries(goals);
   if (!entries.length) return false;     // no goals → can't be "done"
   for (const [, g] of entries) {
@@ -5734,7 +5747,7 @@ const SIDE_PANEL_KEY = "acp.sidePanel.v1";
 const SIDE_PANEL_TABS = ["main", "filters", "library"];
 const SIDE_PANEL_MIN_W = 300;
 const SIDE_PANEL_MAX_W = 760;
-const sidePanelState = { open: true, tab: "main", width: 380 };
+const sidePanelState = { open: true, tab: "main", width: SIDE_PANEL_DEFAULT_W };
 
 function loadSidePanelState() {
   try {
@@ -6388,8 +6401,7 @@ function planCamera(plan) {
 
 // True if the plan has any logged actual hours on any filter.
 function planHasData(plan) {
-  const goals = plan?.filter_goals || {};
-  for (const g of Object.values(goals)) {
+  for (const g of plan?.filter_rows || []) {
     if ((Number(g?.actual_hours) || 0) > 0) return true;
   }
   return false;
@@ -6540,7 +6552,7 @@ function newEmptyPlan() {
     },
     telescope_id: tel?.id || "",
     camera_id: cam?.id || "",
-    filter_goals: {},
+    filter_rows: [],
     priority: "normal",
     min_altitude_deg: 30,
     meridian_window_min: 0,
@@ -6597,7 +6609,7 @@ function planRowHtml(pl, { withProject = true } = {}) {
   const name = esc(pl.target?.name || pl.id);
   const proj = esc(pl.project_name || "(no project)");
   const pri = pl.priority || "normal";
-  const goals = pl.filter_goals || {};
+  const goals = hoursByFilter(pl);
   const dots = FILTER_DOT_ORDER.map(f => {
     const g = goals[f];
     const color = FILTER_COLORS[f] || "#888";
@@ -6884,78 +6896,86 @@ function renderPlanListItems() {
   list.innerHTML = html;
 }
 
-// Build the list of TS-template <option> tags for a filter row.
-//
-// Returns the inner HTML for a <select>, OR null when no template UI should
-// render at all (e.g. /api/ts-templates wasn't available, caller falls
-// back to an em-dash).
-//
-// Filtering steps:
-//   1. By filter name (case-insensitive).
-//   2. Then by selected camera, using a normalised-name "contains" check so
-//      a template called "Ha (ZWO ASI6200MM Pro)" matches a gear camera
-//      named "ZWO ASI6200MM Pro". If the camera-narrow returns empty, we
-//      fall back to filter-only, better to show something than nothing.
-//
-// Option labels: when multiple templates remain, we show only the *varying*
-// fields (gain / sub-exposure / offset / bin) instead of the full template
-// name, so the user sees the meaningful axis of choice (e.g. "100s" / "300s"
-// when only exposure differs, or "gain 0" / "gain 100" when only gain
-// differs). When a single template remains we just show its name.
-//
-// Single-match behaviour: the lone option is rendered as `selected` so the
-// auto-persist hook in renderPlanEditor picks it up, user doesn't have to
-// open the dropdown to confirm.
-function buildTsTemplateOptions(filterName, cameraObj, filtCfg) {
-  if (!tsTemplates || !tsTemplates.available) return null;
-  let matching = (tsTemplates.templates || []).filter(
-    t => (t.filter || "").toLowerCase() === filterName.toLowerCase(),
-  );
-  if (matching.length === 0) {
-    return `<option value="">(no ${esc(filterName)} template)</option>`;
-  }
-  if (cameraObj && cameraObj.name && matching.length > 1) {
-    const camNorm = _normalizeForMatch(cameraObj.name);
-    const narrowed = matching.filter(t => _normalizeForMatch(t.name).includes(camNorm));
-    if (narrowed.length) matching = narrowed;
-  }
-  const diffs = _differingTemplateFields(matching);
-  // Allow clearing an existing pick when the user wants to fall back to ACP's
-  // own derivation. Only show "(none)" when something is currently stored , 
-  // for fresh plans we don't want the empty choice cluttering the dropdown.
-  const opts = [];
-  if (filtCfg && filtCfg.ts_template_id) {
-    opts.push(`<option value="">(none)</option>`);
-  }
-  opts.push(...matching.map((t, i) => {
-    const label = diffs.length ? _templateOptionLabel(t, diffs) : t.name;
-    const stored = filtCfg && String(filtCfg.ts_template_id || "") === String(t.id);
-    // Auto-default the lone option when nothing's stored yet so the
-    // post-render auto-persist hook fires for it.
-    const autoDefault = matching.length === 1 && !(filtCfg && filtCfg.ts_template_id);
-    const selected = stored || autoDefault ? "selected" : "";
-    return `<option value="${esc(t.id)}" ${selected}>${esc(label)}</option>`;
-  }));
-  return opts.join("");
+// What the filter-row cards need to draw: the plan's camera, the TS template
+// list (empty when none has loaded) and the dot colours.
+function filterRowsContext() {
+  return {
+    camera: editingPlan ? planCamera(editingPlan) : null,
+    templates: tsTemplates && tsTemplates.available ? (tsTemplates.templates || []) : [],
+    colors: FILTER_COLORS,
+  };
 }
 
-function _normalizeForMatch(s) {
-  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+// Redraw the card list after a structural change (add, remove, filter or
+// template or unit change). Goal typing only touches the row's own card.
+function redrawFilterRows(panel) {
+  const host = panel.querySelector("#filterRows");
+  if (host) host.innerHTML = filterListHtml(editingPlan, filterRowsContext());
 }
 
-function _differingTemplateFields(templates) {
-  // Order matters, exposure first is what users notice; gain/offset/bin
-  // tail off in significance. We list the differing ones in that order so
-  // the option label reads naturally.
-  const fields = ["default_exposure_s", "gain", "offset", "bin"];
-  return fields.filter(f => new Set(templates.map(t => t[f])).size > 1);
-}
-
-function _templateOptionLabel(template, diffs) {
-  return diffs.map(f => {
-    if (f === "default_exposure_s") return `${template[f]}s`;
-    return `${f.replace(/_/g, " ")} ${template[f]}`;
-  }).join(" · ");
+function wireFilterRows(panel) {
+  const host = panel.querySelector("#filterRows");
+  if (!host) return;
+  const rowOf = el => {
+    const id = el.closest(".fr-card")?.dataset.rowId;
+    return (editingPlan.filter_rows || []).find(r => r.id === id);
+  };
+  host.addEventListener("click", e => {
+    if (e.target.closest(".fr-add")) {
+      editingPlan.filter_rows.push(newFilterRow({
+        rows: editingPlan.filter_rows,
+        camera: planCamera(editingPlan),
+        templates: filterRowsContext().templates,
+        id: crypto.randomUUID(),
+      }));
+      redrawFilterRows(panel);
+      return;
+    }
+    if (e.target.closest(".fr-remove")) {
+      const row = rowOf(e.target);
+      if (!row) return;
+      editingPlan.filter_rows = editingPlan.filter_rows.filter(r => r !== row);
+      redrawFilterRows(panel);
+    }
+  });
+  host.addEventListener("input", e => {
+    if (!e.target.classList.contains("fr-goal-input")) return;
+    const row = rowOf(e.target);
+    if (!row) return;
+    const v = parseFloat(e.target.value);
+    setRowGoal(row, isFinite(v) ? v : 0);
+    // Repaint only the progress block, so the input keeps focus and cursor.
+    const card = e.target.closest(".fr-card");
+    const tmp = document.createElement("div");
+    tmp.innerHTML = cardHtml(row, 0, filterRowsContext());
+    const next = tmp.firstElementChild;
+    card.classList.toggle("fr-done", next.classList.contains("fr-done"));
+    card.querySelector(".fr-progress").innerHTML = next.querySelector(".fr-progress").innerHTML;
+  });
+  host.addEventListener("change", e => {
+    const row = rowOf(e.target);
+    if (!row) return;
+    const ctx = filterRowsContext();
+    if (e.target.classList.contains("fr-unit-sel")) {
+      setRowUnit(row, e.target.value);
+    } else if (e.target.classList.contains("fr-filter-sel")) {
+      const { template, sub } = usualTemplate(e.target.value, ctx.camera, ctx.templates);
+      row.filter = e.target.value;
+      setRowTemplate(row, template, sub);
+    } else if (e.target.classList.contains("fr-tmpl-sel")) {
+      if (e.target.value === NEW_TEMPLATE_VALUE) {
+        const name = (window.prompt("New template name?") || "").trim();
+        const sub = parseFloat(window.prompt("Sub length in seconds?", String(row.template_sub_s || 300)));
+        if (name && isFinite(sub) && sub > 0) setRowTemplate(row, name, sub);
+      } else {
+        const t = templatesForFilter(ctx.templates, row.filter).find(x => x.name === e.target.value);
+        if (t) setRowTemplate(row, t.name, templateSub(t));
+      }
+    } else {
+      return;
+    }
+    redrawFilterRows(panel);
+  });
 }
 
 function renderPlanEditor(plan) {
@@ -6963,6 +6983,10 @@ function renderPlanEditor(plan) {
   updateSearchVisibility();
   selectedPlanId = plan.id;
   editingPlan = JSON.parse(JSON.stringify(plan));
+  // GET /api/plans still carries a derived filter_goals for older plugins.
+  // The editor reads and writes filter_rows only.
+  delete editingPlan.filter_goals;
+  if (!Array.isArray(editingPlan.filter_rows)) editingPlan.filter_rows = [];
   editingPlanOriginalSettings = {
     state: editingPlan.state || "active",
     priority: editingPlan.priority || "normal",
@@ -6974,10 +6998,6 @@ function renderPlanEditor(plan) {
   const telescope = planTelescope(editingPlan);
   const camera = planCamera(editingPlan);
   const [fw, fh] = planFovArcmin(editingPlan);
-  // LRGBHOS order, keep only the canonical 7 the camera has configured;
-  // any extras are hidden for now (same rule as the sky-map chip rail).
-  const camFilters = camera?.filters ? Object.keys(camera.filters) : FILTER_DOT_ORDER;
-  const filters = FILTER_DOT_ORDER.filter(f => camFilters.includes(f));
   const mos = planMosaic(editingPlan);
   // Other plans sharing this project_name: state, priority and minimum
   // time apply to the whole TS project, not just this plan (see
@@ -6992,24 +7012,6 @@ function renderPlanEditor(plan) {
   const camOpts = (gear.cameras || []).map(c =>
     `<option value="${esc(c.id)}" ${c.id === editingPlan.camera_id ? "selected" : ""}>${esc(c.name)}</option>`
   ).join("") || `<option value="">(no cameras, open Edit gear)</option>`;
-
-  const goalRows = filters.map(f => {
-    const g = editingPlan.filter_goals[f] || {};
-    const color = FILTER_COLORS[f] || "#888";
-    const filtCfg = camera?.filters?.[f] || {};
-    const th = g.target_hours ?? "";
-    const sub = g.sub_exposure_s ?? filtCfg.default_sub_s ?? 300;
-    const ah = g.actual_hours || 0;
-    const ahClass = (g.target_hours > 0 && ah >= g.target_hours) ? "done" : (ah > 0 ? "partial" : "todo");
-    const tsOpts = buildTsTemplateOptions(f, camera, filtCfg);
-    return `<tr>
-      <td><span class="filter-pill fp-${esc(f)}" style="background:${color};color:#000">${esc(f)}</span></td>
-      <td><input type="number" step="0.5" min="0" class="goal-target-hours" data-f="${esc(f)}" value="${th}" placeholder="hrs"></td>
-      <td><input type="number" step="10" min="10" class="goal-sub-s" data-f="${esc(f)}" value="${sub}"></td>
-      <td><span class="goal-status ${ahClass}" data-actual-filter="${esc(f)}">${ah.toFixed(1)}h</span></td>
-      <td>${tsOpts !== null ? `<select class="tmpl-sel" data-f="${esc(f)}">${tsOpts}</select>` : `<span style="color:#78839a;font-size:11px">, </span>`}</td>
-    </tr>`;
-  }).join("");
 
   const tg = editingPlan.target;
 
@@ -7082,10 +7084,7 @@ function renderPlanEditor(plan) {
 
       <fieldset>
         <legend>Filter goals</legend>
-        <table class="goals-table">
-          <thead><tr><th>Filter</th><th>Target h</th><th>Sub (s)</th><th>Done</th><th>TS template</th></tr></thead>
-          <tbody>${goalRows}</tbody>
-        </table>
+        <div id="filterRows">${filterListHtml(editingPlan, filterRowsContext())}</div>
       </fieldset>
 
       <fieldset>
@@ -7197,57 +7196,7 @@ function renderPlanEditor(plan) {
     editingPlan.target.mosaic.overlap_pct = Math.max(0, Math.min(90, parseFloat(e.target.value) || 0));
     updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
   });
-  panel.querySelectorAll(".goal-target-hours").forEach(el => el.addEventListener("input", e => {
-    const f = e.target.dataset.f;
-    const v = parseFloat(e.target.value);
-    editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
-    if (isFinite(v) && v > 0) {
-      editingPlan.filter_goals[f].target_hours = v;
-      // The sub-exposure field shows a sensible default (stored value, gear
-      // default, or 300s) whether or not the user ever touches it. Commit
-      // that displayed value here so a plan saved right after setting a
-      // target-hours goal still carries sub_exposure_s.
-      if (!editingPlan.filter_goals[f].sub_exposure_s) {
-        const subEl = panel.querySelector(`.goal-sub-s[data-f="${CSS.escape(f)}"]`);
-        const sub = parseFloat(subEl?.value);
-        if (isFinite(sub) && sub > 0) editingPlan.filter_goals[f].sub_exposure_s = sub;
-      }
-    } else {
-      delete editingPlan.filter_goals[f];
-    }
-  }));
-  panel.querySelectorAll(".goal-sub-s").forEach(el => el.addEventListener("input", e => {
-    const f = e.target.dataset.f;
-    const v = parseFloat(e.target.value);
-    if (isFinite(v) && v > 0) {
-      editingPlan.filter_goals[f] = editingPlan.filter_goals[f] || {};
-      editingPlan.filter_goals[f].sub_exposure_s = v;
-    }
-  }));
-  panel.querySelectorAll(".tmpl-sel").forEach(el => el.addEventListener("change", async e => {
-    const f = e.target.dataset.f;
-    const cam = planCamera(editingPlan);
-    if (!cam) return;
-    cam.filters = cam.filters || {};
-    cam.filters[f] = cam.filters[f] || {};
-    cam.filters[f].ts_template_id = e.target.value || null;
-    const opt = e.target.selectedOptions[0];
-    cam.filters[f].ts_template_name = opt?.textContent?.split(" (")[0] || null;
-    // Persist to data/gear.json so the mapping survives a reload
-    await saveGear();
-  }));
-  // Auto-persist single-match template defaults: when buildTsTemplateOptions
-  // pre-selects the only candidate, fire a synthetic change so the handler
-  // above writes it to gear.json without the user opening the dropdown.
-  // Skips selects where the pre-selected value already matches storage.
-  panel.querySelectorAll(".tmpl-sel").forEach(el => {
-    const f = el.dataset.f;
-    const cam = planCamera(editingPlan);
-    const stored = String(cam?.filters?.[f]?.ts_template_id || "");
-    if (el.value && el.value !== stored) {
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  });
+  wireFilterRows(panel);
   panel.querySelector("#f_state")?.addEventListener("change", e => { editingPlan.state = e.target.value; });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
   panel.querySelector("#f_mintime")?.addEventListener("input", e => {
