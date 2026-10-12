@@ -579,6 +579,10 @@ Each phase ends with its tests passing in every repo it touches.
 
 Phase 3 ships the migration and the importer change together, so no push can run between them. Within phase 3 the plugin goes onto Voyager before ACP core merges, as in `ts-project-settings.md` section 8. ACP deploys on merge, and the migration is the step that is hard to undo.
 
+### Rolling back the plugin
+
+Once the phase 3 plugin has pushed, the way back is to restore the `schedulerdb.sqlite` backup that sync wrote beside the database, with NINA closed. Never reinstall the older plugin over a database the new one has written to. The new push restamps every exposure plan with the filter row guid, and an older plugin looks plans up by the goal key guid, finds none, and inserts a second exposure plan for every row, starting from zero frames. The same holds for ACP: a rolled-back ACP core with a migrated `plans.json` needs the `plans.json.bak-*` copy the migration took.
+
 Phase 4 comes before phase 5 because the order writer needs the switch frequency. Phase 2 comes before phase 3 so ACP has template sub lengths when the list replaces the sub field.
 
 Phases 3 to 6 regenerate `golden-rows.json` with `tests/dump_golden_rows.py` and copy it into the plugin in the same session.
