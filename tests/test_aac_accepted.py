@@ -220,6 +220,26 @@ class TestReviewFixes(unittest.TestCase):
         body["filter_rows"][2].update(changes)
         return self.client.put("/api/plans/M42", json=body)
 
+    def test_a_save_from_a_page_older_than_the_goal_panel_keeps_the_rows(self):
+        stored = self._stored()
+        stored["ts_links"] = {"profile-1": {"plans": {"M42_" + HA_ID: 7}}}
+        app_module.save_plans({"version": 1, "filter_rows_migrated": 1, "plans": [stored]})
+        body = {k: v for k, v in stored.items() if k not in ("filter_rows", "ts_links")}
+        body["filter_goals"] = {}
+        body["ts_links"] = {"profile-1": {"plans": {"M42_Ha": 7}}}
+        body["min_altitude_deg"] = 25
+        self.assertEqual(self.client.put("/api/plans/M42", json=body).status_code, 200)
+        saved = self._stored()
+        self.assertEqual([r["id"] for r in saved["filter_rows"]], [r["id"] for r in stored["filter_rows"]])
+        self.assertEqual(saved["ts_links"], stored["ts_links"])
+        self.assertEqual(saved["min_altitude_deg"], 25)
+
+    def test_a_save_with_empty_rows_still_clears_them(self):
+        body = dict(self._stored())
+        body["filter_rows"] = []
+        self.assertEqual(self.client.put("/api/plans/M42", json=body).status_code, 200)
+        self.assertEqual(self._stored()["filter_rows"], [])
+
     def test_a_save_keeps_the_block_while_filter_and_template_agree(self):
         self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
         self.assertEqual(self._save_with(target_frames=60).status_code, 200)

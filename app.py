@@ -41,6 +41,7 @@ Env:
 """
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import hmac
@@ -3673,6 +3674,29 @@ def api_plans():
     return jsonify(payload), 201
 
 
+_OLD_PAGE_KEEPS = ("filter_rows", "ts_links", "ts_refs", "ts_base_snapshot")
+
+
+def _keep_rows_from_old_page(payload: dict, existing: dict) -> None:
+    """A save with no `filter_rows` comes from a page loaded before the goal
+    panel shipped. It only knows `filter_goals`, which is never stored, and
+    it echoes the TS link keys from before the rows migration. Storing it as
+    sent wipes every filter on the plan and points the next push at plans
+    that no longer exist, so keep what is stored for those fields instead.
+    """
+    if "filter_rows" in payload or not isinstance(existing.get("filter_rows"), list):
+        return
+    for key in _OLD_PAGE_KEEPS:
+        if key in existing:
+            payload[key] = copy.deepcopy(existing[key])
+        else:
+            payload.pop(key, None)
+    logging.warning(
+        "plan %s saved without filter rows (a page loaded before the goal panel?); kept the stored rows",
+        _safe_log(payload.get("id")),
+    )
+
+
 @app.route("/api/plans/<plan_id>", methods=["GET", "PUT", "DELETE"])
 @_holds_plans_lock
 def api_plan(plan_id: str):
@@ -3697,6 +3721,7 @@ def api_plan(plan_id: str):
     payload["created_at"] = existing.get("created_at") or datetime.now(timezone.utc).isoformat()
     payload.setdefault("last_synced_at", existing.get("last_synced_at"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _keep_rows_from_old_page(payload, existing)
     fr.keep_aac(payload, existing)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
