@@ -132,7 +132,8 @@ let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on
 let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
-let editingPlanOriginalSettings = null; // {state, priority, minimum_time_min} as loaded, so savePlan() knows whether to also hit the project settings route
+let editingPlanOriginalSettings = null; // {state, priority, minimum_time_min, filter_switch_frequency, smart_exposure_order} as loaded, so savePlan() knows whether to also hit the project settings route
+let editingRotateN = ROTATE_DEFAULT;   // N shown beside "Rotate every" while the switch is on "Finish each"
 let planOverlay = null;        // Aladin overlay for plan footprints (solid, plans with data)
 let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed, not-started plans)
 let planCenterCat = null;      // Aladin catalog for plan center + rotation handle markers
@@ -678,6 +679,9 @@ import {
   filterListHtml,
   hoursByFilter,
   newFilterRow,
+  orderExplanation,
+  clampRotate,
+  ROTATE_DEFAULT,
   rowDiffLabel,
   setRowGoal,
   setRowTemplate,
@@ -6897,12 +6901,39 @@ function renderPlanListItems() {
 }
 
 // What the filter-row cards need to draw: the plan's camera, the TS template
-// list (empty when none has loaded) and the dot colours.
+// list (empty when none has loaded), the dot colours, and for the controls
+// above the list the N to offer for "Rotate every" and the project note.
 function filterRowsContext() {
   return {
     camera: editingPlan ? planCamera(editingPlan) : null,
     templates: tsTemplates && tsTemplates.available ? (tsTemplates.templates || []) : [],
     colors: FILTER_COLORS,
+    rotateN: editingRotateN,
+    projectNote: orderProjectNote(editingPlan),
+  };
+}
+
+// Switching and smart order belong to the TS project, like state and
+// priority, so a plan sharing its project says so (goal-panel-and-ts-order.md
+// section 4).
+function orderProjectNote(plan) {
+  if (!plan || !plan.project_name) return "";
+  const mates = plans.filter(p => p.id !== plan.id && p.project_name === plan.project_name).length;
+  return mates > 0
+    ? `Filter switching and smart order apply to all ${mates + 1} plans in project ${plan.project_name}.`
+    : "";
+}
+
+// The project settings as loaded or saved, so savePlan() can tell whether
+// any changed. The two order settings stay as stored: absent means unknown,
+// and only a change in the editor gives them a value.
+function originalSettingsOf(plan) {
+  return {
+    state: plan.state || "active",
+    priority: plan.priority || "normal",
+    minimum_time_min: plan.minimum_time_min ?? 0,
+    filter_switch_frequency: plan.filter_switch_frequency,
+    smart_exposure_order: plan.smart_exposure_order,
   };
 }
 
@@ -6935,6 +6966,42 @@ function wireFilterRows(panel) {
       const row = rowOf(e.target);
       if (!row) return;
       editingPlan.filter_rows = editingPlan.filter_rows.filter(r => r !== row);
+      redrawFilterRows(panel);
+    }
+  });
+  // The switch, N and smart order. Typing N updates the plan and the line
+  // under the controls only, so the input keeps focus.
+  const setOrderText = () => {
+    const text = host.querySelector(".fr-order-text");
+    if (text) text.textContent = orderExplanation(editingPlan.filter_switch_frequency || 0, editingPlan.smart_exposure_order === true);
+  };
+  const readRotateN = () => {
+    const input = host.querySelector(".fr-rotate-n");
+    editingRotateN = clampRotate(input ? input.value : editingRotateN);
+    return editingRotateN;
+  };
+  host.addEventListener("input", e => {
+    if (e.target.classList.contains("fr-rotate-n")) {
+      const v = parseInt(e.target.value, 10);
+      if (Number.isFinite(v) && v >= 1 && v <= 99) {
+        editingRotateN = v;
+        editingPlan.filter_switch_frequency = v;
+        setOrderText();
+      }
+      return;
+    }
+  });
+  host.addEventListener("change", e => {
+    if (e.target.name === "fr-switch") {
+      editingPlan.filter_switch_frequency = e.target.value === "rotate" ? readRotateN() : 0;
+      redrawFilterRows(panel);
+    } else if (e.target.classList.contains("fr-rotate-n")) {
+      editingPlan.filter_switch_frequency = readRotateN();
+      redrawFilterRows(panel);
+    } else if (e.target.classList.contains("fr-smart-cb")) {
+      // The list order is kept either way; smart order only switches
+      // reordering off.
+      editingPlan.smart_exposure_order = !!e.target.checked;
       redrawFilterRows(panel);
     }
   });
@@ -6987,11 +7054,8 @@ function renderPlanEditor(plan) {
   // The editor reads and writes filter_rows only.
   delete editingPlan.filter_goals;
   if (!Array.isArray(editingPlan.filter_rows)) editingPlan.filter_rows = [];
-  editingPlanOriginalSettings = {
-    state: editingPlan.state || "active",
-    priority: editingPlan.priority || "normal",
-    minimum_time_min: editingPlan.minimum_time_min ?? 0,
-  };
+  editingPlanOriginalSettings = originalSettingsOf(editingPlan);
+  editingRotateN = editingPlan.filter_switch_frequency > 0 ? editingPlan.filter_switch_frequency : ROTATE_DEFAULT;
   saveUiState();
 
   const panel = document.getElementById("panelBody");
@@ -7302,10 +7366,15 @@ async function savePlan() {
   // write to plans.json, so a half-saved project can't happen. Only
   // fires when one of the three actually changed, and only when the plan
   // is in a named project at all.
+  const orderChanged = editingPlanOriginalSettings && (
+    editingPlan.filter_switch_frequency !== editingPlanOriginalSettings.filter_switch_frequency
+    || editingPlan.smart_exposure_order !== editingPlanOriginalSettings.smart_exposure_order
+  );
   const settingsChanged = editingPlanOriginalSettings && (
     editingPlan.state !== editingPlanOriginalSettings.state
     || editingPlan.priority !== editingPlanOriginalSettings.priority
     || editingPlan.minimum_time_min !== editingPlanOriginalSettings.minimum_time_min
+    || orderChanged
   );
   if (editingPlan.project_name && settingsChanged) {
     const sr = await fetch(`/api/projects/${encodeURIComponent(editingPlan.project_name)}/settings`, {
@@ -7315,6 +7384,12 @@ async function savePlan() {
         state: editingPlan.state,
         priority: editingPlan.priority,
         minimum_time_min: editingPlan.minimum_time_min,
+        // Switching and smart order each go only when changed here: a value
+        // never set stays unknown, and the sync leaves TS's alone.
+        ...(editingPlan.filter_switch_frequency !== editingPlanOriginalSettings.filter_switch_frequency
+          ? { filter_switch_frequency: editingPlan.filter_switch_frequency ?? 0 } : {}),
+        ...(editingPlan.smart_exposure_order !== editingPlanOriginalSettings.smart_exposure_order
+          ? { smart_exposure_order: editingPlan.smart_exposure_order === true } : {}),
       }),
     });
     if (!sr.ok) {
@@ -7335,11 +7410,7 @@ async function savePlan() {
   }
   const saved = await r.json();
   editingPlan = saved;
-  editingPlanOriginalSettings = {
-    state: saved.state || "active",
-    priority: saved.priority || "normal",
-    minimum_time_min: saved.minimum_time_min ?? 0,
-  };
+  editingPlanOriginalSettings = originalSettingsOf(saved);
   // Reload the full list rather than patching one entry in place: when the
   // settings route above just changed this plan's project-mates too, the
   // in-memory `plans` array has to pick that up, not just this plan.

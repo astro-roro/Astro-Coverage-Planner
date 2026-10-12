@@ -3515,6 +3515,14 @@ def _validate_plan_payload(payload: dict) -> str | None:
             return "minimum_time_min must be an integer"
         if mt < 0:
             return "minimum_time_min must be ≥ 0"
+    # The TS project's shooting-order settings
+    # (docs/specs/goal-panel-and-ts-order.md section 4). Absent means
+    # unknown, so neither is required.
+    for key in ORDER_SETTING_KEYS:
+        if key in payload:
+            err = _order_setting_error(key, payload[key])
+            if err:
+                return err
     # Live-page fields (docs/specs/shooting-page.md). Absent means private,
     # so anything other than the two known values is rejected, never coerced.
     vis = payload.get("visibility")
@@ -3663,18 +3671,39 @@ def api_plan(plan_id: str):
     return jsonify(payload)
 
 
+# The TS project's filter switch frequency and smart exposure order
+# (docs/specs/goal-panel-and-ts-order.md section 4). "Finish each" stores a
+# switch frequency of 0, "Rotate every N" stores N from 1 to 99. Absent on a
+# plan means unknown: the sync never writes it on update.
+ORDER_SETTING_KEYS = ("filter_switch_frequency", "smart_exposure_order")
+SWITCH_FREQUENCY_MAX = 99
+
+
+def _order_setting_error(key: str, value) -> str | None:
+    if key == "smart_exposure_order":
+        return None if isinstance(value, bool) else "smart_exposure_order must be true or false"
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "filter_switch_frequency must be an integer"
+    if not 0 <= value <= SWITCH_FREQUENCY_MAX:
+        return f"filter_switch_frequency must be between 0 and {SWITCH_FREQUENCY_MAX}"
+    return None
+
+
 @app.route("/api/projects/<project_name>/settings", methods=["PUT"])
 def api_project_settings(project_name: str):
-    """Save state, priority and minimum_time_min across every plan that
-    shares this project_name, in one write to plans.json.
+    """Save state, priority, minimum_time_min, filter_switch_frequency and
+    smart_exposure_order across every plan that shares this project_name,
+    in one write to plans.json. The last two are the TS project's
+    shooting-order settings (docs/specs/goal-panel-and-ts-order.md
+    section 4).
 
     ACP has no project entity: a TS project is the group of plans that
     share `project_name`, the same grouping `_build_ts_export` uses. The
     editor calls this route instead of saving each plan separately so a
     change to one of these three fields can never land on some of a
     project's plans and not others. See docs/specs/ts-project-settings.md
-    section 1. Any subset of the three body keys can be given; a key left
-    out is left unchanged on every plan in the group.
+    section 1. Any subset of the body keys can be given; a key left out is
+    left unchanged on every plan in the group.
     """
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -3699,6 +3728,14 @@ def api_project_settings(project_name: str):
         if minimum_time_min < 0:
             return jsonify({"error": "minimum_time_min must be ≥ 0"}), 400
 
+    order_settings = {}
+    for key in ORDER_SETTING_KEYS:
+        if key in payload:
+            err = _order_setting_error(key, payload[key])
+            if err:
+                return jsonify({"error": err}), 400
+            order_settings[key] = payload[key]
+
     data = load_plans()
     plans = data.get("plans", [])
     group = [p for p in plans if isinstance(p, dict) and p.get("project_name") == project_name]
@@ -3713,6 +3750,7 @@ def api_project_settings(project_name: str):
             p["priority"] = priority
         if has_minimum_time:
             p["minimum_time_min"] = minimum_time_min
+        p.update(order_settings)
         p["updated_at"] = now
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return jsonify({
@@ -3722,6 +3760,7 @@ def api_project_settings(project_name: str):
         "state": state,
         "priority": priority,
         "minimum_time_min": minimum_time_min if has_minimum_time else None,
+        **{key: order_settings.get(key) for key in ORDER_SETTING_KEYS},
     })
 
 

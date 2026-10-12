@@ -99,5 +99,70 @@ class TestProjectSettings(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
 
+class TestOrderSettings(unittest.TestCase):
+    """Filter switch frequency and smart order, the TS project's
+    shooting-order settings (docs/specs/goal-panel-and-ts-order.md
+    section 4). Saved for every plan in the project at once."""
+
+    def setUp(self):
+        self.plans_path = _fresh_plans_path()
+        self.client = app.test_client()
+        app_module.save_plans({"version": 1, "settings_migrated": 1, "plans": [
+            _plan("m31-l", "M31"),
+            _plan("m31-ha", "M31"),
+            _plan("m42-l", "M42"),
+        ]})
+
+    def _stored(self):
+        return {p["id"]: p for p in app_module.load_plans()["plans"]}
+
+    def test_rotate_every_n_and_smart_order_reach_every_plan_in_the_project(self):
+        r = self.client.put("/api/projects/M31/settings", json={
+            "filter_switch_frequency": 3, "smart_exposure_order": True,
+        })
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        body = r.get_json()
+        self.assertEqual((body["filter_switch_frequency"], body["smart_exposure_order"]), (3, True))
+        stored = self._stored()
+        for pid in ("m31-l", "m31-ha"):
+            self.assertEqual(stored[pid]["filter_switch_frequency"], 3)
+            self.assertIs(stored[pid]["smart_exposure_order"], True)
+        self.assertNotIn("filter_switch_frequency", stored["m42-l"])
+        self.assertNotIn("smart_exposure_order", stored["m42-l"])
+
+    def test_finish_each_stores_0_and_an_omitted_setting_stays_unknown(self):
+        r = self.client.put("/api/projects/M31/settings", json={"filter_switch_frequency": 0})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        stored = self._stored()
+        self.assertEqual(stored["m31-l"]["filter_switch_frequency"], 0)
+        self.assertNotIn("smart_exposure_order", stored["m31-l"])
+        self.assertEqual(stored["m31-l"]["state"], "active")
+
+    def test_out_of_range_or_wrong_type_is_rejected_and_writes_nothing(self):
+        for body in ({"filter_switch_frequency": 100}, {"filter_switch_frequency": -1},
+                     {"filter_switch_frequency": 2.5}, {"filter_switch_frequency": True},
+                     {"filter_switch_frequency": "3"}, {"smart_exposure_order": 1},
+                     {"smart_exposure_order": "yes"}):
+            r = self.client.put("/api/projects/M31/settings", json=body)
+            self.assertEqual(r.status_code, 400, body)
+        self.assertNotIn("filter_switch_frequency", self._stored()["m31-l"])
+
+    def test_99_is_the_largest_n(self):
+        r = self.client.put("/api/projects/M31/settings", json={"filter_switch_frequency": 99})
+        self.assertEqual(r.status_code, 200)
+
+    def test_plan_save_validates_both_fields(self):
+        plan = _plan("m31-l", "M31")
+        for key, value in (("filter_switch_frequency", 100), ("filter_switch_frequency", 1.5),
+                           ("smart_exposure_order", "on")):
+            r = self.client.post("/api/plans", json={**plan, key: value})
+            self.assertEqual(r.status_code, 400, (key, value))
+        r = self.client.post("/api/plans", json={**plan, "filter_switch_frequency": 4,
+                                                 "smart_exposure_order": False})
+        self.assertIn(r.status_code, (200, 201), r.get_data(as_text=True))
+        stored = self._stored()["m31-l"]
+        self.assertEqual((stored["filter_switch_frequency"], stored["smart_exposure_order"]), (4, False))
+
+
 if __name__ == "__main__":
     unittest.main()

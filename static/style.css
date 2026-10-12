@@ -1048,6 +1048,18 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .fr-prog-text { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; color: #a2aec2; white-space: nowrap; overflow: hidden; }
 .fr-add { align-self: flex-start; font-size: 11px; }
 
+/* Above the list: the "Finish each" / "Rotate every N" switch, "Smart order"
+   and one line saying what Target Scheduler will do. */
+.fr-order { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-bottom: 6px; font-size: 11px; max-width: 100%; }
+.fr-switch { display: inline-flex; border: 1px solid #2a3246; border-radius: 6px; overflow: hidden; }
+.fr-switch-opt { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; white-space: nowrap; cursor: pointer; }
+.fr-switch-opt:has(input[type=radio]:checked) { background: #24324a; color: #e6edf7; }
+.fr-switch-opt input[type=radio] { margin: 0; }
+.fr-rotate-n { width: 42px; font-size: 11px; }
+.fr-smart { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.fr-order-text, .fr-order-note { flex: 1 0 100%; color: #78839a; }
+.fr-list.fr-smart-on .fr-pos { opacity: 0.5; }
+
 .plan-editor-actions {
   display: flex;
   gap: 8px;
