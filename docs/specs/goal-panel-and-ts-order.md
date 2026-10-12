@@ -383,6 +383,12 @@ The base project block (`state.py` `_project_snapshot`, `TsState.cs`) gains `fil
 
 The order is the order of `filter_rows`. There is no separate order field. Every panel of a mosaic gets the same order.
 
+The safety rule: a push replaces an override order in TS only when the user changed the order in ACP. Everything below serves it.
+
+The decision is per target, not per panel. A target's base order is the one its anchor panel (1,1) recorded. "ACP's order changed" means ACP's order differs from that. When it has not changed, every panel's TS rows are left alone, whatever they hold (a hand order on one panel is not copied to another). When it has changed, every panel gets ACP's order. An import records the anchor panel's order as the base order for the whole target, and never another panel's own order.
+
+Two kinds of edit count as a change of order. Moving rows does. So does adding a row anywhere but the end of the list: the user placed it, and its plan is appended to the natural order, so the order has to be written for it to land where the user put it. Adding a row at the end does not. Removing a row never does.
+
 ### What the writers do
 
 At each push, for each target of the plan, the writer computes:
@@ -390,7 +396,7 @@ At each push, for each target of the plan, the writer computes:
 | Name | Value |
 |---|---|
 | ACP order | the row ids in list order, reduced to rows with an enabled exposure plan on this target |
-| Base order | `exposure_order` for this panel in the base, a list of row ids |
+| Base order | `exposure_order` for the anchor panel (1,1) in the base, a list of row ids, used for every panel of the target |
 | Base rows | `override_rows` for this panel in the base, as `[action, referenceIdx]` pairs |
 | TS rows | the target's override rows now, as the same pairs |
 | Generated rows | the rows built from the ACP order by "What the sync writes" above, or none when the ACP order equals the natural order |
@@ -401,17 +407,20 @@ The decision:
 |---|---|
 | Smart order is on, after this push | nothing to the override rows, except the new plan rule below |
 | No base, or a base with no `exposure_order` | nothing |
+| The push inserted this target | writes the generated rows (smart order is checked first), because the target has no rows of anyone's yet |
 | ACP order differs from base order | writes the generated rows, so ACP wins |
-| ACP order equals base order, and TS rows equal base rows | writes the generated rows if they differ from TS rows |
-| ACP order equals base order, and TS rows differ from base rows | nothing, because the order was changed in TS |
+| ACP order equals base order, TS rows equal base rows, and TS rows already shoot ACP's order | writes the generated rows if they differ from TS rows |
+| ACP order equals base order, and TS rows differ from base rows or shoot another order | nothing, because the order was set in TS |
 
-The fourth case refreshes rows the sync wrote itself. A changed goal, AAC floor, throttle, grader setting or switch frequency changes the block sizes, so the generated rows change. The fifth case keeps an order set in TS.
+"Differs" and "equals" use the rule above: a row added anywhere but the end, or rows in another relative order, differ. A row removed, or added at the end, does not.
+
+The fifth case refreshes rows the sync wrote itself. A changed goal, AAC floor, throttle, grader setting or switch frequency changes the block sizes, so the generated rows change. The sixth case keeps an order set in TS. The "already shoot ACP's order" test in the fifth case stops a mosaic panel that holds some other order, or none, from being given the order of a panel whose rows were set by hand.
 
 "Writes" means: delete the target's override rows and insert the new ones, in the push transaction. Writing no rows deletes the override rows, which returns the target to natural order. Separately, every push deletes the cadence rows of every target that has override rows after it ("Restarting the walk every night" above).
 
 New plan rule: a push may insert an exposure plan on a target whose override rows it did not replace. The writer then appends that plan's block to the end and deletes the cadence rows. Without this, TS never shoots the new plan (`PlanningTarget.cs:80-97`). The push result names the target.
 
-After the push, the base records the target's effective order as `exposure_order`, and its override rows as `override_rows`. As with state, a push that left TS's rows alone keeps the old base order.
+After the push, the base records the target's effective order as `exposure_order` (the anchor panel's, for every panel), and each panel's override rows as `override_rows`. As with state, a push that left TS's rows alone keeps the old base order. A base built with no push outcome records `override_rows` only for a target that has none in TS, because rows set in TS must never be taken for rows the sync wrote. A stored `override_rows` that is not a list of integer pairs reads as not recorded, in both writers.
 
 ### What the importer does
 
@@ -423,6 +432,8 @@ The effective order of a target is read like this:
 The importer emits `filter_rows` in that order. The diff compares the order as the list of row ids, by the three-way rules of `ts-upload-import.md`. A base with no `exposure_order` reads like a missing `state` in `ts-project-settings.md` section 3. ACP could not set an order before this change, so any difference is a change made in TS.
 
 An override order with repeats or dithers, made by hand in TS, comes into ACP as its first-occurrence order. Its rows stay in TS until ACP's order changes.
+
+The order is its own field in the import choices, apart from the plan's Keep ACP. Choosing Keep ACP on a plan for its other fields does not stop TS's order being pulled, and does not change how the order base is recorded. Choosing Keep ACP on the order itself is an explicit choice of ACP's order over TS's: the base still records TS's order, so the next push replaces the order set in TS. The import preview says so on that row: "Your next push will replace the order set in Target Scheduler." For a conflict that includes the order, the plan's Keep ACP is that choice.
 
 The migration in section 3 does not count as an ACP change to the order. A base without `exposure_order` means the first push writes no order, and the next upload brings in each target's effective order from TS. Rohan's three hand-made override orders therefore stay in TS until he changes the order in ACP.
 
@@ -540,7 +551,14 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | R4 | C# | R1 and R3 as golden scenarios | The plugin's rows equal the Python rows. |
 | O1 | Python | ACP order OIII, Ha. Push. Then import. | TS has 8 override rows: OIII x4, then Ha x4. Cadence rows: none. The oracle shoots OIII, OIII, OIII, OIII, Ha, Ha, Ha, Ha. Import returns the rows in the order OIII, Ha, with the same ids, and no changes. |
 | O2 | Python | After O1, edit TS's override rows to Ha, OIII (one each). Push with no ACP change. | The override rows stay Ha, OIII. The base order stays OIII, Ha. The next import shows the order changed in TS to Ha, OIII. |
-| O3 | Python | After O2, reorder ACP's rows to Ha, OIII and push | ACP wins. The rows become Ha x4, OIII x4, and the push result says it replaced an order set in TS. |
+| O3 | Python | After O2, reorder ACP's rows to Ha, OIII and push | ACP wins. Ha, OIII is the natural order, so no override rows are written. The existing TS rows are deleted, and the push result says it replaced an order set in TS. |
+| O3b | Python | A target the push inserts, ACP order OIII, Ha, smart order off | The generated rows are written, OIII x4 then Ha x4. With smart order on, none are. |
+| O3c | Python | A 1 by 2 mosaic. A hand order on panel 2 only. Push, import, push, with no ACP change. | Panel 2 keeps its rows through both pushes and panel 1 stays in natural order. After the import, every panel's base order is the anchor panel's. |
+| O3d | Python | The same mosaic with the hand order on panel 1, imported into ACP, then pushed | Panel 1 keeps its rows. Panel 2 is not given panel 1's order. |
+| O3e | Python | The same mosaic, ACP reordered, pushed | Both panels get the same generated rows. |
+| O3f | Python | Hand order in TS, import with Keep ACP chosen for the plan only | TS's order still comes into ACP, and the next push leaves TS's rows. With Keep ACP chosen on the order field, ACP's order stays and the next push replaces TS's rows. The preview carries the sentence above on the order row. |
+| O3g | Python | Hand order OIII, Ha in TS. Add SII in ACP and drag it to the top, then push. Separately, add SII at the end and push. | The first writes ACP's order, SII, OIII, Ha. The second leaves the hand order and appends SII's block. |
+| O3h | C# | The golden scenarios x1 to x3b | The plugin's rows equal the Python rows. |
 | O4 | Python | Switch frequency 0 against 3. ACP order OIII, Ha. | At 0: the oracle shoots OIII x4 then Ha x4. At 3: override rows are OIII x3, Ha x3. The oracle shoots OIII, OIII, OIII, Ha, Ha, Ha, OIII, Ha. |
 | O4b | Python | Grader off, throttle 125, switch frequency 0, ACP order OIII, Ha | Blocks are 5 rows each. The oracle shoots OIII x5, then Ha x5, which is past `desired`, as TS does. |
 | O4c | Python | After O1, the oracle shoots OIII x4 and one Ha. AAC then lowers OIII's `accepted` to 3. Push. | The cadence rows are gone. The oracle's next frame is OIII, then Ha. |
