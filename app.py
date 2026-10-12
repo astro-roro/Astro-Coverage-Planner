@@ -122,6 +122,8 @@ TARGET_OVERRIDES_PATH = Path(os.environ.get(
 # the like). Its own file, not a key in plans.json, because the plan save
 # route replaces the whole plan and would drop a flag the editor never sent.
 HIDDEN_PATH = Path(os.environ.get("HIDDEN_PATH", REPO_ROOT / "data" / "hidden.json"))
+TS_TEMPLATES_PATH = Path(os.environ.get(
+    "TS_TEMPLATES_PATH", REPO_ROOT / "data" / "ts_templates.json"))
 TS_DB_PATH = os.environ.get(
     "TS_DB_PATH",
     str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
@@ -4367,11 +4369,114 @@ def api_sync_config():
     })
 
 
+_TS_TEMPLATE_NUMBER_FIELDS = ("default_exposure_s", "gain", "offset", "bin")
+
+
+def _load_ts_templates_store() -> dict:
+    """The per-profile template lists the plugin posted, or {} when none."""
+    try:
+        data = json.loads(TS_TEMPLATES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    return profiles if isinstance(profiles, dict) else {}
+
+
+def _plugin_templates_response(path: Path, error: str):
+    """Answer from the lists the plugin posted, or None when there are none.
+
+    The server case: ACP on Brutix has no TS database file, so the plugin
+    sends the list instead (docs/specs/goal-panel-and-ts-order.md section 2).
+    """
+    profiles = _load_ts_templates_store()
+    if not profiles:
+        return None
+    templates = []
+    for pid, entry in profiles.items():
+        for t in entry.get("templates", []):
+            templates.append({**t, "profile_id": pid, "received_at": entry.get("received_at")})
+    return jsonify({
+        "available": True,
+        "source": "plugin",
+        "path": str(path),
+        "profiles": {
+            pid: {"received_at": e.get("received_at"), "sent_at": e.get("sent_at")}
+            for pid, e in profiles.items()
+        },
+        "templates": templates,
+    })
+
+
+def _validate_ts_templates_payload(payload) -> str | None:
+    if not isinstance(payload, dict):
+        return "body must be a JSON object"
+    pid = payload.get("profile_id")
+    if not isinstance(pid, str) or not pid.strip():
+        return "profile_id is required"
+    if "sent_at" in payload and payload["sent_at"] is not None and not isinstance(payload["sent_at"], str):
+        return "sent_at must be a string"
+    templates = payload.get("templates")
+    if not isinstance(templates, list):
+        return "templates must be a list"
+    for i, t in enumerate(templates):
+        if not isinstance(t, dict):
+            return f"templates[{i}] must be an object"
+        if not isinstance(t.get("name"), str) or not t["name"].strip():
+            return f"templates[{i}].name is required"
+        if "filter" in t and t["filter"] is not None and not isinstance(t["filter"], str):
+            return f"templates[{i}].filter must be a string"
+        for f in _TS_TEMPLATE_NUMBER_FIELDS:
+            v = t.get(f)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
+                return f"templates[{i}].{f} must be a number"
+    return None
+
+
+@app.route("/api/ts-templates", methods=["POST"])
+def api_ts_templates_post():
+    """Store the plugin's exposure template list for one profile.
+
+    The latest post for a profile replaces that profile's list. The bearer
+    token gate that covers every /api route applies, as it does to /progress.
+    """
+    payload = request.get_json(silent=True)
+    err = _validate_ts_templates_payload(payload)
+    if err:
+        return jsonify({"error": err}), 400
+    pid = payload["profile_id"].strip()
+    templates = [{
+        "name": t["name"],
+        "filter": t.get("filter"),
+        **{f: t.get(f) for f in _TS_TEMPLATE_NUMBER_FIELDS},
+    } for t in payload["templates"]]
+    received_at = datetime.now(timezone.utc).isoformat()
+    with _ts_templates_lock:
+        profiles = _load_ts_templates_store()
+        profiles[pid] = {
+            "received_at": received_at,
+            "sent_at": payload.get("sent_at"),
+            "templates": templates,
+        }
+        TS_TEMPLATES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(TS_TEMPLATES_PATH, {"profiles": profiles}, indent=2)
+    return jsonify({"profile_id": pid, "count": len(templates), "received_at": received_at})
+
+
+_ts_templates_lock = threading.Lock()
+
+
 @app.route("/api/ts-templates")
 def api_ts_templates():
-    """Read-only dump of user's Target Scheduler ExposureTemplates. Falls back gracefully if DB unreachable."""
+    """Read-only dump of user's Target Scheduler ExposureTemplates.
+
+    Reads the TS database when it is readable ("source": "database"). Where it
+    is not, as on a server away from the imaging PC, falls back to the lists
+    the plugin posted ("source": "plugin")."""
     path = Path(os.path.expandvars(TS_DB_PATH))
     if not path.exists():
+        fallback = _plugin_templates_response(path, "")
+        if fallback is not None:
+            return fallback
         return jsonify({
             "available": False,
             "path": str(path),
@@ -4389,6 +4494,9 @@ def api_ts_templates():
         conn.close()
     except sqlite3.Error:
         logging.exception("sqlite read failed for %r", _safe_log(path))
+        fallback = _plugin_templates_response(path, "")
+        if fallback is not None:
+            return fallback
         return jsonify({
             "available": False,
             "path": str(path),
@@ -4405,7 +4513,7 @@ def api_ts_templates():
         "offset": r["offset"],
         "bin": r["bin"],
     } for r in rows]
-    return jsonify({"available": True, "path": str(path), "templates": templates})
+    return jsonify({"available": True, "source": "database", "path": str(path), "templates": templates})
 
 
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
