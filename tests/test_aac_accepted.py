@@ -176,6 +176,114 @@ class TestAcceptedEndpoint(unittest.TestCase):
         self.assertEqual(row["aac"]["accepted_seconds"], 22320.0)
 
 
+class TestReviewFixes(unittest.TestCase):
+    """Section 6 after review: stale blocks go, goal_at_send is stored, and the
+    routes that write plans.json hold PLANS_LOCK."""
+
+    def setUp(self):
+        _redirect_state()
+        self._prev = os.environ.pop("ACP_API_TOKEN", None)
+        self.addCleanup(self._restore_token)
+        app_module.save_plans({"version": 1, "filter_rows_migrated": 1, "plans": [_plan()]})
+        self.client = app.test_client()
+
+    def _restore_token(self):
+        if self._prev is None:
+            os.environ.pop("ACP_API_TOKEN", None)
+        else:
+            os.environ["ACP_API_TOKEN"] = self._prev
+
+    def _stored(self):
+        return app_module.load_plans()["plans"][0]
+
+    def _post(self, body):
+        return self.client.post("/api/plans/M42/accepted", json=body)
+
+    def test_the_goal_at_send_is_stored_in_the_rows_unit(self):
+        self._post(_request([_figures(HA_ID, "Ha", "Ha", 100.0, 1, True),
+                             _figures(STARS_ID, "R", "R Stars", 100.0, 1, True)]))
+        rows = self._stored()["filter_rows"]
+        self.assertEqual(rows[0]["aac"]["goal_at_send"], 6.0)
+        self.assertEqual(rows[1]["aac"]["goal_at_send"], 48.0)
+
+    def test_a_row_that_comes_back_unknown_loses_its_stored_block(self):
+        self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
+        self.assertIn("aac", self._stored()["filter_rows"][2])
+        r = self._post(_request([_figures(G_ID, "G", "G Narrow", 10.0, 1)]))
+        self.assertEqual([u["id"] for u in r.get_json()["unknown_rows"]], [G_ID])
+        self.assertNotIn("aac", self._stored()["filter_rows"][2])
+
+    def _save_with(self, **changes):
+        plan = self._stored()
+        body = {k: v for k, v in plan.items()}
+        body["filter_rows"] = [dict(r) for r in plan["filter_rows"]]
+        body["filter_rows"][2].update(changes)
+        return self.client.put("/api/plans/M42", json=body)
+
+    def test_a_save_keeps_the_block_while_filter_and_template_agree(self):
+        self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
+        self.assertEqual(self._save_with(target_frames=60).status_code, 200)
+        self.assertIn("aac", self._stored()["filter_rows"][2])
+
+    def test_a_save_drops_the_block_when_the_template_changes(self):
+        self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
+        self.assertEqual(self._save_with(template="G Narrow").status_code, 200)
+        self.assertNotIn("aac", self._stored()["filter_rows"][2])
+
+    def test_a_save_drops_the_block_when_the_filter_changes(self):
+        self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
+        self.assertEqual(self._save_with(filter="B").status_code, 200)
+        self.assertNotIn("aac", self._stored()["filter_rows"][2])
+
+    def test_the_routes_that_write_plans_hold_the_plans_lock(self):
+        taken = []
+
+        class Spy:
+            def __enter__(self_inner):
+                taken.append("in")
+
+            def __exit__(self_inner, *a):
+                taken.append("out")
+
+        real = app_module.PLANS_LOCK
+        app_module.PLANS_LOCK = Spy()
+        self.addCleanup(setattr, app_module, "PLANS_LOCK", real)
+        body = app_module.load_plans()["plans"][0]
+        calls = [
+            lambda: self.client.post("/api/plans/M42/accepted", json=_request([])),
+            lambda: self.client.put("/api/plans/M42", json=body),
+            lambda: self.client.post("/api/plans/M42/progress", json={"filters": {"Ha": {"acquired_hours": 1.0}}}),
+        ]
+        for call in calls:
+            taken.clear()
+            self.assertNotIn(call().status_code, (404, 500))
+            self.assertEqual(taken, ["in", "out"])
+
+    def test_an_accepted_write_waits_for_a_holder_of_the_lock(self):
+        import threading
+        done = threading.Event()
+        result = []
+
+        def post():
+            result.append(self._post(_request([_figures(HA_ID, "Ha", "Ha", 100.0, 1)])).status_code)
+            done.set()
+
+        app_module.PLANS_LOCK.acquire()
+        try:
+            t = threading.Thread(target=post)
+            t.start()
+            self.assertFalse(done.wait(0.3), "the write ran while the lock was held")
+        finally:
+            app_module.PLANS_LOCK.release()
+        self.assertTrue(done.wait(5))
+        t.join()
+        self.assertEqual(result, [200])
+        self.assertIn("aac", self._stored()["filter_rows"][0])
+
+    def test_the_host_exposes_its_lock_for_the_extension_to_share(self):
+        self.assertIs(app.plans_lock, app_module.PLANS_LOCK)
+
+
 class TestTargetClass(unittest.TestCase):
     def setUp(self):
         _redirect_state()

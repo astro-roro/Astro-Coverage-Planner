@@ -5,7 +5,7 @@
   "profile": "profilepreference grading columns that differ from 0 (all start at 0)",
   "plan": "the ACP plan's aac block (filed_through_night, min_total_frames) and whether it is a 2 column mosaic",
   "ts": "the project's enablegrader before, and UTC times of acquiredimage rows",
-  "rows": "ACP filter rows with an optional aac block (null: a row ACP has but AAC has not reported); row.ts is the exposure plan before the push; row.expected is desired and accepted after it",
+  "rows": "ACP filter rows with an optional aac block (null: a row ACP has but AAC has not reported); row.ts is the exposure plan before the push; row.expected is desired and accepted after it An aac block may hold goal_at_send, the row's goal (in the row's unit) when the figures were stored: a complete flag counts only while the row's goal is not above it.",
   "expected": "enablegrader after, a substring the push result's notes must contain (null: no note about AAC), and whether the AAC write happened"
  },
  "default_profile": {
@@ -91,7 +91,8 @@
       "seen_frames": 48,
       "complete": true,
       "estimated_hours": null,
-      "measurement": null
+      "measurement": null,
+      "goal_at_send": 48
      },
      "ts": {
       "desired": 48,
@@ -216,7 +217,7 @@
    ],
    "expected": {
     "enablegrader": 0,
-    "warning": null,
+    "warning": "SII 300 has no AAC figures yet",
     "written": false
    }
   },
@@ -403,7 +404,7 @@
    ],
    "expected": {
     "enablegrader": 1,
-    "warning": null,
+    "warning": "is a mosaic",
     "written": false
    }
   },
@@ -486,7 +487,8 @@
       "seen_frames": 49,
       "complete": true,
       "estimated_hours": null,
-      "measurement": null
+      "measurement": null,
+      "goal_at_send": 50
      },
      "ts": {
       "desired": 50,
@@ -749,7 +751,8 @@
       "seen_frames": 5,
       "complete": true,
       "estimated_hours": null,
-      "measurement": null
+      "measurement": null,
+      "goal_at_send": 0.5
      },
      "ts": {
       "desired": 6,
@@ -768,6 +771,102 @@
     "written": true
    },
    "note": "complete: max(count 5, desired 10)"
+  },
+  {
+   "name": "goal_raised_since_complete_reads_incomplete",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 2.0,
+     "aac": {
+      "accepted_seconds": 1500.0,
+      "accepted_frames": 5,
+      "seen_seconds": 1500.0,
+      "seen_frames": 5,
+      "complete": true,
+      "estimated_hours": null,
+      "measurement": null,
+      "goal_at_send": 0.5
+     },
+     "ts": {
+      "desired": 6,
+      "acquired": 6,
+      "accepted": 6
+     },
+     "expected": {
+      "desired": 24,
+      "accepted": 5
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "complete was judged at 0.5 h (goal_at_send); the goal is 2 h now, so the row reads incomplete: min(count 5, desired 24 - short 5)"
+  },
+  {
+   "name": "goal_lowered_since_complete_stays_complete",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 0.25,
+     "aac": {
+      "accepted_seconds": 1500.0,
+      "accepted_frames": 5,
+      "seen_seconds": 1500.0,
+      "seen_frames": 5,
+      "complete": true,
+      "estimated_hours": null,
+      "measurement": null,
+      "goal_at_send": 0.5
+     },
+     "ts": {
+      "desired": 6,
+      "acquired": 6,
+      "accepted": 6
+     },
+     "expected": {
+      "desired": 10,
+      "accepted": 10
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "complete was judged at 0.5 h; a lower goal leaves it standing: max(count 5, desired 10)"
   }
  ]
 }

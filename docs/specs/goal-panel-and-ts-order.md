@@ -461,12 +461,12 @@ ACP stores them as follows:
 
 | Path on the plan | Content |
 |---|---|
-| `filter_rows[i].aac` | the row's fields above, replacing the previous block |
+| `filter_rows[i].aac` | the row's fields above, and `goal_at_send`, replacing the previous block |
 | `aac.filed_through_night` | from the request |
 | `aac.min_total_frames` | from the request |
 | `aac.received_at` | the time ACP received it |
 
-A row is stored only when its `id` exists on the plan, its `filter` passes `canon_filter` to the row's filter, and its `template` equals the row's template exactly. Any other row comes back in `unknown_rows` with a reason: "no such row", or "row now has filter G and template G Stars". Values may go down. `actual_hours` is never changed.
+A row is stored only when its `id` exists on the plan, its `filter` passes `canon_filter` to the row's filter, and its `template` equals the row's template exactly. Any other row comes back in `unknown_rows` with a reason: "no such row", or "row now has filter G and template G Stars". A row that exists but comes back unknown loses its stored block. Values may go down. `actual_hours` is never changed.
 
 ### Done, as the editor shows it
 
@@ -477,10 +477,25 @@ A row with an `aac` block shows done as `aac.accepted_seconds / 3600` hours, or 
 Both writers follow the AAC spec's section 7, "How the shortfall reaches TS", which is summarised here.
 
 - Before any AAC write, the writer reads the profile's grading settings in `profilepreference`. If `delayGrading` is not 0, or any of `enableGradeRMS`, `enableGradeStars`, `enableGradeHFR`, `enableGradeFWHM` and `enableGradeEccentricity` is not 0, it makes no AAC write for that profile and logs a warning.
-- A project is eligible when every exposure plan in it links to a row with an `aac` block, no target in it is a mosaic panel, and `aac.filed_through_night` is on or after the night that ended that morning.
-- For an eligible project, one transaction writes `accepted` for every exposure plan and sets `project.enablegrader` to 1. Any other project gets neither write.
-- `exposureplan.accepted` and `project.enablegrader` stay in `INSERT_ONLY_COLUMNS` and `insertOnlyColumns`. A per-project exception, built by `convert.py` and `TsConvert` like `project_update_skip_cols_by_guid`, lets them into the update for eligible projects.
+- A project is eligible when all of these hold:
+  - ACP's data allows it: no target in it is a mosaic panel, every plan in it has a usable `aac` block, and every row the push writes (a goal above 0) has an `aac` block. A row with no block rules the whole project out, and a row with a goal of 0 is not written, so it does not count.
+  - The profile's grading settings are all 0.
+  - `aac.filed_through_night` is on or after the night that ended that morning. With several plans in the project, the oldest watermark counts.
+  - Every enabled exposure plan in the project is one this push wrote with an AAC count. Disabled plans, such as those of removed rows and rows at goal 0, are not looked at.
+  - TS has saved no frame for the project after noon, local time, on the day after the watermark night. A rerun during imaging would otherwise reset `accepted` and have TS reshoot tonight's frames.
+- For an eligible project, one transaction writes `accepted` for every enabled exposure plan and sets `project.enablegrader` to 1. Any other project gets neither write.
+- `exposureplan.accepted` and `project.enablegrader` stay out of the generic UPDATE (`INSERT_ONLY_COLUMNS` and `insertOnlyColumns`). `upsert.py` and `TsUpsert` write them with explicit UPDATE statements after the plans are written, for eligible projects only, so `convert.py` and `TsConvert` carry no per-project exception for them.
+- A project AAC has reported on and the push skips gets a line in the push result saying why, such as "Helix: AAC counts not written, OIII has no AAC figures yet". A project with no `aac` block anywhere stays quiet.
 - `acquired` is never written.
+
+### Four rules that keep AAC and ACP apart
+
+- **AAC's floor never reaches ACP's goal.** The floor lifts only what the writers send as `desired`. The base snapshot records the row's own goal for an AAC-linked row, not the floored `desired` TS holds. On import, a TS `desired` equal to `max(goal, min_total_frames)` for that row is read back as the row's goal, so with no base, or after "Take TS" on an unrelated conflict, the floor is never written into ACP. Any other `desired` in TS is a real edit and is pulled as usual.
+- **A stale block goes.** A row's `aac` block was reported for one filter and template. ACP drops it when a save, a pull or "Take TS" gives the row a different filter or template, and when AAC sends the row to `/accepted` and gets it back in `unknown_rows`. A project then has a row with no block, which rules it out until AAC reports again.
+- **Goal 0 is a removed row.** A row with a goal of 0 pushes no plan, and its existing exposure plan is disabled on the next push, with the override rows rebuilt as in "Removing and re-adding a row". Raising the goal again enables the plan, as re-adding a row does.
+- **A `complete` flag is judged against the goal AAC saw.** `/accepted` stores `goal_at_send` in the row's `aac` block: the row's goal in its own unit at that moment. The writers count `complete` only while the row's current goal is not above `goal_at_send`. Raised since, the row reads as not complete until AAC reports again. A block with no `goal_at_send` keeps its flag.
+
+ACP's own writers of `plans.json` (`/accepted`, `/progress`, plan saves, project settings, sync) hold one lock, `PLANS_LOCK`. The NINA extension adopts it in `register(app)`, so a push, an import and an `/accepted` write cannot write back older copies over each other.
 
 The values, for each AAC-linked row, with `sub` meaning `template_sub_s`:
 

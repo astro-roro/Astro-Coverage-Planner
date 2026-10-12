@@ -167,6 +167,26 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = int(os.environ.get("ACP_STATIC_MAX_AGE
 MAX_BODY_BYTES = int(os.environ.get("ACP_MAX_BODY_BYTES", 1024 * 1024))
 app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
 
+# Every route that reads plans.json, changes it and writes it back holds this
+# lock, and so does the NINA Target Scheduler extension's push and import,
+# which adopts it in register(app). Without it AAC's /accepted could write
+# back an older copy over a push's, and the reverse. ACP runs as one process
+# under waitress, so a thread lock is enough.
+PLANS_LOCK = threading.RLock()
+app.plans_lock = PLANS_LOCK
+
+
+def _holds_plans_lock(fn):
+    """Run a plans.json read-modify-write route under PLANS_LOCK. Looked up
+    per call, so a test can swap the lock."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with PLANS_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
+
 # NINA profiles that have reported a fingerprint. A real user has a handful.
 # The key is caller-supplied, so without a ceiling anyone on the LAN can grow
 # the file without limit.
@@ -3617,6 +3637,7 @@ def _with_goals_view(plan):
 
 
 @app.route("/api/plans", methods=["GET", "POST"])
+@_holds_plans_lock
 def api_plans():
     data = load_plans()
     if request.method == "GET":
@@ -3653,6 +3674,7 @@ def api_plans():
 
 
 @app.route("/api/plans/<plan_id>", methods=["GET", "PUT", "DELETE"])
+@_holds_plans_lock
 def api_plan(plan_id: str):
     data = load_plans()
     plans = data.get("plans", [])
@@ -3700,6 +3722,7 @@ def _order_setting_error(key: str, value) -> str | None:
 
 
 @app.route("/api/projects/<project_name>/settings", methods=["PUT"])
+@_holds_plans_lock
 def api_project_settings(project_name: str):
     """Save state, priority, minimum_time_min, filter_switch_frequency and
     smart_exposure_order across every plan that shares this project_name,
@@ -4271,6 +4294,7 @@ def _validate_progress_payload(payload) -> str | None:
 
 
 @app.route("/api/plans/<plan_id>/progress", methods=["POST"])
+@_holds_plans_lock
 def api_plan_progress(plan_id: str):
     """Record acquired hours against a plan's filter rows.
 
@@ -4349,6 +4373,7 @@ def api_plan_progress(plan_id: str):
 
 
 @app.route("/api/plans/<plan_id>/accepted", methods=["POST"])
+@_holds_plans_lock
 def api_plan_accepted(plan_id: str):
     """Store AAC's accepted counts against a plan's filter rows.
 
@@ -4971,6 +4996,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
 
 
 @app.route("/api/sync", methods=["POST"])
+@_holds_plans_lock
 def api_sync():
     """Build a Target Scheduler Import Profile zip from current plans.
 
