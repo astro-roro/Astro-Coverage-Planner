@@ -1015,7 +1015,7 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
    Columns are position (22px), filter (104px), template (the rest, allowed
    to shrink to nothing so long names truncate) and remove (26px). Keep the
    column string in step with CARD_GRID_COLUMNS in static/filter-rows.mjs. */
-.fr-list { display: flex; flex-direction: column; gap: 6px; max-width: 100%; overflow-x: hidden; }
+.fr-list { display: flex; flex-direction: column; gap: 6px; max-width: 100%; overflow-x: hidden; padding: 6px 0; margin: -6px 0; }
 .fr-empty { font-size: 11px; color: #78839a; }
 .fr-card {
   display: grid;
@@ -1042,12 +1042,12 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .fr-filter { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 4px; }
 .fr-dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; }
 .fr-card select, .fr-card input { font-size: 11px; min-width: 0; }
-.fr-filter-sel { flex: 1 1 0; width: 0; }
-.fr-tmpl-sel { grid-column: 3; grid-row: 1; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fr-card select.fr-filter-sel { flex: 1 1 0; width: 0; }
+.fr-card select.fr-tmpl-sel { grid-column: 3; grid-row: 1; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fr-remove { grid-column: 4; grid-row: 1; width: 26px; padding: 0; }
 .fr-goal { grid-column: 2; grid-row: 2; display: flex; gap: 3px; }
-.fr-goal-input { flex: 1 1 0; width: 0; }
-.fr-unit-sel { flex: 0 0 auto; width: 42px; }
+.fr-card input.fr-goal-input { flex: 1 1 0; width: 0; }
+.fr-card select.fr-unit-sel { flex: 0 0 auto; width: 42px; }
 .fr-progress { grid-column: 3; grid-row: 2; }
 .fr-bar { height: 5px; background: #2a3246; border-radius: 3px; overflow: hidden; }
 .fr-bar > i { display: block; height: 100%; background: #4da6ff; }
