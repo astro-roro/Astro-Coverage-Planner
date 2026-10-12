@@ -484,21 +484,37 @@ def keep_aac(payload: dict, existing: dict | None) -> None:
 
     grader is the only writer of a row's `grader` block and of the plan's `grader`
     block, so whatever a client echoes is replaced by what is stored, matched
-    by row id. A row the client added has none.
+    by row id. A row the client added has none, and a row whose filter or
+    template differs from the stored row's loses its block: grader reported it
+    for the old pair (section 6).
     """
-    stored = {r.get("id"): r.get("grader") for r in rows_of(existing)
-              if isinstance(r.get("grader"), dict)}
+    stored = {r.get("id"): r for r in rows_of(existing) if isinstance(r.get("grader"), dict)}
     rows = payload.get("filter_rows")
     if isinstance(rows, list):
         for r in rows:
             if not isinstance(r, dict):
                 continue
             r.pop("grader", None)
-            if r.get("id") in stored:
-                r["grader"] = copy.deepcopy(stored[r["id"]])
+            old = stored.get(r.get("id"))
+            if old is not None and same_identity(old, r):
+                r["grader"] = copy.deepcopy(old["grader"])
     payload.pop("grader", None)
     if isinstance(existing, dict) and isinstance(existing.get("grader"), dict):
         payload["grader"] = copy.deepcopy(existing["grader"])
+
+
+def same_identity(a: dict, b: dict) -> bool:
+    """Whether two rows name the same filter and template, the pair grader's
+    figures are reported against."""
+    return row_filter(a.get("filter")) == row_filter(b.get("filter")) \
+        and a.get("template") == b.get("template")
+
+
+def goal_of(row: dict) -> float:
+    """The row's goal in its own unit: hours for "h", frames for "fr"."""
+    if row.get("unit") == "fr":
+        return float(max(0, int(_num(row.get("target_frames")) or 0)))
+    return _num(row.get("target_hours")) or 0.0
 
 
 _ACCEPTED_NUMBERS = ("accepted_seconds", "seen_seconds")
@@ -563,7 +579,11 @@ def apply_accepted(plan: dict, body: dict, received_at: str,
     """Store grader's figures on *plan* and return the `unknown_rows`.
 
     A row is stored only when its id is on the plan, its echoed filter reaches
-    the row's filter, and its echoed template equals the row's. Values may go
+    the row's filter, and its echoed template equals the row's. A row grader sent
+    that comes back unknown loses its stored block, which was reported for a
+    filter and template the row no longer has. Each stored block also records
+    `goal_at_send`, the row's goal in its own unit at that moment, so a
+    `complete` flag stops counting once the goal is raised. Values may go
     down. `actual_hours` is never touched. The caller has run
     `validate_accepted`.
     """
@@ -578,6 +598,7 @@ def apply_accepted(plan: dict, body: dict, received_at: str,
         filter_ok = echoed == row.get("filter") or row_filter(echoed) == row.get("filter") \
             or (canon_filter(echoed) or None) == row.get("filter")
         if not filter_ok or entry["template"] != row.get("template"):
+            row.pop("grader", None)
             unknown.append({"id": entry["id"], "reason":
                             f"row now has filter {row.get('filter')} and template {row.get('template')}"})
             continue
@@ -589,6 +610,7 @@ def apply_accepted(plan: dict, body: dict, received_at: str,
             "complete": entry["complete"],
             "estimated_hours": entry.get("estimated_hours"),
             "measurement": entry.get("measurement"),
+            "goal_at_send": goal_of(row),
         }
     plan["grader"] = {
         "filed_through_night": body["filed_through_night"],
