@@ -70,18 +70,35 @@ There is no column for plan order in TS. Natural order follows `Id`, and changin
 For each target, the sync builds the override rows from ACP's order:
 
 1. Walk the goal keys in ACP's order. Skip keys with no enabled exposure plan on this target.
-2. For each key, add a block of exposure rows pointing at that plan's `referenceIdx`. The block holds N rows when the switch frequency is N. It holds the plan's `desired` count when the switch frequency is 0.
+2. For each key, add a block of exposure rows pointing at that plan's `referenceIdx`. The block holds N rows when the switch frequency is N. When the switch frequency is 0, it holds the frames TS needs to call the plan done (table below).
 3. When the project's `ditherevery` is above 0, insert dither rows by TS's own rule in `Planning/DitherInjector.cs:76-116`. A dither goes before the item where any filter is seen `ditherevery + 1` times since the last dither, with the list treated as a circle.
 4. Number the rows 1, 2, 3 in the `order` column.
 
-A block of `desired` rows works for switch frequency 0 because TS skips finished plans (`OverrideOrderExposureSelector.cs:33`). The filter finishes inside its block and TS moves straight on to the next block. If the grader rejects frames, the shortfall is shot on the next turn of the circle.
+At switch frequency 0 the block size follows TS's completion rule in `Planning/Exposures/ExposureCompletionHelper.cs`:
+
+| Project grader | TS calls the plan done when | Block size |
+|---|---|---|
+| on | `Accepted` reaches `Desired` (lines 20-27) | `desired` |
+| off | `Acquired` reaches `(int)(throttle x Desired)` (lines 29-32) | ceil(throttle / 100 x `desired`) |
+
+The throttle is `profilepreference.exposureThrottle` for the profile, a percentage. The writer reads the real value at push time. TS's default is 125 (`Database/Schema/ProfilePreference.cs:67`), and Rohan set his to 100 on 12 October.
+
+A block sized this way works because TS skips finished plans (`OverrideOrderExposureSelector.cs:33`, and `PlanningTarget.cs:65-71` marks them rejected when the target loads). The filter finishes inside its block and TS moves straight on to the next block.
+
+### Restarting the walk every night
+
+TS's place in the override rows only moves forward (`Planning/FilterCadence.cs:36-51`). Suppose TS passes the end of Ha's block, and next morning AAC lowers Ha's `accepted`. Without help, Ha's shortfall waits until every other filter in the circle is done.
+
+So for every target that has override rows, the sync deletes the cadence rows on every push, whether or not it writes the order. TS then rebuilds the cadence from the override rows with row 1 marked next (`FilterCadenceFactory.cs:31-41`). Each night's walk starts at row 1, skips finished plans, and lands on the first unfinished plan in ACP's order.
+
+At switch frequency N this costs at most N - 1 extra frames per night. The first unfinished plan gets a full block of N again, even if it shot part of a block the night before.
 
 Two exceptions keep the footprint small:
 
 - When ACP's order equals the natural order, the sync writes no override rows. TS then uses its own selector for the switch frequency, with the same result and with per-template dither settings intact.
 - When smart order is on, the sync does not write override rows. TS ignores them.
 
-Whenever the sync writes, replaces or deletes override rows, it also deletes that target's cadence rows. It does the same for every target in a project whose switch frequency or smart order it writes.
+The sync also deletes a target's cadence rows whenever it deletes its override rows, and for every target in a project whose switch frequency or smart order it writes.
 
 ## 1. The side panel and the goal table
 
@@ -172,7 +189,7 @@ The editor offers the templates whose filter matches the row's filter. A seconda
 
 "+ sub exposure for R" adds a secondary row under R. The row asks for a TS template name, chosen from the list or typed. The name becomes the goal key. It must be unique on the plan and must not be a canonical filter name.
 
-A secondary row can exist without a primary goal. In that case `filter_goals.R` holds only `sub_rows`, and its own `target_hours` is 0.
+A secondary row can exist without a primary goal. In that case `filter_goals.R` holds only `sub_rows`, its own `target_hours` is 0, and it may have no `sub_exposure_s`. The writers push no exposure plan for it, as for any row with no goal. `GET /api/plans` adds `"primary_goal": false` to such a row in its response, without storing it. AAC treats that row as having no primary goal, the same as an absent one.
 
 A row's unit follows its sub length. Under 60 s the goal is in frames, and from 60 s up it is in hours. Clicking the unit flips that one row and stores `goal_unit`. Changing the sub length does not flip a row that was flipped by hand.
 
@@ -223,6 +240,8 @@ The new rules, in both writers:
 - A secondary row's exposure plan guid uses a new recipe, `"{profile}/plan/{targetGuid}/{filter}/{template}"`. Each free-text part in both recipes is length-prefixed as in `schema.py`.
 - A secondary row's exposure plan is linked in `ts_links` like any other.
 - Before inserting, a secondary row looks for its exposure plan under the flat recipe older pushes used, `exposure_plan_guid(profile, target_guid, template)`. A hit is restamped with the new guid and repointed at the right template, as `migrate.py` does for the length-prefix change. This stops the migration in section 5 from creating a second exposure plan for every star row already in TS.
+
+The sync never deletes templates. Instead, the push result lists every template on the profile whose `filtername` is not a filter on any of the profile's cameras, such as "R Stars", "G Stars" and "B Stars". Rohan deletes them in TS.
 
 `TsConvert.cs` and `TsGuid.cs` mirror these rules. `TsIdentityRecipeTests` gains both recipes.
 
@@ -329,9 +348,9 @@ The decision:
 | ACP order equals base order, and TS rows equal base rows | writes the generated rows if they differ from TS rows |
 | ACP order equals base order, and TS rows differ from base rows | nothing, because the order was changed in TS |
 
-The fourth case refreshes rows the sync wrote itself, for example after a goal or the switch frequency changed. The fifth case keeps an order set in TS.
+The fourth case refreshes rows the sync wrote itself. A changed goal, AAC floor, throttle, grader setting or switch frequency changes the block sizes, so the generated rows change. The fifth case keeps an order set in TS.
 
-"Writes" means: delete the target's override rows, insert the new ones, and delete the target's cadence rows. All three happen in the push transaction. Writing no rows deletes the override rows, which returns the target to natural order.
+"Writes" means: delete the target's override rows and insert the new ones, in the push transaction. Writing no rows deletes the override rows, which returns the target to natural order. Separately, every push deletes the cadence rows of every target that has override rows after it ("Restarting the walk every night" above).
 
 New plan rule: a push may insert an exposure plan on a target whose override rows it did not replace. The writer then appends that plan's block to the end and deletes the cadence rows. Without this, TS never shoots the new plan (`PlanningTarget.cs:80-97`). The push result names the target.
 
@@ -350,13 +369,16 @@ An override order with repeats or dithers, made by hand in TS, comes into ACP as
 
 ### Migration of existing plans
 
-`load_plans` runs a one-shot migration, guarded by `goal_panel_migrated: 1` on the `plans.json` document. It takes a timestamped backup first, as `_maybe_migrate_draft_plans_to_active` does (`app.py:637-672`). For each plan it:
+`load_plans` runs two one-shot migrations. Each takes a timestamped backup first, as `_maybe_migrate_draft_plans_to_active` does (`app.py:637-672`).
 
-- sets `goal_order` to the default order over the plan's existing keys
+The first ships in phase 3, guarded by `sub_rows_migrated: 1` on the `plans.json` document. It must ship with the importer change, because a push between the two would write a second exposure plan for every star row. For each plan it:
+
 - moves every top-level key that is not a canonical filter name, but whose `canon_filter` is one, into that filter's `sub_rows`. "R Stars" moves to `filter_goals.R.sub_rows."R Stars"`, and `filter_goals.R` is created with `target_hours` 0 if it was absent.
 - logs keys whose filter it cannot work out, by plan id, and leaves them where they are
 
-It does not set `filter_switch_frequency` or `smart_exposure_order`. Those arrive from TS on the next "Send TS to ACP".
+The second ships in phase 5, guarded by `goal_order_migrated: 1`. It sets `goal_order` to the default order over each plan's existing keys.
+
+Neither migration sets `filter_switch_frequency` or `smart_exposure_order`. Those arrive from TS on the next "Send TS to ACP".
 
 The migration does not count as an ACP change. A base without `exposure_order` means the next push writes no order. The next upload brings in each target's effective order from TS. Rohan's three hand-made override orders therefore stay in TS until he changes the order in ACP.
 
@@ -370,7 +392,7 @@ A plan gains `target_class`, one of `survey`, `deep` and `pretty`. Absent, or an
 
 ### `POST /api/plans/<plan_id>/accepted`
 
-AAC is the only caller. The body is the one in the AAC spec: `source`, `at`, `filed_through_night`, `min_total_frames`, and a list of `rows`. Each row is identified by `filter` and `template`, with `template` null for a primary row. Each carries these fields:
+AAC is the only caller. The route uses the same token scheme as `POST /api/plans/<plan_id>/progress`. The body is the one in the AAC spec: `source`, `at`, `filed_through_night`, `min_total_frames`, and a list of `rows`. Each row is identified by `filter` and `template`, with `template` null for a primary row. Each carries these fields:
 
 - `accepted_seconds`, `accepted_frames`
 - `seen_seconds`, `seen_frames`
@@ -447,6 +469,7 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | P3 | ACP, `tests/frontend` | Stored width 380, then 450 | 380 loads as 560 and is saved as 560. 450 loads as 450. |
 | P4 | ACP, `tests/frontend` | A plan whose camera has no TS template list | The template cell shows the en dash. No rendered cell in the app is exactly ",". |
 | P5 | ACP, `tests/frontend` | R goal 4.2 h, actual 3.0 h | The bar reads "3.0 / 4.2 h" and "1.2 h left". |
+| P6 | ACP, `tests/frontend` | R goal 4.2 h, actual 4.2 h, `aac.accepted_seconds` 10800, `aac.complete` false. Then `aac.complete` true. | First: the bar reads "3.0 / 4.2 h" and the row is not dimmed. Second: the row is dimmed as finished. |
 | T1 | ACP | `POST /api/ts-templates` for profile P, then `GET` with no TS database file | `source` is `"plugin"`, the list is P's, and `received_at` is set. A second post for P replaces the list. |
 | T2 | C# | Sync for tonight against a test database with three templates | One post to `/api/ts-templates` with the three templates. |
 | S1 | Python | Plan adds `filter_goals.R.sub_rows."R Stars"`, sub 15 s, 50 frames, no such template in TS | One new template named "R Stars", `filtername` "R", `defaultexposure` 15. One new exposure plan with `desired` 50, pointing at it. The primary R plan is unchanged. |
@@ -455,10 +478,14 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | S4 | C# | The golden rows for S1 and S2 | The plugin's rows equal the Python rows. |
 | S5 | ACP | Save a plan with a secondary row named "Ha" under R, then one with "R Stars" under both R and G | Both return 400. |
 | S7 | Python | A database pushed before this change with a flat "R Stars" goal: an exposure plan under the flat guid, pointing at a template with `filtername` "R Stars". TS also has a template "R Stars" with filter R. Push the migrated plan. | No exposure plan is inserted. The existing one carries the new guid, points at the "R Stars" template with filter R, and keeps its `acquired` and `accepted`. |
+| S8 | Python | A database holding templates with `filtername` "R Stars", "G Stars" and "B Stars" | The push deletes no template. Its result lists those three by name. |
 | S6 | C# | Two TS rows, R 120 s and R Stars 15 s, 10 frames each | Progress posts R with 0.3333 h, and R with template "R Stars" with 0.0417 h. ACP stores the second under `sub_rows`. |
 | O1 | Python | ACP order OIII, Ha. Push. Then import. | TS has 8 override rows: OIII x4, then Ha x4. Cadence rows: none. The oracle shoots OIII, OIII, OIII, OIII, Ha, Ha, Ha, Ha. Import returns `goal_order` OIII, Ha and no changes. |
 | O2 | Python | After O1, edit TS's override rows to Ha, OIII (one each). Push with no ACP change. | The override rows stay Ha, OIII. The base order stays OIII, Ha. The next import shows `goal_order` changed in TS to Ha, OIII. |
 | O3 | Python | After O2, change ACP's order to Ha, OIII and push | ACP wins. The rows become Ha x4, OIII x4, and the push result says it replaced an order set in TS. |
+| O4b | Python | Grader off, throttle 125, switch frequency 0, ACP order OIII, Ha, desired 4 each | Blocks are 5 rows each. The oracle shoots OIII x5, then Ha x5, which is past `desired`, as TS does. |
+| O4c | Python | After O1, the oracle shoots OIII x4 and one Ha. AAC then lowers OIII's `accepted` to 3. Push. | The cadence rows are gone. The oracle's next frame is OIII, then Ha. |
+| O4d | Python | After O1, raise OIII's goal to 6 frames. Push with no order change. | Case 4 applies: the rows become OIII x6, Ha x4. The same happens when AAC's floor raises `desired`. |
 | O4 | Python | Switch frequency 0 against 3. ACP order OIII, Ha. Desired 4 each. | At 0: the oracle shoots OIII x4 then Ha x4. At 3: override rows are OIII x3, Ha x3. The oracle shoots OIII, OIII, OIII, Ha, Ha, Ha, OIII, Ha. |
 | O5 | Python | ACP order equals natural order, Ha then OIII, at 0 and at 3 | No override rows. At 0 the oracle shoots Ha x4 then OIII x4. At 3 it shoots Ha x3, OIII x3, Ha, OIII. |
 | O6 | Python | Smart order turned on in ACP, ACP order OIII, Ha | The project row has `smartexposureorder` 1. No override rows are written, and the cadence rows are deleted. The editor shows the move controls disabled and the order unchanged. |
@@ -466,14 +493,14 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | O8 | Python | A target with hand-made override rows for Ha and OIII. ACP adds SII. Push. | The SII plan is inserted. Its 4-row block is appended to the override rows, and the cadence rows are deleted. |
 | O9 | C# | Test O1's database, loaded through TS's assembly | `ExposureSelectionExpert` returns an override selector, and ten selections return OIII x4 then Ha x4. This test runs only where the TS plugin assembly is installed. If referencing it from `ACP.NINA.Plugin.Tests` proves impractical, the manual check in section 8 replaces it. |
 | O10 | Python | Cadence rows left from an older order, then an ACP order change | The cadence rows are gone after the push. |
-| M1 | ACP | `plans.json` with a plan keyed L, R, R Stars, Ha, and no `goal_order` | After load: "R Stars" sits under `filter_goals.R.sub_rows`, and `goal_order` is L, R, Ha, R Stars. A backup exists. A second load changes nothing. |
+| M1 | ACP | `plans.json` with a plan keyed L, R, R Stars, Ha, and no `goal_order` | After the phase 3 migration: "R Stars" sits under `filter_goals.R.sub_rows`. After the phase 5 migration: `goal_order` is L, R, Ha, R Stars. Each takes a backup. A second load changes nothing. |
 | M2 | Python | M1's plan, with a base that has no `exposure_order`, and TS in natural order OIII-first | The push writes no override rows. The next import shows a change made in TS to TS's order. |
-| F1 | Python | Base switch frequency 0, ACP 3, TS 0 | The push writes 3 and deletes the cadence rows of every target in the project. |
+| F1 | Python | O1's database, base switch frequency 0, ACP 3, TS 0 | The push writes 3 and deletes the cadence rows of every target in the project. The override rows change from OIII x4, Ha x4 to OIII x3, Ha x3. |
 | F2 | Python | Base 0, ACP 0, TS 3 | The push leaves 3. The base stays 0. |
 | F3 | C# | F1 and F2 as golden scenarios | The plugin's rows equal the Python rows. |
 | A1 | ACP | Save `target_class` "deep", then "giant" | "deep" saves. "giant" returns 400. A plan with none reads as survey in `GET /api/plans`. |
-| A2 | ACP | `POST /api/plans/M42/accepted` with Ha 22320 s, 62 frames, complete false, then Ha 21240 s | Both are stored under `filter_goals.Ha.aac`, and the second lowers the value. `actual_hours` is unchanged. `aac.received_at` is set. A row with filter R and template "R Stars", on a plan without that row, comes back in `unknown_rows`. |
-| A3 | Python | Every case in `tests/fixtures/aac_accepted_cases.json` | Each case writes exactly the expected `accepted`, `desired` and `enablegrader`. `acquired` never changes. |
+| A2 | ACP | `POST /api/plans/M42/accepted` with Ha 22320 s, complete false, then Ha 21240 s. A row with filter "Antlia Ha" and template null. A row with filter R and template "R Stars". The request has `filed_through_night` 2026-10-11 and `min_total_frames` 10. Also one request with no token. | The Ha values are stored under `filter_goals.Ha.aac`, and the second lowers them. "Antlia Ha" lands on Ha through `canon_filter`. "R Stars" lands under `filter_goals.R.sub_rows."R Stars".aac`, or in `unknown_rows` on a plan without that row. `aac.filed_through_night`, `aac.min_total_frames` and `aac.received_at` are stored. `actual_hours` is unchanged. The request with no token gets the same refusal as `/progress`. |
+| A3 | Python | Every case in `tests/fixtures/aac_accepted_cases.json`, which includes a frame row with `target_frames` 8 and floor 10 | Each case writes exactly the expected `accepted`, `desired` and `enablegrader`. The frame row gets `desired` 10. `acquired` never changes. |
 | A4 | Python | Two exposure plans in one project, one with an `aac` block and one without. Then both with blocks, but `filed_through_night` two nights old. | Neither push writes `accepted` or `enablegrader` in that project. |
 | A5 | Python | A mosaic plan with fresh figures. Then an eligible project on a profile with `delayGrading` 80. | Neither push makes an AAC write. The second logs a warning naming the profile setting. |
 | A6 | C# | The same case file, and A4 and A5 | The plugin's rows equal the expected rows in every case. |
@@ -488,10 +515,10 @@ Each phase ends with its tests passing in every repo it touches. The order respe
 |---|---|---|
 | 1 | Panel width, the rebuilt table without order controls, progress bars, `EMPTY_CELL` and the 18 placeholders. Tests P1 to P5. | ACP |
 | 2 | Template list from the plugin. Tests T1 and T2. | ACP, ACP.NINA.Plugin |
-| 3 | Secondary rows: model, validation, editor, both writers, the importer, progress keying, the lookup under the old guid. Tests S1 to S7. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
+| 3 | Secondary rows: model, validation, editor, both writers, the importer, progress keying, the lookup under the old guid, and the first migration. Tests S1 to S8. S7 must pass in this phase. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 | 4 | Switch frequency and smart order: settings route, column rules, base fields, cadence deletion. Tests F1 to F3. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
-| 5 | Filter order: `goal_order`, the move controls, the migration, the oracle, the override writer, the importer. Tests O1 to O10, M1 and M2. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
-| 6 | AAC dependencies. Tests A1 to A6. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
+| 5 | Filter order: `goal_order`, the move controls, the second migration, the oracle, the override writer, the nightly cadence reset, the importer. Tests O1 to O10, M1 and M2. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
+| 6 | AAC dependencies. Tests A1 to A6 and P6. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 
 Phases 3 to 6 regenerate `golden-rows.json` with `tests/dump_golden_rows.py` and copy it into the plugin in the same session.
 
@@ -507,19 +534,17 @@ I cannot run TS here, so the order needs one check on Voyager after phase 5 ship
 
 1. The order goes into TS's override rows, expanded into blocks, rather than into exposure plan `Id` order. Changing `Id` would break `acquiredimage.exposureId` and the pinned ids in `ts_links`. The agreed design named the override table but not the expansion, which section "What TS does with an order" shows is needed.
 2. TS's planner loads a target's exposure plans in `Id` order. Its loader at `SchedulerDatabaseContext.cs:306-320` does not sort them, and TS's own editor assumes the same order.
-3. With the switch frequency at 0, a block of `desired` rows per plan stands in for TS's finish-each behaviour. A plan with a large frame goal makes a long override list, for example 500 rows for 500 star frames.
+3. With the switch frequency at 0, a block per plan sized by TS's completion rule stands in for TS's finish-each behaviour. A plan with a large frame goal makes a long override list, for example 500 rows for 500 star frames.
 4. Dither rows use the project's `ditherevery`. A template's own `ditherevery` (column on `exposuretemplate`, -1 by default) is ignored inside an override order, as it is in TS when a user builds one by hand.
 5. A secondary row that names an existing TS template uses it unchanged. The template's default exposure may differ from the row's sub, and the row's sub wins because it is written to the exposure plan.
 6. Switch frequency and smart order are per project, so they are saved for every plan in a project at once. When plans disagree, the first plan in `plans.json` wins.
 7. The goal unit threshold is the sub length: under 60 s is frames. A frame row stores both `target_frames` and `target_hours`.
 8. The panel's narrowest desktop width is 641 px. Below that the phone sheet applies and is unchanged by this spec.
 9. The 18 placeholders become an en dash rather than the original em dash, so a future punctuation tidy does not catch them.
-10. Section 6 follows the AAC spec file as it stood at 19:15 on 12 October, including its storage contract. Field names come from that version.
+10. Section 6 follows the AAC spec at commit `26d7be1`, including its storage contract. Field names come from that version. The AAC spec is being amended to use this spec's guid recipe for secondary rows.
 11. Secondary rows nest under `filter_goals.<f>.sub_rows`, as the AAC storage contract requires, rather than sitting beside primary rows as top-level keys. The importer's flat keying changes to match, and the migration moves existing flat keys.
 
 ## Open questions
 
-1. Rohan's three hand-made override orders (G7.7-3.7, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what he wanted when he set them on 11 October? If not, he can set each order once in ACP after phase 5, and the sync replaces them.
-2. The three stray templates with filter names "B Stars", "G Stars" and "R Stars" (ids 15, 17, 20 in the scratch copy) came from the old key-as-filter bug. Should the sync leave them for Rohan to delete in TS, or should phase 3 report them in the push result?
-3. Does `ACP.NINA.Plugin.Tests` reference TS's assembly in a way that lets test O9 run on Windows? If not, the manual check is the only check against TS itself.
-4. The AAC spec says a secondary row's exposure plan guid derives from "the ACP plan id, the panel, the filter and the template". This spec keeps the existing recipe's inputs (profile and target guid, which stand for plan and panel) and adds the filter and the template. Is that acceptable to the AAC side, or must the guid use the ACP plan id itself?
+1. Rohan's three hand-made override orders (G7.7-3.7, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what he wanted when he set them on 11 October? If not, he can set each order once in ACP after phase 5, and the sync replaces them. Rohan has been asked and has not answered yet.
+2. Does `ACP.NINA.Plugin.Tests` reference TS's assembly in a way that lets test O9 run on Windows? If not, the manual check is the only check against TS itself.
