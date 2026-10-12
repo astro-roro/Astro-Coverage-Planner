@@ -275,8 +275,20 @@ function filterOptionsHtml(row, camera) {
   return names.map(f => `<option value="${esc(f)}"${f === row.filter ? " selected" : ""}>${esc(f)}</option>`).join("");
 }
 
-// One card. `colors` maps filter name to dot colour.
-export function cardHtml(row, index, { camera, templates, colors = {} } = {}) {
+// The grab handle in a card's first column: the position number over a 6-dot
+// grip. It is the only thing that starts a drag or takes the arrow keys.
+// With smart order on it is disabled and not draggable.
+export const HANDLE_LABEL = "Drag to reorder. Arrow keys also move it.";
+const GRIP_SVG = `<svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true" fill="currentColor"><circle cx="3" cy="3" r="1.2"></circle><circle cx="7" cy="3" r="1.2"></circle><circle cx="3" cy="7" r="1.2"></circle><circle cx="7" cy="7" r="1.2"></circle><circle cx="3" cy="11" r="1.2"></circle><circle cx="7" cy="11" r="1.2"></circle></svg>`;
+
+export function handleHtml(index, smart = false) {
+  const state = smart ? " disabled" : ` draggable="true"`;
+  return `<button type="button" class="fr-handle"${state} aria-label="${HANDLE_LABEL}"><span class="fr-pos">${index + 1}</span>${GRIP_SVG}</button>`;
+}
+
+// One card. `colors` maps filter name to dot colour. `smart` disables the
+// handle.
+export function cardHtml(row, index, { camera, templates, colors = {}, smart = false } = {}) {
   const p = rowProgress(row);
   const dot = colors[row.filter] || "#888";
   const frames = row.unit === "fr";
@@ -286,7 +298,7 @@ export function cardHtml(row, index, { camera, templates, colors = {} } = {}) {
     .join("");
   const cur = templateLabel(row.template, rowSub(row));
   return `<div class="fr-card${p.finished ? " fr-done" : ""}" data-row-id="${esc(row.id)}">
-    <span class="fr-pos">${index + 1}</span>
+    ${handleHtml(index, smart)}
     <div class="fr-filter"><span class="fr-dot" style="background:${esc(dot)}"></span><select class="fr-filter-sel" aria-label="Filter">${filterOptionsHtml(row, camera)}</select></div>
     <select class="fr-tmpl-sel" aria-label="TS template" title="${esc(cur)}">${tmplOpts}</select>
     <button type="button" class="fr-remove" title="Remove this filter" aria-label="Remove this filter">×</button>
@@ -355,13 +367,52 @@ export function orderControlsHtml(plan, { rotateN, projectNote = "" } = {}) {
 // list is marked so reordering (phase 5) stays off; the order is kept.
 export function filterListHtml(plan, ctx = {}) {
   const rows = plan?.filter_rows || [];
-  const cards = rows.map((r, i) => cardHtml(r, i, ctx)).join("");
+  const smart = smartOrder(plan);
+  const cards = rows.map((r, i) => cardHtml(r, i, { ...ctx, smart })).join("");
   const note = rows.length
     ? ""
     : `<div class="fr-empty">No filters yet. Add one to set a goal.</div>`;
-  const smart = smartOrder(plan);
   const controls = orderControlsHtml(plan, { rotateN: ctx.rotateN, projectNote: ctx.projectNote });
   return `${controls}<div class="fr-list${smart ? " fr-smart-on" : ""}" data-reorder="${smart ? "off" : "on"}">${note}${cards}<button type="button" class="fr-add">+ Add filter</button></div>`;
+}
+
+// --- reordering (section 1) ---
+
+// A copy of `rows` with the row at `from` moved to final index `to`. Out of
+// range or unchanged gives a plain copy.
+export function moveRow(rows, from, to) {
+  const out = [...rows];
+  const n = out.length;
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return out;
+  if (from < 0 || from >= n || to < 0 || to >= n || from === to) return out;
+  const [r] = out.splice(from, 1);
+  out.splice(to, 0, r);
+  return out;
+}
+
+// Dragging row `from` over row `over`: where the drop line goes and the row's
+// final index. Dragging upwards the line is above the hovered row, downwards
+// below it, and either way the row ends up at the hovered row's index. Null
+// when the drag is over its own row.
+export function dropTarget(from, over) {
+  if (!Number.isInteger(from) || !Number.isInteger(over) || from === over) return null;
+  return { placement: from > over ? "before" : "after", to: over };
+}
+
+// The final index for an arrow key on the row at `index`, or null when the
+// key does nothing: not an up or down arrow, already at that end, or smart
+// order is on.
+export function keyMoveTarget(key, index, length, smart = false) {
+  if (smart) return null;
+  const to = key === "ArrowUp" ? index - 1 : key === "ArrowDown" ? index + 1 : null;
+  if (to === null || to < 0 || to >= length) return null;
+  return to;
+}
+
+// The drop line: 2 px accent rule between two ring markers. app.js puts at
+// most one in the list.
+export function dropLineHtml() {
+  return `<div class="fr-drop-line" aria-hidden="true"><span class="fr-drop-mark"></span><span class="fr-drop-rule"></span><span class="fr-drop-mark"></span></div>`;
 }
 
 // --- sync diff labels ---

@@ -680,6 +680,10 @@ import {
   hoursByFilter,
   newFilterRow,
   orderExplanation,
+  moveRow,
+  dropTarget,
+  keyMoveTarget,
+  dropLineHtml,
   clampRotate,
   ROTATE_DEFAULT,
   rowDiffLabel,
@@ -6968,6 +6972,68 @@ function wireFilterRows(panel) {
       editingPlan.filter_rows = editingPlan.filter_rows.filter(r => r !== row);
       redrawFilterRows(panel);
     }
+  });
+  // Reordering. Only the handle starts a drag or takes arrow keys; the cards
+  // are drop targets. Smart order switches all of it off and keeps the order.
+  let dragFrom = -1;
+  const smartOn = () => editingPlan.smart_exposure_order === true;
+  const indexOf = el => {
+    const id = el.closest(".fr-card")?.dataset.rowId;
+    return (editingPlan.filter_rows || []).findIndex(r => r.id === id);
+  };
+  const clearDrop = () => {
+    host.querySelectorAll(".fr-drop-line").forEach(n => n.remove());
+    host.querySelectorAll(".fr-dragging").forEach(n => n.classList.remove("fr-dragging"));
+  };
+  const endDrag = () => { dragFrom = -1; clearDrop(); };
+  const applyMove = (from, to) => {
+    editingPlan.filter_rows = moveRow(editingPlan.filter_rows, from, to);
+    redrawFilterRows(panel);
+  };
+  host.addEventListener("dragstart", e => {
+    const handle = e.target.closest?.(".fr-handle");
+    if (!handle || smartOn()) { e.preventDefault(); return; }
+    dragFrom = indexOf(handle);
+    if (dragFrom < 0) { e.preventDefault(); return; }
+    const card = handle.closest(".fr-card");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(dragFrom));
+    if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(card, 10, 10);
+    card.classList.add("fr-dragging");
+  });
+  host.addEventListener("dragover", e => {
+    if (dragFrom < 0 || smartOn()) return;
+    const card = e.target.closest?.(".fr-card");
+    const t = card ? dropTarget(dragFrom, indexOf(card)) : null;
+    e.preventDefault();
+    host.querySelectorAll(".fr-drop-line").forEach(n => n.remove());
+    if (!t) return;
+    card.insertAdjacentHTML(t.placement === "before" ? "beforebegin" : "afterend", dropLineHtml());
+  });
+  host.addEventListener("dragleave", e => {
+    if (!e.relatedTarget || !host.contains(e.relatedTarget)) clearDrop();
+  });
+  host.addEventListener("drop", e => {
+    if (dragFrom < 0 || smartOn()) return;
+    e.preventDefault();
+    const card = e.target.closest?.(".fr-card");
+    const t = card ? dropTarget(dragFrom, indexOf(card)) : null;
+    const from = dragFrom;
+    endDrag();
+    if (t) applyMove(from, t.to);
+  });
+  host.addEventListener("dragend", endDrag);
+  host.addEventListener("keydown", e => {
+    const handle = e.target.closest?.(".fr-handle");
+    if (!handle) return;
+    const from = indexOf(handle);
+    const to = keyMoveTarget(e.key, from, editingPlan.filter_rows.length, smartOn());
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
+    if (to === null || from < 0) return;
+    const id = editingPlan.filter_rows[from].id;
+    applyMove(from, to);
+    const sel = `.fr-card[data-row-id="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(id) : id}"] .fr-handle`;
+    host.querySelector(sel)?.focus();
   });
   // The switch, N and smart order. Typing N updates the plan and the line
   // under the controls only, so the input keeps focus.
