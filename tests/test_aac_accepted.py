@@ -239,10 +239,10 @@ class TestReviewFixes(unittest.TestCase):
         taken = []
 
         class Spy:
-            def __enter__(self_inner):
+            def __enter__(self):
                 taken.append("in")
 
-            def __exit__(self_inner, *a):
+            def __exit__(self, *a):
                 taken.append("out")
 
         real = app_module.PLANS_LOCK
