@@ -622,19 +622,26 @@ def _heal_plan_list(plans: list) -> list:
 PLAN_STATES = ("draft", "active", "inactive", "closed")
 
 
-def _backup_plans_json() -> None:
-    """Timestamped copy of plans.json, taken once before the draft->active
-    migration touches it. Best-effort: a backup failure is logged, not
-    fatal, because refusing to migrate over a backup problem would leave
-    the 47 plans permanently stuck under the old draft meaning."""
+def _backup_plans_json() -> bool:
+    """Timestamped copy of plans.json, taken before a one-shot migration
+    touches it. Returns whether the copy was made (a missing plans.json has
+    nothing to lose and counts as made). The draft->active migration goes
+    ahead without one, because refusing would leave the 47 plans stuck under
+    the old draft meaning; the filter row migration does not."""
     if not PLANS_PATH.exists():
-        return
+        return True
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = PLANS_PATH.with_name(f"{PLANS_PATH.name}.bak-{stamp}")
+    n = 2
+    while backup_path.exists():
+        backup_path = PLANS_PATH.with_name(f"{PLANS_PATH.name}.bak-{stamp}-{n}")
+        n += 1
     try:
         backup_path.write_bytes(PLANS_PATH.read_bytes())
     except OSError as exc:
         logging.warning("could not back up %s before migration: %s", PLANS_PATH, exc)
+        return False
+    return True
 
 
 def _maybe_migrate_draft_plans_to_active() -> None:
@@ -675,13 +682,6 @@ def _maybe_migrate_draft_plans_to_active() -> None:
     save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
 
 
-def _known_filters() -> set[str]:
-    """Every canonical filter name the scanner's vocabulary can produce."""
-    _filter_helpers()
-    from build_archive_manifest import FILTER_CANON
-    return set(FILTER_CANON.values())
-
-
 def _maybe_migrate_filter_rows() -> None:
     """One-shot: every plan's `filter_goals` becomes `filter_rows`.
 
@@ -701,17 +701,21 @@ def _maybe_migrate_filter_rows() -> None:
     if not isinstance(plans, list):
         plans = []
     todo = [p for p in plans if isinstance(p, dict) and not isinstance(p.get("filter_rows"), list)]
+    cameras = {}
     if any(isinstance(p.get("filter_goals"), dict) and p["filter_goals"] for p in todo):
-        _backup_plans_json()
-        canon_filter, _ = _filter_helpers()
-        canon = lambda n: canon_filter(n) or n  # noqa: E731
-        known = _known_filters()
+        if not _backup_plans_json():
+            # No backup, no migration: it is the step that is hard to undo.
+            # Plans keep their filter_goals, which GET still serves, and the
+            # next load tries again.
+            logging.error(
+                "Not moving filter goals into filter rows, because %s could not be backed up first",
+                PLANS_PATH,
+            )
+            return
         cameras = {c.get("id"): c for c in (load_gear().get("cameras") or []) if isinstance(c, dict)}
-    else:
-        canon, known, cameras = (lambda n: n), set(), {}
     moved = 0
     for p in todo:
-        id_by_key = fr.migrate_plan(p, cameras.get(p.get("camera_id") or ""), canon, known)
+        id_by_key = fr.migrate_plan(p, cameras.get(p.get("camera_id") or ""))
         fr.rekey_links(p, id_by_key)
         moved += len(id_by_key)
     _plans_cache["plans"] = plans
@@ -3491,11 +3495,7 @@ def _validate_plan_payload(payload: dict) -> str | None:
     payload.pop("filter_goals", None)
     if "filter_rows" in payload:
         cameras = {c.get("id"): c for c in (load_gear().get("cameras") or []) if isinstance(c, dict)}
-        canon_filter, _ = _filter_helpers()
-        err = fr.validate_rows(
-            payload["filter_rows"], cameras.get(payload.get("camera_id") or ""),
-            lambda n: canon_filter(n) or n,
-        )
+        err = fr.validate_rows(payload["filter_rows"], cameras.get(payload.get("camera_id") or ""))
         if err:
             return err
     # TS project state (docs/specs/ts-project-settings.md section 1). Absent
@@ -3594,7 +3594,8 @@ def _expand_plan(plan: dict, tokens: frozenset[str], gear_data: dict | None, sit
 def _with_goals_view(plan):
     """A copy of *plan* carrying the derived `filter_goals` older plugins
     read (filter_rows.filter_goals_view). Never stored."""
-    if not isinstance(plan, dict):
+    if not isinstance(plan, dict) or not isinstance(plan.get("filter_rows"), list):
+        # Not migrated yet (the backup failed): its own filter_goals stand.
         return plan
     return {**plan, "filter_goals": fr.filter_goals_view(plan)}
 

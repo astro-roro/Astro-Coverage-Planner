@@ -6,9 +6,14 @@ list order is the shooting order. "R at 180 s" and "R Stars at 15 s" are two
 rows of one filter.
 
 Pure functions over plan dicts, so the migration, the validator and the
-derived `filter_goals` view can be tested without the Flask app. The filter
-vocabulary comes in as a `canon` callable (the scanner's `canon_filter`),
-because importing the scanner pulls in numpy and astropy.
+derived `filter_goals` view can be tested without the Flask app.
+
+A row's filter comes from one vocabulary, `row_filter`, which the TS
+sync's writer and importer and the NINA plugin share. It is not the archive
+scanner's `canon_filter`: that one strips brand names ("Antlia Ha" is Ha),
+the writers do not, and a difference between the two would read as a
+change of filter made in ACP. tests/fixtures/row_filter_cases.json is the
+table all three test against.
 """
 from __future__ import annotations
 
@@ -28,7 +33,48 @@ UNITS = ("h", "fr")
 # frames rather than hours.
 FRAME_UNIT_BELOW_S = 60
 
-Canon = Callable[[str], "str | None"]
+# The alias table the writers use (nina_ts_sync.filter_canon.FILTER_CANON
+# and the plugin's TsFilterNames). Keys are matched upper-cased.
+ROW_FILTER_ALIASES: dict[str, str] = {
+    "H": "Ha", "HA": "Ha", "HALPHA": "Ha", "H-ALPHA": "Ha", "H_ALPHA": "Ha",
+    "O": "OIII", "O3": "OIII", "OIII": "OIII", "O-III": "OIII", "O_III": "OIII",
+    "S": "SII", "S2": "SII", "SII": "SII", "S-II": "SII", "S_II": "SII",
+    "L": "L", "LUM": "L", "LUMINANCE": "L", "LIGHT": "L", "CLEAR": "L",
+    "R": "R", "RED": "R",
+    "G": "G", "GREEN": "G",
+    "B": "B", "BLUE": "B",
+    "V": "V", "IR": "IR", "UV": "UV",
+    "NOFILTER": "NoFilter", "NO FILTER": "NoFilter", "NO_FILTER": "NoFilter",
+    "NONE": "NoFilter", "EMPTY": "NoFilter", "OPEN": "NoFilter",
+}
+_KNOWN = frozenset(ROW_FILTER_ALIASES.values())
+
+
+def _alias(name: str) -> str:
+    trimmed = (name or "").strip()
+    return ROW_FILTER_ALIASES.get(trimmed.upper(), trimmed)
+
+
+def known_filter(name: str | None) -> str | None:
+    """The known filter a goal key or TS filtername names, or None. A name
+    the alias table does not know is tried on its first word, so "R Stars"
+    is R and "Ha 3nm" is Ha; "Antlia Ha" names no known filter."""
+    if not name:
+        return None
+    whole = _alias(name)
+    if whole in _KNOWN:
+        return whole
+    words = str(name).strip().split()
+    if len(words) > 1:
+        head = _alias(words[0])
+        if head in _KNOWN:
+            return head
+    return None
+
+
+def row_filter(name: str | None) -> str:
+    """A row's filter: the known filter *name* names, else *name* trimmed."""
+    return known_filter(name) or (name or "").strip()
 
 
 def filter_sort_key(name: str) -> tuple[int, str]:
@@ -140,7 +186,7 @@ def filter_goals_view(plan: dict | None) -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 
-def validate_rows(rows, camera: dict | None, canon: Canon) -> str | None:
+def validate_rows(rows, camera: dict | None) -> str | None:
     """The `filter_rows` checks `_validate_plan_payload` makes (section 3).
 
     Assigns an id to a row that arrives without one. Returns an error string,
@@ -151,7 +197,7 @@ def validate_rows(rows, camera: dict | None, canon: Canon) -> str | None:
     camera_filters = None
     if isinstance(camera, dict) and isinstance(camera.get("filters"), dict) and camera["filters"]:
         names = [str(k) for k in camera["filters"]]
-        camera_filters = set(names) | {canon(n) or n for n in names}
+        camera_filters = set(names) | {row_filter(n) for n in names}
     seen_ids: set[str] = set()
     seen_pairs: set[tuple[str, str]] = set()
     for i, row in enumerate(rows):
@@ -176,7 +222,7 @@ def validate_rows(rows, camera: dict | None, canon: Canon) -> str | None:
         if pair in seen_pairs:
             return f"two rows have filter {filt!r} and template {template!r}"
         seen_pairs.add(pair)
-        if camera_filters is not None and filt not in camera_filters and (canon(filt) or filt) not in camera_filters:
+        if camera_filters is not None and filt not in camera_filters and row_filter(filt) not in camera_filters:
             return f"{where}.filter {filt!r} is not a filter on this plan's camera"
         sub = row.get("template_sub_s")
         sub_v = _num(sub)
@@ -210,26 +256,6 @@ def validate_rows(rows, camera: dict | None, canon: Canon) -> str | None:
 # ---------------------------------------------------------------------------
 # The one-shot migration from filter_goals (section 3)
 # ---------------------------------------------------------------------------
-
-
-def known_filter(name: str | None, canon: Canon, known: set[str]) -> str | None:
-    """The canonical filter a goal key names, or None.
-
-    `canon_filter` maps aliases ("Lum", "Antlia Ha") but passes a key such as
-    "R Stars" through unchanged, so a key the vocabulary does not know is
-    tried again on its first word: "R Stars" is filter R, "Ha 3nm" is Ha.
-    """
-    if not name:
-        return None
-    whole = canon(name)
-    if whole in known:
-        return whole
-    first = str(name).strip().split()
-    if len(first) > 1:
-        head = canon(first[0])
-        if head in known:
-            return head
-    return None
 
 
 def _usual_template(key: str, camera: dict | None) -> str:
@@ -289,7 +315,7 @@ def _sub_row_entries(goal: dict) -> list[tuple[str, dict]]:
     return out
 
 
-def migrate_plan(plan: dict, camera: dict | None, canon: Canon, known: set[str]) -> dict[str, str]:
+def migrate_plan(plan: dict, camera: dict | None) -> dict[str, str]:
     """Turn one plan's `filter_goals` into `filter_rows`, in place.
 
     Returns the old goal key to new row id map, for rekeying `ts_links`.
@@ -311,7 +337,7 @@ def migrate_plan(plan: dict, camera: dict | None, canon: Canon, known: set[str])
         if not isinstance(goal, dict):
             continue
         key = str(key)
-        filt = known_filter(key, canon, known)
+        filt = known_filter(key)
         if filt is not None and filt == key:
             template, canonical = _usual_template(key, camera), True
         elif filt is not None:
@@ -369,9 +395,12 @@ def rekey_links(plan: dict, id_by_key: dict[str, str]) -> None:
     rows_by_id = {r["id"]: r for r in rows_of(plan)}
 
     def note_row(row_id: str, entry: dict) -> None:
+        # The migrated row's own values, over whatever the plugin recorded:
+        # a difference between the two is the migration's naming, never an
+        # edit, and must not read as a template change on the next push.
         row = rows_by_id.get(row_id) or {}
-        entry.setdefault("filter", row.get("filter"))
-        entry.setdefault("template", row.get("template"))
+        entry["filter"] = row.get("filter")
+        entry["template"] = row.get("template")
 
     def fix_refs(refs) -> None:
         if not isinstance(refs, dict):

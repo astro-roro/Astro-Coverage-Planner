@@ -1,0 +1,14 @@
+{
+  "about": "The one filter vocabulary for filter rows (docs/specs/goal-panel-and-ts-order.md section 3). ACP's migration (filter_rows.row_filter), the Python writer and importer (nina_ts_sync.rows.row_filter) and the plugin (TsRows.RowFilter) all read this table in their tests. Each case is a goal key or a TS filtername and the row filter it becomes. The alias table names a known filter; a name it does not know is tried on its first word; anything else stays as it is, trimmed.",
+  "cases": [
+    ["Ha", "Ha"], ["H", "Ha"], ["HA", "Ha"], ["Halpha", "Ha"], ["H-alpha", "Ha"],
+    ["O", "OIII"], ["O3", "OIII"], ["OIII", "OIII"],
+    ["S", "SII"], ["S2", "SII"], ["SII", "SII"],
+    ["L", "L"], ["Lum", "L"], ["Luminance", "L"], ["Clear", "L"],
+    ["R", "R"], ["Red", "R"], ["G", "G"], ["Green", "G"], ["B", "B"], ["Blue", "B"],
+    ["R Stars", "R"], ["G Stars", "G"], ["B Stars", "B"], ["Ha 3nm", "Ha"], ["O 3nm", "OIII"],
+    ["R Stars (ZWO ASI6200MM Pro)", "R"],
+    ["Antlia Ha", "Antlia Ha"], ["IDAS LPS", "IDAS LPS"], ["L-eXtreme", "L-eXtreme"],
+    ["  Ha  ", "Ha"], ["NoFilter", "NoFilter"], ["Foo", "Foo"], ["", ""]
+  ]
+}

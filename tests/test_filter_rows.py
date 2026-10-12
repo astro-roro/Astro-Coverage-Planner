@@ -147,15 +147,9 @@ class TestMigrationM1(unittest.TestCase):
 class TestMigrationCases(unittest.TestCase):
     """The four rows of the migration table."""
 
-    KNOWN = {"L", "R", "G", "B", "Ha", "OIII", "SII"}
-
-    @staticmethod
-    def canon(name):
-        return {"Lum": "L", "Antlia Ha": "Ha"}.get(name, name)
-
     def _migrate(self, goals, camera=CAMERA, **extra):
         plan = {"id": "p", "filter_goals": goals, **extra}
-        ids = fr.migrate_plan(plan, camera, self.canon, self.KNOWN)
+        ids = fr.migrate_plan(plan, camera)
         return plan, ids
 
     def test_canonical_key_without_a_template_name_uses_the_camera_name(self):
@@ -168,9 +162,17 @@ class TestMigrationCases(unittest.TestCase):
         self.assertEqual((row["filter"], row["template"], row["template_sub_s"]), ("SII", "SII", 300))
 
     def test_alias_key_keeps_its_name_as_the_template(self):
-        plan, _ = self._migrate({"Antlia Ha": {"target_hours": 1, "sub_exposure_s": 300}})
+        plan, _ = self._migrate({"Lum": {"target_hours": 1, "sub_exposure_s": 300}})
         row = plan["filter_rows"][0]
-        self.assertEqual((row["filter"], row["template"]), ("Ha", "Antlia Ha"))
+        self.assertEqual((row["filter"], row["template"]), ("L", "Lum"))
+
+    def test_a_brand_name_is_not_stripped(self):
+        """The writers' vocabulary, not the archive scanner's: "Antlia Ha" is
+        its own filter, so the migration and the writers agree on it."""
+        with self.assertLogs(level="WARNING"):
+            plan, _ = self._migrate({"Antlia Ha": {"target_hours": 1, "sub_exposure_s": 300}})
+        row = plan["filter_rows"][0]
+        self.assertEqual((row["filter"], row["template"]), ("Antlia Ha", "Antlia Ha"))
 
     def test_unknown_key_is_its_own_filter_and_logged(self):
         with self.assertLogs(level="WARNING") as cm:
@@ -197,12 +199,72 @@ class TestMigrationCases(unittest.TestCase):
                                  "Alpha": {"target_hours": 1}, "L": {"target_hours": 1}})
         self.assertEqual([r["filter"] for r in plan["filter_rows"]], ["L", "Ha", "Alpha", "Zed"])
 
+    def test_the_base_takes_the_migrated_rows_filter_and_template(self):
+        """A base the plugin wrote from rows it derived names the filter and
+        template its own way. The migrated row's values replace them, so the
+        next push sees no change of template."""
+        plan = {"id": "p", "filter_goals": {"Ha": {"target_hours": 4, "sub_exposure_s": 300}},
+                "ts_links": {"prof": {"refs": {}, "base_snapshot": {"exposure_plans_by_panel_filter": {
+                    "1,1_Ha": {"desired": 48, "filter": "H", "template": "Ha (camera)"}}}}}}
+        ids = fr.migrate_plan(plan, CAMERA)
+        fr.rekey_links(plan, ids)
+        entry = plan["ts_links"]["prof"]["base_snapshot"]["exposure_plans_by_panel_filter"][f"1,1_{ids['Ha']}"]
+        self.assertEqual((entry["filter"], entry["template"], entry["desired"]), ("Ha", "Ha 3nm", 48))
+
     def test_plan_with_rows_is_left_alone(self):
         rows = [{"id": "x", "filter": "R"}]
         plan, ids = self._migrate({"Ha": {"target_hours": 1}}, filter_rows=rows)
         self.assertEqual(plan["filter_rows"], rows)
         self.assertEqual(ids, {})
         self.assertNotIn("filter_goals", plan)
+
+
+class TestSharedRowFilter(unittest.TestCase):
+    """tests/fixtures/row_filter_cases.json, the table the TS sync and the
+    plugin test their own copies against."""
+
+    def test_every_case(self):
+        cases = json.loads((Path(__file__).resolve().parent / "fixtures" / "row_filter_cases.json")
+                           .read_text(encoding="utf-8"))["cases"]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(fr.row_filter(raw), expected)
+
+    def test_the_writers_alias_table_is_copied_exactly(self):
+        """nina_ts_sync.filter_canon.FILTER_CANON, as that repo has it."""
+        self.assertEqual(len(fr.ROW_FILTER_ALIASES), 35)
+        self.assertEqual(fr.ROW_FILTER_ALIASES["O"], "OIII")
+
+    def test_the_validator_accepts_an_imported_star_row(self):
+        """The importer makes "R Stars (ZWO ASI6200MM Pro)" on filtername R
+        into filter R, which a camera with R takes."""
+        rows = [{"id": "a", "filter": "R", "template": "R Stars (ZWO ASI6200MM Pro)",
+                 "template_sub_s": 10, "unit": "fr", "target_frames": 30}]
+        self.assertIsNone(fr.validate_rows(rows, CAMERA))
+
+
+class TestMigrationNeedsABackup(unittest.TestCase):
+
+    def setUp(self):
+        _redirect_state({"version": 1, "settings_migrated": 1, "plans": [_m1_plan()]})
+
+    def test_a_failed_backup_leaves_the_goals_and_get_serves_them(self):
+        from unittest import mock
+        with mock.patch.object(app_module, "_backup_plans_json", return_value=False), \
+                self.assertLogs(level="ERROR"):
+            doc = app_module.load_plans()
+        self.assertNotIn("filter_rows_migrated", doc)
+        plan = doc["plans"][0]
+        self.assertNotIn("filter_rows", plan)
+        stored = json.loads(app_module.PLANS_PATH.read_text(encoding="utf-8"))
+        self.assertNotIn("filter_rows_migrated", stored)
+        got = app.test_client().get("/api/plans").get_json()["plans"][0]
+        self.assertEqual(got["filter_goals"]["R Stars"]["sub_exposure_s"], 15)
+
+        # The next load with a working backup migrates.
+        app_module._plans_cache = None
+        app_module._plans_cache_mtime = None
+        self.assertEqual(app_module.load_plans()["filter_rows_migrated"], 1)
 
 
 class TestFilterGoalsView(unittest.TestCase):
