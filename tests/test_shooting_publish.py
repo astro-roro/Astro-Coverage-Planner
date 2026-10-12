@@ -41,8 +41,12 @@ def _plan(**over):
         "telescope_id": "t1", "camera_id": "c1",
         "target": {"name": "Vela SNR", "center_ra_deg": 128.5, "center_dec_deg": -45.0,
                    "rotation_deg": 0, "mosaic": {"rows": 1, "cols": 1, "overlap_pct": 0}},
-        "filter_goals": {"Ha": {"target_hours": 10.0, "sub_exposure_s": 300},
-                         "OIII": {"target_hours": 8.0}},
+        "filter_rows": [
+            {"id": "r-ha", "filter": "Ha", "template": "Ha", "template_sub_s": 300,
+             "unit": "h", "target_hours": 10.0},
+            {"id": "r-oiii", "filter": "OIII", "template": "OIII", "template_sub_s": 300,
+             "unit": "h", "target_hours": 8.0},
+        ],
     }
     p.update(over)
     return p
@@ -106,7 +110,9 @@ class BuildDocument(unittest.TestCase):
         self.assertIsNone(pr["last_imaged_nights_ago"])
 
     def test_actual_hours_wins_when_higher(self):
-        plan = _plan(filter_goals={"Ha": {"target_hours": 10.0, "actual_hours": 4.0}})
+        plan = _plan(filter_rows=[{"id": "r-ha", "filter": "Ha", "template": "Ha",
+                                   "template_sub_s": 300, "unit": "h",
+                                   "target_hours": 10.0, "actual_hours": 4.0}])
         doc = build_shooting_document([plan], _manifest(_target(128.5, -45.0)), GEAR, now=NOW)
         self.assertEqual(doc["projects"][0]["filters"]["Ha"]["done_hours"], 4.0)
 

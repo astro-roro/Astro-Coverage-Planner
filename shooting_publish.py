@@ -23,6 +23,7 @@ if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
 from build_archive_manifest import canon_filter  # noqa: E402
+import filter_rows as fr  # noqa: E402
 from sanitise_manifest import _aperture_class, validate_no_paths  # noqa: E402
 
 DOC_VERSION = 1
@@ -143,14 +144,14 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
     logged = _hours_by_filter(matched)
 
     filters: dict[str, dict] = {}
-    for fname, goal in (plan.get("filter_goals") or {}).items():
+    for fname, goal in fr.hours_by_filter(plan).items():
         key = canon_filter(fname) or fname
-        goal = goal or {}
         # actual_hours comes from the Target Scheduler extension when it is
-        # installed and is usually fresher than the last archive scan.
-        done = max(logged.get(key, 0.0), float(goal.get("actual_hours") or 0))
+        # installed and is usually fresher than the last archive scan. A
+        # filter with two rows (R and R Stars) shows their sum.
+        done = max(logged.get(key, 0.0), goal["actual_hours"])
         filters[key] = {
-            "target_hours": round(float(goal.get("target_hours") or 0), 1),
+            "target_hours": round(goal["target_hours"], 1),
             "done_hours": round(done, 1),
         }
 
