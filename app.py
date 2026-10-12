@@ -3498,6 +3498,10 @@ def _validate_plan_payload(payload: dict) -> str | None:
         err = fr.validate_rows(payload["filter_rows"], cameras.get(payload.get("camera_id") or ""))
         if err:
             return err
+    # What AAC reads (section 6). Absent means survey.
+    tclass = payload.get("target_class")
+    if tclass is not None and tclass not in fr.TARGET_CLASSES:
+        return f"target_class must be one of {', '.join(fr.TARGET_CLASSES)}"
     # TS project state (docs/specs/ts-project-settings.md section 1). Absent
     # means "active". "parked" is a held PR #97 value that never shipped;
     # normalise it to "inactive" (TS's meaning for a plan paused by hand)
@@ -3602,7 +3606,11 @@ def _expand_plan(plan: dict, tokens: frozenset[str], gear_data: dict | None, sit
 def _with_goals_view(plan):
     """A copy of *plan* carrying the derived `filter_goals` older plugins
     read (filter_rows.filter_goals_view). Never stored."""
-    if not isinstance(plan, dict) or not isinstance(plan.get("filter_rows"), list):
+    if not isinstance(plan, dict):
+        return plan
+    # A plan with no target_class reads as survey (section 6), for AAC.
+    plan = {**plan, "target_class": fr.target_class_of(plan)}
+    if not isinstance(plan.get("filter_rows"), list):
         # Not migrated yet (the backup failed): its own filter_goals stand.
         return plan
     return {**plan, "filter_goals": fr.filter_goals_view(plan)}
@@ -3637,6 +3645,7 @@ def api_plans():
     payload.setdefault("created_at", now)
     payload.setdefault("last_synced_at", None)
     payload["updated_at"] = now
+    fr.keep_aac(payload, next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None))
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -3666,6 +3675,7 @@ def api_plan(plan_id: str):
     payload["created_at"] = existing.get("created_at") or datetime.now(timezone.utc).isoformat()
     payload.setdefault("last_synced_at", existing.get("last_synced_at"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    fr.keep_aac(payload, existing)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return jsonify(payload)
@@ -4338,6 +4348,36 @@ def api_plan_progress(plan_id: str):
     })
 
 
+@app.route("/api/plans/<plan_id>/accepted", methods=["POST"])
+def api_plan_accepted(plan_id: str):
+    """Store AAC's accepted counts against a plan's filter rows.
+
+    AAC is the only caller (docs/specs/goal-panel-and-ts-order.md section 6,
+    and its own spec, incremental-master-builds.md section 7). The access gate
+    has already checked the bearer token. A row lands only when its id, echoed
+    filter and echoed template match the plan; the rest come back in
+    `unknown_rows` with a reason, and AAC does not retry them until its figures
+    change. Values may go down, and `actual_hours` is never touched.
+    """
+    body = request.get_json(silent=True)
+    data = load_plans()
+    plans = data.get("plans", [])
+    idx = next((i for i, p in enumerate(plans) if p.get("id") == plan_id), None)
+    if idx is None:
+        return jsonify({"error": "not found"}), 404
+    err = fr.validate_accepted(body)
+    if err:
+        return jsonify({"error": err}), 400
+    plan = plans[idx]
+    canon_filter, _ = _filter_helpers()
+    now = datetime.now(timezone.utc).isoformat()
+    unknown = fr.apply_accepted(plan, body, now, canon_filter)
+    plans[idx] = plan
+    save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    return jsonify({"ok": True, "unknown_rows": unknown,
+                    "filed_through_night": body["filed_through_night"]})
+
+
 def _build_live_document() -> dict:
     import shooting_publish as sp
     plans = load_plans().get("plans", [])
@@ -4805,7 +4845,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
             # mosaic share the same set.
             exp_plan_specs: list[dict] = []
             for row in fr.rows_of(pl):
-                desired = fr.desired(row)
+                desired = fr.desired_for(row, pl)
                 if desired <= 0:
                     continue
                 fname = str(row.get("filter") or "")

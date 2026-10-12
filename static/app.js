@@ -624,6 +624,7 @@ import {
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
+import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
   LABEL_PRETTY as _LABEL_PRETTY,
   LABEL_RANK as _LABEL_RANK,
@@ -7157,6 +7158,7 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Project</span>
           <input type="text" class="wide" id="f_project" value="${esc(editingPlan.project_name)}" placeholder="groups plans into a TS project">
         </label>
+        ${targetClassFieldHtml(editingPlan)}
         <div class="coord-row">
           <label style="flex:1"><span class="lab">RA (deg)</span>
             <input type="number" step="0.1" id="f_ra" value="${Number(tg.center_ra_deg).toFixed(3)}">
@@ -7278,6 +7280,7 @@ function renderPlanEditor(plan) {
   // Wire live-edit handlers
   panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
+  panel.querySelector("#f_target_class")?.addEventListener("change", e => { setTargetClass(editingPlan, e.target.value); });
   panel.querySelector("#f_ra")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value);
     if (isFinite(v)) { editingPlan.target.center_ra_deg = v; document.getElementById("f_ra_hms").textContent = deg2hms(v); redrawPlanFootprints(); schedulePlanVisRefresh(); }

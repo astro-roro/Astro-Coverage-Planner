@@ -1,0 +1,773 @@
+{
+ "description": "Shared cases for the accepted write to Target Scheduler: goal-panel-and-ts-order.md section 6 and AAC's incremental-master-builds.md section 7 (test T8, sync side). Run by acp-nina-ts-sync, the plugin and ACP (ACP checks only each row's expected desired). Copied from acp-nina-ts-sync/tests/fixtures into the other two repos; never edit a copy.",
+ "format": {
+  "now": "the moment the sync runs, with its offset; the site zone is Australia/Melbourne",
+  "profile": "profilepreference grading columns that differ from 0 (all start at 0)",
+  "plan": "the ACP plan's aac block (filed_through_night, min_total_frames) and whether it is a 2 column mosaic",
+  "ts": "the project's enablegrader before, and UTC times of acquiredimage rows",
+  "rows": "ACP filter rows with an optional aac block (null: a row ACP has but AAC has not reported); row.ts is the exposure plan before the push; row.expected is desired and accepted after it",
+  "expected": "enablegrader after, a substring the push result's notes must contain (null: no note about AAC), and whether the AAC write happened"
+ },
+ "default_profile": {
+  "delayGrading": 0,
+  "enableGradeRMS": 0,
+  "enableGradeStars": 0,
+  "enableGradeHFR": 0,
+  "enableGradeFWHM": 0,
+  "enableGradeEccentricity": 0
+ },
+ "cases": [
+  {
+   "name": "ha_shortfall_grader_on",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 6.0,
+     "aac": {
+      "accepted_seconds": 20700.0,
+      "accepted_frames": 69,
+      "seen_seconds": 21600.0,
+      "seen_frames": 72,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 72,
+      "acquired": 72,
+      "accepted": 72
+     },
+     "expected": {
+      "desired": 72,
+      "accepted": 69
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "TS shoots 3"
+  },
+  {
+   "name": "r_stars_complete_stays_complete",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "R",
+     "template": "R Stars",
+     "template_sub_s": 15,
+     "unit": "fr",
+     "target_frames": 48,
+     "aac": {
+      "accepted_seconds": 705.0,
+      "accepted_frames": 47,
+      "seen_seconds": 720.0,
+      "seen_frames": 48,
+      "complete": true,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 48,
+      "acquired": 52,
+      "accepted": 52
+     },
+     "expected": {
+      "desired": 48,
+      "accepted": 48
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   }
+  },
+  {
+   "name": "dolphin_oiii_grader_switches_on",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "OIII",
+     "template": "OIII 300",
+     "template_sub_s": 300,
+     "unit": "fr",
+     "target_frames": 40,
+     "aac": {
+      "accepted_seconds": 9900.0,
+      "accepted_frames": 33,
+      "seen_seconds": 10800.0,
+      "seen_frames": 36,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 40,
+      "acquired": 36,
+      "accepted": 4
+     },
+     "expected": {
+      "desired": 40,
+      "accepted": 33
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "32 images pending; TS shoots 7"
+  },
+  {
+   "name": "project_with_a_row_that_has_no_aac_block",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "OIII",
+     "template": "OIII 300",
+     "template_sub_s": 300,
+     "unit": "fr",
+     "target_frames": 40,
+     "aac": {
+      "accepted_seconds": 9900.0,
+      "accepted_frames": 33,
+      "seen_seconds": 9900.0,
+      "seen_frames": 33,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 40,
+      "acquired": 36,
+      "accepted": 4
+     },
+     "expected": {
+      "desired": 40,
+      "accepted": 4
+     }
+    },
+    {
+     "filter": "SII",
+     "template": "SII 300",
+     "template_sub_s": 300,
+     "unit": "fr",
+     "target_frames": 40,
+     "aac": null,
+     "ts": {
+      "desired": 40,
+      "acquired": 0,
+      "accepted": 0
+     },
+     "expected": {
+      "desired": 40,
+      "accepted": 0
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 0,
+    "warning": null,
+    "written": false
+   }
+  },
+  {
+   "name": "stale_watermark_writes_nothing",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-10",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 6.0,
+     "aac": {
+      "accepted_seconds": 20700.0,
+      "accepted_frames": 69,
+      "seen_seconds": 20700.0,
+      "seen_frames": 69,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 72,
+      "acquired": 72,
+      "accepted": 72
+     },
+     "expected": {
+      "desired": 72,
+      "accepted": 72
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": "2026-10-10",
+    "written": false
+   }
+  },
+  {
+   "name": "profile_delay_grading_80_writes_nothing",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {
+    "delayGrading": 80
+   },
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 6.0,
+     "aac": {
+      "accepted_seconds": 20700.0,
+      "accepted_frames": 69,
+      "seen_seconds": 20700.0,
+      "seen_frames": 69,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 72,
+      "acquired": 72,
+      "accepted": 72
+     },
+     "expected": {
+      "desired": 72,
+      "accepted": 72
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 0,
+    "warning": "delayGrading",
+    "written": false
+   }
+  },
+  {
+   "name": "r_stars_below_the_floor",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "R",
+     "template": "R Stars",
+     "template_sub_s": 15,
+     "unit": "h",
+     "target_hours": 0.02,
+     "aac": {
+      "accepted_seconds": 120.0,
+      "accepted_frames": 8,
+      "seen_seconds": 120.0,
+      "seen_frames": 8,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 10,
+      "acquired": 8,
+      "accepted": 8
+     },
+     "expected": {
+      "desired": 10,
+      "accepted": 8
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "TS shoots 2"
+  },
+  {
+   "name": "mosaic_writes_nothing",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": true
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 6.0,
+     "aac": {
+      "accepted_seconds": 20700.0,
+      "accepted_frames": 69,
+      "seen_seconds": 20700.0,
+      "seen_frames": 69,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 72,
+      "acquired": 72,
+      "accepted": 72
+     },
+     "expected": {
+      "desired": 72,
+      "accepted": 72
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": false
+   }
+  },
+  {
+   "name": "rerun_at_23_00_after_tonights_frames",
+   "now": "2026-10-12T23:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": [
+     "2026-10-12T10:00:00Z",
+     "2026-10-12T10:00:00Z",
+     "2026-10-12T10:00:00Z",
+     "2026-10-12T10:00:00Z",
+     "2026-10-12T10:00:00Z"
+    ]
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 6.0,
+     "aac": {
+      "accepted_seconds": 20700.0,
+      "accepted_frames": 69,
+      "seen_seconds": 20700.0,
+      "seen_frames": 69,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 72,
+      "acquired": 72,
+      "accepted": 72
+     },
+     "expected": {
+      "desired": 72,
+      "accepted": 72
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": "saved frames",
+    "written": false
+   }
+  },
+  {
+   "name": "frame_row_complete_one_over",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "R",
+     "template": "R Stars",
+     "template_sub_s": 15,
+     "unit": "fr",
+     "target_frames": 50,
+     "aac": {
+      "accepted_seconds": 735.0,
+      "accepted_frames": 49,
+      "seen_seconds": 735.0,
+      "seen_frames": 49,
+      "complete": true,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 50,
+      "acquired": 52,
+      "accepted": 52
+     },
+     "expected": {
+      "desired": 50,
+      "accepted": 50
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "desired 50, accepted 50"
+  },
+  {
+   "name": "frame_row_below_the_floor",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "R",
+     "template": "R Stars",
+     "template_sub_s": 15,
+     "unit": "fr",
+     "target_frames": 8,
+     "aac": {
+      "accepted_seconds": 120.0,
+      "accepted_frames": 8,
+      "seen_seconds": 120.0,
+      "seen_frames": 8,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 8,
+      "acquired": 8,
+      "accepted": 8
+     },
+     "expected": {
+      "desired": 10,
+      "accepted": 8
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "desired 10 from the floor"
+  },
+  {
+   "name": "frames_before_the_cutoff_let_the_write_through",
+   "now": "2026-10-11T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-10",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": [
+     "2026-10-10T18:42:09Z",
+     "2026-10-10T18:49:58Z"
+    ]
+   },
+   "rows": [
+    {
+     "filter": "OIII",
+     "template": "OIII 300",
+     "template_sub_s": 300,
+     "unit": "fr",
+     "target_frames": 40,
+     "aac": {
+      "accepted_seconds": 9900.0,
+      "accepted_frames": 33,
+      "seen_seconds": 9900.0,
+      "seen_frames": 33,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 40,
+      "acquired": 36,
+      "accepted": 4
+     },
+     "expected": {
+      "desired": 40,
+      "accepted": 33
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   }
+  },
+  {
+   "name": "frames_after_the_cutoff_block_the_write",
+   "now": "2026-10-10T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-09",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": [
+     "2026-10-10T18:42:09Z",
+     "2026-10-10T18:49:58Z"
+    ]
+   },
+   "rows": [
+    {
+     "filter": "OIII",
+     "template": "OIII 300",
+     "template_sub_s": 300,
+     "unit": "fr",
+     "target_frames": 40,
+     "aac": {
+      "accepted_seconds": 9900.0,
+      "accepted_frames": 33,
+      "seen_seconds": 9900.0,
+      "seen_frames": 33,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 40,
+      "acquired": 36,
+      "accepted": 4
+     },
+     "expected": {
+      "desired": 40,
+      "accepted": 4
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 0,
+    "warning": "saved frames",
+    "written": false
+   }
+  },
+  {
+   "name": "new_sii_row_with_zero_figures",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 0,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 6.0,
+     "aac": {
+      "accepted_seconds": 20700.0,
+      "accepted_frames": 69,
+      "seen_seconds": 20700.0,
+      "seen_frames": 69,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 72,
+      "acquired": 72,
+      "accepted": 72
+     },
+     "expected": {
+      "desired": 72,
+      "accepted": 69
+     }
+    },
+    {
+     "filter": "SII",
+     "template": "SII 300",
+     "template_sub_s": 300,
+     "unit": "fr",
+     "target_frames": 40,
+     "aac": {
+      "accepted_seconds": 0.0,
+      "accepted_frames": 0,
+      "seen_seconds": 0.0,
+      "seen_frames": 0,
+      "complete": false,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 40,
+      "acquired": 0,
+      "accepted": 0
+     },
+     "expected": {
+      "desired": 40,
+      "accepted": 0
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   }
+  },
+  {
+   "name": "hour_row_below_the_floor_after_a_final",
+   "now": "2026-10-12T15:00:00+11:00",
+   "plan": {
+    "filed_through_night": "2026-10-11",
+    "min_total_frames": 10,
+    "mosaic": false
+   },
+   "profile": {},
+   "ts": {
+    "enablegrader": 1,
+    "acquired_images_utc": []
+   },
+   "rows": [
+    {
+     "filter": "Ha",
+     "template": "Ha 300",
+     "template_sub_s": 300,
+     "unit": "h",
+     "target_hours": 0.5,
+     "aac": {
+      "accepted_seconds": 1500.0,
+      "accepted_frames": 5,
+      "seen_seconds": 1500.0,
+      "seen_frames": 5,
+      "complete": true,
+      "estimated_hours": null,
+      "measurement": null
+     },
+     "ts": {
+      "desired": 6,
+      "acquired": 6,
+      "accepted": 6
+     },
+     "expected": {
+      "desired": 10,
+      "accepted": 10
+     }
+    }
+   ],
+   "expected": {
+    "enablegrader": 1,
+    "warning": null,
+    "written": true
+   },
+   "note": "complete: max(count 5, desired 10)"
+  }
+ ]
+}

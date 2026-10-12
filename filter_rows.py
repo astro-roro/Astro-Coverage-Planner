@@ -18,6 +18,7 @@ table all three test against.
 from __future__ import annotations
 
 import copy
+import datetime
 import logging
 import math
 import uuid
@@ -122,6 +123,37 @@ def desired(row: dict) -> int:
     if hours <= 0:
         return 0
     return max(1, math.ceil(hours * 3600.0 / sub_s(row)))
+
+
+def plan_aac(plan: dict | None) -> dict | None:
+    """The plan's `aac` block when it has a usable watermark and floor, else
+    None. `filed_through_night` has to be an ISO date and `min_total_frames` a
+    whole number of at least 0 (section 6)."""
+    b = (plan or {}).get("aac")
+    if not isinstance(b, dict):
+        return None
+    night, floor = b.get("filed_through_night"), b.get("min_total_frames")
+    if not isinstance(night, str) or len(night) != 10:
+        return None
+    if isinstance(floor, bool) or not isinstance(floor, int) or floor < 0:
+        return None
+    try:
+        datetime.date.fromisoformat(night)
+    except ValueError:
+        return None
+    return b
+
+
+def desired_for(row: dict, plan: dict | None) -> int:
+    """`desired` with AAC's floor (section 6): a row that has an `aac` block
+    on a plan with one never sits below `min_total_frames`. A row with a goal
+    of 0 still pushes no plan. The TS sync writers compute the same number
+    (tests/fixtures/aac_accepted_cases.json)."""
+    d = desired(row)
+    if d <= 0 or not isinstance(row.get("aac"), dict):
+        return d
+    block = plan_aac(plan)
+    return max(d, int(block["min_total_frames"])) if block else d
 
 
 def goal_hours(row: dict) -> float:
@@ -431,3 +463,136 @@ def rekey_links(plan: dict, id_by_key: dict[str, str]) -> None:
                 fix_base(link.get("base_snapshot"))
     fix_refs(plan.get("ts_refs"))
     fix_base(plan.get("ts_base_snapshot"))
+
+
+# ---------------------------------------------------------------------------
+# What AAC needs from ACP (section 6)
+# ---------------------------------------------------------------------------
+
+TARGET_CLASSES = ("survey", "deep", "pretty")
+DEFAULT_TARGET_CLASS = "survey"
+
+
+def target_class_of(plan: dict | None) -> str:
+    """A plan's target class; absent or any other value reads as survey."""
+    v = (plan or {}).get("target_class")
+    return v if v in TARGET_CLASSES else DEFAULT_TARGET_CLASS
+
+
+def keep_aac(payload: dict, existing: dict | None) -> None:
+    """Put AAC's figures back on a plan a client is saving.
+
+    AAC is the only writer of a row's `aac` block and of the plan's `aac`
+    block, so whatever a client echoes is replaced by what is stored, matched
+    by row id. A row the client added has none.
+    """
+    stored = {r.get("id"): r.get("aac") for r in rows_of(existing)
+              if isinstance(r.get("aac"), dict)}
+    rows = payload.get("filter_rows")
+    if isinstance(rows, list):
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            r.pop("aac", None)
+            if r.get("id") in stored:
+                r["aac"] = copy.deepcopy(stored[r["id"]])
+    payload.pop("aac", None)
+    if isinstance(existing, dict) and isinstance(existing.get("aac"), dict):
+        payload["aac"] = copy.deepcopy(existing["aac"])
+
+
+_ACCEPTED_NUMBERS = ("accepted_seconds", "seen_seconds")
+_ACCEPTED_COUNTS = ("accepted_frames", "seen_frames")
+
+
+def _nonneg(v) -> bool:
+    n = _num(v)
+    return n is not None and n >= 0
+
+
+def validate_accepted(body) -> str | None:
+    """The shape checks for POST /api/plans/<id>/accepted (section 6)."""
+    if not isinstance(body, dict):
+        return "body must be a JSON object"
+    night = body.get("filed_through_night")
+    if not isinstance(night, str):
+        return "filed_through_night must be a date string such as 2026-10-11"
+    try:
+        datetime.date.fromisoformat(night)
+    except ValueError:
+        return "filed_through_night must be a date string such as 2026-10-11"
+    floor = body.get("min_total_frames")
+    if isinstance(floor, bool) or not isinstance(floor, int) or floor < 0:
+        return "min_total_frames must be a whole number of at least 0"
+    for key in ("source", "at"):
+        if body.get(key) is not None and not isinstance(body[key], str):
+            return f"{key} must be a string"
+    rows = body.get("rows")
+    if not isinstance(rows, list):
+        return "rows must be a list"
+    for i, r in enumerate(rows):
+        where = f"rows[{i}]"
+        if not isinstance(r, dict):
+            return f"{where} must be an object"
+        if not isinstance(r.get("id"), str) or not r["id"]:
+            return f"{where}.id must be a non-empty string"
+        for key in ("filter", "template"):
+            if not isinstance(r.get(key), str):
+                return f"{where}.{key} must be a string"
+        for key in _ACCEPTED_NUMBERS:
+            if not _nonneg(r.get(key)):
+                return f"{where}.{key} must be a number of at least 0"
+        for key in _ACCEPTED_COUNTS:
+            v = r.get(key)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+                    or v < 0 or int(v) != v:
+                return f"{where}.{key} must be a whole number of at least 0"
+        if not isinstance(r.get("complete"), bool):
+            return f"{where}.complete must be true or false"
+        est = r.get("estimated_hours")
+        if est is not None and not _nonneg(est):
+            return f"{where}.estimated_hours must be null or a number of at least 0"
+        meas = r.get("measurement")
+        if meas is not None and not isinstance(meas, dict):
+            return f"{where}.measurement must be null or an object"
+    return None
+
+
+def apply_accepted(plan: dict, body: dict, received_at: str,
+                   canon_filter: Callable[[str], str | None]) -> list[dict]:
+    """Store AAC's figures on *plan* and return the `unknown_rows`.
+
+    A row is stored only when its id is on the plan, its echoed filter reaches
+    the row's filter, and its echoed template equals the row's. Values may go
+    down. `actual_hours` is never touched. The caller has run
+    `validate_accepted`.
+    """
+    by_id = {r.get("id"): r for r in rows_of(plan)}
+    unknown: list[dict] = []
+    for entry in body["rows"]:
+        row = by_id.get(entry["id"])
+        if row is None:
+            unknown.append({"id": entry["id"], "reason": "no such row"})
+            continue
+        echoed = entry["filter"]
+        filter_ok = echoed == row.get("filter") or row_filter(echoed) == row.get("filter") \
+            or (canon_filter(echoed) or None) == row.get("filter")
+        if not filter_ok or entry["template"] != row.get("template"):
+            unknown.append({"id": entry["id"], "reason":
+                            f"row now has filter {row.get('filter')} and template {row.get('template')}"})
+            continue
+        row["aac"] = {
+            "accepted_seconds": float(entry["accepted_seconds"]),
+            "accepted_frames": int(entry["accepted_frames"]),
+            "seen_seconds": float(entry["seen_seconds"]),
+            "seen_frames": int(entry["seen_frames"]),
+            "complete": entry["complete"],
+            "estimated_hours": entry.get("estimated_hours"),
+            "measurement": entry.get("measurement"),
+        }
+    plan["aac"] = {
+        "filed_through_night": body["filed_through_night"],
+        "min_total_frames": body["min_total_frames"],
+        "received_at": received_at,
+    }
+    return unknown

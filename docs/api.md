@@ -38,6 +38,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/plans/<id>`, `PUT`, `DELETE` | Single-plan operations |
 | `POST /api/plans/match` | Score every plan against a connected rig's gear fingerprint |
 | `POST /api/plans/<id>/progress` | Record acquired hours against a plan's filter goals |
+| `POST /api/plans/<id>/accepted` | Store Astro Auto Calibration's accepted counts per filter row |
 | `GET /api/fingerprints` | Last gear fingerprint each NINA profile reported |
 | `GET /api/target-overrides`, `POST` | Per-target metadata overrides |
 | `GET /api/destinations`, `POST` | CRUD for multi-rig sync destinations |
@@ -278,6 +279,28 @@ Each entry updates `filter_goals.<f>.actual_hours`. Hours only ever go up: NINA'
 ```
 
 `updated` is what changed, `unknown_filters` is what was dropped, and `not_lowered` names goals whose stored value was higher than what was reported and `force` was not set. An unknown plan id is a 404; a bad payload is a 400 and nothing is written.
+
+### Accepted counts: `POST /api/plans/<id>/accepted`
+
+Astro Auto Calibration (AAC) is the only caller. It sends the frames it accepted, per filter row, so the editor can show done against what AAC kept and the Target Scheduler sync can write the shortfall (docs/specs/goal-panel-and-ts-order.md section 6). The bearer token is checked like every other `/api` route, against `ACP_API_TOKEN`.
+
+```json
+{"source": "aac", "at": "2026-10-12T10:05:00Z", "filed_through_night": "2026-10-11", "min_total_frames": 10,
+ "rows": [{"id": "<row id>", "filter": "Ha", "template": "Ha 300",
+           "accepted_seconds": 20700.0, "accepted_frames": 69, "seen_seconds": 21600.0, "seen_frames": 72,
+           "complete": false, "estimated_hours": null, "measurement": null}]}
+```
+
+A row is stored only when its `id` is on the plan, its `filter` reaches the row's filter (`Antlia Ha` is `Ha`), and its `template` equals the row's. It replaces the row's `aac` block, and values may go down. `actual_hours` is never changed. The plan gets `aac.filed_through_night`, `aac.min_total_frames` and `aac.received_at`. A save from the plan editor cannot change any of these.
+
+```json
+{"ok": true, "unknown_rows": [{"id": "<row id>", "reason": "row now has filter G and template G Stars"}],
+ "filed_through_night": "2026-10-11"}
+```
+
+`unknown_rows` lists the rows that were not stored, with `no such row` or the row's current filter and template as the reason. A missing or wrong token is a 401, an unknown plan id a 404, and a malformed body a 400 with nothing written.
+
+A plan also carries `target_class`, one of `survey`, `deep` and `pretty`, which AAC reads from `GET /api/plans`. A plan with none reads as `survey`, and any other value is refused with a 400.
 
 ### Destinations: `/api/destinations`
 
