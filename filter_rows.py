@@ -51,6 +51,11 @@ ROW_FILTER_ALIASES: dict[str, str] = {
 _KNOWN = frozenset(ROW_FILTER_ALIASES.values())
 
 
+def _safe_log(value) -> str:
+    """Strip CR/LF and truncate, as app._safe_log does, for CodeQL's log rule."""
+    return str(value).replace("\r", "").replace("\n", "")[:200]
+
+
 def _alias(name: str) -> str:
     trimmed = (name or "").strip()
     return ROW_FILTER_ALIASES.get(trimmed.upper(), trimmed)
@@ -377,7 +382,7 @@ def migrate_plan(plan: dict, camera: dict | None) -> dict[str, str]:
         else:
             logging.warning(
                 "plan %r: goal %r names no known filter, kept as its own filter",
-                plan.get("id"), key,
+                _safe_log(plan.get("id")), _safe_log(key),
             )
             filt, template, canonical = key, key, True
         staged.append((filt, canonical, template, _row_from_goal(filt, template, goal), key))
