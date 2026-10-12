@@ -134,7 +134,7 @@ A new plan starts with no rows. The fieldset shows a short note and an "+ Add fi
 
 "+ Add filter" appends a row. Its filter is the first filter, in drop-down order, that no row uses yet. If every filter is used, it is the first filter again. Its template is that filter's usual template: the camera's `ts_template_name` for that filter when the template list has it, else the first template for that filter by name. Its goal is 0.
 
-The remove button deletes the row from the plan. It does not delete anything in TS (open question 2).
+The remove button deletes the row from the plan. On the next push its exposure plan in TS is disabled, never deleted (section 3).
 
 ### Reordering
 
@@ -234,6 +234,21 @@ A plan gains `filter_rows`, an ordered list. Its order is the shooting order. Ea
 | fr | `target_frames` |
 
 A row whose goal is 0 pushes no exposure plan, as today. For an AAC-linked row the floor in section 6 applies on top.
+
+### Removing and re-adding a row
+
+When a row is removed in ACP, the next push sets `enabled` to 0 on its exposure plan on every target of the plan. It never deletes the plan, so the plan's `acquired` and `accepted` and its `acquiredimage` history stay. The writer finds the plan through the row id in `ts_links`. A plan with no link, or one never stamped by ACP, is left alone.
+
+Disabling a plan shifts the `referenceIdx` of every enabled plan after it (`SchedulerPlanLoader.cs:53`). So in the same push the writer rebuilds that target's override rows:
+
+- rows the sync generated are regenerated from the new list, by section 5
+- rows set in TS are kept, with each `referenceIdx` remapped to the same plan's new index and the disabled plan's rows dropped
+
+It also deletes that target's cadence rows. TS's own editor clears both tables when it toggles a plan (`SchedulerDatabaseContext.cs:973-975`). The writer keeps the override rows instead, because a cleared order would put the target back in natural order.
+
+The importer reads enabled plans only, so a removed row does not come back on the next upload.
+
+Adding a row with the same filter and template as a removed one produces the same exposure plan guid. The writer finds the disabled plan by that guid, sets `enabled` to 1 and links it to the new row id. The plan keeps its counts, so the row starts with the frames TS already took. Re-enabling shifts `referenceIdx` too, and the writer rebuilds the override rows the same way.
 
 ### What the push writes to `exposureplan.exposure`
 
@@ -421,7 +436,7 @@ A plan gains `target_class`, one of `survey`, `deep` and `pretty`. Absent, or an
 
 ### `POST /api/plans/<plan_id>/accepted`
 
-AAC is the only caller. The route uses the same token scheme as `POST /api/plans/<plan_id>/progress`. The body carries `source`, `at`, `filed_through_night`, `min_total_frames` and a list of `rows`. Each row names its target by `row_id`, and echoes `filter` and `template` for checking. Each carries these fields:
+AAC is the only caller. It authenticates as the plugin does on `/progress`, with an `Authorization: Bearer <token>` header that ACP checks against `ACP_API_TOKEN`. A missing or wrong token gets 401, and an unknown plan id gets 404. The body carries `source`, `at`, `filed_through_night`, `min_total_frames` and a list of `rows`. AAC sends every row of the plan. Each row names its target by `id`, the row id, and echoes `filter` and `template` for checking. Each carries these fields:
 
 - `accepted_seconds`, `accepted_frames`
 - `seen_seconds`, `seen_frames`
@@ -437,7 +452,7 @@ ACP stores them as follows:
 | `aac.min_total_frames` | from the request |
 | `aac.received_at` | the time ACP received it |
 
-A row is stored only when its `row_id` exists on the plan, its `filter` passes `canon_filter` to the row's filter, and its `template` equals the row's template exactly. Any other row comes back in `unknown_rows` with a reason: "no such row", or "row now has filter G and template G Stars". Values may go down. `actual_hours` is never changed.
+A row is stored only when its `id` exists on the plan, its `filter` passes `canon_filter` to the row's filter, and its `template` equals the row's template exactly. Any other row comes back in `unknown_rows` with a reason: "no such row", or "row now has filter G and template G Stars". Values may go down. `actual_hours` is never changed.
 
 ### Done, as the editor shows it
 
@@ -519,6 +534,10 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | S6 | C# | Two TS plans on R, templates R (120 s) and R Stars (15 s), 10 frames each | Progress posts two entries, R with template R at 0.3333 h, and R with template R Stars at 0.0417 h. ACP stores each on its own row. |
 | S7 | ACP | A progress post with filter R and no template, on a plan with one R row, then on a plan with two | The first updates the R row. The second returns R in `unknown_filters`. |
 | S8 | ACP | `GET /api/plans` for M1's plan | `filter_goals` holds L, R and Ha, built from the first row of each filter, and no "R Stars". |
+| R1 | Python | Plans Ha, OIII, SII inserted in that order, so natural order is Ha, OIII, SII. ACP rows SII, Ha, OIII, all pushed. Remove the Ha row. Push. | The Ha plan has `enabled` 0 and keeps its `acquired` and `accepted`. No plan is deleted. The override rows become SII x4 with `referenceIdx` 1, then OIII x4 with `referenceIdx` 0. The cadence rows are gone. The oracle shoots SII x4 then OIII x4. The next import has no Ha row. |
+| R2 | Python | R1, then TS rows set by hand to SII, Ha, OIII before the removal | After the push the TS rows are SII, OIII, remapped to the new indexes, and the push did not regenerate them. |
+| R3 | Python | After R1, add a row with filter Ha and template Ha again. Push. | No plan is inserted. The old Ha plan has `enabled` 1, its counts unchanged, and `ts_links` points the new row id at it. The override rows are rebuilt with Ha in its new list position. |
+| R4 | C# | R1 and R3 as golden scenarios | The plugin's rows equal the Python rows. |
 | O1 | Python | ACP order OIII, Ha. Push. Then import. | TS has 8 override rows: OIII x4, then Ha x4. Cadence rows: none. The oracle shoots OIII, OIII, OIII, OIII, Ha, Ha, Ha, Ha. Import returns the rows in the order OIII, Ha, with the same ids, and no changes. |
 | O2 | Python | After O1, edit TS's override rows to Ha, OIII (one each). Push with no ACP change. | The override rows stay Ha, OIII. The base order stays OIII, Ha. The next import shows the order changed in TS to Ha, OIII. |
 | O3 | Python | After O2, reorder ACP's rows to Ha, OIII and push | ACP wins. The rows become Ha x4, OIII x4, and the push result says it replaced an order set in TS. |
@@ -553,9 +572,9 @@ Each phase ends with its tests passing in every repo it touches.
 |---|---|---|
 | 1 | `EMPTY_CELL` and the 17 placeholders that outlive the old goal table. Test U12's comma check. | ACP |
 | 2 | Template list from the plugin. Tests T1 and T2. | ACP, ACP.NINA.Plugin |
-| 3 | `filter_rows`: model, validation, the migration, the card list without dragging, both writers, the exposure rule, template lookup, plan identity, the importer, progress, the `filter_goals` view for older plugins. Tests U1 to U5, U9 to U12, V1, V2, M1 to M4, S1 to S8. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
+| 3 | `filter_rows`: model, validation, the migration, the card list without dragging, both writers, the exposure rule, template lookup, plan identity, the importer, progress, the `filter_goals` view for older plugins. Tests U1 to U5, U9 to U12, V1, V2, M1 to M4, S1 to S8, R1, R3, R4. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 | 4 | Switch frequency and smart order: the switch, settings route, column rules, base fields, cadence deletion. Tests F1 to F3. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
-| 5 | Filter order: dragging, the drop line, arrow keys, the oracle, the override writer, the nightly cadence reset, the importer's order. Tests U6 to U8, O1 to O11. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
+| 5 | Filter order: dragging, the drop line, arrow keys, the oracle, the override writer, the nightly cadence reset, the importer's order. Tests U6 to U8, O1 to O11, R2. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 | 6 | AAC dependencies. Tests A1 to A6. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 
 Phase 3 ships the migration and the importer change together, so no push can run between them. Within phase 3 the plugin goes onto Voyager before ACP core merges, as in `ts-project-settings.md` section 8. ACP deploys on merge, and the migration is the step that is hard to undo.
@@ -584,11 +603,10 @@ I cannot run TS here, so the order needs one check on Voyager after phase 5 ship
 8. `GET /api/plans` keeps a derived `filter_goals` for older plugins, built from the first row of each filter. Star rows reach TS only once the new plugin is installed.
 9. Switch frequency and smart order are per project, so they are saved for every plan in a project at once. When plans disagree, the first plan in `plans.json` wins.
 10. The placeholders become an en dash rather than the original em dash, so a future punctuation tidy does not catch them.
-11. Section 6 follows the AAC spec at commit `26d7be1` for every field except where rows live. The coordinator reports that spec is being amended to `filter_rows`, row ids in `/accepted`, and this spec's guid recipe.
+11. Section 6 follows the AAC spec at commit `e41528c`: `filter_rows` with row ids, rows addressed by `id` in `/accepted`, and bearer token authentication. That spec defines `template_sub_s` as the template default copied when the row was made. This spec refreshes it to the sub TS actually uses (assumption 6), which is the same value for every row created after the migration.
 12. "Rotate every N" keeps N between 1 and 99.
 
 ## Open questions
 
 1. Rohan's three hand-made override orders (G7.7-3.7, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what he wanted when he set them on 11 October? If not, he can set each order once in ACP after phase 5, and the sync replaces them. Rohan has been asked and has not answered yet.
-2. Removing a row in ACP leaves its exposure plan in TS, still enabled, as removing a goal does today. TS keeps shooting it. Should the push disable the exposure plan of a removed row instead? Disabling shifts `referenceIdx`, so the writer would rebuild that target's override rows in the same push.
-3. Does `ACP.NINA.Plugin.Tests` reference TS's assembly in a way that lets test O9 run on Windows? If not, the manual check is the only check against TS itself.
+2. Does `ACP.NINA.Plugin.Tests` reference TS's assembly in a way that lets test O9 run on Windows? If not, the manual check is the only check against TS itself.
