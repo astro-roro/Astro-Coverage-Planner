@@ -295,15 +295,73 @@ export function cardHtml(row, index, { camera, templates, colors = {} } = {}) {
   </div>`;
 }
 
-// The whole list: cards in order, then "+ Add filter". An empty plan gets a
-// short note first.
+// --- switch frequency and smart order (section 4) ---
+
+// "Rotate every N" keeps N between these.
+export const ROTATE_MIN = 1;
+export const ROTATE_MAX = 99;
+// N offered when the switch first moves to "Rotate every N" on a plan that
+// has never rotated.
+export const ROTATE_DEFAULT = 3;
+
+// The plan's switch frequency as the editor shows it: absent (unknown) is 0.
+export function switchFrequency(plan) {
+  const n = Number(plan?.filter_switch_frequency);
+  return Number.isInteger(n) && n >= 0 && n <= ROTATE_MAX ? n : 0;
+}
+
+export function smartOrder(plan) {
+  return plan?.smart_exposure_order === true;
+}
+
+// N clamped to 1..99, whole frames. Anything unreadable falls back to the
+// default.
+export function clampRotate(n) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return ROTATE_DEFAULT;
+  return Math.min(ROTATE_MAX, Math.max(ROTATE_MIN, v));
+}
+
+// The one line under the controls saying what Target Scheduler will do.
+export function orderExplanation(freq, smart) {
+  if (smart) return "Target Scheduler picks the order itself (moon and altitude). Dragging is off.";
+  if (freq > 0) {
+    return `Shoots ${freq} ${freq === 1 ? "frame" : "frames"} of each filter, top to bottom, then repeats.`;
+  }
+  return "Shoots each filter until its goal is met, top to bottom.";
+}
+
+// The controls above the card list. `rotateN` is the N to show while the
+// switch is on "Finish each", so flipping it back keeps the last value.
+// `projectNote` is the one-line note for a project shared with other plans.
+export function orderControlsHtml(plan, { rotateN, projectNote = "" } = {}) {
+  const freq = switchFrequency(plan);
+  const smart = smartOrder(plan);
+  const n = freq > 0 ? freq : clampRotate(rotateN ?? ROTATE_DEFAULT);
+  const rotating = freq > 0;
+  return `<div class="fr-order">
+    <div class="fr-switch" role="radiogroup" aria-label="Filter switching">
+      <label class="fr-switch-opt"><input type="radio" name="fr-switch" value="finish"${rotating ? "" : " checked"}> Finish each</label>
+      <label class="fr-switch-opt"><input type="radio" name="fr-switch" value="rotate"${rotating ? " checked" : ""}> Rotate every <input type="number" class="fr-rotate-n" min="${ROTATE_MIN}" max="${ROTATE_MAX}" step="1" value="${n}" aria-label="Frames per filter before switching"${rotating ? "" : " disabled"}></label>
+    </div>
+    <label class="fr-smart"><input type="checkbox" class="fr-smart-cb"${smart ? " checked" : ""}> Smart order</label>
+    <div class="fr-order-text">${esc(orderExplanation(freq, smart))}</div>
+    ${projectNote ? `<div class="fr-order-note">${esc(projectNote)}</div>` : ""}
+  </div>`;
+}
+
+// The whole list: the order controls, then cards in order, then "+ Add
+// filter". An empty plan gets a short note first. With smart order on the
+// list is marked so reordering (phase 5) stays off; the order is kept.
 export function filterListHtml(plan, ctx = {}) {
   const rows = plan?.filter_rows || [];
   const cards = rows.map((r, i) => cardHtml(r, i, ctx)).join("");
   const note = rows.length
     ? ""
     : `<div class="fr-empty">No filters yet. Add one to set a goal.</div>`;
-  return `<div class="fr-list">${note}${cards}<button type="button" class="fr-add">+ Add filter</button></div>`;
+  const smart = smartOrder(plan);
+  const controls = orderControlsHtml(plan, { rotateN: ctx.rotateN, projectNote: ctx.projectNote });
+  return `${controls}<div class="fr-list${smart ? " fr-smart-on" : ""}" data-reorder="${smart ? "off" : "on"}">${note}${cards}<button type="button" class="fr-add">+ Add filter</button></div>`;
 }
 
 // --- sync diff labels ---
