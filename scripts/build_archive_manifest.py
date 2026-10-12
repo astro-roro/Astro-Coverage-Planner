@@ -1805,7 +1805,13 @@ def read_xisf_meta(path: Path) -> dict:
         def fk(k, default=None):
             v = fits_kw.get(k)
             if v and isinstance(v, list) and len(v):
-                return v[0].get("value")
+                val = v[0].get("value")
+                # FITS writes an apostrophe inside a text value as two. The
+                # xisf library strips the outer quotes but not the doubling,
+                # so "Cat's Paw" arrived as "Cat''s Paw".
+                if isinstance(val, str):
+                    val = val.replace("''", "'")
+                return val
             return default
         # Colour sensor: Bayer keyword carried through, or a 3-channel RGB stack.
         out["colour"] = bool(str(fk("BAYERPAT") or fk("COLORTYP") or "").strip()) \
