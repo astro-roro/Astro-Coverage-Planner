@@ -213,7 +213,7 @@ button:active { background: #262e40; }
 }
 
 .panel {
-  --side-panel-w: 380px;
+  --side-panel-w: 420px;
   position: absolute;
   top: 0;
   right: 0;
@@ -2266,3 +2266,86 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .hidden-toggle[hidden] { display: none; }
 .hidden-toggle[aria-pressed="true"] { color: #e0e4ea; border-color: #4da6ff; }
 .hidden-note { font-size: 12px; color: #78839a; margin: 4px 0 8px; }
+
+/* Plan editor card notes (docs/specs/gear-templates.md section 7) */
+.fr-notes { grid-column: 2 / span 3; grid-row: 3; display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 10px; color: #8d99ad; }
+.fr-flag-warn { color: #f0c46a; }
+
+/* Gear button badge: held template conflicts (section 6) */
+.gear-badge { display: inline-block; min-width: 16px; margin-left: 6px; padding: 0 5px; border-radius: 999px; background: #d64545; color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; vertical-align: 1px; }
+.gear-badge[hidden] { display: none; }
+
+/* Gear editor (docs/specs/gear-templates.md section 6, the approved Main and Telescopes artboards) */
+.ge { display: flex; flex-direction: column; min-height: 0; flex: 1; font-size: 12px; color: #e0e4ea; }
+.ge button, .ge input, .ge select { font-family: inherit; }
+.ge-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #1f2937; }
+.ge-head a { font-size: 12px; text-decoration: none; }
+.ge-head h2 { margin: 0; flex: 1; font-size: 14px; color: #e8ecf3; text-align: center; }
+.ge-save { height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: #2f6fd6; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.ge-save:disabled { opacity: 0.6; cursor: default; }
+.ge-tabs { display: flex; gap: 4px; padding: 10px 14px 0; }
+.ge-tab { flex: 1; text-align: center; padding: 8px 0; font-size: 12px; color: #8d99ad; background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
+.ge-tab[aria-selected="true"] { color: #e8ecf3; font-weight: 600; border-bottom-color: #7fb2ff; }
+.ge-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ge-banner { padding: 8px 10px; border-radius: 6px; font-size: 11px; line-height: 1.5; background: #3a2e14; color: #f0c46a; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ge-banner.ge-info { background: #1a2c4a; color: #9cc4ff; }
+.ge-banner button { height: 24px; padding: 0 8px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
+.ge-card { border: 1px solid #263044; border-radius: 8px; background: #121821; min-width: 0; }
+.ge-card-top { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid #1f2937; }
+.ge-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ge-caret { font-size: 11px; color: #8d99ad; }
+.ge-card input[type=text], .ge-card input[type=number], .ge-card select { box-sizing: border-box; background: #0f1319; border: 1px solid #263044; border-radius: 6px; color: #e0e4ea; font-size: 12px; padding: 0 6px; height: 28px; min-width: 0; }
+.ge-card input:disabled { opacity: 0.5; }
+.ge-name { flex: 1; height: 30px !important; font-size: 13px !important; font-weight: 600; color: #e8ecf3 !important; padding: 0 8px !important; }
+.ge-icon-btn { width: 30px; height: 30px; border: 1px solid #263044; border-radius: 6px; background: transparent; color: #8d99ad; cursor: pointer; flex: none; }
+.ge-menu-wrap { position: relative; flex: none; }
+.ge-menu { position: absolute; right: 0; top: 34px; z-index: 5; min-width: 170px; display: flex; flex-direction: column; background: #161d28; border: 1px solid #263044; border-radius: 6px; padding: 4px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }
+.ge-menu button { text-align: left; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: #e0e4ea; font-size: 12px; cursor: pointer; }
+.ge-menu button:hover { background: #1f2a3b; }
+.ge-menu button.ge-danger { color: #e08a8a; }
+.ge-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.ge-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.ge-field { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: #8d99ad; min-width: 0; }
+.ge-field-wide { grid-column: 1 / -1; }
+.ge-muted { font-size: 11px; color: #8d99ad; }
+.ge-warn { color: #f0c46a; }
+.ge-filters { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+.ge-filters-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ge-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #a2aec2; }
+.ge-legend { font-size: 10px; color: #6c788d; }
+.ge-box { border: 1px solid #1f2937; border-radius: 6px; overflow: hidden; }
+.ge-box-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: #161d28; flex-wrap: wrap; }
+.ge-fname { font-size: 12px; font-weight: 700; color: #e8ecf3; min-width: 38px; }
+.ge-wnote { font-size: 10px; color: #8d99ad; flex: 1; min-width: 0; }
+.ge-pill { font-size: 10px; padding: 2px 6px; border-radius: 999px; white-space: nowrap; background: #1a2c4a; color: #9cc4ff; }
+.ge-pill.ge-pill-in_ts { background: #173326; color: #7fd6a6; }
+.ge-pill.ge-pill-new { background: #3a2e14; color: #f0c46a; }
+.ge-pill.ge-pill-changed { background: #1a2c4a; color: #9cc4ff; }
+.ge-pill.ge-pill-waiting { background: #232a36; color: #9aa6ba; }
+.ge-pill.ge-pill-conflict { background: #4a1f1f; color: #f29a9a; }
+.ge-pill.ge-pill-wheel { background: #232a36; color: #9aa6ba; }
+.ge-dashed { height: 24px; padding: 0 8px; border: 1px dashed #36425a; border-radius: 5px; background: transparent; color: #7fb2ff; font-size: 11px; cursor: pointer; }
+.ge-dashed-lg { height: 34px; width: 100%; border: 1px dashed #36425a; border-radius: 6px; background: transparent; color: #7fb2ff; font-size: 12px; cursor: pointer; }
+.ge-x { height: 24px; width: 24px; padding: 0; border: 0; background: transparent; color: #6c788d; cursor: pointer; font-size: 12px; }
+.ge-x:disabled { opacity: 0.3; cursor: default; }
+.ge-tpl { border-top: 1px solid #1a2230; }
+.ge-line { width: 100%; display: grid; grid-template-columns: 12px minmax(0, 1fr) auto auto; align-items: center; column-gap: 8px; padding: 7px 8px; background: transparent; border: 0; color: #e0e4ea; text-align: left; cursor: pointer; }
+.ge-tpl.ge-open .ge-line { background: #18212e; }
+.ge-star { font-size: 11px; color: #f2c94c; }
+.ge-tname { min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ge-tsub { font-size: 12px; color: #c9d2e0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ge-editor { padding: 8px 10px 10px 28px; background: #0f1520; display: flex; flex-direction: column; gap: 8px; }
+.ge-check { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #c9d2e0; }
+.ge-note { font-size: 11px; color: #8d99ad; line-height: 1.5; }
+.ge-impact { font-size: 11px; color: #c9d2e0; line-height: 1.5; }
+.ge-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.ge-btn { height: 28px; padding: 0 10px; border: 1px solid #263044; border-radius: 6px; background: transparent; color: #c9d2e0; font-size: 11px; cursor: pointer; }
+.ge-btn.ge-danger { border-color: #4a2b2b; color: #e08a8a; }
+.ge-btn:disabled { opacity: 0.45; cursor: default; }
+.ge-summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid #263044; border-radius: 8px; background: #121821; color: #e0e4ea; text-align: left; cursor: pointer; width: 100%; }
+.ge-summary .ge-sname { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ge-swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.ge-card input[type=color] { width: 30px; height: 30px; padding: 0; border: 1px solid #263044; border-radius: 6px; background: transparent; flex: none; }
+.ge-add-filter { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed #36425a; border-radius: 6px; }
+.ge-add-filter .ge-btns { align-items: center; }
+.ge-linkrow { display: flex; gap: 6px; flex-wrap: wrap; }
