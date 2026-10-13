@@ -540,6 +540,166 @@ def repair_stars(templates: list[dict]) -> None:
         templates[0]["starred"] = True
 
 
-def wheel_slot_for(cam_wheel: dict | None, filt: str, pid: str | None = None):
-    slots = ((cam_wheel or {}).get("filters") or {}).get(filt, {}).get("slots") or {}
-    return slots.get(pid) if pid else next(iter(slots.values()), None)
+# ---------------------------------------------------------------------------
+# Adoption and the pull (spec sections 8, 10 and 11)
+# ---------------------------------------------------------------------------
+
+FIELD_LABEL = {"name": "name", "sub_s": "sub", "gain": "gain", "offset": "offset", "bin": "bin"}
+
+
+def _fmt(v) -> str:
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return f"{v:g}" if isinstance(v, float) else str(v)
+
+
+def _row_values(row: dict) -> dict:
+    return {"name": row.get("name"), "filtername": row.get("filter"),
+            "defaultexposure": row.get("default_exposure_s"), "gain": row.get("gain"),
+            "offset": row.get("offset"), "bin": row.get("bin")}
+
+
+def ts_groups(rows: list[dict], slots: list[str], camera_filters) -> dict[str, dict]:
+    """Group a profile's TS templates by ACP filter and sub class (spec
+    section 10): `<filter>/<normal|short>`. A template whose filtername names
+    no filter of the camera is left out. A template is on the wheel when the
+    slot its filter resolves to is its own filtername. The default pick is
+    the on-wheel template with the most plans, ties to the lowest id."""
+    keys = {fr.row_filter(str(k)): k for k in camera_filters}
+    groups: dict[str, dict] = {}
+    for r in rows:
+        filt = fr.known_filter(r.get("filter"))
+        if filt is None or filt not in keys or not isinstance(r.get("id"), int):
+            continue
+        sub = r.get("default_exposure_s")
+        cls = "short" if _is_num(sub) and sub < fr.FRAME_UNIT_BELOW_S else "normal"
+        slot = fr.resolve_to_wheel(filt, slots)
+        entry = {"row": r, "id": r["id"], "name": r.get("name"),
+                 "on_wheel": slot is not None and slot == r.get("filter"),
+                 "plans": len(r.get("plans") or [])}
+        g = groups.setdefault(f"{filt}/{cls}", {"filter": keys[filt], "members": [], "default": None})
+        g["members"].append(entry)
+    for g in groups.values():
+        live = [m for m in g["members"] if m["on_wheel"]]
+        g["default"] = min(live, key=lambda m: (-m["plans"], m["id"])) if live else None
+    return groups
+
+
+def adopt(doc: dict, pid: str, linked: dict, ts_rows: list, now: str) -> tuple[bool, list[str]]:
+    """Link gear templates to the TS templates that stand for them (spec
+    section 11 step 2), for every camera linked to profile *pid*.
+
+    Gear values come from the camera's primary profile only. For any other
+    profile the link is recorded with the gear values as its base, so
+    nothing is written, and the notes list the differences. Only the primary
+    profile's list creates gear templates. A group already linked is
+    skipped, so a repeat changes nothing. Changes *doc* in place.
+    """
+    rows = [r for r in ts_rows if isinstance(r, dict)]
+    if not any(isinstance(r.get("id"), int) for r in rows):
+        return False, []
+    changed, notes = False, []
+    for cam in doc.get("cameras") or []:
+        profs = linked.get(cam.get("id"), [])
+        me = next((p for p in profs if p["profile_id"] == pid), None)
+        if me is None or not isinstance(cam.get("filters"), dict):
+            continue
+        primary = profs[0]["profile_id"] == pid
+        for g in ts_groups(rows, me["slots"], cam["filters"]).values():
+            tpls = cam["filters"][g["filter"]].setdefault("templates", [])
+            members, ids = g["members"], {m["id"] for m in g["members"]}
+            if any(isinstance(t.get("ts"), dict) and isinstance(t["ts"].get(pid), dict)
+                   and t["ts"][pid].get("id") in ids for t in tpls):
+                continue
+            d = g["default"]
+            if d is None:
+                continue
+            member_names = {m["name"].lower() for m in members if isinstance(m["name"], str)}
+            cands = [t for t in tpls if pid not in (t.get("ts") or {}) and t["name"].lower() in member_names]
+            cands = [t for t in cands if t["name"].lower() == d["name"].lower()] or cands
+            if len(cands) > 1:
+                cands = [t for t in cands if t.get("starred")] or cands
+            target = cands[0] if cands else None
+            values = _row_values(d["row"])
+            if target is None:
+                if not primary:
+                    notes.append(f"{me['profile_name']} has templates for {g['filter']} that gear lacks, "
+                                 "waiting for the primary profile to report")
+                    continue
+                if any(t["name"].lower() == str(d["name"]).lower()
+                       for _c, _f, t in all_templates({"cameras": [cam]})):
+                    notes.append(f"Template {d['name']!r} was not created in gear, because the camera "
+                                 "already has a template with that name.")
+                    continue
+                target = new_template(d["name"], d["row"].get("default_exposure_s"), values["gain"],
+                                      values["offset"], values["bin"], starred=False)
+                tpls.append(target)
+                repair_stars(tpls)
+            elif primary:
+                if target["name"] != d["name"]:
+                    target["aliases"] = push_alias(target.get("aliases") or [], target["name"], d["name"])
+                for field in TEMPLATE_FIELDS:
+                    v = values[BASE_KEY[field]]
+                    if v is not None:
+                        target[field] = v
+            base = dict(values)
+            if not primary:
+                for field in TEMPLATE_FIELDS:
+                    gear_v, ts_v = target.get(field), values[BASE_KEY[field]]
+                    if ts_v is not None and not _same(gear_v, ts_v):
+                        notes.append(f"{me['profile_name']}: {target['name']} {FIELD_LABEL[field]} is "
+                                     f"{_fmt(ts_v)} in TS and {_fmt(gear_v)} in gear")
+                    base[BASE_KEY[field]] = gear_v
+            others = [m["name"] for m in members if m is not d and isinstance(m["name"], str)]
+            names = list(target.get("ts_names") or [])
+            for n in others:
+                if n != target["name"] and n not in names:
+                    names.append(n)
+            target["ts_names"] = names
+            target.setdefault("ts", {})[pid] = {"id": d["id"], "guid": d["row"].get("guid"),
+                                                "pushed_iso": now, "base": base, "repoint_from": []}
+            changed = True
+    return changed, notes
+
+
+def pull(doc: dict, pid: str, linked: dict, ts_rows: list) -> tuple[bool, list[str], dict, dict]:
+    """Take a change made in TS into gear (spec section 8, the pull).
+
+    For each template linked to *pid* whose camera has *pid* as its primary
+    profile: a synced field where gear still equals the base and TS now
+    differs is taken, with the base. A field gear has changed is left to the
+    push. Returns (changed, notes, subs, renames) where *subs* maps template
+    id to (old sub, new sub) and *renames* to the new name, for the caller to
+    carry into plan rows. Changes *doc* in place.
+    """
+    changed, notes, subs, renames = False, [], {}, {}
+    lst = {"templates": [r for r in ts_rows if isinstance(r, dict)]}
+    for cam in doc.get("cameras") or []:
+        profs = linked.get(cam.get("id"), [])
+        if not profs or profs[0]["profile_id"] != pid:
+            continue
+        for _c, _f, t in all_templates({"cameras": [cam]}):
+            link = (t.get("ts") or {}).get(pid)
+            if not isinstance(link, dict) or not isinstance(link.get("base"), dict):
+                continue
+            known, row = _find_row(lst, link)
+            if row is None:
+                continue
+            for field in TEMPLATE_FIELDS:
+                b, c, a = link["base"].get(BASE_KEY[field]), row.get(LIST_KEY[field]), t.get(field)
+                if b is None or c is None or not _same(a, b) or _same(c, b):
+                    continue
+                if field == "name" and any(
+                        o is not t and o["name"].lower() == str(c).lower()
+                        for _c2, _f2, o in all_templates({"cameras": [cam]})):
+                    continue
+                notes.append(f"Changed in TS: {t['name']} {FIELD_LABEL[field]} {_fmt(c)}")
+                if field == "sub_s":
+                    subs[t["id"]] = (a, c)
+                if field == "name":
+                    t["aliases"] = push_alias(t.get("aliases") or [], a, c)
+                    renames[t["id"]] = c
+                t[field] = c
+                link["base"][BASE_KEY[field]] = c
+                changed = True
+    return changed, notes, subs, renames

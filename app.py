@@ -3605,7 +3605,7 @@ def _ts_name_clash(doc: dict, ctx: dict, cam: dict, tpl: dict, new_name: str):
     return None
 
 
-def _carry_into_plans(renames: dict, subs: dict) -> list[dict]:
+def _carry_into_plans(renames: dict, subs: dict, row_ok=None) -> list[dict]:
     """Carry gear template changes into the plan rows (spec section 4).
 
     *renames* is template id to new name; *subs* is template id to (old sub,
@@ -3633,7 +3633,7 @@ def _carry_into_plans(renames: dict, subs: dict) -> list[dict]:
             if tid in subs:
                 old, new = subs[tid]
                 have = fr._num(row.get("template_sub_s"))
-                if have is not None and abs(have - old) < 1e-9:
+                if have is not None and abs(have - old) < 1e-9 and (row_ok is None or row_ok(p, row)):
                     hours = fr._num(row.get("actual_hours"))
                     fr.set_row_sub(row, new)
                     sub_changes.append({
@@ -3967,6 +3967,68 @@ def api_gear_camera_nina_names(camera_id: str):
     return jsonify({"ok": True, "rev": rev, "nina_names": names})
 
 
+def _ts_plan_id(plan: dict, profile_id: str, row_id) -> int | None:
+    """The exposure plan id ACP pinned for a row on a profile."""
+    links = plan.get("ts_links") if isinstance(plan.get("ts_links"), dict) else {}
+    refs = (links.get(profile_id) or {}).get("refs")
+    if not isinstance(refs, dict) and isinstance((plan.get("ts_refs") or {}).get("profile_id"), str) \
+            and plan["ts_refs"]["profile_id"] == profile_id:
+        refs = plan["ts_refs"]
+    ids = (refs or {}).get("exposure_plan_ids") if isinstance(refs, dict) else None
+    for key, ep in (ids or {}).items() if isinstance(ids, dict) else []:
+        if str(key).endswith("_" + str(row_id)):
+            return ep
+    return None
+
+
+def apply_ts_lists() -> list[str]:
+    """Adoption and the pull for every profile that has posted a template
+    list (docs/specs/gear-templates.md sections 8 and 11). Runs when a list
+    arrives, when a fingerprint arrives and when a plugin becomes capable,
+    so the order of those events does not matter. Idempotent: a repeat
+    changes nothing and leaves `rev` alone. Returns the sync notes."""
+    notes: list[str] = []
+    with GEAR_LOCK:
+        doc = _gear_for_write()
+        if not gt.is_migrated(doc):
+            return notes
+        lists = _load_ts_templates_store()
+        if not lists:
+            return notes
+        ctx = _gear_camera_context(doc)
+        primaries = {ps[0]["profile_id"] for ps in ctx["linked"].values() if ps}
+        now = datetime.now(timezone.utc).isoformat()
+        changed, subs, renames = False, {}, {}
+        exposures: dict[tuple, float] = {}
+        for pid in sorted(lists, key=lambda p: (p not in primaries, p)):
+            rows = (lists[pid] or {}).get("templates") or []
+            for r in rows:
+                for pl in r.get("plans") or []:
+                    exposures[(pid, pl.get("id"))] = pl.get("exposure")
+            if gt._is_capable(doc.get("links_capable", {}).get(pid)):
+                ch, n = gt.adopt(doc, pid, ctx["linked"], rows, now)
+                changed, notes = changed or ch, notes + n
+            ch, n, sb, rn = gt.pull(doc, pid, ctx["linked"], rows)
+            changed, notes = changed or ch, notes + n
+            subs.update({k: (v, pid) for k, v in sb.items()})
+            renames.update(rn)
+        if not changed:
+            return notes
+        with PLANS_LOCK:
+            # Only a row whose TS plan follows the template default (-1)
+            # takes a sub changed in TS; a plan with its own exposure keeps it.
+            by_tid = {tid: pid for tid, (_old_new, pid) in subs.items()}
+
+            def follows_default(plan, row):
+                pid = by_tid.get(row.get("template_id"))
+                ep = _ts_plan_id(plan, pid, row.get("id")) if pid else None
+                return ep is not None and exposures.get((pid, ep)) == -1
+            _carry_into_plans(renames, {tid: v[0] for tid, v in subs.items()}, follows_default)
+            commit_gear(doc)
+            _repair_row_templates()
+    return notes
+
+
 def set_links_capable(profile_id: str, capabilities) -> bool:
     """Record what the plugin on *profile_id* says it can do, from a links
     post (the sync's route calls this). A post that lists both "templates"
@@ -3992,7 +4054,17 @@ def set_links_capable(profile_id: str, capabilities) -> bool:
         else:
             return False
         commit_gear(doc)
+    if capable:
+        _apply_ts_lists_safely()
     return True
+
+
+def _apply_ts_lists_safely() -> list[str]:
+    try:
+        return apply_ts_lists()
+    except Exception:
+        logging.exception("applying the TS template lists to gear failed")
+        return []
 
 
 def record_template_results(profile_id: str, results) -> int:
@@ -4957,6 +5029,10 @@ def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
         save_fingerprints({"version": doc.get("version", 1), "profiles": profiles})
     except (OSError, ValueError) as exc:
         logging.warning("could not write %s: %s", FINGERPRINTS_PATH, exc)
+        return
+    if profile_id:
+        # A fingerprint can complete the pair a template list was waiting for.
+        _apply_ts_lists_safely()
 
 
 @app.route("/api/fingerprints")
@@ -5423,7 +5499,9 @@ def api_ts_templates_post():
         _atomic_write_json(TS_TEMPLATES_PATH, {"profiles": profiles}, indent=2)
         global _ts_store_cache
         _ts_store_cache = None
-    return jsonify({"profile_id": pid, "count": len(templates), "received_at": received_at})
+    notes = _apply_ts_lists_safely()
+    return jsonify({"profile_id": pid, "count": len(templates), "received_at": received_at,
+                    "notes": notes})
 
 
 _ts_templates_lock = threading.Lock()
