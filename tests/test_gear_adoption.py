@@ -162,6 +162,18 @@ class TestAdoption(AdoptionBase):
         self.assertEqual(ha["ts"][P1]["base"]["offset"], -1)
         self.assertTrue(any("Ha offset is 10 in TS and -1 in gear" in n for n in notes), notes)
 
+    def test_a_secondary_profile_difference_after_linking_is_noted_and_not_pulled(self):
+        self.match(fingerprint())
+        self.post_list()
+        app_module.set_links_capable(P2, ["templates", "repoint"])
+        self.match(fingerprint(profile_id=P2, profile_name="Bar"))
+        self.match(fingerprint(profile_id=P1, profile_name="Foo"))
+        self.post_list(P2)
+        before = read_gear()
+        notes = self.post_list(P2, ts20({12: {"offset": 11}}))["notes"]
+        self.assertTrue(any("Ha offset is 11 in TS and -1 in gear" in n for n in notes), notes)
+        self.assertEqual(read_gear(), before)
+
     def test_m12_a_secondary_waits_for_the_primary_to_create_a_template(self):
         self.match(fingerprint(profile_id=P1, profile_name="Foo"))
         self.match(fingerprint(profile_id=P2, profile_name="Bar"))

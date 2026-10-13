@@ -676,14 +676,25 @@ def pull(doc: dict, pid: str, linked: dict, ts_rows: list) -> tuple[bool, list[s
     lst = {"templates": [r for r in ts_rows if isinstance(r, dict)]}
     for cam in doc.get("cameras") or []:
         profs = linked.get(cam.get("id"), [])
-        if not profs or profs[0]["profile_id"] != pid:
+        me = next((p for p in profs if p["profile_id"] == pid), None)
+        if me is None:
             continue
+        primary = profs[0]["profile_id"] == pid
         for _c, _f, t in all_templates({"cameras": [cam]}):
             link = (t.get("ts") or {}).get(pid)
             if not isinstance(link, dict) or not isinstance(link.get("base"), dict):
                 continue
             known, row = _find_row(lst, link)
             if row is None:
+                continue
+            if not primary:
+                # Section 8: a profile that is not the camera's primary gets a
+                # note listing differences and nothing else.
+                for field in TEMPLATE_FIELDS:
+                    ts_v, gear_v = row.get(LIST_KEY[field]), t.get(field)
+                    if ts_v is not None and not _same(gear_v, ts_v):
+                        notes.append(f"{me['profile_name']}: {t['name']} {FIELD_LABEL[field]} is "
+                                     f"{_fmt(ts_v)} in TS and {_fmt(gear_v)} in gear")
                 continue
             for field in TEMPLATE_FIELDS:
                 b, c, a = link["base"].get(BASE_KEY[field]), row.get(LIST_KEY[field]), t.get(field)
