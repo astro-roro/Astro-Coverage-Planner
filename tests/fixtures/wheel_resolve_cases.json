@@ -1,0 +1,26 @@
+{
+  "about": "How a filter name finds its slot on a NINA filter wheel (docs/specs/gear-templates.md section 2). ACP (filter_rows.resolve_to_wheel), the Python sync (nina_ts_sync.filter_canon.resolve_to_wheel) and the plugin (TsFilterNames.ResolveToWheel) all read this table in their tests. Each case gives a filter name, the wheel's slot names in slot order and the slot it resolves to, or null for none. The order of preference is the slot equal to the filter exactly, then equal ignoring case and surrounding spaces, then the first slot whose alias-table spelling equals the filter's alias-table spelling. The alias table is ROW_FILTER_ALIASES, never the scanner's canon_filter, so \"Antlia Ha\" and \"R Stars\" resolve to nothing.",
+  "cases": [
+    {"filter": "Ha",        "slots": ["L", "R", "G", "B", "H", "O", "S"], "expect": "H"},
+    {"filter": "OIII",      "slots": ["L", "R", "G", "B", "H", "O", "S"], "expect": "O"},
+    {"filter": "SII",       "slots": ["L", "R", "G", "B", "H", "O", "S"], "expect": "S"},
+    {"filter": "R",         "slots": ["L", "R", "G", "B", "H", "O", "S"], "expect": "R"},
+    {"filter": "R Stars",   "slots": ["L", "R", "G", "B", "H", "O", "S"], "expect": null},
+    {"filter": "Antlia Ha", "slots": ["L", "R", "G", "B", "H", "O", "S"], "expect": null},
+    {"filter": "Ha",        "slots": ["Ha", "H"],  "expect": "Ha"},
+    {"filter": "ha",        "slots": ["Ha"],       "expect": "Ha"},
+    {"filter": "L",         "slots": ["Lum"],      "expect": "Lum"},
+    {"filter": "H",         "slots": ["Ha", "H"],  "expect": "H"},
+    {"filter": "Ha",        "slots": ["H", "Ha"],  "expect": "Ha"},
+    {"filter": " Ha ",      "slots": ["Ha"],       "expect": "Ha"},
+    {"filter": "H-alpha",   "slots": ["H"],        "expect": "H"},
+    {"filter": "Luminance", "slots": ["L", "R"],   "expect": "L"},
+    {"filter": "Red",       "slots": ["R"],        "expect": "R"},
+    {"filter": "OIII",      "slots": ["Oiii"],     "expect": "Oiii"},
+    {"filter": "Antlia Ha", "slots": ["Antlia Ha", "H"], "expect": "Antlia Ha"},
+    {"filter": "IDAS + RED", "slots": ["R", "G"],  "expect": null},
+    {"filter": "V",         "slots": ["L", "R", "G", "B", "H", "O", "S"], "expect": null},
+    {"filter": "Ha",        "slots": [],           "expect": null},
+    {"filter": "",          "slots": ["Ha"],       "expect": null}
+  ]
+}

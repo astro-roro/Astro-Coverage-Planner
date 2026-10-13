@@ -89,6 +89,7 @@ except ImportError:
     )
 
 import filter_rows as fr
+import gear_templates as gt
 from gaps import candidates_in_moc, compute_gap_moc
 
 # Ceiling on a single acquired-hours report. Ten years of continuous imaging is
@@ -179,6 +180,13 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
 # under waitress, so a thread lock is enough.
 PLANS_LOCK = threading.RLock()
 app.plans_lock = PLANS_LOCK
+
+# Every write to gear.json holds this (docs/specs/gear-templates.md section
+# 4). A gear write that also changes plans takes GEAR_LOCK first and
+# PLANS_LOCK second, and code that holds PLANS_LOCK never takes GEAR_LOCK
+# except the one-off migration, which runs at startup before any request.
+GEAR_LOCK = threading.RLock()
+app.gear_lock = GEAR_LOCK
 
 
 def _holds_plans_lock(fn):
@@ -584,15 +592,108 @@ def load_catalogs() -> dict:
     return _catalogs_cache
 
 
-def load_gear() -> dict:
+_gear_migration_failed: tuple | None = None
+
+
+def _read_gear_file() -> dict:
     global _gear_cache, _gear_cache_mtime
-    if not GEAR_PATH.exists():
-        return {"version": 1, "presets": []}
     mtime = GEAR_PATH.stat().st_mtime
     if _gear_cache is None or _gear_cache_mtime != mtime:
         _gear_cache = json.loads(GEAR_PATH.read_text(encoding="utf-8"))
         _gear_cache_mtime = mtime
     return _gear_cache
+
+
+def _backup_gear_json() -> bool:
+    """Timestamped copy of gear.json, taken before the template migration
+    rewrites it. Returns whether the copy was made. Without one the
+    migration does not run: it is the step that is hard to undo."""
+    if not GEAR_PATH.exists():
+        return True
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = GEAR_PATH.with_name(f"{GEAR_PATH.name}.bak-{stamp}")
+    n = 2
+    while backup_path.exists():
+        backup_path = GEAR_PATH.with_name(f"{GEAR_PATH.name}.bak-{stamp}-{n}")
+        n += 1
+    try:
+        backup_path.write_bytes(GEAR_PATH.read_bytes())
+    except OSError as exc:
+        logging.warning("could not back up %s before migration: %s", GEAR_PATH, exc)
+        return False
+    return True
+
+
+def _maybe_migrate_gear() -> None:
+    """One-shot: a version 2 gear.json becomes version 3, step 1 of
+    docs/specs/gear-templates.md section 11. The caller holds GEAR_LOCK and
+    has just re-read the file. Guarded by `templates_migrated: 1` on the
+    document itself, takes a timestamped backup first, and leaves the old
+    shape in place (served as it is) if the backup cannot be written."""
+    global _gear_migration_failed
+    doc = _gear_cache
+    if not isinstance(doc, dict) or doc.get("templates_migrated"):
+        return
+    key = (str(GEAR_PATH), _gear_cache_mtime)
+    if _gear_migration_failed == key:
+        return
+    if not _backup_gear_json():
+        logging.error("Not moving gear into templates, because %s could not be backed up first", GEAR_PATH)
+        _gear_migration_failed = key
+        return
+    new = gt.migrate_v2(doc)
+    save_gear(new)
+    logging.info("Moved gear filters into templates (%d cameras)", len(new.get("cameras") or []))
+
+
+def _load_gear_stored() -> dict:
+    """The gear document as it is stored, migrated on first sight. Callers
+    must not change it; copy first."""
+    if not GEAR_PATH.exists():
+        return {"version": 1, "presets": []}
+    doc = _read_gear_file()
+    if isinstance(doc, dict) and not doc.get("templates_migrated"):
+        with GEAR_LOCK:
+            # Another thread may have migrated while this one waited.
+            doc = _read_gear_file()
+            if isinstance(doc, dict) and not doc.get("templates_migrated"):
+                _maybe_migrate_gear()
+                doc = _read_gear_file()
+    return doc
+
+
+def _peek_plans() -> list:
+    """The plans list for a read that must not run the plans migrations
+    (load_gear is called from inside them)."""
+    try:
+        mtime = PLANS_PATH.stat().st_mtime
+    except OSError:
+        return []
+    if _plans_cache is not None and _plans_cache_mtime == mtime:
+        plans = _plans_cache.get("plans")
+    else:
+        try:
+            parsed = json.loads(PLANS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        plans = parsed.get("plans") if isinstance(parsed, dict) else None
+    return plans if isinstance(plans, list) else []
+
+
+def load_gear() -> dict:
+    """The gear document with its derived keys: the old per-filter scalars,
+    each template's `status` and `used_by`, each camera's `wheel` block. It
+    is a copy, so a caller may change it. `save_gear` strips every derived
+    key again. A document that has not been migrated comes back as stored."""
+    stored = _load_gear_stored()
+    if not gt.is_migrated(stored):
+        return stored
+    try:
+        profiles = load_fingerprints().get("profiles") or {}
+    except (OSError, ValueError):
+        profiles = {}
+    return gt.derive(stored, fingerprints=profiles, ts_lists=_load_ts_templates_store(),
+                     plans=_peek_plans(), norm=_norm_gear_name)
 
 
 def _heal_nonfinite_floats(value, path_parts: list[str], healed: list[str]):
@@ -749,6 +850,37 @@ def _maybe_migrate_filter_rows() -> None:
     save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
 
 
+def _repair_row_templates() -> bool:
+    """Step 3 of the gear migration: give every plan row its `template_id`
+    (docs/specs/gear-templates.md sections 3 and 11). Runs when plans.json
+    loads and again whenever gear learns new templates. A row nothing matches
+    is flagged `template_unresolved` and logged by plan id. Returns whether
+    any row changed, in which case plans.json is written."""
+    if not isinstance(_plans_cache, dict):
+        return False
+    stored = _load_gear_stored()
+    if not gt.is_migrated(stored):
+        return False
+    cameras = {c.get("id"): c for c in stored.get("cameras") or [] if isinstance(c, dict)}
+    plans = _plans_cache.get("plans")
+    changed = False
+    for p in plans if isinstance(plans, list) else []:
+        if isinstance(p, dict) and fr.repair_rows(p.get("filter_rows"), cameras.get(p.get("camera_id") or ""),
+                                                  p.get("id"), True):
+            changed = True
+    if changed:
+        save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
+    return changed
+
+
+def repair_plan_templates() -> bool:
+    """Run the row repair on the plans now, for a caller that has just given
+    gear new templates (adoption in the sync). Takes PLANS_LOCK."""
+    with PLANS_LOCK:
+        load_plans()
+        return _repair_row_templates()
+
+
 def load_plans() -> dict:
     global _plans_cache, _plans_cache_mtime
     if not PLANS_PATH.exists():
@@ -762,6 +894,7 @@ def load_plans() -> dict:
             _plans_cache["plans"] = _heal_plan_list(plans)
         _maybe_migrate_draft_plans_to_active()
         _maybe_migrate_filter_rows()
+        _repair_row_templates()
     # One-shot backfill: the first time someone declares destinations,
     # every existing plan without a destination_id picks up the first
     # destination's id and gets persisted. Flag stored in destinations.json
@@ -1562,11 +1695,32 @@ def _with_sensor_scalars(camera: dict) -> dict:
 
 
 def save_gear(data: dict) -> None:
+    """Write gear.json with every derived key stripped, so none is stored."""
     global _gear_cache, _gear_cache_mtime
+    data = gt.strip_derived(data)
     GEAR_PATH.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(GEAR_PATH, data, indent=2)
     _gear_cache = data
     _gear_cache_mtime = GEAR_PATH.stat().st_mtime
+
+
+def commit_gear(doc: dict) -> int:
+    """Write a changed stored document with `rev` one higher and return the
+    new rev. The caller holds GEAR_LOCK."""
+    doc["rev"] = int(doc.get("rev") or 0) + 1
+    save_gear(doc)
+    return doc["rev"]
+
+
+def _gear_for_write() -> dict:
+    """A private copy of the stored document to change and commit. A store
+    with no file yet starts as an empty version 3 document."""
+    stored = _load_gear_stored()
+    if gt.is_migrated(stored):
+        return copy.deepcopy(stored)
+    if not GEAR_PATH.exists():
+        return gt.empty_doc()
+    return copy.deepcopy(stored)
 
 
 # Normalize a telescope/camera name for fuzzy matching. Mirrors _normTelName
@@ -1693,7 +1847,13 @@ def _seed_gear_from_manifest() -> dict:
     """Idempotent: merge unseen manifest telescopes + cameras into gear.json.
     Uses normalized-name fuzzy matching so existing gear isn't duplicated."""
     extracted = _extract_gear_from_manifest()
-    gear = load_gear()
+    with GEAR_LOCK:
+        return _seed_gear_locked(extracted)
+
+
+def _seed_gear_locked(extracted: dict) -> dict:
+    gear = copy.deepcopy(_load_gear_stored())
+    migrated = gt.is_migrated(gear)
     gear.setdefault("version", 2)
     telescopes = gear.setdefault("telescopes", [])
     cameras = gear.setdefault("cameras", [])
@@ -1757,8 +1917,17 @@ def _seed_gear_from_manifest() -> dict:
         existing_cam_norms.add(_norm_gear_name(info["name"]))
         existing_cam_ids.add(cam_id)
 
+    if migrated:
+        # Only the cameras this run added are in the old shape.
+        for cam in cameras:
+            if any(not (isinstance(v, dict) and isinstance(v.get("templates"), list))
+                   for v in (cam.get("filters") or {}).values()):
+                gt.camera_to_v3(cam)
     if added_tels or added_cams:
-        save_gear(gear)
+        if migrated:
+            commit_gear(gear)
+        else:
+            save_gear(gear)
     return {
         "ok": True,
         "added_telescopes": added_tels,
@@ -3350,9 +3519,11 @@ def api_export_priority():
 # places. Frontend escapes them, but defence-in-depth: reject anything
 # outside the legitimate astrophoto filter-name shape on the way in,
 # so a poisoned gear.json can never enter the system in the first place.
-# Real filter names are short alphanumeric tokens (Ha, SII, OIII, L, R,
-# G, B, V, IDAS, U, NII, Hb, etc.): < and " have no place here.
-_FILTER_NAME_RE = re.compile(r"^[A-Za-z0-9_+\-]{1,32}$")
+# Real filter names are short tokens (Ha, SII, OIII, L, R, G, B, V, IDAS,
+# "Antlia Ha", "IDAS + RED"): < and " have no place here. A space is fine
+# inside the name but not at either end (docs/specs/gear-templates.md
+# section 4).
+_FILTER_NAME_RE = gt.FILTER_NAME_RE
 
 
 def _validate_gear_payload(payload: dict) -> str | None:
@@ -3366,44 +3537,532 @@ def _validate_gear_payload(payload: dict) -> str | None:
         if not isinstance(filters, dict):
             return f"cameras[{i}].filters must be an object"
         for fname in filters.keys():
-            if not isinstance(fname, str) or not _FILTER_NAME_RE.match(fname):
+            if (not isinstance(fname, str) or not _FILTER_NAME_RE.match(fname)
+                    or fname != fname.strip()):
                 return (f"cameras[{i}].filters has invalid filter name "
-                        f"{fname!r}: must match {_FILTER_NAME_RE.pattern}")
+                        f"{fname!r}: must match {_FILTER_NAME_RE.pattern} "
+                        "with no space at either end")
     return None
+
+
+def _gear_response(g: dict) -> dict:
+    """What GET /api/gear and a 409 serve."""
+    out = {
+        "version": g.get("version", 2),
+        "telescopes": g.get("telescopes", []),
+        # Derive sensor_width_px/sensor_height_px on every read so
+        # cameras added via the UI editor (which only ever writes
+        # sensor_px) still carry the scalar fields the NINA plugin
+        # expects, not just ones seeded from a manifest scan.
+        "cameras": [_with_sensor_scalars(c) for c in g.get("cameras", [])],
+        "telescope_colours": g.get("telescope_colours", {}),
+    }
+    if gt.is_migrated(g):
+        for key in ("gear_schema", "rev", "tidy", "links_capable", "wheel_unlinked",
+                    "wheel_ambiguous", "conflict_count"):
+            out[key] = g.get(key, {} if key in ("tidy", "links_capable") else
+                             [] if key.startswith("wheel_") else 0)
+    return out
+
+
+def _plans_using(removed_ids: set, cameras: list, plans: list) -> dict[str, dict]:
+    """plan id -> {template id: rows} for the removed templates still in use."""
+    out: dict[str, dict] = {}
+    for tid, per_plan in gt.usage_by_template(plans, cameras).items():
+        if tid in removed_ids:
+            for pid, n in per_plan.items():
+                out.setdefault(pid, {})[tid] = n
+    return out
+
+
+def _gear_camera_context(doc: dict) -> dict:
+    """Who reports each camera, for the save guard."""
+    try:
+        profiles = load_fingerprints().get("profiles") or {}
+    except (OSError, ValueError):
+        profiles = {}
+    cams = [c for c in doc.get("cameras") or [] if isinstance(c, dict)]
+    return gt.link_cameras(cams, gt._profile_entries(profiles), _norm_gear_name)
+
+
+def _camera_edit_blocked(doc: dict, ctx: dict, cam: dict) -> bool:
+    return gt.edit_blocked(cam, ctx["linked"].get(cam.get("id"), []),
+                           ctx["name_reports"].get(cam.get("id"), []), doc.get("links_capable"))
+
+
+def _ts_name_clash(doc: dict, ctx: dict, cam: dict, tpl: dict, new_name: str):
+    """A TS template of a profile linked to the camera that already holds
+    *new_name* and is not this template's own link, as (profile, TS id)."""
+    lists = _load_ts_templates_store()
+    pids = {p["profile_id"] for p in ctx["linked"].get(cam.get("id"), [])}
+    pids.update((tpl.get("ts") or {}).keys())
+    for pid in sorted(p for p in pids if p):
+        own = ((tpl.get("ts") or {}).get(pid) or {}).get("id")
+        for row in (lists.get(pid) or {}).get("templates") or []:
+            if (isinstance(row, dict) and str(row.get("name") or "").lower() == new_name.lower()
+                    and row.get("id") is not None and row.get("id") != own):
+                return pid, row.get("id")
+    return None
+
+
+def _carry_into_plans(renames: dict, subs: dict) -> list[dict]:
+    """Carry gear template changes into the plan rows (spec section 4).
+
+    *renames* is template id to new name; *subs* is template id to (old sub,
+    new sub). A rename reaches every row on the template. A sub change reaches
+    only the rows that follow the template, whose `template_sub_s` equals the
+    old sub, and never touches `target_hours` or `target_frames` except where
+    a row changes unit. Writes plans.json when anything changed and returns
+    the `sub_changes`. The caller holds GEAR_LOCK and PLANS_LOCK.
+    """
+    if not renames and not subs:
+        return []
+    data = load_plans()
+    plans = copy.deepcopy(data.get("plans") or [])
+    sub_changes: list[dict] = []
+    changed = False
+    for p in plans:
+        if not isinstance(p, dict):
+            continue
+        touched = False
+        for row in fr.rows_of(p):
+            tid = row.get("template_id")
+            if tid in renames and row.get("template") != renames[tid]:
+                row["template"] = renames[tid]
+                touched = True
+            if tid in subs:
+                old, new = subs[tid]
+                have = fr._num(row.get("template_sub_s"))
+                if have is not None and abs(have - old) < 1e-9:
+                    hours = fr._num(row.get("actual_hours"))
+                    fr.set_row_sub(row, new)
+                    sub_changes.append({
+                        "plan_id": p.get("id"), "row_id": row.get("id"), "filter": row.get("filter"),
+                        "template": row.get("template"), "old_sub_s": old, "new_sub_s": new,
+                        "acquired_frames": round(hours * 3600.0 / old) if hours else 0,
+                    })
+                    touched = True
+        if touched:
+            p["updated_at"] = datetime.now(timezone.utc).isoformat()
+            changed = True
+    if changed:
+        save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    return sub_changes
+
+
+def _gear_post_v3(payload: dict, base: dict):
+    """POST /api/gear from a page that sends templates (gear_schema 3)."""
+    if payload.get("rev") != base.get("rev"):
+        return jsonify({"error": "gear changed elsewhere", "gear": _gear_response(load_gear())}), 409
+    if not isinstance(payload.get("telescopes"), list) or not all(
+            isinstance(t, dict) for t in payload["telescopes"]):
+        return jsonify({"error": "telescopes must be a list of objects"}), 400
+    cams_in = payload["cameras"]
+    stored_cams = {c.get("id"): c for c in base.get("cameras") or [] if isinstance(c, dict)}
+    stored_loc = {t["id"]: (cam.get("id"), f, t) for cam, f, t in gt.all_templates(base)}
+
+    seen_cams: set[str] = set()
+    seen_ids: set[str] = set()
+    new_cams: list[dict] = []
+    for i, c in enumerate(cams_in):
+        cid = c.get("id")
+        if not isinstance(cid, str) or not cid.strip():
+            return jsonify({"error": f"cameras[{i}].id must be a non-empty string"}), 400
+        if cid in seen_cams:
+            return jsonify({"error": f"two cameras share the id {cid!r}"}), 400
+        seen_cams.add(cid)
+        cam = {k: copy.deepcopy(v) for k, v in c.items() if k not in ("filters", *gt.DERIVED_CAMERA)}
+        old_cam = stored_cams.get(cid) or {}
+        if "nina_names" not in c and old_cam.get("nina_names"):
+            cam["nina_names"] = list(old_cam["nina_names"])
+        names_seen: set[str] = set()
+        filters_out: dict = {}
+        for fname, cfg in (c.get("filters") or {}).items():
+            where = f"cameras[{i}].filters[{fname!r}]"
+            tpls = cfg.get("templates") if isinstance(cfg, dict) else None
+            if not isinstance(tpls, list) or not tpls:
+                return jsonify({"error": f"{where} has no templates. A filter needs at least one."}), 400
+            out_tpls = []
+            for j, t in enumerate(tpls):
+                twhere = f"{where}.templates[{j}]"
+                err = gt.valid_template_fields(t, twhere)
+                if err:
+                    return jsonify({"error": err}), 400
+                tid = t.get("id")
+                if tid is None or tid == "":
+                    tid = str(uuid.uuid4())
+                elif not isinstance(tid, str) or len(tid) > 64:
+                    return jsonify({"error": f"{twhere}.id must be a string of at most 64 characters"}), 400
+                if tid in seen_ids:
+                    return jsonify({"error": f"two templates share the id {tid!r}"}), 400
+                seen_ids.add(tid)
+                key = t["name"].lower()
+                if key in names_seen:
+                    return jsonify({"error": f"camera {cid!r} has two templates named {t['name']!r}"}), 400
+                names_seen.add(key)
+                was = stored_loc.get(tid)
+                if was is not None and (was[0], was[1]) != (cid, fname):
+                    return jsonify({"error": f"{twhere}: a template cannot move to another filter "
+                                              "or camera. Remove it and add a new one."}), 400
+                out_tpls.append(gt.clean_template({**t, "id": tid}, was[2] if was else None))
+            gt.repair_stars(out_tpls)
+            filters_out[fname] = {"templates": out_tpls}
+        cam["filters"] = filters_out
+        new_cams.append(cam)
+
+    new_doc = {**base, "cameras": new_cams, "telescopes": payload["telescopes"]}
+    new_loc = {t["id"]: (cam.get("id"), f, t) for cam, f, t in gt.all_templates(new_doc)}
+
+    with PLANS_LOCK:
+        plans = load_plans().get("plans") or []
+        # Never remove what a plan row uses (a template, its filter or its camera).
+        removed = set(stored_loc) - set(new_loc)
+        in_use = _plans_using(removed, list(stored_cams.values()), plans)
+        gone_cams = set(stored_cams) - seen_cams
+        for p in plans:
+            if isinstance(p, dict) and p.get("camera_id") in gone_cams and p.get("id") not in in_use:
+                in_use[p["id"]] = {"camera": 1}
+        if in_use:
+            listing = ", ".join(f"{pid} ({sum(v.values())})" for pid, v in sorted(in_use.items()))
+            total = sum(sum(v.values()) for v in in_use.values())
+            return jsonify({"error": f"{total} plan rows use templates, filters or cameras this save would "
+                                     f"remove. Plans (rows): {listing}",
+                            "rows": total,
+                            "plans": {pid: sum(v.values()) for pid, v in in_use.items()}}), 400
+
+        ctx = _gear_camera_context(base)
+        renames, subs = {}, {}
+        for tid, (cid, fname, t) in new_loc.items():
+            was = stored_loc.get(tid)
+            if was is None:
+                continue
+            old = was[2]
+            if old.get("name") != t["name"]:
+                renames[tid] = t["name"]
+            if not gt._same(old.get("sub_s"), t["sub_s"]):
+                subs[tid] = (old["sub_s"], t["sub_s"])
+        for tid in set(renames) | set(subs):
+            cid = new_loc[tid][0]
+            if cid in stored_cams and _camera_edit_blocked(base, ctx, stored_cams[cid]):
+                return jsonify({"error": gt.PLUGIN_MESSAGE}), 400
+        for tid, new_name in renames.items():
+            cid, fname, t = new_loc[tid]
+            hit = _ts_name_clash(base, ctx, stored_cams.get(cid) or {}, stored_loc[tid][2], new_name)
+            if hit:
+                pname = next((p["profile_name"] for p in ctx["linked"].get(cid, [])
+                              if p["profile_id"] == hit[0]), hit[0])
+                return jsonify({"error": f"TS template id {hit[1]} in profile {pname} ({hit[0]}) "
+                                          f"is already named {new_name!r}"}), 400
+
+        sub_changes = _carry_into_plans(renames, subs)
+        rev = commit_gear(new_doc)
+    return jsonify({"ok": True, "rev": rev, "sub_changes": sub_changes})
+
+
+def _gear_post_old_page(payload: dict, base: dict):
+    """POST /api/gear without `gear_schema`: a page loaded before templates
+    shipped. Its filters are old scalars, and applying them would revert
+    edits made on a newer page, so they are ignored. Telescopes, and each
+    known camera's name and sensor, are applied; a camera it does not know
+    is added with one default template per filter; none is deleted."""
+    stored = {c.get("id"): c for c in base.get("cameras") or [] if isinstance(c, dict)}
+    cameras = list(base.get("cameras") or [])
+    ids = []
+    for c in payload.get("cameras") or []:
+        cid = c.get("id")
+        if cid in stored:
+            for key in ("name", "pixel_size_um", "sensor_px"):
+                if key in c:
+                    stored[cid][key] = copy.deepcopy(c[key])
+            continue
+        cam = {k: copy.deepcopy(v) for k, v in c.items() if k not in ("filters", *gt.DERIVED_CAMERA)}
+        cam["filters"] = {}
+        taken: set[str] = set()
+        for fname, cfg in (c.get("filters") or {}).items():
+            cfg = cfg if isinstance(cfg, dict) else {}
+            sub = cfg.get("default_sub_s")
+            name = gt._clip_name(f"{fname} ({cam.get('name')})")
+            n = 2
+            while name.lower() in taken:
+                name = gt._clip_name(f"{fname} ({cam.get('name')}) {n}")
+                n += 1
+            taken.add(name.lower())
+            gain, offset, bin_ = (gt._whole(cfg.get(k)) for k in ("gain", "offset", "bin"))
+            cam["filters"][fname] = {"templates": [gt.new_template(
+                name, sub if gt._is_num(sub) and 0 < sub <= gt.SUB_MAX_S else 300,
+                gain if gain is not None and gain >= -1 else -1,
+                offset if offset is not None and offset >= -1 else -1,
+                bin_ if bin_ is not None and 1 <= bin_ <= 4 else 1, starred=True)]}
+        cameras.append(cam)
+        stored[cid] = cam
+        ids.append(cid)
+    new_doc = {**base, "telescopes": payload.get("telescopes", []), "cameras": cameras}
+    rev = commit_gear(new_doc)
+    logging.warning("gear saved by a page without templates; kept every stored filter and template "
+                    "(added cameras: %s)", ", ".join(_safe_log(i) for i in ids) or "none")
+    return jsonify({"ok": True, "rev": rev, "ignored": ["filters"]})
 
 
 @app.route("/api/gear", methods=["GET", "POST"])
 def api_gear():
     if request.method == "GET":
-        g = load_gear()
-        return jsonify({
-            "version": g.get("version", 2),
-            "telescopes": g.get("telescopes", []),
-            # Derive sensor_width_px/sensor_height_px on every read so
-            # cameras added via the UI editor (which only ever writes
-            # sensor_px) still carry the scalar fields the NINA plugin
-            # expects, not just ones seeded from a manifest scan.
-            "cameras": [_with_sensor_scalars(c) for c in g.get("cameras", [])],
-            "telescope_colours": g.get("telescope_colours", {}),
-        })
+        return jsonify(_gear_response(load_gear()))
     payload = request.get_json(silent=True) or {}
     if "telescopes" not in payload or "cameras" not in payload:
         return jsonify({"error": "telescopes and cameras arrays required"}), 400
     err = _validate_gear_payload(payload)
     if err:
         return jsonify({"error": err}), 400
-    out = {
-        "version": 2,
-        "telescopes": payload.get("telescopes", []),
-        "cameras": payload.get("cameras", []),
-    }
-    # Colours change only through /api/gear/telescope-colour, so a gear editor
-    # save (which sends telescopes and cameras) must not wipe them.
-    colours = load_gear().get("telescope_colours")
-    if colours:
-        out["telescope_colours"] = colours
-    save_gear(out)
-    return jsonify({"ok": True})
+    with GEAR_LOCK:
+        base = _gear_for_write()
+        if not gt.is_migrated(base):
+            # The migration could not take its backup, so the file is still
+            # in the old shape and is written the old way.
+            if "gear_schema" in payload:
+                return jsonify({"error": "gear is waiting for its migration backup"}), 503
+            out = {"version": 2, "telescopes": payload.get("telescopes", []),
+                   "cameras": payload.get("cameras", [])}
+            colours = base.get("telescope_colours")
+            if colours:
+                out["telescope_colours"] = colours
+            save_gear(out)
+            return jsonify({"ok": True})
+        if "gear_schema" not in payload:
+            return _gear_post_old_page(payload, base)
+        if payload["gear_schema"] != gt.SCHEMA:
+            return jsonify({"error": f"gear_schema must be {gt.SCHEMA}"}), 400
+        return _gear_post_v3(payload, base)
+
+
+def _find_camera(doc: dict, camera_id) -> dict | None:
+    return next((c for c in doc.get("cameras") or [] if isinstance(c, dict) and c.get("id") == camera_id), None)
+
+
+def _template_fields_from_body(body: dict, where: str = "body") -> tuple[dict | None, str | None]:
+    t = {"name": body.get("name"), "sub_s": body.get("sub_s"), "gain": body.get("gain", -1),
+         "offset": body.get("offset", -1), "bin": body.get("bin", 1)}
+    err = gt.valid_template_fields(t, where)
+    return (None, err) if err else (t, None)
+
+
+@app.route("/api/gear/templates", methods=["POST"])
+def api_gear_template_add():
+    """Add one template to a camera's filter. Body: camera_id, filter, name,
+    sub_s, gain, offset, bin. It is starred only when the filter has none."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "payload must be a JSON object"}), 400
+    fields, err = _template_fields_from_body(body)
+    if err:
+        return jsonify({"error": err}), 400
+    with GEAR_LOCK:
+        doc = _gear_for_write()
+        if not gt.is_migrated(doc):
+            return jsonify({"error": "gear is waiting for its migration backup"}), 503
+        cam = _find_camera(doc, body.get("camera_id"))
+        if cam is None:
+            return jsonify({"error": "no such camera"}), 404
+        filt = body.get("filter")
+        cfg = (cam.get("filters") or {}).get(filt) if isinstance(filt, str) else None
+        if not isinstance(cfg, dict):
+            return jsonify({"error": f"the camera has no filter {filt!r}"}), 400
+        names = {t["name"].lower() for _c, _f, t in gt.all_templates({"cameras": [cam]})}
+        if fields["name"].lower() in names:
+            return jsonify({"error": f"camera {cam['id']!r} already has a template named {fields['name']!r}"}), 400
+        tpls = cfg.setdefault("templates", [])
+        tpl = gt.new_template(fields["name"], fields["sub_s"], gt._whole(fields["gain"]),
+                              gt._whole(fields["offset"]), gt._whole(fields["bin"]),
+                              starred=not tpls)
+        tpls.append(tpl)
+        rev = commit_gear(doc)
+    return jsonify({"ok": True, "rev": rev, "template": tpl}), 201
+
+
+@app.route("/api/gear/templates/<template_id>/star", methods=["POST"])
+def api_gear_template_star(template_id: str):
+    with GEAR_LOCK:
+        doc = _gear_for_write()
+        hit = gt.find_by_id(doc, template_id) if gt.is_migrated(doc) else None
+        if hit is None:
+            return jsonify({"error": "no such template"}), 404
+        cam, fname, _t = hit
+        for t in cam["filters"][fname]["templates"]:
+            t["starred"] = t.get("id") == template_id
+        rev = commit_gear(doc)
+    return jsonify({"ok": True, "rev": rev})
+
+
+@app.route("/api/gear/templates/<template_id>/resolve", methods=["POST"])
+def api_gear_template_resolve(template_id: str):
+    """Settle one held conflict. Body: profile_id, field, take ("acp" or "ts").
+
+    "acp" sets the field's base to TS's value, so the next push writes
+    ACP's value. "ts" sets the gear field and the base to TS's value, and a
+    changed sub reaches the rows that follow the template.
+    """
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "payload must be a JSON object"}), 400
+    pid, field, take = body.get("profile_id"), body.get("field"), body.get("take")
+    if field == "defaultexposure":
+        field = "sub_s"
+    if not isinstance(pid, str) or not pid:
+        return jsonify({"error": "profile_id is required"}), 400
+    if field not in gt.TEMPLATE_FIELDS:
+        return jsonify({"error": f"field must be one of {', '.join(gt.TEMPLATE_FIELDS)}"}), 400
+    if take not in ("acp", "ts"):
+        return jsonify({"error": 'take must be "acp" or "ts"'}), 400
+    with GEAR_LOCK, PLANS_LOCK:
+        doc = _gear_for_write()
+        hit = gt.find_by_id(doc, template_id) if gt.is_migrated(doc) else None
+        if hit is None:
+            return jsonify({"error": "no such template"}), 404
+        _cam, _f, tpl = hit
+        link = (tpl.get("ts") or {}).get(pid)
+        if not isinstance(link, dict):
+            return jsonify({"error": "the template has no link to that profile"}), 404
+        known, row = gt._find_row(_load_ts_templates_store().get(pid), link)
+        ts_value = row.get(gt.LIST_KEY[field]) if row else None
+        if ts_value is None:
+            return jsonify({"error": "TS's value is not known: the last template list has no such row"}), 409
+        base = link.setdefault("base", {})
+        renames, subs = {}, {}
+        if take == "ts":
+            if field == "name" and any(
+                    t is not tpl and t["name"].lower() == str(ts_value).lower()
+                    for _c, _ff, t in gt.all_templates({"cameras": [_cam]})):
+                return jsonify({"error": f"the camera already has a template named {ts_value!r}"}), 400
+            if field == "sub_s" and not gt._same(tpl.get("sub_s"), ts_value):
+                subs[tpl["id"]] = (tpl["sub_s"], ts_value)
+            if field == "name" and tpl.get("name") != ts_value:
+                tpl["aliases"] = gt.push_alias(tpl.get("aliases") or [], tpl.get("name"), ts_value)
+                renames[tpl["id"]] = ts_value
+            tpl[field] = ts_value
+        base[gt.BASE_KEY[field]] = ts_value
+        sub_changes = _carry_into_plans(renames, subs)
+        rev = commit_gear(doc)
+    return jsonify({"ok": True, "rev": rev, "sub_changes": sub_changes})
+
+
+@app.route("/api/gear/cameras/<camera_id>/nina-names", methods=["POST"])
+def api_gear_camera_nina_names(camera_id: str):
+    """Link a NINA camera name to a gear camera. Body: {"name": str}."""
+    body = request.get_json(silent=True)
+    name = body.get("name") if isinstance(body, dict) else None
+    if not isinstance(name, str) or not name.strip() or len(name) > 200:
+        return jsonify({"error": "name must be a non-empty string of at most 200 characters"}), 400
+    name = name.strip()
+    with GEAR_LOCK:
+        doc = _gear_for_write()
+        cam = _find_camera(doc, camera_id) if gt.is_migrated(doc) else None
+        if cam is None:
+            return jsonify({"error": "no such camera"}), 404
+        names = cam.setdefault("nina_names", [])
+        if name in names:
+            return jsonify({"ok": True, "rev": doc.get("rev"), "nina_names": names})
+        if len(names) >= 20:
+            return jsonify({"error": "too many linked NINA names"}), 400
+        names.append(name)
+        rev = commit_gear(doc)
+    return jsonify({"ok": True, "rev": rev, "nina_names": names})
+
+
+def set_links_capable(profile_id: str, capabilities) -> bool:
+    """Record what the plugin on *profile_id* says it can do, from a links
+    post (the sync's route calls this). A post that lists both "templates"
+    and "repoint" sets the entry. Any other post, including one with no
+    `capabilities`, deletes it, so a downgraded plugin loses the capability
+    at once. Returns whether gear changed."""
+    if not isinstance(profile_id, str) or not profile_id:
+        return False
+    caps = {c for c in capabilities if isinstance(c, str)} if isinstance(capabilities, (list, tuple)) else set()
+    capable = {"templates", "repoint"} <= caps
+    with GEAR_LOCK:
+        doc = _gear_for_write()
+        if not gt.is_migrated(doc):
+            return False
+        table = doc.setdefault("links_capable", {})
+        if capable:
+            if gt._is_capable(table.get(profile_id)):
+                return False
+            table[profile_id] = {"templates": True, "repoint": True,
+                                 "at": datetime.now(timezone.utc).isoformat()}
+        elif profile_id in table:
+            del table[profile_id]
+        else:
+            return False
+        commit_gear(doc)
+    return True
+
+
+def record_template_results(profile_id: str, results) -> int:
+    """Store the writer's per-template results into `ts[profile_id]` (spec
+    section 4; the sync's sync and links routes both call this). Returns the
+    number of templates whose link changed. `rev` moves only when one did.
+
+    The actions are inserted, updated, unchanged, held (or conflict),
+    skipped and adopted. A skipped template records nothing. An adopted one
+    took TS's values, which gear takes only for the camera's primary profile;
+    for any other the link is recorded with the gear values as its base.
+    """
+    if not isinstance(profile_id, str) or not profile_id or not isinstance(results, list):
+        return 0
+    with GEAR_LOCK:
+        doc = _gear_for_write()
+        if not gt.is_migrated(doc):
+            return 0
+        ctx = _gear_camera_context(doc)
+        changed = 0
+        for res in results:
+            if not isinstance(res, dict) or res.get("action") == "skipped":
+                continue
+            hit = gt.find_by_id(doc, res.get("template_id"))
+            if hit is None or res.get("ts_id") is None:
+                continue
+            cam, _fname, tpl = hit
+            linked = ctx["linked"].get(cam.get("id"), [])
+            primary = linked[0]["profile_id"] if linked else None
+            old = (tpl.get("ts") or {}).get(profile_id) or {}
+            ts_base = copy.deepcopy(res.get("base")) if isinstance(res.get("base"), dict) else {}
+            if res.get("action") == "adopted":
+                if primary in (None, profile_id):
+                    for field in gt.TEMPLATE_FIELDS:
+                        v = ts_base.get(gt.BASE_KEY[field])
+                        if v is not None:
+                            tpl[field] = v
+                else:
+                    for field in gt.TEMPLATE_FIELDS:
+                        ts_base[gt.BASE_KEY[field]] = tpl.get(field)
+            link = {"id": res["ts_id"], "guid": res.get("guid"), "base": ts_base,
+                    "repoint_from": list(old.get("repoint_from") or []),
+                    "pushed_iso": old.get("pushed_iso")}
+            if {k: v for k, v in link.items() if k != "pushed_iso"} == \
+                    {k: v for k, v in old.items() if k != "pushed_iso"}:
+                continue
+            link["pushed_iso"] = datetime.now(timezone.utc).isoformat()
+            tpl.setdefault("ts", {})[profile_id] = link
+            changed += 1
+        if changed:
+            commit_gear(doc)
+    return changed
+
+
+def clear_repoint(profile_id: str) -> bool:
+    """A push finished its plan moves: empty every `repoint_from` list of
+    *profile_id* (spec section 10, `repoint_done`)."""
+    with GEAR_LOCK:
+        doc = _gear_for_write()
+        if not gt.is_migrated(doc):
+            return False
+        touched = False
+        for _c, _f, tpl in gt.all_templates(doc):
+            link = (tpl.get("ts") or {}).get(profile_id)
+            if isinstance(link, dict) and link.get("repoint_from"):
+                link["repoint_from"] = []
+                touched = True
+        if touched:
+            commit_gear(doc)
+    return touched
 
 
 # A colour Rohan picked for a telescope, keyed by the telescope name shown next
@@ -3429,16 +4088,20 @@ def api_gear_telescope_colour():
     colour = payload.get("colour")
     if colour is not None and (not isinstance(colour, str) or not _TELESCOPE_COLOUR_RE.match(colour)):
         return jsonify({"error": "colour must be #rrggbb or null"}), 400
-    gear = dict(load_gear()) if GEAR_PATH.exists() else {"version": 2, "telescopes": [], "cameras": []}
-    colours = dict(gear.get("telescope_colours") or {})
-    if colour is None:
-        colours.pop(name, None)
-    else:
-        if name not in colours and len(colours) >= _TELESCOPE_COLOURS_MAX:
-            return jsonify({"error": "too many telescope colours"}), 400
-        colours[name] = colour.lower()
-    gear["telescope_colours"] = colours
-    save_gear(gear)
+    with GEAR_LOCK:
+        gear = _gear_for_write() if GEAR_PATH.exists() else {"version": 2, "telescopes": [], "cameras": []}
+        colours = dict(gear.get("telescope_colours") or {})
+        if colour is None:
+            colours.pop(name, None)
+        else:
+            if name not in colours and len(colours) >= _TELESCOPE_COLOURS_MAX:
+                return jsonify({"error": "too many telescope colours"}), 400
+            colours[name] = colour.lower()
+        gear["telescope_colours"] = colours
+        if gt.is_migrated(gear):
+            commit_gear(gear)
+        else:
+            save_gear(gear)
     return jsonify({"ok": True, "telescope_colours": colours})
 
 
@@ -3519,8 +4182,10 @@ def _validate_plan_payload(payload: dict) -> str | None:
     # stored (docs/specs/goal-panel-and-ts-order.md section 3).
     payload.pop("filter_goals", None)
     if "filter_rows" in payload:
-        cameras = {c.get("id"): c for c in (load_gear().get("cameras") or []) if isinstance(c, dict)}
-        err = fr.validate_rows(payload["filter_rows"], cameras.get(payload.get("camera_id") or ""))
+        gear = load_gear()
+        cameras = {c.get("id"): c for c in (gear.get("cameras") or []) if isinstance(c, dict)}
+        err = fr.validate_rows(payload["filter_rows"], cameras.get(payload.get("camera_id") or ""),
+                               payload.get("id"), gt.is_migrated(gear))
         if err:
             return err
     # What AAC reads (section 6). Absent means survey.
@@ -4064,6 +4729,11 @@ def _match_plan(plan: dict, optics: dict, bands: dict[str, str],
     return result
 
 
+MAX_WHEEL_SLOTS = 64
+MAX_WHEEL_SLOT_CHARS = 32
+MAX_PROFILE_ID_CHARS = 64
+
+
 def _normalise_fingerprint(fp: dict) -> dict:
     """The subset of a fingerprint that identifies the rig, rounded so the
     same physical setup hashes the same way across sessions.
@@ -4077,7 +4747,7 @@ def _normalise_fingerprint(fp: dict) -> dict:
     canon_filter, _ = _filter_helpers()
     fl = _fingerprint_focal_length(fp)
     px_um = _num(camera.get("pixel_size_um"))
-    return {
+    out = {
         "profile_name": str(fp.get("profile_name") or ""),
         "camera": {
             "name": str(camera.get("name") or ""),
@@ -4092,10 +4762,26 @@ def _normalise_fingerprint(fp: dict) -> dict:
         "mount": str((fp.get("mount") or {}).get("name") or ""),
         "focal_length_mm": round(fl, 1) if fl else None,
     }
+    # The wheel as the NINA profile holds it, raw and in slot order, and the
+    # profile's id (docs/specs/gear-templates.md section 5). `filters` above
+    # stays canonical and sorted. Left out when the plugin sent none, so an
+    # older plugin's stored entry keeps its shape.
+    slots = fp.get("wheel_slots")
+    if isinstance(slots, list) and slots:
+        out["wheel_slots"] = [str(sl) for sl in slots if isinstance(sl, str)]
+    pid = fp.get("profile_id")
+    if isinstance(pid, str) and pid.strip():
+        out["profile_id"] = pid.strip()
+    return out
 
 
 def _fingerprint_id(fp: dict) -> str:
-    payload = json.dumps(_normalise_fingerprint(fp), sort_keys=True, separators=(",", ":"))
+    # Which profile reported a rig, and how its wheel slots are spelt, do not
+    # make it a different rig, so neither goes into the id.
+    norm = _normalise_fingerprint(fp)
+    norm.pop("wheel_slots", None)
+    norm.pop("profile_id", None)
+    payload = json.dumps(norm, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
@@ -4128,6 +4814,15 @@ def _validate_fingerprint(fp) -> str | None:
     if filters is not None and (not isinstance(filters, list)
                                 or not all(isinstance(f, str) for f in filters)):
         return "filters must be a list of strings"
+    slots = fp.get("wheel_slots")
+    if slots is not None:
+        if (not isinstance(slots, list) or len(slots) > MAX_WHEEL_SLOTS
+                or not all(isinstance(sl, str) and len(sl) <= MAX_WHEEL_SLOT_CHARS for sl in slots)):
+            return (f"wheel_slots must be a list of at most {MAX_WHEEL_SLOTS} strings "
+                    f"of at most {MAX_WHEEL_SLOT_CHARS} characters")
+    pid = fp.get("profile_id")
+    if pid is not None and (not isinstance(pid, str) or len(pid) > MAX_PROFILE_ID_CHARS):
+        return f"profile_id must be a string of at most {MAX_PROFILE_ID_CHARS} characters"
     fl = fp.get("focal_length_mm")
     if isinstance(fl, dict):
         if _num(fl.get("solved")) is None and _num(fl.get("profile")) is None:
@@ -4220,11 +4915,20 @@ def _store_fingerprint(fp: dict, fp_id: str, mode: str, summary: dict) -> None:
     Write failures are logged and swallowed: failing to record telemetry
     must never cost the caller its match results.
     """
-    key = str(fp.get("profile_name") or "").strip() or fp_id
+    name = str(fp.get("profile_name") or "").strip()
+    profile_id = fp.get("profile_id").strip() if isinstance(fp.get("profile_id"), str) else ""
+    key = profile_id or name or fp_id
     doc = load_fingerprints()
     profiles = dict(doc.get("profiles") or {})
+    if profile_id and name:
+        # A report with an id replaces the entry an older plugin left under
+        # the profile's name, which has no id (spec section 5).
+        old_entry = profiles.get(name)
+        if isinstance(old_entry, dict) and not old_entry.get("profile_id") and name != key:
+            del profiles[name]
     profiles[key] = {
-        "profile_name": key,
+        "profile_name": name or key,
+        **({"profile_id": profile_id} if profile_id else {}),
         "fingerprint_id": fp_id,
         "received_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
@@ -4322,6 +5026,24 @@ def _validate_progress_payload(payload) -> str | None:
     return None
 
 
+def _template_names_for_row(plan: dict):
+    """A function from a row to every name its gear template has gone by:
+    the current name, `aliases` and `ts_names`."""
+    stored = _load_gear_stored()
+    cam = next((c for c in stored.get("cameras") or []
+                if isinstance(c, dict) and c.get("id") == plan.get("camera_id")), None)
+
+    def names(row: dict) -> set[str]:
+        tpls = fr.camera_templates(cam, row.get("filter"))
+        if not tpls:
+            return set()
+        tpl = next((t for t in tpls if t.get("id") == row.get("template_id")), None) \
+            or fr.find_template(tpls, row.get("template"))
+        return fr.template_names(tpl)
+
+    return names
+
+
 @app.route("/api/plans/<plan_id>/progress", methods=["POST"])
 @_holds_plans_lock
 def api_plan_progress(plan_id: str):
@@ -4354,6 +5076,7 @@ def api_plan_progress(plan_id: str):
 
     canon_filter, _ = _filter_helpers()
     rows = fr.rows_of(plan)
+    names_for_row = _template_names_for_row(plan)
 
     if payload.get("entries") is not None:
         reports = [(e["filter"], e.get("template"), e) for e in payload["entries"]]
@@ -4367,7 +5090,10 @@ def api_plan_progress(plan_id: str):
         canon = canon_filter(name) or str(name)
         same_filter = [r for r in rows if r.get("filter") in (canon, name)]
         if template is not None:
-            hits = [r for r in same_filter if r.get("template") == template]
+            # A row renamed in gear since the plugin read the plans still
+            # answers to its earlier names (gear templates spec section 7).
+            hits = [r for r in same_filter
+                    if r.get("template") == template or template in names_for_row(r)]
             label = f"{canon} ({template})"
         else:
             # An older plugin sends no template. It can only mean the one
@@ -4425,7 +5151,7 @@ def api_plan_accepted(plan_id: str):
     plan = plans[idx]
     canon_filter, _ = _filter_helpers()
     now = datetime.now(timezone.utc).isoformat()
-    unknown = fr.apply_accepted(plan, body, now, canon_filter)
+    unknown = fr.apply_accepted(plan, body, now, canon_filter, _template_names_for_row(plan))
     plans[idx] = plan
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return jsonify({"ok": True, "unknown_rows": unknown,
@@ -4563,16 +5289,36 @@ def api_sync_config():
 
 
 _TS_TEMPLATE_NUMBER_FIELDS = ("default_exposure_s", "gain", "offset", "bin")
+# Sent by a plugin that knows gear templates (docs/specs/gear-templates.md
+# section 3): the TS row id and the columns Tidy compares. A list whose
+# templates carry no `id` comes from an older plugin.
+_TS_TEMPLATE_EXTRA_NUMBERS = ("id", "moonavoidanceenabled", "moonavoidanceseparation",
+                              "moonavoidancewidth", "twilightlevel", "maximumhumidity", "ditherevery")
+_TS_TEMPLATE_PLANS_MAX = 5000
+
+
+_ts_store_cache: tuple | None = None
 
 
 def _load_ts_templates_store() -> dict:
-    """The per-profile template lists the plugin posted, or {} when none."""
+    """The per-profile template lists the plugin posted, or {} when none.
+    The result is shared between callers, so copy before changing it."""
+    global _ts_store_cache
+    try:
+        st = TS_TEMPLATES_PATH.stat()
+    except OSError:
+        return {}
+    key = (str(TS_TEMPLATES_PATH), st.st_mtime_ns, st.st_size)
+    if _ts_store_cache is not None and _ts_store_cache[0] == key:
+        return _ts_store_cache[1]
     try:
         data = json.loads(TS_TEMPLATES_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     profiles = data.get("profiles") if isinstance(data, dict) else None
-    return profiles if isinstance(profiles, dict) else {}
+    profiles = profiles if isinstance(profiles, dict) else {}
+    _ts_store_cache = (key, profiles)
+    return profiles
 
 
 def _plugin_templates_response(path: Path, error: str):
@@ -4618,10 +5364,25 @@ def _validate_ts_templates_payload(payload) -> str | None:
             return f"templates[{i}].name is required"
         if "filter" in t and t["filter"] is not None and not isinstance(t["filter"], str):
             return f"templates[{i}].filter must be a string"
-        for f in _TS_TEMPLATE_NUMBER_FIELDS:
+        for f in _TS_TEMPLATE_NUMBER_FIELDS + _TS_TEMPLATE_EXTRA_NUMBERS:
             v = t.get(f)
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
                 return f"templates[{i}].{f} must be a number"
+        if t.get("guid") is not None and not isinstance(t["guid"], str):
+            return f"templates[{i}].guid must be a string"
+        plans = t.get("plans")
+        if plans is not None:
+            if not isinstance(plans, list):
+                return f"templates[{i}].plans must be a list"
+            if len(plans) > _TS_TEMPLATE_PLANS_MAX:
+                return f"templates[{i}].plans has more than {_TS_TEMPLATE_PLANS_MAX} entries"
+            for j, plan in enumerate(plans):
+                if not isinstance(plan, dict):
+                    return f"templates[{i}].plans[{j}] must be an object"
+                for f in ("id", "exposure"):
+                    v = plan.get(f)
+                    if isinstance(v, bool) or not isinstance(v, (int, float)):
+                        return f"templates[{i}].plans[{j}].{f} must be a number"
     return None
 
 
@@ -4637,14 +5398,22 @@ def api_ts_templates_post():
     if err:
         return jsonify({"error": err}), 400
     pid = payload["profile_id"].strip()
-    templates = [{
-        "name": t["name"],
-        "filter": t.get("filter"),
-        **{f: t.get(f) for f in _TS_TEMPLATE_NUMBER_FIELDS},
-    } for t in payload["templates"]]
+    templates = []
+    for t in payload["templates"]:
+        entry = {
+            "name": t["name"],
+            "filter": t.get("filter"),
+            **{f: t.get(f) for f in _TS_TEMPLATE_NUMBER_FIELDS},
+        }
+        for f in _TS_TEMPLATE_EXTRA_NUMBERS + ("guid",):
+            if t.get(f) is not None:
+                entry[f] = t[f]
+        if isinstance(t.get("plans"), list):
+            entry["plans"] = [{"id": int(p["id"]), "exposure": p["exposure"]} for p in t["plans"]]
+        templates.append(entry)
     received_at = datetime.now(timezone.utc).isoformat()
     with _ts_templates_lock:
-        profiles = _load_ts_templates_store()
+        profiles = dict(_load_ts_templates_store())
         profiles[pid] = {
             "received_at": received_at,
             "sent_at": payload.get("sent_at"),
@@ -4652,6 +5421,8 @@ def api_ts_templates_post():
         }
         TS_TEMPLATES_PATH.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(TS_TEMPLATES_PATH, {"profiles": profiles}, indent=2)
+        global _ts_store_cache
+        _ts_store_cache = None
     return jsonify({"profile_id": pid, "count": len(templates), "received_at": received_at})
 
 
@@ -5370,6 +6141,21 @@ def api_scan_status():
     return jsonify(scan_status())
 
 
+def migrate_gear_at_startup() -> None:
+    """Run the gear template migration before the first request
+    (docs/specs/gear-templates.md section 11). It also runs lazily on the
+    first load of an unmigrated file, so this only makes it eager. Skipped
+    when ACP_SKIP_STARTUP_MIGRATION is set, which the test suite does so an
+    import never touches the developer's own data/gear.json."""
+    if os.environ.get("ACP_SKIP_STARTUP_MIGRATION"):
+        return
+    try:
+        _load_gear_stored()
+    except Exception:
+        logging.exception("gear migration at startup failed; gear is served as stored")
+
+
+migrate_gear_at_startup()
 start_scan_scheduler()
 
 
