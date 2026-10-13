@@ -582,7 +582,7 @@ For each group with a pick:
 
 Then `tidy[P] = {state: "done", at: <now>}`. A group that is all off the wheel gets a gear template with `new` status and `repoint_from` set.
 
-The next push moves, for each ACP row whose plan is on a template id in `repoint_from` of the row's gear template, the plan onto the gear template's TS id, and writes `exposure` by the sub rule in section 8. A star row's plan moves from the normal template to the short one through the `template_id` change rule in section 8 (the row's `template_id` differs from the base's), not through `repoint_from`, and keeps its `acquired` and `accepted`. The push does not touch TS plans that ACP does not own. When the move is done the writer reports `repoint_done: true` and ACP clears `repoint_from`. The 22 plans each on ids 15, 17 and 20 move to ids 7, 6 and 5, which are 15 s templates, so their sub does not change.
+The next push moves, for each ACP row whose plan is on a template id in `repoint_from` of the row's gear template, the plan onto the gear template's TS id, and writes `exposure` by the sub rule in section 8. A star row's plan moves from the normal template to the short one through the `template_id` change rule in section 8 (the row's `template_id` differs from the base's), not through `repoint_from`, and keeps its `acquired` and `accepted`. The push does not touch TS plans that ACP does not own. When the move is done the writer reports `repoint_done: true` and ACP clears `repoint_from`. The move is done only when, after the push, no enabled TS plan of the profile that ACP owns sits on a template id in any `repoint_from` list, read from TS, not from the rows this push wrote. Sync for Tonight pushes only tonight's plans, so it usually reports false, and a later Sync All finishes the job. Phase 4 reports true when any written row had a `repoint_from` list; phase 5 replaces that with this rule. The 22 plans each on ids 15, 17 and 20 move to ids 7, 6 and 5, which are 15 s templates, so their sub does not change.
 
 Nothing is deleted in TS. The unused templates stay until the user removes them in TS. Because the gear template no longer lists them, the push result lists them as stray each time, as the goal panel spec does.
 
@@ -705,6 +705,14 @@ After phases 1 to 3 are deployed (the phase 4 plugin is already on Voyager), wit
 - [ ] In ACP, change template "Ha" offset from Default to 25. Run Sync for tonight. In TS's Database Manager, the template named Ha (id 12) shows offset 25 and nothing else on it changed.
 - [ ] In TS, change that template's sub to 240, run Sync for tonight, and confirm ACP's gear shows Ha at 240 s with the note "Changed in TS".
 - [ ] Rename "Ha" to "Ha 300" in ACP and sync. TS shows one template with the new name, still 20 in total, and an Ha plan's counts are intact.
+
+## Settled while building phase 4
+
+- The plugin cannot tell which profile is a camera's primary. A template it finds in TS by name with no base is reported with `action` "adopted" and TS's values as `base`. Phase 1's `record_template_results` accepts "adopted" beside "inserted", "updated", "unchanged", "held" and "skipped", and applies Decision 5: it takes the values only for the primary profile and otherwise records the link with the gear values as base.
+- An inserted gear template's guid is `Stable("{NamePart(profile)}/gear-template/{NamePart(templateId)}")`. Phase 3's Python writer uses the same recipe.
+- In gear mode the stray list is every template of the profile that no gear template of any camera claims, so it can include templates of a linked camera this push did not cover. The editor shows it as is.
+- Sync All posts no fingerprint when no camera is connected, so a daytime sync never unlinks the camera.
+- A wheel list of null means "not given" and keeps today's behaviour. An empty list means "wheel unknown" and skips rows on templates TS lacks. Production always sends the profile's slot list.
 
 ## Assumptions made
 
