@@ -467,7 +467,50 @@ export function gearButtonTitle(n) {
   return num(n) > 0 ? conflictTooltip(num(n)) : "";
 }
 
+// Put the count on the Gear button: replace any old badge and set the
+// tooltip. *btn* is the button element, or null when the page has none.
+export function refreshGearBadge(btn, n) {
+  if (!btn) return;
+  btn.querySelector(".gear-badge")?.remove();
+  btn.insertAdjacentHTML("beforeend", gearBadgeHtml(n));
+  btn.title = gearButtonTitle(n);
+}
+
+// What the page keeps of a GET /api/gear answer.
+export function gearFromResponse(g) {
+  return {
+    version: g.version || 2, telescopes: g.telescopes || [], cameras: g.cameras || [],
+    telescope_colours: g.telescope_colours || {},
+    rev: g.rev ?? 0, conflict_count: g.conflict_count || 0,
+    wheel_unlinked: g.wheel_unlinked || [], wheel_ambiguous: g.wheel_ambiguous || [],
+    tidy: g.tidy || {}, links_capable: g.links_capable || {},
+  };
+}
+
 // --- saving ---
+
+// A failed save, shown as a message. A 409 (gear changed on the server) says
+// so and offers Reload; the draft in *state.doc* is left exactly as it is.
+// *before* is the scan's wording for a failure that is not a 409.
+export function applySaveFailure(state, res, before = false) {
+  if (res.status === 409) state.message = { text: CONFLICT_MESSAGE, reload: true };
+  else state.message = { text: before ? `Couldn't save current edits before scanning: ${res.error}` : `Save failed: ${res.error}` };
+  return state;
+}
+
+// The Reload action: ask first (*ask* is confirm), and only on a yes fetch the
+// server's gear (*fetchGear* returns it) and replace the draft with it.
+// Returns whether it reloaded.
+export async function reloadDraft(state, ask, fetchGear) {
+  if (!ask("Reload gear from the server? Your unsaved edits will be lost.")) return false;
+  const gearNow = await fetchGear();
+  state.doc = JSON.parse(JSON.stringify({ telescopes: gearNow.telescopes || [], cameras: gearNow.cameras || [] }));
+  state.saved = JSON.parse(JSON.stringify(state.doc));
+  state.wheelUnlinked = gearNow.wheel_unlinked || [];
+  state.message = null;
+  state.openTemplate = null;
+  return true;
+}
 
 const SERVER_TEMPLATE_KEYS = ["status", "conflicts", "used_by", "note", "_new"];
 

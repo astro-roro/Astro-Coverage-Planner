@@ -12,6 +12,10 @@ import {
   CONFLICT_MESSAGE,
   PLUGIN_NOTE,
   addFilter,
+  applySaveFailure,
+  gearFromResponse,
+  refreshGearBadge,
+  reloadDraft,
   addTemplate,
   buildSavePayload,
   canonFilterName,
@@ -48,6 +52,16 @@ const P1 = "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7";
 const CAM = "zwo-asi6200mm-pro";
 
 const clone = o => JSON.parse(JSON.stringify(o));
+
+// Just enough of a button for refreshGearBadge: it holds the badges inserted.
+function fakeButton() {
+  const btn = {
+    badges: [], title: "",
+    querySelector: () => (btn.badges.length ? { remove: () => { btn.badges.length = 0; } } : null),
+    insertAdjacentHTML: (_where, html) => { if (html) btn.badges.push(html); },
+  };
+  return btn;
+}
 
 function editorState(over = {}) {
   const gear = clone(fixture.gear);
@@ -220,9 +234,39 @@ describe("U6: the 409 answer", () => {
     assert.match(html, /data-act="reload"/);
     assert.match(html, /value="Edited name"/);
   });
-  it("is wired so a 409 keeps the draft and Reload asks first", () => {
-    assert.match(appSrc, /res\.status === 409\s*\?\s*\{ text: CONFLICT_MESSAGE, reload: true \}/);
-    assert.match(appSrc, /case "reload":\s*\n\s*if \(!confirm\(/);
+  it("keeps the draft when the save comes back 409, and says so", () => {
+    const st = editorState();
+    camOf(st).name = "Edited name";
+    applySaveFailure(st, { ok: false, status: 409, error: "stale" });
+    assert.deepEqual(st.message, { text: CONFLICT_MESSAGE, reload: true });
+    assert.equal(camOf(st).name, "Edited name");
+    assert.notDeepEqual(st.doc, st.saved);
+    assert.match(gearEditorHtml(st), /value="Edited name"/);
+  });
+  it("words any other failure plainly, with no Reload", () => {
+    const st = editorState();
+    applySaveFailure(st, { ok: false, status: 500, error: "boom" });
+    assert.deepEqual(st.message, { text: "Save failed: boom" });
+    applySaveFailure(st, { ok: false, status: 500, error: "boom" }, true);
+    assert.equal(st.message.text, "Couldn't save current edits before scanning: boom");
+  });
+  it("Reload asks first, keeps the draft on a no, and replaces it on a yes", async () => {
+    const st = editorState();
+    camOf(st).name = "Edited name";
+    st.message = { text: CONFLICT_MESSAGE, reload: true };
+    let fetched = 0, asked = null;
+    const server = { telescopes: clone(fixture.gear.telescopes), cameras: clone(fixture.gear.cameras), wheel_unlinked: [] };
+    const fetchGear = async () => { fetched++; return server; };
+    assert.equal(await reloadDraft(st, q => { asked = q; return false; }, fetchGear), false);
+    assert.match(asked, /unsaved edits will be lost/);
+    assert.equal(fetched, 0);
+    assert.equal(camOf(st).name, "Edited name");
+    assert.ok(st.message);
+    assert.equal(await reloadDraft(st, () => true, fetchGear), true);
+    assert.equal(fetched, 1);
+    assert.equal(camOf(st).name, fixture.gear.cameras.find(c => c.id === CAM).name);
+    assert.deepEqual(st.doc, st.saved);
+    assert.equal(st.message, null);
   });
 });
 
@@ -410,11 +454,26 @@ describe("U15: the badge on the Gear button", () => {
     assert.ok(badge.includes(conflictTooltip(2)));
     assert.equal(gearBadgeHtml(0), "");
   });
-  it("is drawn on load, after a sync and after a save", () => {
-    assert.match(appSrc, /conflict_count: g\.conflict_count \|\| 0/);
-    assert.match(appSrc, /btn\.insertAdjacentHTML\("beforeend", gearBadgeHtml\(n\)\)/);
+  it("is redrawn from each answer: a sync that adds conflicts, then one that clears them", () => {
+    const btn = fakeButton();
+    refreshGearBadge(btn, gearFromResponse({ conflict_count: 3 }).conflict_count);
+    assert.deepEqual(btn.badges, [gearBadgeHtml(3)]);
+    assert.equal(btn.title, conflictTooltip(3));
+    refreshGearBadge(btn, gearFromResponse({ conflict_count: 1 }).conflict_count);
+    assert.deepEqual(btn.badges, [gearBadgeHtml(1)]);
+    refreshGearBadge(btn, gearFromResponse({}).conflict_count);
+    assert.deepEqual(btn.badges, []);
+    assert.equal(btn.title, "");
+    refreshGearBadge(null, 2);
+  });
+  it("reads the count from the gear answer", () => {
+    assert.equal(gearFromResponse({ conflict_count: 4, rev: 7 }).conflict_count, 4);
+    assert.equal(gearFromResponse({ conflict_count: 4, rev: 7 }).rev, 7);
+    assert.equal(gearFromResponse({}).conflict_count, 0);
+  });
+  it("is refreshed after a sync", () => {
+    // The sync calls loadGear, which ends in updateGearBadge; that call is in app.js.
     assert.match(appSrc, /if \(typeof loadGear === "function"\) await loadGear\(\);/);
-    assert.match(appSrc, /await loadPlans\(\);\s*\n\s*await loadGear\(\);\s*\n\}/);
   });
   it("is red", () => {
     assert.match(css.match(/\.gear-badge \{[^}]*\}/)[0], /background: #d64545/);

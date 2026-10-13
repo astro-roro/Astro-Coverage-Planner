@@ -702,8 +702,10 @@ import {
   duplicateCamera,
   duplicateTemplate as geDuplicateTemplate,
   findTemplate as geFindTemplate,
-  gearButtonTitle,
-  gearBadgeHtml,
+  applySaveFailure,
+  gearFromResponse,
+  refreshGearBadge,
+  reloadDraft,
   gearEditorHtml,
   newCamera,
   removeFilter as geRemoveFilter,
@@ -6303,13 +6305,7 @@ async function loadGear() {
   try {
     const r = await fetch("/api/gear");
     const g = await r.json();
-    gear = {
-      version: g.version || 2, telescopes: g.telescopes || [], cameras: g.cameras || [],
-      telescope_colours: g.telescope_colours || {},
-      rev: g.rev ?? 0, conflict_count: g.conflict_count || 0,
-      wheel_unlinked: g.wheel_unlinked || [], wheel_ambiguous: g.wheel_ambiguous || [],
-      tidy: g.tidy || {}, links_capable: g.links_capable || {},
-    };
+    gear = gearFromResponse(g);
   } catch { gear = { telescopes: [], cameras: [], telescope_colours: {}, rev: 0, conflict_count: 0, wheel_unlinked: [] }; }
   updateGearBadge();
 }
@@ -6319,10 +6315,7 @@ async function loadGear() {
 function updateGearBadge() {
   const btn = document.getElementById("planGear");
   if (!btn) return;
-  const n = gear.conflict_count || 0;
-  btn.querySelector(".gear-badge")?.remove();
-  btn.insertAdjacentHTML("beforeend", gearBadgeHtml(n));
-  btn.title = gearButtonTitle(n);
+  refreshGearBadge(btn, gear.conflict_count || 0);
 }
 
 // Merge telescopes/cameras discovered in the coverage manifest into gear.json.
@@ -7942,9 +7935,7 @@ function renderGearEditor() {
       renderPlanList();
       return;
     }
-    state.message = res.status === 409
-      ? { text: CONFLICT_MESSAGE, reload: true }
-      : { text: `Save failed: ${res.error}` };
+    applySaveFailure(state, res);
     render();
   }
 
@@ -7952,7 +7943,7 @@ function renderGearEditor() {
     // Persist any in-progress edits first so the scan merges into saved state.
     const res = await postGear(state.doc);
     if (!res.ok) {
-      state.message = res.status === 409 ? { text: CONFLICT_MESSAGE, reload: true } : { text: `Couldn't save current edits before scanning: ${res.error}` };
+      applySaveFailure(state, res, true);
       render();
       return;
     }
@@ -7985,12 +7976,7 @@ function renderGearEditor() {
       case "save": await save(); return;
       case "tab": state.tab = el.dataset.tab; state.menu = null; break;
       case "reload":
-        if (!confirm("Reload gear from the server? Your unsaved edits will be lost.")) return;
-        await loadGear();
-        state.doc = clone({ telescopes: gear.telescopes || [], cameras: gear.cameras || [] });
-        state.saved = clone(state.doc);
-        state.wheelUnlinked = gear.wheel_unlinked || [];
-        state.message = null; state.openTemplate = null;
+        if (!(await reloadDraft(state, confirm, async () => { await loadGear(); return gear; }))) return;
         if (!camOf(state.openCamera)) state.openCamera = state.doc.cameras[0]?.id || null;
         break;
       case "scan": await scanCoverage(); return;
