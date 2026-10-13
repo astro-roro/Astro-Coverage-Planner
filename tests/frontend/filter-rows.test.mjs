@@ -20,15 +20,20 @@ import {
 const css = readFileSync(new URL("../../static/style.css", import.meta.url), "utf8");
 const appSrc = readFileSync(new URL("../../static/app.js", import.meta.url), "utf8");
 
-const TEMPLATES = [
-  { id: 1, name: "R", filter: "R", default_exposure_s: 180 },
-  { id: 2, name: "R Stars", filter: "R", default_exposure_s: 15 },
-  { id: 3, name: "Ha", filter: "Ha", default_exposure_s: 300 },
-];
+// Gear version 3: each camera filter holds its templates, one starred.
+const T = (id, name, sub_s, starred = false) => ({ id, name, sub_s, starred });
 const CAMERA = {
+  id: "cam",
   name: "ZWO ASI6200MM Pro",
-  filters: { L: { default_sub_s: 120 }, R: {}, G: {}, B: {}, Ha: { ts_template_name: "Ha" } },
+  filters: {
+    L: { templates: [T("t-l", "L (ZWO ASI6200MM Pro)", 120, true)] },
+    R: { templates: [T("t-r", "R", 180, true), T("t-rs", "R Stars", 15)] },
+    G: { templates: [T("t-g", "G", 180, true)] },
+    B: { templates: [T("t-b", "B", 180, true)] },
+    Ha: { templates: [T("t-ha", "Ha", 300, true)] },
+  },
 };
+const TEMPLATES = [];
 
 function row(over = {}) {
   return {
@@ -49,9 +54,9 @@ describe("U1: a new plan", () => {
     assert.ok(!html.includes("fr-empty"));
     assert.ok(html.indexOf("fr-card") < html.indexOf("fr-add"));
   });
-  it("starts the side panel at 380 px", () => {
-    assert.equal(SIDE_PANEL_DEFAULT_W, 380);
-    assert.match(css, /--side-panel-w:\s*380px/);
+  it("starts the side panel at 420 px", () => {
+    assert.equal(SIDE_PANEL_DEFAULT_W, 420);
+    assert.match(css, /--side-panel-w:\s*420px/);
     assert.match(appSrc, /width: SIDE_PANEL_DEFAULT_W/);
   });
   it("starts a new plan with no rows", () => {
@@ -62,10 +67,11 @@ describe("U1: a new plan", () => {
 describe("U2: + Add filter", () => {
   it("picks the first unused filter and its usual template, goal 0", () => {
     const rows = [];
-    rows.push(newFilterRow({ rows, camera: CAMERA, templates: TEMPLATES, id: "a" }));
-    rows.push(newFilterRow({ rows, camera: CAMERA, templates: TEMPLATES, id: "b" }));
+    rows.push(newFilterRow({ rows, camera: CAMERA, id: "a" }));
+    rows.push(newFilterRow({ rows, camera: CAMERA, id: "b" }));
     assert.equal(rows[0].filter, "L");
     assert.equal(rows[0].template, "L (ZWO ASI6200MM Pro)");
+    assert.equal(rows[0].template_id, "t-l");
     assert.equal(rows[0].template_sub_s, 120);
     assert.equal(rows[1].filter, "R");
     assert.equal(rows[1].template, "R");
@@ -76,25 +82,28 @@ describe("U2: + Add filter", () => {
       assert.equal(rowProgress(r).right, "set a goal");
     }
   });
-  it("uses the camera's template when the list has it", () => {
-    const r = newFilterRow({ rows: [{ filter: "L" }, { filter: "R" }, { filter: "G" }, { filter: "B" }], camera: CAMERA, templates: TEMPLATES, id: "x" });
-    assert.equal(r.filter, "Ha");
-    assert.equal(r.template, "Ha");
+  it("starts on the filter's starred template, not the first", () => {
+    const cam = { name: "Cam", filters: { R: { templates: [T("a", "R Stars", 15), T("b", "R", 180, true)] } } };
+    const r = newFilterRow({ rows: [], camera: cam, id: "x" });
+    assert.equal(r.template, "R");
+    assert.equal(r.template_id, "b");
+    assert.equal(r.template_sub_s, 180);
   });
   it("falls back to the first filter once all are used", () => {
     const used = Object.keys(CAMERA.filters).map(filter => ({ filter }));
-    const r = newFilterRow({ rows: used, camera: CAMERA, templates: TEMPLATES, id: "x" });
+    const r = newFilterRow({ rows: used, camera: CAMERA, id: "x" });
     assert.equal(r.filter, "L");
   });
-  it("takes the camera's ts_template_name with no list, sub 300 by default", () => {
-    const cam = { name: "Cam", filters: { Ha: { ts_template_name: "Ha Narrow" } } };
-    const r = newFilterRow({ rows: [], camera: cam, templates: [], id: "x" });
-    assert.equal(r.template, "Ha Narrow");
+  it("with no gear template names one after the camera, sub 300", () => {
+    const cam = { name: "Cam", filters: { Ha: { templates: [] } } };
+    const r = newFilterRow({ rows: [], camera: cam, id: "x" });
+    assert.equal(r.template, "Ha (Cam)");
     assert.equal(r.template_sub_s, 300);
+    assert.ok(!("template_id" in r));
   });
-  it("starts a frame row when the usual template's sub is under 60 s", () => {
-    const cam = { name: "Cam", filters: { R: { ts_template_name: "R Stars" } } };
-    const r = newFilterRow({ rows: [], camera: cam, templates: TEMPLATES, id: "x" });
+  it("starts a frame row when the starred template's sub is under 60 s", () => {
+    const cam = { name: "Cam", filters: { R: { templates: [T("a", "R Stars", 15, true)] } } };
+    const r = newFilterRow({ rows: [], camera: cam, id: "x" });
     assert.equal(r.unit, "fr");
     assert.equal(r.target_frames, 0);
     assert.ok(!("target_hours" in r));
@@ -107,9 +116,11 @@ describe("U3: picking a template", () => {
     setRowTemplate(r, "R Stars", 15);
     assert.equal(r.unit, "fr");
     assert.equal(r.template_sub_s, 15);
-    const opts = templateOptions(r, TEMPLATES);
+    setRowTemplate(r, "R Stars", 15, "t-rs");
+    assert.equal(r.template_id, "t-rs");
+    const opts = templateOptions(r, CAMERA);
     assert.equal(opts.find(o => o.selected).label, "R Stars \u00b7 15 s");
-    assert.equal(opts[0].label, "R \u00b7 180 s");
+    assert.equal(opts[0].label, "R \u00b7 180 s \u2605");
   });
   it("sets 60 s or more to hours", () => {
     const r = row({ unit: "fr", template: "R Stars", template_sub_s: 15, target_frames: 0 });
@@ -166,7 +177,7 @@ describe("U5: removing a row", () => {
   });
 });
 
-describe("U9: the grid at 380 px and 300 px", () => {
+describe("U9: the grid at 420 px and 300 px", () => {
   const long = row({ template: "B Stars (ZWO ASI6200MM Pro)", filter: "B" });
   it("uses the four aligned columns", () => {
     assert.equal(CARD_GRID_COLUMNS, "22px 104px minmax(0, 1fr) 26px");
@@ -234,7 +245,7 @@ describe("U11: AAC figures", () => {
 
 describe("U12: no template list, no stray comma", () => {
   it("offers the current template and New template…", () => {
-    const opts = templateOptions(row({ template: "Ha (Cam)", template_sub_s: 300 }), []);
+    const opts = templateOptions(row({ template: "Ha (Cam)", template_sub_s: 300 }), { filters: {} });
     assert.deepEqual(opts.map(o => o.label), ["Ha (Cam) \u00b7 300 s", "New template\u2026"]);
     assert.equal(opts[0].selected, true);
   });
