@@ -500,6 +500,16 @@ class TestGearPost(Base):
         r = self.post_gear(rename_duo)
         self.assertEqual(r.status_code, 200, r.get_json())
 
+    def test_u14_the_editor_flag_clears_after_a_capable_post_for_another_profile(self):
+        """The server half of U14: the flag the editor reads drops once a profile that reports the camera is capable."""
+        self.seed_v3()
+        self.match(fingerprint(camera="ZWO ASI2600MM Pro", profile_id=None, slots=[]))
+        self.assertTrue(camera(self.get_gear(), "zwo-asi2600mm-pro")["template_edit_blocked"])
+        self.match(fingerprint(camera="ZWO ASI2600MM Pro", profile_id=P2, profile_name="Bar"))
+        self.assertTrue(camera(self.get_gear(), "zwo-asi2600mm-pro")["template_edit_blocked"])
+        app_module.set_links_capable(P2, ["templates", "repoint"])
+        self.assertFalse(camera(self.get_gear(), "zwo-asi2600mm-pro")["template_edit_blocked"])
+
     def test_g26_a_links_post_without_capabilities_clears_the_entry(self):
         self.seed_v3(capable=True)
         self.assertIn(P1, read_gear()["links_capable"])
@@ -609,6 +619,8 @@ class TestGearRoutes(Base):
         self.assertEqual(after["rev"], before["rev"] + 1)
         self.assertEqual(after["telescope_colours"], {"110GTX": "#ff8800"})
         self.assertEqual(after["cameras"], before["cameras"])
+        # The answer carries the new rev, so the editor's next save is not a 409.
+        self.assertEqual(r.get_json()["rev"], after["rev"])
 
     def conflicted(self, ts_sub=240):
         """Ha at 600 s in gear, 300 s at the last push, and edited to *ts_sub* in TS."""

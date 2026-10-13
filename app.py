@@ -4149,7 +4149,9 @@ def api_gear_telescope_colour():
     """Set or clear one telescope's colour. Body: {"name": str, "colour": "#rrggbb" | null}.
 
     A null colour removes the choice, so the telescope goes back to its
-    automatic colour. Returns the full colour map.
+    automatic colour. Returns the full colour map and, once gear is in the
+    version 3 shape, the new `rev` (the write bumps it, and a page holding
+    the old one would otherwise get a 409 on its next save).
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
@@ -4170,11 +4172,15 @@ def api_gear_telescope_colour():
                 return jsonify({"error": "too many telescope colours"}), 400
             colours[name] = colour.lower()
         gear["telescope_colours"] = colours
+        rev = None
         if gt.is_migrated(gear):
-            commit_gear(gear)
+            rev = commit_gear(gear)
         else:
             save_gear(gear)
-    return jsonify({"ok": True, "telescope_colours": colours})
+    out = {"ok": True, "telescope_colours": colours}
+    if rev is not None:
+        out["rev"] = rev
+    return jsonify(out)
 
 
 def _validate_plan_payload(payload: dict) -> str | None:
