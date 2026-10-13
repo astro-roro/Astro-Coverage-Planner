@@ -770,6 +770,25 @@ def _backup_plans_json() -> bool:
     return True
 
 
+_row_rewrite_backed_up: set = set()
+
+
+def _backup_before_row_rewrite() -> bool:
+    """plans.json backup ahead of the first gear-template row rewrite
+    (template_id, template_unresolved, renames, sub carries) in this process,
+    so spec section 11 Rollback can restore plans.json beside gear.json. Call
+    it only when rows will actually change. One backup per process and path,
+    holding the rows as they were before any rewrite. Returns False when the
+    copy could not be made."""
+    key = str(PLANS_PATH)
+    if key in _row_rewrite_backed_up:
+        return True
+    if not _backup_plans_json():
+        return False
+    _row_rewrite_backed_up.add(key)
+    return True
+
+
 def _maybe_migrate_draft_plans_to_active() -> None:
     """One-shot: every plan left as `state: "draft"` under the old meaning
     becomes `"active"`, the first time ACP loads plans.json after this
@@ -869,6 +888,11 @@ def _repair_row_templates() -> bool:
                                                   p.get("id"), True):
             changed = True
     if changed:
+        # The repair edited the cached rows in place; the file on disk still
+        # holds the old ones, so the backup taken here is the pre-rewrite copy.
+        if not _backup_before_row_rewrite():
+            logging.error("Not writing template ids into plan rows, because %s could not be backed up first", PLANS_PATH)
+            return False
         save_plans({**_plans_cache, "version": _plans_cache.get("version", 1), "plans": plans})
     return changed
 
@@ -3646,6 +3670,8 @@ def _carry_into_plans(renames: dict, subs: dict, row_ok=None) -> list[dict]:
             p["updated_at"] = datetime.now(timezone.utc).isoformat()
             changed = True
     if changed:
+        if not _backup_before_row_rewrite():
+            logging.error("Writing template changes into plan rows without a backup of %s", PLANS_PATH)
         save_plans({**data, "version": data.get("version", 1), "plans": plans})
     return sub_changes
 

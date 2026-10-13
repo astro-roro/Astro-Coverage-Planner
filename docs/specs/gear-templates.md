@@ -714,6 +714,11 @@ After phases 1 to 3 are deployed (the phase 4 plugin is already on Voyager), wit
 - Sync All posts no fingerprint when no camera is connected, so a daytime sync never unlinks the camera.
 - A wheel list of null means "not given" and keeps today's behaviour. An empty list means "wheel unknown" and skips rows on templates TS lacks. Production always sends the profile's slot list.
 
+## Settled after review
+
+- Any rewrite of plan rows by this feature (`template_id`, `template_unresolved`, M6 renames, sub carries) takes a `plans.json.bak-<stamp>` backup first, with the same naming as the other plans backups, so Rollback in section 11 can restore `plans.json` beside `gear.json`. It is taken once per process and path, just before the first write that actually changes rows, so it holds the rows as they were before any rewrite. A load that changes nothing writes no backup. If the backup cannot be made, the `template_id` repair does not write and retries on the next load.
+- A non-primary profile's pull compares its TS list with gear on every post and adds a note per differing field ("Bar: Ha offset is 10 in TS and -1 in gear"). It writes nothing to gear.
+
 ## Assumptions made
 
 1. The raw wheel slot names on Rohan's rig are L, R, G, B, H, O and S, in slots 0 to 6. Confirmed on 13 Oct 2026 from NINA's profile `9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7` on Voyager and the plugin's log line `filters [L, R, G, B, H, O, S]` from the 15:01 runs on 11 and 12 Oct.
