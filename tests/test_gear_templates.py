@@ -1104,6 +1104,32 @@ class TestPlanRows(Base):
         self.assertEqual([x["template_id"] for x in out], [ha["id"], oiii["id"]])
         self.assertEqual(out[1]["template"], "OIII")
 
+    def _plan_backups(self):
+        return sorted(app_module.PLANS_PATH.parent.glob("plans.json.bak-*"))
+
+    def test_a_row_rewrite_takes_a_plans_backup_with_the_old_rows(self):
+        doc = self.seed_v3()
+        ha = tpl(doc, CAM, "Ha", "Ha")
+        write_plans([plan("p1", [row("r1", "Ha", "Ha", None, 300)])])
+        app_module.load_plans()
+        self.assertEqual(read_plans()[0]["filter_rows"][0]["template_id"], ha["id"])
+        backups = self._plan_backups()
+        self.assertTrue(backups)
+        held = [json.loads(b.read_text(encoding="utf-8")) for b in backups]
+        self.assertTrue(all("template_id" not in d["plans"][0]["filter_rows"][0] for d in held))
+
+    def test_a_load_with_nothing_to_rewrite_writes_no_plans_backup(self):
+        doc = self.seed_v3()
+        write_plans([plan("p1", [row("r1", "Ha", "Ha", tpl(doc, CAM, "Ha", "Ha")["id"], 300)])])
+        app_module.load_plans()
+        before = self._plan_backups()
+        app_module._plans_cache = None
+        app_module._plans_cache_mtime = None
+        app_module.load_plans()
+        self.assertEqual(self._plan_backups(), before)
+        self.assertEqual(app_module.repair_plan_templates(), False)
+        self.assertEqual(self._plan_backups(), before)
+
     def test_g25_a_row_nothing_matches_is_flagged_not_guessed(self):
         self.seed_v3()
         write_plans([plan("p1", [row("r1", "R", "Q Stars", None, 15)])])
