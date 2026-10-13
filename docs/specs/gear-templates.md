@@ -717,6 +717,7 @@ After phases 1 to 3 are deployed (the phase 4 plugin is already on Voyager), wit
 ## Settled after review
 
 - Any rewrite of plan rows by this feature (`template_id`, `template_unresolved`, M6 renames, sub carries) takes a `plans.json.bak-<stamp>` backup first, with the same naming as the other plans backups, so Rollback in section 11 can restore `plans.json` beside `gear.json`. It is taken once per process and path, just before the first write that actually changes rows, so it holds the rows as they were before any rewrite. A load that changes nothing writes no backup. If the backup cannot be made, the `template_id` repair does not write and retries on the next load.
+- `_carry_into_plans` (renames and sub carries) logs an error and writes plans.json anyway when its plans backup cannot be made. It runs inside a gear commit, and refusing would leave gear and plans out of step: gear would carry the new names and subs while rows still held the old ones. The `template_id` repair is different, because it can wait for the next load, so it refuses and leaves both the cache and the file as they were on disk.
 - A non-primary profile's pull compares its TS list with gear on every post and adds a note per differing field ("Bar: Ha offset is 10 in TS and -1 in gear"). It writes nothing to gear.
 
 ## Assumptions made

@@ -1026,6 +1026,34 @@ class TestMigration(Base):
         self.assertEqual(read_gear()["rev"], 1)
         self.assertEqual(len(self.backups()), 1)
 
+    def test_load_gear_under_plans_lock_never_takes_gear_lock(self):
+        write_gear(v2_live())
+        taken = []
+
+        class Spy:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __enter__(self):
+                taken.append("GEAR_LOCK")
+                return self.inner.__enter__()
+
+            def __exit__(self, *a):
+                return self.inner.__exit__(*a)
+
+            def _is_owned(self):
+                return self.inner._is_owned()
+
+        with mock.patch.object(app_module, "GEAR_LOCK", Spy(app_module.GEAR_LOCK)):
+            with app_module.PLANS_LOCK:
+                g = app_module.load_gear()
+        self.assertEqual(taken, [])
+        self.assertFalse(g.get("templates_migrated"))
+        self.assertFalse(read_gear().get("templates_migrated"))
+        self.assertEqual(self.backups(), [])
+        # Outside PLANS_LOCK the lazy migration still runs.
+        self.assertTrue(app_module.load_gear().get("templates_migrated"))
+
     def test_m7_a_camera_with_no_filters(self):
         write_gear(v2_live())
         cam = camera(self.get_gear(), "asi-camera-1-as")
@@ -1116,6 +1144,27 @@ class TestPlanRows(Base):
         backups = self._plan_backups()
         self.assertTrue(backups)
         held = [json.loads(b.read_text(encoding="utf-8")) for b in backups]
+        self.assertTrue(all("template_id" not in d["plans"][0]["filter_rows"][0] for d in held))
+
+    def test_a_failed_backup_leaves_the_cache_and_file_as_on_disk(self):
+        doc = self.seed_v3()
+        ha = tpl(doc, CAM, "Ha", "Ha")
+        write_plans([plan("p1", [row("r1", "Ha", "Ha", None, 300)])])
+        app_module._row_rewrite_backed_up.discard(str(app_module.PLANS_PATH))
+        with mock.patch.object(app_module, "_backup_plans_json", return_value=False):
+            with self.assertLogs(level="ERROR"):
+                loaded = app_module.load_plans()
+            self.assertNotIn("template_id", loaded["plans"][0]["filter_rows"][0])
+            self.assertNotIn("template_id", read_plans()[0]["filter_rows"][0])
+            # A later save writes the cache; it must not carry rewritten rows.
+            app_module.save_plans({**app_module._plans_cache})
+        self.assertNotIn("template_id", read_plans()[0]["filter_rows"][0])
+        self.assertFalse(self._plan_backups())
+        # With a working backup the repair runs, and takes its backup first.
+        self.assertTrue(app_module.repair_plan_templates())
+        self.assertEqual(read_plans()[0]["filter_rows"][0]["template_id"], ha["id"])
+        held = [json.loads(b.read_text(encoding="utf-8")) for b in self._plan_backups()]
+        self.assertTrue(held)
         self.assertTrue(all("template_id" not in d["plans"][0]["filter_rows"][0] for d in held))
 
     def test_a_load_with_nothing_to_rewrite_writes_no_plans_backup(self):

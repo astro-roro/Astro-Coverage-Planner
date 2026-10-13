@@ -648,11 +648,18 @@ def _maybe_migrate_gear() -> None:
 
 def _load_gear_stored() -> dict:
     """The gear document as it is stored, migrated on first sight. Callers
-    must not change it; copy first."""
+    must not change it; copy first. A caller holding PLANS_LOCK (and not
+    GEAR_LOCK) gets an unmigrated file as stored, because the migration
+    takes GEAR_LOCK and the lock order forbids that from under PLANS_LOCK."""
     if not GEAR_PATH.exists():
         return {"version": 1, "presets": []}
     doc = _read_gear_file()
     if isinstance(doc, dict) and not doc.get("templates_migrated"):
+        if PLANS_LOCK._is_owned() and not GEAR_LOCK._is_owned():
+            # Code holding PLANS_LOCK never takes GEAR_LOCK (spec section 11).
+            # Serve the file as stored; startup and the GEAR_LOCK-first
+            # paths do the migration.
+            return doc
         with GEAR_LOCK:
             # Another thread may have migrated while this one waited.
             doc = _read_gear_file()
@@ -881,15 +888,17 @@ def _repair_row_templates() -> bool:
     if not gt.is_migrated(stored):
         return False
     cameras = {c.get("id"): c for c in stored.get("cameras") or [] if isinstance(c, dict)}
-    plans = _plans_cache.get("plans")
+    # Work on a copy: the cache and plans.json stay as they are on disk until
+    # the backup and the write have both succeeded.
+    plans = copy.deepcopy(_plans_cache.get("plans"))
     changed = False
     for p in plans if isinstance(plans, list) else []:
         if isinstance(p, dict) and fr.repair_rows(p.get("filter_rows"), cameras.get(p.get("camera_id") or ""),
                                                   p.get("id"), True):
             changed = True
     if changed:
-        # The repair edited the cached rows in place; the file on disk still
-        # holds the old ones, so the backup taken here is the pre-rewrite copy.
+        # The file on disk still holds the old rows, so the backup taken here
+        # is the pre-rewrite copy.
         if not _backup_before_row_rewrite():
             logging.error("Not writing template ids into plan rows, because %s could not be backed up first", PLANS_PATH)
             return False
