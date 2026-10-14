@@ -1254,6 +1254,11 @@ def classify_by_header(meta: dict, p: Path, size: int) -> str:
         # Everything else under full_masters/ is intermediate
         return "processed"
 
+    # WBPP's local normalization reference is one registered sub that it writes
+    # into the master folder, so the folder check below would call it a master.
+    if name.startswith("ln_reference_"):
+        return "processed"
+
     # Explicit master naming
     if name.startswith("full_master_") or name.startswith("nightly_master_") or name.startswith("master_"):
         return "master"
