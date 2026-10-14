@@ -204,7 +204,7 @@ export function mergeNights(have, got) {
     // was cut at its first page keeps the extra events already loaded.
     const byId = new Map((incoming.more ? cur.events : []).map(e => [e.id, e]));
     for (const e of incoming.events) byId.set(e.id, e);
-    const events = [...byId.values()].sort((a, b) => whenOf(a) - whenOf(b) || a.id - b.id);
+    const events = [...byId.values()].sort((a, b) => whenOf(b) - whenOf(a) || b.id - a.id);
     const extra = events.length - incoming.events.length;
     byNight.set(incoming.night, { night: incoming.night, events,
       more: Math.max(0, (incoming.more || 0) - Math.max(0, extra)) });

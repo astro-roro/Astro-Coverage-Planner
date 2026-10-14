@@ -1004,7 +1004,9 @@ def list_nights(*, nights: int, before: str | None) -> dict:
 
 def _night_events(conn, night: str, offset: int) -> tuple[list, int]:
     rows = conn.execute(
-        "SELECT * FROM events WHERE night = ? ORDER BY at_ts, id LIMIT ? OFFSET ?",
+        # Newest first, so the latest of the night is at the top and an older
+        # page follows it.
+        "SELECT * FROM events WHERE night = ? ORDER BY at_ts DESC, id DESC LIMIT ? OFFSET ?",
         (night, NIGHT_PAGE, offset)).fetchall()
     total = conn.execute("SELECT COUNT(*) FROM events WHERE night = ?", (night,)).fetchone()[0]
     return [_row_event(r) for r in rows], max(0, total - offset - len(rows))

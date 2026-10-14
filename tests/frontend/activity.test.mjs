@@ -155,7 +155,7 @@ describe("mergeNights", () => {
                  { night: "2026-10-12", more: 0, events: [row({ id: 3 })] }];
     const out = mergeNights(have, got);
     assert.deepEqual(out.map(n => n.night), ["2026-10-13", "2026-10-12"]);
-    assert.deepEqual(out[0].events.map(e => [e.id, e.title]), [[1, "new"], [2, "A title"]]);
+    assert.deepEqual(out[0].events.map(e => [e.id, e.title]), [[2, "A title"], [1, "new"]]);
   });
 });
 
@@ -169,7 +169,18 @@ describe("mergeNights with a complete refetch", () => {
   it("keeps loaded events when the refetch is only the first page of a long night", () => {
     const have = [{ night: "2026-10-13", more: 0, events: [row({ id: 1 }), row({ id: 201 })] }];
     const got = [{ night: "2026-10-13", more: 50, events: [row({ id: 1 })] }];
-    assert.deepEqual(mergeNights(have, got)[0].events.map(e => e.id), [1, 201]);
+    assert.deepEqual(mergeNights(have, got)[0].events.map(e => e.id), [201, 1]);
+  });
+});
+
+describe("mergeNights order", () => {
+  it("puts the newest event of a night first", () => {
+    const got = [{ night: "2026-10-13", more: 0, events: [
+      row({ id: 1, at: "2026-10-13T19:00:00+11:00" }),
+      row({ id: 2, at: "2026-10-14T03:00:00+11:00" }),
+      row({ id: 3, at: "2026-10-13T23:00:00+11:00" })] }];
+    const have = [{ night: "2026-10-13", more: 0, events: [row({ id: 9 })] }];
+    assert.deepEqual(mergeNights(have, got)[0].events.map(e => e.id), [2, 3, 1]);
   });
 });
 
