@@ -621,6 +621,8 @@ import {
   withTimeout,
 } from "./init-error.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
+import { ACTIVITY_PANEL_W } from "./activity.mjs";
+import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
@@ -5777,17 +5779,27 @@ function positionCatTooltip() {
 // recentres when the panel opens, closes, is resized or changes tab.
 // Open/closed, tab and width are remembered under SIDE_PANEL_KEY.
 const SIDE_PANEL_KEY = "acp.sidePanel.v1";
-const SIDE_PANEL_TABS = ["main", "filters", "library"];
+const SIDE_PANEL_TABS = ["main", "filters", "library", "activity"];
 const SIDE_PANEL_MIN_W = 300;
 const SIDE_PANEL_MAX_W = 760;
-const sidePanelState = { open: true, tab: "main", width: SIDE_PANEL_DEFAULT_W };
+// Activity keeps its own width: rows carry paths and links, so it opens wider
+// than the 380 px the other tabs use.
+const sidePanelState = { open: true, tab: "main", width: SIDE_PANEL_DEFAULT_W, activityWidth: ACTIVITY_PANEL_W };
+let activityUi = null;
+
+function widthKey(tab) {
+  return tab === "activity" ? "activityWidth" : "width";
+}
 
 function loadSidePanelState() {
   try {
     const s = JSON.parse(localStorage.getItem(SIDE_PANEL_KEY) || "{}") || {};
     if (typeof s.open === "boolean") sidePanelState.open = s.open;
-    if (SIDE_PANEL_TABS.includes(s.tab)) sidePanelState.tab = s.tab;
+    if (SIDE_PANEL_TABS.includes(s.tab) && document.querySelector(`.side-tab[data-tab="${s.tab}"]`)) {
+      sidePanelState.tab = s.tab;
+    }
     if (Number.isFinite(s.width)) sidePanelState.width = s.width;
+    if (Number.isFinite(s.activityWidth)) sidePanelState.activityWidth = s.activityWidth;
   } catch { /* localStorage disabled or bad JSON, keep defaults */ }
 }
 
@@ -5806,6 +5818,7 @@ function clampSidePanelWidth(w) {
 function sidePanelTitle(tab) {
   if (tab === "filters") return "Map filters";
   if (tab === "library") return "Library";
+  if (tab === "activity") return "Activity";
   return planningMode ? "Plans" : "Targets";
 }
 
@@ -5814,7 +5827,8 @@ function applySidePanel() {
   if (!panel) return;
   const { open, tab } = sidePanelState;
   panel.hidden = !open;
-  panel.style.setProperty("--side-panel-w", `${clampSidePanelWidth(sidePanelState.width)}px`);
+  panel.style.setProperty("--side-panel-w", `${clampSidePanelWidth(sidePanelState[widthKey(tab)])}px`);
+  panel.classList.toggle("is-activity", tab === "activity");
   for (const sec of panel.querySelectorAll(".side-tab")) sec.hidden = sec.dataset.tab !== tab;
   for (const btn of document.querySelectorAll("#panelRail .rail-btn")) {
     btn.setAttribute("aria-pressed", String(open && btn.dataset.tab === tab));
@@ -5826,6 +5840,7 @@ function applySidePanel() {
   const mainTip = document.getElementById("railMainTip");
   if (mainTip) mainTip.textContent = planningMode ? "Plans and projects" : "Targets in your archive";
   nudgeMapControls();
+  if (activityUi) activityUi.onTabShown(open && tab === "activity");
 }
 
 function openSidePanelTab(tab) {
@@ -5893,8 +5908,9 @@ function setupSidePanelResize() {
   let startX = 0, startW = 0;
   const onMove = e => {
     // The panel grows leftwards, so dragging left widens it.
-    sidePanelState.width = clampSidePanelWidth(startW + (startX - e.clientX));
-    panel.style.setProperty("--side-panel-w", `${sidePanelState.width}px`);
+    const key = widthKey(sidePanelState.tab);
+    sidePanelState[key] = clampSidePanelWidth(startW + (startX - e.clientX));
+    panel.style.setProperty("--side-panel-w", `${sidePanelState[key]}px`);
     nudgeMapControls();
   };
   const onUp = () => {
@@ -5917,8 +5933,9 @@ function setupSidePanelResize() {
   handle.addEventListener("keydown", e => {
     const step = e.shiftKey ? 64 : 16;
     const w = panel.getBoundingClientRect().width;
-    if (e.key === "ArrowLeft") sidePanelState.width = clampSidePanelWidth(w + step);
-    else if (e.key === "ArrowRight") sidePanelState.width = clampSidePanelWidth(w - step);
+    const key = widthKey(sidePanelState.tab);
+    if (e.key === "ArrowLeft") sidePanelState[key] = clampSidePanelWidth(w + step);
+    else if (e.key === "ArrowRight") sidePanelState[key] = clampSidePanelWidth(w - step);
     else return;
     e.preventDefault();
     saveSidePanelState();
@@ -5968,7 +5985,34 @@ function setupSidePanel() {
   applySidePanel();
 }
 
+// Open a plan in the editor from an Activity row, the way the map's own
+// "Open" menu item does.
+function activityOpenPlan(planId) {
+  const pl = plans.find(p => p.id === planId);
+  if (!pl) return;
+  const go = () => {
+    revealMainSidePanel();
+    if (!planningMode) setPlanningMode(true);
+    panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+    renderPlanEditor(pl);
+  };
+  if (panelMode === "plan-edit" && editingPlan?.id !== pl.id) requestNavigateAwayFromPlanEdit(go);
+  else if (panelMode !== "plan-edit") go();
+  else revealMainSidePanel();
+}
+
+function activityShowOnMap(ra, dec) {
+  panMapTo(ra, dec);
+  // On a phone the panel is a sheet over the map, so close it to show the sky.
+  if (window.matchMedia?.("(max-width: 640px)").matches) {
+    sidePanelState.open = false;
+    saveSidePanelState();
+    applySidePanel();
+  }
+}
+
 function init() {
+  activityUi = setupActivity({ openPlan: activityOpenPlan, showOnMap: activityShowOnMap });
   setupSidePanel();
 
   // Independent of everything below: don't let a slow or failed sky map
