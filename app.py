@@ -67,6 +67,7 @@ from pathlib import Path
 
 from flask import (Flask, Response, jsonify, redirect, render_template, request,
                    send_from_directory)
+from werkzeug.exceptions import HTTPException
 
 # Reconfigure stdout/stderr to UTF-8 so non-ASCII characters in log/print
 # output don't crash on Windows where the default console codec (cp1252)
@@ -88,6 +89,7 @@ except ImportError:
         "Install with `pip install mocpy>=0.13` to enable /api/moc/<id>."
     )
 
+import activity
 import filter_rows as fr
 import gear_templates as gt
 from gaps import candidates_in_moc, compute_gap_moc
@@ -189,16 +191,62 @@ GEAR_LOCK = threading.RLock()
 app.gear_lock = GEAR_LOCK
 
 
+# Activity events a route wants recorded wait here until PLANS_LOCK is let go,
+# so the SQLite write never holds up a plans.json save (docs/specs/activity-tab.md,
+# Storage). A thread that is not inside a plans route records straight away.
+_activity_pending = threading.local()
+
+
+def _run_activity(fn) -> None:
+    try:
+        if activity.enabled():
+            fn()
+    except Exception:
+        logging.exception("could not record an activity event")
+
+
+def _activity_later(fn) -> None:
+    calls = getattr(_activity_pending, "calls", None)
+    if calls is None:
+        _run_activity(fn)
+    else:
+        calls.append(fn)
+
+
 def _holds_plans_lock(fn):
     """Run a plans.json read-modify-write route under PLANS_LOCK. Looked up
-    per call, so a test can swap the lock."""
+    per call, so a test can swap the lock. Activity events the route queued
+    with _activity_later are recorded once the lock is released."""
     import functools
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with PLANS_LOCK:
-            return fn(*args, **kwargs)
+        outermost = getattr(_activity_pending, "calls", None) is None
+        if outermost:
+            _activity_pending.calls = []
+        try:
+            with PLANS_LOCK:
+                result = fn(*args, **kwargs)
+        except BaseException:
+            if outermost:
+                _activity_pending.calls = None
+            raise
+        if outermost:
+            calls, _activity_pending.calls = _activity_pending.calls, None
+            for call in calls:
+                _run_activity(call)
+        return result
     return wrapper
+
+
+def record_activity(**fields):
+    """ACP's own entry in the Activity tab. Extensions call it as
+    ``app.record_activity`` and skip when the attribute is missing."""
+    return activity.record(**fields)
+
+
+app.record_activity = record_activity
+activity.set_default_db_path(lambda: PLANS_PATH.with_name("activity.sqlite"))
 
 # NINA profiles that have reported a fingerprint. A real user has a handful.
 # The key is caller-supplied, so without a ceiling anyone on the LAN can grow
@@ -1740,8 +1788,15 @@ def save_gear(data: dict) -> None:
 def commit_gear(doc: dict) -> int:
     """Write a changed stored document with `rev` one higher and return the
     new rev. The caller holds GEAR_LOCK."""
+    before_gear = copy.deepcopy(_load_gear_stored()) if activity.enabled() else None
     doc["rev"] = int(doc.get("rev") or 0) + 1
     save_gear(doc)
+    if before_gear is not None:
+        after_gear = copy.deepcopy(doc)
+        night = activity.current_night()
+        _activity_later(lambda: activity.record_changes(
+            etype="gear_changed", key=f"gear_changed:{night}", night=night,
+            changes=activity.diff_gear(before_gear, after_gear), prefix="Gear: "))
     return doc["rev"]
 
 
@@ -2006,6 +2061,7 @@ def index():
         total_targets=m.get("total_targets", 0),
         total_hours=m.get("total_integration_hours", 0),
         scan_date=(m.get("scan_date") or "")[:10],
+        activity_enabled=activity.enabled(),
     )
 
 
@@ -4449,10 +4505,18 @@ def api_plans():
     payload.setdefault("created_at", now)
     payload.setdefault("last_synced_at", None)
     payload["updated_at"] = now
-    fr.keep_aac(payload, next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None))
+    previous = next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None)
+    before = copy.deepcopy(previous) if previous is not None and activity.enabled() else None
+    fr.keep_aac(payload, previous)
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    if activity.enabled():
+        after = copy.deepcopy(payload)
+        if previous is None:
+            _activity_later(lambda: _record_plan_created(after))
+        else:
+            _activity_later(lambda: _record_plan_edit(before, after))
     return jsonify(payload), 201
 
 
@@ -4490,8 +4554,11 @@ def api_plan(plan_id: str):
     if request.method == "GET":
         return jsonify(_with_goals_view(plans[idx]))
     if request.method == "DELETE":
-        plans.pop(idx)
+        gone = plans.pop(idx)
         save_plans({**data, "version": data.get("version", 1), "plans": plans})
+        if activity.enabled():
+            gone = copy.deepcopy(gone)
+            _activity_later(lambda: _record_plan_deleted(gone))
         return ("", 204)
     payload = request.get_json(silent=True) or {}
     payload["id"] = plan_id  # URL is authoritative; validator runs after
@@ -4499,6 +4566,8 @@ def api_plan(plan_id: str):
     if err:
         return jsonify({"error": err}), 400
     existing = plans[idx]
+    # What the plan was as loaded (already healed), for the Activity diff.
+    before = copy.deepcopy(existing) if activity.enabled() else None
     payload["guid"] = existing.get("guid") or str(uuid.uuid4())
     payload["created_at"] = existing.get("created_at") or datetime.now(timezone.utc).isoformat()
     payload.setdefault("last_synced_at", existing.get("last_synced_at"))
@@ -4507,7 +4576,33 @@ def api_plan(plan_id: str):
     fr.keep_aac(payload, existing)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    if before is not None:
+        after = copy.deepcopy(payload)
+        _activity_later(lambda: _record_plan_edit(before, after))
     return jsonify(payload)
+
+
+def _record_plan_created(plan: dict) -> None:
+    activity.record(
+        type="plan_created", key=f"plan_created:{plan.get('id')}",
+        title=f"Plan created: {activity.plan_name(plan)}", refs=activity.plan_refs(plan))
+
+
+def _record_plan_deleted(plan: dict) -> None:
+    activity.record(
+        type="plan_deleted", key=f"plan_deleted:{plan.get('id')}",
+        title=f"Plan deleted: {activity.plan_name(plan)}", refs=activity.plan_refs(plan))
+
+
+def _record_plan_edit(before: dict, after: dict) -> None:
+    """One ``plan_edited`` per plan per night. ``before`` is the plan as it was
+    loaded and healed, ``after`` the plan as stored, so a heal or a migration
+    is never mistaken for an edit."""
+    changes = activity.diff_plans(before, after)
+    night = activity.current_night()
+    activity.record_changes(
+        etype="plan_edited", key=f"plan_edited:{after.get('id')}:{night}", night=night,
+        changes=changes, refs=activity.plan_refs(after))
 
 
 # The TS project's filter switch frequency and smart exposure order
@@ -4582,6 +4677,18 @@ def api_project_settings(project_name: str):
     if not group:
         return jsonify({"error": f"no plans in project {project_name!r}"}), 404
 
+    wanted = dict(order_settings)
+    if state is not None:
+        wanted["state"] = state
+    if priority is not None:
+        wanted["priority"] = priority
+    if has_minimum_time:
+        wanted["minimum_time_min"] = minimum_time_min
+    changes: dict = {}
+    for p in group:
+        for k, v in wanted.items():
+            if k not in changes and not activity.same_value(p.get(k), v):
+                changes[k] = {"from": p.get(k), "to": v}
     now = datetime.now(timezone.utc).isoformat()
     for p in group:
         if state is not None:
@@ -4593,6 +4700,12 @@ def api_project_settings(project_name: str):
         p.update(order_settings)
         p["updated_at"] = now
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    if changes:
+        night = activity.current_night()
+        _activity_later(lambda: activity.record_changes(
+            etype="project_settings", key=f"project_settings:{project_name}:{night}", night=night,
+            changes=changes, prefix=f"{project_name}: ", refs={"project": project_name},
+            extra_data={"plans": len(group)}))
     return jsonify({
         "ok": True,
         "project_name": project_name,
@@ -5202,6 +5315,9 @@ def api_plan_progress(plan_id: str):
 
     force = bool(payload.get("force"))
     updated, unknown, not_lowered = {}, [], []
+    tracking = activity.enabled()
+    hours_before = copy.deepcopy(fr.hours_by_filter(plan)) if tracking else {}
+    reached_before = {r.get("id"): _row_at_goal(r) for r in rows} if tracking else {}
     for name, template, cfg in reports:
         # "Antlia Ha" from the plugin lands on the plan's Ha rows.
         canon = canon_filter(name) or str(name)
@@ -5234,6 +5350,14 @@ def api_plan_progress(plan_id: str):
         plan["updated_at"] = datetime.now(timezone.utc).isoformat()
         plans[idx] = plan
         save_plans({**data, "version": data.get("version", 1), "plans": plans})
+
+    if tracking:
+        plan_copy = copy.deepcopy(plan)
+        hours_after = fr.hours_by_filter(plan_copy)
+        newly = [r for r in fr.rows_of(plan_copy)
+                 if _row_at_goal(r) and not reached_before.get(r.get("id"), False)]
+        _activity_later(lambda: _record_progress(plan_copy, hours_before, hours_after,
+                                                 list(unknown), newly))
 
     return jsonify({
         "ok": True,
@@ -5268,11 +5392,237 @@ def api_plan_accepted(plan_id: str):
     plan = plans[idx]
     canon_filter, _ = _filter_helpers()
     now = datetime.now(timezone.utc).isoformat()
+    complete_before = {r.get("id"): bool((r.get("aac") or {}).get("complete"))
+                       for r in fr.rows_of(plan)}
     unknown = fr.apply_accepted(plan, body, now, canon_filter, _template_names_for_row(plan))
     plans[idx] = plan
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
+    if activity.enabled():
+        plan_copy = copy.deepcopy(plan)
+        newly = [r for r in fr.rows_of(plan_copy)
+                 if (r.get("aac") or {}).get("complete") and not complete_before.get(r.get("id"))]
+        _activity_later(lambda: _record_accepted(plan_copy, newly))
     return jsonify({"ok": True, "unknown_rows": unknown,
                     "filed_through_night": body["filed_through_night"]})
+
+
+def _row_at_goal(row: dict) -> bool:
+    goal = fr.goal_hours(row)
+    actual = fr._num(row.get("actual_hours")) or 0.0
+    return goal > 0 and actual >= goal
+
+
+def _record_goal_reached(plan: dict, row: dict) -> None:
+    goal = fr.goal_hours(row)
+    filt = str(row.get("filter") or "")
+    activity.record(
+        type="goal_reached", key=f"goal:{plan.get('id')}:{filt}:{goal:g}",
+        title=f"{activity.plan_name(plan)}: {filt} reached its goal of {goal:g} h",
+        refs={**activity.plan_refs(plan), "filter": filt}, data={"goal_h": round(goal, 4)})
+
+
+def _record_progress(plan: dict, before: dict, after: dict, unknown: list, newly: list) -> None:
+    """The night's progress report for a plan, with the hours it added, plus an
+    open item for filters the plan has no goal for."""
+    night = activity.current_night()
+    plan_id = plan.get("id")
+    name = activity.plan_name(plan)
+
+    def merge(previous):
+        prior = ((previous or {}).get("data") or {}).get("filters") or {}
+        filters = {}
+        for fname, now in after.items():
+            was = (before.get(fname) or {}).get("actual_hours", now["actual_hours"])
+            carried = (prior.get(fname) or {}).get("delta_h")
+            carried = carried if isinstance(carried, (int, float)) else 0.0
+            filters[fname] = {"hours": round(now["actual_hours"], 4),
+                              "goal": round(now["target_hours"], 4),
+                              "delta_h": round(carried + now["actual_hours"] - was, 4)}
+        added = sum(f["delta_h"] for f in filters.values())
+        title = (f"{name}: +{added:.2f} h reported" if added > 0.005
+                 else f"{name}: progress reported, no new hours")
+        return {"title": title, "data": {"filters": filters},
+                "resolves": [] if unknown else [f"progress:{plan_id}"]}
+
+    activity.record_merged(
+        merge, type="progress_report", key=f"progress_report:{plan_id}:{night}", night=night,
+        refs=activity.plan_refs(plan), title="progress", data={})
+    if unknown:
+        activity.record(
+            type="progress_unknown", key=f"progress_unknown:{plan_id}:{night}", night=night,
+            severity="warn", needs_you=True, resolve_key=f"progress:{plan_id}",
+            title=f"{name}: a progress report named filters the plan has no goal for",
+            detail="Unknown: " + ", ".join(str(u) for u in unknown),
+            refs=activity.plan_refs(plan))
+    for row in newly:
+        _record_goal_reached(plan, row)
+
+
+def _record_accepted(plan: dict, newly: list) -> None:
+    night = activity.current_night()
+    rows = []
+    for r in fr.rows_of(plan):
+        block = r.get("aac")
+        if isinstance(block, dict):
+            rows.append({"filter": r.get("filter"), "template": r.get("template"),
+                         "accepted_frames": block.get("accepted_frames"),
+                         "accepted_h": round((block.get("accepted_seconds") or 0) / 3600.0, 3),
+                         "complete": bool(block.get("complete"))})
+    activity.record(
+        type="accepted_counts", key=f"accepted_counts:{plan.get('id')}:{night}", night=night,
+        title=f"{activity.plan_name(plan)}: AAC accepted counts updated ({len(rows)} rows)",
+        refs=activity.plan_refs(plan), data={"rows": rows[:40]})
+    for row in newly:
+        _record_goal_reached(plan, row)
+
+
+# ---------------------------------------------------------------------------
+# Activity tab (docs/specs/activity-tab.md)
+#
+# The storage and the rules live in activity.py. These routes only check the
+# gate-adjacent things (the token for posting, the Origin for browser writes),
+# parse the request and hand over. ACP_ACTIVITY=off makes every one a 404.
+# ---------------------------------------------------------------------------
+
+def _activity_route(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not activity.enabled():
+            return jsonify({"error": "not found"}), 404
+        try:
+            return fn(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception:
+            logging.exception("activity store failed")
+            return jsonify({"error": "the activity store is unavailable"}), 503
+    return wrapper
+
+
+def _origin_refused():
+    """A browser write whose Origin is another site is refused. A caller with
+    no Origin header (the plugin, curl, a test) is not a browser."""
+    origin = request.headers.get("Origin")
+    if not origin:
+        return None
+    seen = urllib.parse.urlsplit(origin).netloc.lower()
+    allowed = {request.host.lower()}
+    forwarded = request.headers.get("X-Forwarded-Host", "").split(",")[0].strip().lower()
+    if forwarded:
+        allowed.add(forwarded)
+    if seen in allowed:
+        return None
+    return jsonify({"error": "cross-origin write refused"}), 403
+
+
+@app.route("/api/activity/events", methods=["POST"])
+@_activity_route
+def api_activity_events():
+    if not _api_auth_token():
+        return jsonify({"error": "ACP needs an access token set before it accepts activity events"}), 403
+    # Above the 1 MB every other route has; set before the body is read.
+    request.max_content_length = activity.MAX_BODY_BYTES
+    body = request.get_json(silent=True)
+    events = body.get("events") if isinstance(body, dict) else None
+    if not isinstance(events, list):
+        return jsonify({"error": "the body must be {\"events\": [...]}"}), 400
+    if len(events) > activity.MAX_BATCH:
+        return jsonify({"error": f"more than {activity.MAX_BATCH} events in one batch",
+                        "max_events": activity.MAX_BATCH}), 413
+    return jsonify(activity.ingest(events))
+
+
+def _int_arg(name: str, default: int):
+    raw = request.args.get(name)
+    if raw is None or raw == "":
+        return default, None
+    try:
+        return int(raw), None
+    except ValueError:
+        return None, (jsonify({"error": f"{name} must be an integer"}), 400)
+
+
+@app.route("/api/activity")
+@_activity_route
+def api_activity():
+    nights, bad = _int_arg("nights", activity.DEFAULT_NIGHTS)
+    if bad:
+        return bad
+    if nights < 1:
+        return jsonify({"error": "nights must be 1 or more"}), 400
+    before = request.args.get("before") or None
+    if before is not None and not activity.valid_night(before):
+        return jsonify({"error": "before must be a night, YYYY-MM-DD"}), 400
+    return jsonify(activity.list_nights(nights=min(nights, activity.MAX_NIGHTS), before=before))
+
+
+@app.route("/api/activity/night/<night>")
+@_activity_route
+def api_activity_night(night: str):
+    if not activity.valid_night(night):
+        return jsonify({"error": "night must be YYYY-MM-DD"}), 400
+    offset, bad = _int_arg("offset", 0)
+    if bad:
+        return bad
+    if offset < 0:
+        return jsonify({"error": "offset must be 0 or more"}), 400
+    return jsonify(activity.night_page(night, offset))
+
+
+@app.route("/api/activity/summary")
+@_activity_route
+def api_activity_summary():
+    return jsonify(activity.summary())
+
+
+@app.route("/api/activity/seen", methods=["POST"])
+@_activity_route
+def api_activity_seen():
+    refused = _origin_refused()
+    if refused:
+        return refused
+    # Whatever time the client sends is ignored: last_seen is the server's.
+    return jsonify({"last_seen": activity.mark_seen()})
+
+
+@app.route("/api/activity/events/<int:event_id>/dismiss", methods=["POST"])
+@_activity_route
+def api_activity_dismiss(event_id: int):
+    refused = _origin_refused()
+    if refused:
+        return refused
+    if not activity.set_dismissed(event_id, True):
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/activity/events/<int:event_id>/restore", methods=["POST"])
+@_activity_route
+def api_activity_restore(event_id: int):
+    refused = _origin_refused()
+    if refused:
+        return refused
+    if not activity.set_dismissed(event_id, False):
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/activity/prefs", methods=["GET", "PUT"])
+@_activity_route
+def api_activity_prefs():
+    if request.method == "GET":
+        return jsonify(activity.get_prefs())
+    refused = _origin_refused()
+    if refused:
+        return refused
+    body = request.get_json(silent=True)
+    chips = body.get("chips") if isinstance(body, dict) else None
+    if not isinstance(chips, dict) or any(
+            not isinstance(v, bool) for k, v in chips.items() if k in activity.DEFAULT_CHIPS):
+        return jsonify({"error": "chips must be an object of chip id to true or false"}), 400
+    return jsonify(activity.set_prefs(chips))
 
 
 def _build_live_document() -> dict:
@@ -6163,6 +6513,7 @@ def run_scan_now(trigger: str = "cron") -> bool:
         _scan_state["last_finish"] = None
         _scan_state["last_trigger"] = trigger
     code = None
+    before = _manifest_snapshot() if activity.enabled() else None
     try:
         code = _run_scan_subprocess([sys.executable, str(SCAN_SCRIPT_PATH)])
     except Exception as e:
@@ -6173,7 +6524,97 @@ def run_scan_now(trigger: str = "cron") -> bool:
             _scan_state["running"] = False
             _scan_state["last_finish"] = datetime.now().isoformat(timespec="seconds")
             _scan_state["last_exit_code"] = code
+    _run_activity(lambda: _record_scan_activity(before, code == 0))
     return True
+
+
+def _manifest_snapshot() -> dict | None:
+    """Hours per filter for each target, read straight from the manifest file
+    (not the cache, which can hold the old file for a second). None when
+    there is no readable manifest to compare against."""
+    try:
+        doc = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    out: dict = {}
+    for t in (doc.get("targets") if isinstance(doc, dict) else None) or []:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("target_id"))
+        filters = {}
+        for fname, d in (t.get("filters") or {}).items():
+            hours = d.get("total_hours") if isinstance(d, dict) else None
+            if isinstance(hours, (int, float)) and not isinstance(hours, bool):
+                filters[str(fname)] = float(hours)
+        out[tid] = {"name": ", ".join(str(o) for o in (t.get("objects") or [])) or tid,
+                    "filters": filters}
+    return out
+
+
+def _carried(previous, *path) -> float:
+    node = (previous or {}).get("data") or {}
+    for step in path:
+        node = node.get(step) if isinstance(node, dict) else None
+    return float(node) if isinstance(node, (int, float)) and not isinstance(node, bool) else 0.0
+
+
+def _record_scan_activity(before: dict | None, ok: bool) -> None:
+    night = activity.current_night()
+    if not ok:
+        with SCAN_STATE_LOCK:
+            kind = _scan_state.get("last_error_kind") or "crashed"
+            message = _scan_state.get("last_error") or _SCAN_ERROR_MESSAGES["crashed"]
+
+        def merge_error(previous):
+            return {"title": f"Coverage scan failed: {message}"[:200],
+                    "data": {"kind": kind, "failures": int(_carried(previous, "failures")) + 1}}
+
+        activity.record_merged(
+            merge_error, type="scan_error", key=f"scan_error:{night}", night=night,
+            severity="error", needs_you=True, resolve_key="scan", title="scan", data={})
+        return
+
+    after = _manifest_snapshot()
+    added = removed = 0
+    moves = []
+    if before is not None and after is not None:
+        added = len(set(after) - set(before))
+        removed = len(set(before) - set(after))
+        for tid in set(before) | set(after):
+            old = (before.get(tid) or {}).get("filters", {})
+            new = (after.get(tid) or {}).get("filters", {})
+            name = (after.get(tid) or before.get(tid) or {}).get("name", tid)
+            for fname in set(old) | set(new):
+                delta = new.get(fname, 0.0) - old.get(fname, 0.0)
+                if abs(delta) > activity.MOVED_H:
+                    moves.append((tid, name, fname, old.get(fname, 0.0), new.get(fname, 0.0), delta))
+
+    def merge_finished(previous):
+        total_added = int(_carried(previous, "added")) + added
+        total_removed = int(_carried(previous, "removed")) + removed
+        bits = [f"{total_added} target{'s' if total_added != 1 else ''} added",
+                f"{total_removed} removed"] if total_added or total_removed else ["no target changes"]
+        return {"title": "Coverage scan finished: " + ", ".join(bits),
+                "data": {"scans": int(_carried(previous, "scans")) + 1,
+                         "added": total_added, "removed": total_removed},
+                "resolves": ["scan"]}
+
+    activity.record_merged(merge_finished, type="scan_finished", key=f"scan_finished:{night}",
+                           night=night, title="scan", data={})
+    for tid, name, fname, was, now, delta in moves:
+        def merge_move(previous, name=name, fname=fname, was=was, now=now, delta=delta):
+            prior = (previous or {}).get("data") or {}
+            total = _carried(previous, "delta_h") + delta
+            if abs(total) <= activity.MOVED_H:
+                return None
+            first = prior.get("from_h", was)
+            return {"title": f"{name}: {fname} {total:+.2f} h",
+                    "data": {"filter": fname, "delta_h": round(total, 4),
+                             "from_h": first, "to_h": round(now, 4)}}
+
+        activity.record_merged(
+            merge_move, type="coverage_changed", key=f"coverage:{tid}:{fname}:{night}",
+            night=night, refs={"target": name, "filter": fname}, title="move", data={})
 
 
 def _next_fire_time(expr: str, now: datetime) -> datetime:

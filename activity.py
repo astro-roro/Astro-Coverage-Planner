@@ -803,12 +803,45 @@ def diff_plans(before: dict | None, after: dict | None) -> dict:
     return changes
 
 
+def diff_gear(before: dict | None, after: dict | None) -> dict:
+    """Field -> {from, to} for telescopes and cameras added, removed or edited."""
+    changes: dict = {}
+    for kind, label in (("telescopes", "telescope"), ("cameras", "camera")):
+        def index(doc):
+            items = (doc or {}).get(kind) or []
+            return {str(i.get("id")): i for i in items if isinstance(i, dict)}
+        b, a = index(before), index(after)
+        for gid in sorted(set(b) | set(a)):
+            item = a.get(gid) or b.get(gid)
+            name = str(item.get("name") or gid)
+            if gid not in b:
+                changes[f"{label}:{name}"] = {"from": None, "to": "present"}
+                continue
+            if gid not in a:
+                changes[f"{label}:{name}"] = {"from": "present", "to": None}
+                continue
+            fb: dict = {}
+            fa: dict = {}
+            for src, dst in ((b[gid], fb), (a[gid], fa)):
+                for k, v in src.items():
+                    if k != "id":
+                        _flatten(k, v, dst)
+            for field in sorted(set(fb) | set(fa)):
+                if not _same(fb.get(field), fa.get(field)):
+                    changes[f"{label}:{name}.{field}"] = {"from": fb.get(field), "to": fa.get(field)}
+    return changes
+
+
 def _default_target_class(plan: dict) -> str:
     try:
         import filter_rows as fr
         return fr.target_class_of(plan)
     except Exception:
         return "survey"
+
+
+def same_value(a, b) -> bool:
+    return _same(a, b)
 
 
 def _same(a, b) -> bool:
@@ -846,8 +879,18 @@ def _label(key: str) -> str:
             return f"{parts[1]} row"
         return f"{parts[1]} {_ROW_LABELS.get(parts[2], parts[2].replace('_', ' '))}"
     if ":" in key:
-        return key.replace(":", " ", 1)
+        kind, _, rest = key.partition(":")
+        name, _, field = rest.partition(".")
+        return f"{kind} {name}" + (f" {field.replace('_', ' ')}" if field else "")
     return key.replace("_", " ")
+
+
+def _presence(ch: dict) -> str | None:
+    if ch["from"] is None and ch["to"] == "present":
+        return "added"
+    if ch["from"] == "present" and ch["to"] is None:
+        return "removed"
+    return None
 
 
 def changes_title(changes: dict, *, limit: int = 4) -> str:
@@ -855,8 +898,9 @@ def changes_title(changes: dict, *, limit: int = 4) -> str:
     parts = []
     for key, ch in changes.items():
         label = _label(key)
-        if key.startswith("rows.") and key.count(".") == 1:
-            parts.append(f"{'added' if ch['from'] is None else 'removed'} {label}")
+        presence = _presence(ch)
+        if presence:
+            parts.append(f"{presence} {label}")
             continue
         unit = " h" if key.endswith(".target_hours") or key.endswith(".actual_hours") else ""
         parts.append(f"{label} {_fmt(key, ch['from'])} to {_fmt(key, ch['to'])}{unit}")
