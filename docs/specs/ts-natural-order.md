@@ -303,6 +303,6 @@ Back up `schedulerdb.sqlite` first, with NINA closed.
 6. The 30-minute window for a recent frame is a chosen value, not one derived from TS.
 7. TS writes plan rows outside a container run, by the paths listed under "Why only never-shot targets". The journal mode on the rig is "delete", the rollback journal, so a rolled-back push leaves the file's bytes unchanged.
 
-## Open questions
+## Decided
 
-1. Nightly walk restart. The order spec deletes a target's cadence rows on every push, but only for targets with override rows. A target with frames keeps that behaviour. A permuted target has no override rows, and once it is shot at switch frequency N the basic selector's cadence only moves forward. Should the push delete the cadence rows of every permuted target with N above 0, each night?
+1. Nightly walk restart. A permuted target has no override rows, so the push does not delete its cadence rows each night. Target Scheduler then walks its cadence the way it does for any target built by hand, carrying on from where the last night stopped. A target with frames keeps the order spec's nightly reset, because it still has override rows. (Decided 14 Oct 2026: follow Target Scheduler's own behaviour wherever no override is involved.)
