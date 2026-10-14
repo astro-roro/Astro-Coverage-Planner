@@ -63,6 +63,8 @@ Three targets have override orders in the scratch copy of Voyager's database fro
 
 ### What the sync writes so TS shoots in ACP's order
 
+> Superseded in part by `docs/specs/ts-natural-order.md` (14 October 2026). For a never-shot target the writer no longer writes override rows. It moves plan contents between the target's slots, so the next paragraph's rationale (that changing `Id` breaks `acquiredimage.exposureId`) applies only to targets that have frames. Those still get the rows described here.
+
 There is no column for plan order in TS. Natural order follows `Id`, and changing `Id` would break `acquiredimage.exposureId` and every pinned id in ACP's `ts_links`. So the order goes into the override rows. The sync writes them so they reproduce the switch frequency and the dithering TS would otherwise do itself.
 
 For each target, the sync builds the override rows from ACP's order:
@@ -379,6 +381,8 @@ The base project block (`state.py` `_project_snapshot`, `TsState.cs`) gains `fil
 
 ## 5. Filter order
 
+> Superseded in part by `docs/specs/ts-natural-order.md`. The "Write" and "Refresh" outcomes in the decision table below apply to a target that has frames. On a never-shot target the same outcomes permute the plans and delete the override rows.
+
 ### Behaviour
 
 The order is the order of `filter_rows`. There is no separate order field. Every panel of a mosaic gets the same order.
@@ -530,6 +534,8 @@ The oracle is checked against TS's own tests. `tests/test_ts_order_oracle.py` po
 The oracle is a port, so it cannot prove TS itself agrees. Test O9 below is the check against TS itself.
 
 ### Scenarios
+
+> Superseded in part by `docs/specs/ts-natural-order.md`. O1, O3, O3b, O3e, O3g, O4, O4b, O4c, O4d, O7, O3k, R3b and F1 expect generated override rows on a target with no frames. For a never-shot target they now expect permuted plans and no override rows. The golden scenarios that move are listed in that spec.
 
 Unless a test says otherwise, the fixture is one plan "M42" on a fresh database at `user_version` 28. It has two rows, Ha then OIII, each with template sub 300 s and a 4-frame goal. The grader is on, the switch frequency is 0, smart order is off and `ditherevery` is 0. Natural order is Ha then OIII.
 
