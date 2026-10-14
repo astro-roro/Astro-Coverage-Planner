@@ -48,7 +48,7 @@ ACP compares content as canonical JSON (sorted keys, numbers as sent). Identical
 
 ### Resolving
 
-Every key named in any event's `resolves` is written to a `resolutions` table as `(resolve_key, resolved_by, at)`. A needs-you event is closed when a resolution for its `resolve_key` exists with `at` later than the event's last content change. This works in either arrival order: a resolve that arrives before its item still closes it. Resolving a key with no matching item stores the resolution and changes nothing else.
+Every key named in any event's `resolves` is written to a `resolutions` table as `(resolve_key, resolved_by, at)`. A needs-you event is closed when a resolution for its `resolve_key` exists with `at` later than the event's last content change. This works in either arrival order: a resolve that arrives before its item still closes it, provided both carry their real `at`. So a posted event with `needs_you` true or a non-empty `resolves` must include `at`, and POST rejects it otherwise with an error naming `at`. ACP's own events always set `at`. Resolving a key with no matching item stores the resolution and changes nothing else.
 
 A needs-you event is open while it has no qualifying resolution, no `dismissed_at`, and `expires_at` is empty or in the future. Dismiss sets `dismissed_at`; restore clears it.
 
@@ -111,7 +111,7 @@ A path matching no entry is shown as `(unmapped) <basename>` in both folder fiel
 
 ## API
 
-All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or the session cookie. GET routes follow the same gate as every other `/api` GET. One shared token for the plugin, AAC and the browser is an accepted risk on a home LAN. Browser POSTs (`seen`, `dismiss`, `restore`, `prefs`) also check that `Origin`, when present, matches the host, as ACP's cross-origin write guard already does.
+All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or the session cookie. GET routes follow the same gate as every other `/api` GET. One shared token for the plugin, AAC and the browser is an accepted risk on a home LAN. Browser POSTs (`seen`, `dismiss`, `restore`, `prefs`) also check that `Origin`, when present, matches the request's `Host` or `X-Forwarded-Host`, since production sits behind a reverse proxy. ACP had no such guard before this feature; this check is new.
 
 - `POST /api/activity/events` with `{ "events": [ ... ] }`. The route's body limit is 2 MiB and the batch limit is 100 events; either over is 413 and stores nothing. It answers `{ "stored", "updated", "unchanged", "stale", "rejected": [ { "key", "error" } ] }`. A bad event is rejected alone and the rest are stored. Clients never retry rejected events. The route answers 403 while `ACP_API_TOKEN` is unset, and rejects `source: "acp"`.
 - `GET /api/activity?nights=5&before=<night>` answers `{ "nights": [ { "night", "events": [...], "more": n } ], "next_before", "total_nights", "last_seen" }`. Nights are newest first and skip nights with no events. `nights` defaults to 5, is capped at 30, and a non-integer is 400. Within a night, events are ordered by `(at, id)` and capped at 200, with `more` counting the rest.
@@ -127,13 +127,13 @@ All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or th
 
 ACP exposes `app.record_activity(**fields)`, which calls `record()` with `source: "acp"`. The sync extension calls `getattr(app, "record_activity", None)` and skips when it is absent, so a newer extension still works on an older ACP.
 
-- **Plan created, deleted**: one event each, key `plan_created:<plan_id>` or `plan_deleted:<plan_id>`.
+- **Plan created, deleted**: one event each, key `plan_created:<plan_id>:<night>` or `plan_deleted:<plan_id>:<night>`, so a plan deleted and recreated on a later night records again.
 - **Plan edited**: type `plan_edited`, key `plan_edited:<plan_id>:<night>`. ACP diffs the stored plan before and after the PUT, ignoring `updated_at`, `guid`, `created_at`, `last_synced_at` and anything only a load-time heal or migration changed. The night's cumulative change set lives in `data.changes` (field to `{ from, to }`, where `from` stays the first value of the night) and merges on each save. The title is built from that set, such as "min altitude 20 to 30, priority Normal to High". A save that changes nothing records nothing. In the UI, consecutive rows with the same change across one project collapse into one line, such as "46 PNe Survey plans: min altitude 20 to 30".
 - **Project settings and gear**: `project_settings` and `gear_changed`, coalesced per night the same way.
 - **Send TS to ACP** (extension, `nina_ts_sync/upload_routes.py`): `ts_upload_received` when an upload arrives, then `ts_upload_applied` with the number of plans changed, or `ts_upload_discarded`.
 - **Rig synced** (extension, the `/links` route): `rig_synced`, key `rig_synced:<profile>:<night>`, one row per rig per night.
 - **Progress reports**: `progress_report`, key `progress_report:<plan_id>:<night>`, updated with hours per filter. Unknown filters in a report post a separate `progress_unknown`, key `progress_unknown:<plan_id>:<night>`, resolve key `progress:<plan_id>`. A later report with none unknown resolves it.
-- **Goal reached**: when a progress report or `POST /api/plans/<id>/accepted` takes a row to its goal, ACP records `goal_reached`, key `goal:<plan_id>:<filter>:<target_hours>`. Raising the goal later makes a new key, so reaching the new goal records again.
+- **Goal reached**: when a progress report or `POST /api/plans/<id>/accepted` takes a row to its goal, ACP records `goal_reached`, key `goal:<plan_id>:<row_id>:<target_hours as %g>`, so two rows of the same filter each record. Raising the goal later makes a new key, so reaching the new goal records again.
 - **AAC accepted counts**: `accepted_counts`, key `accepted_counts:<plan_id>:<night>`.
 - **Manifest scan**: on success, `scan_finished` (key `scan_finished:<night>`) with targets added and removed, resolving `scan`. Each target and filter whose hours moved by more than 0.01 h updates `coverage_changed`, key `coverage:<target>:<filter>:<night>`, whose `data.delta_h` accumulates over the night, so two scans of +0.25 h read as one row of "+0.50 h". On failure, `scan_error` (key `scan_error:<night>`, needs you, resolve key `scan`) carries the error kind ACP already classifies.
 
@@ -231,7 +231,7 @@ Phase 1, ACP (pytest, in `tests/test_activity.py` unless named):
 25. Editing a plan's min altitude from 20 to 30 records one `plan_edited` event titled with "min altitude 20 to 30". A second edit that night changing priority leaves one event whose `data.changes` holds both, with min altitude still from 20.
 26. A plan PUT that changes only `updated_at`, `guid`, `created_at` or `last_synced_at`, or where only a load-time heal differs, records nothing.
 27. A progress report naming a filter the plan lacks posts `progress_unknown` keyed `progress_unknown:<plan_id>:<night>` with resolve key `progress:<plan_id>`, and `summary.open` contains it. A later clean report resolves it.
-28. A progress report taking a row to its goal records one `goal_reached` keyed `goal:<plan_id>:<filter>:<target_hours>`, and a repeat records nothing. The same through `POST /api/plans/<id>/accepted`, in the fixture style of `tests/test_aac_accepted.py`.
+28. A progress report taking a row to its goal records one `goal_reached` keyed `goal:<plan_id>:<row_id>:<target_hours as %g>`, and a repeat records nothing. The same through `POST /api/plans/<id>/accepted`, in the fixture style of `tests/test_aac_accepted.py`.
 29. Two successful scans each adding 0.25 h of Ha to a target, with `_run_scan_subprocess` and `run_scan_now` monkeypatched as in `tests/test_scan_schedule.py`, leave one `coverage_changed` keyed `coverage:<target>:Ha:<night>` reading "+0.50 h".
 30. A failed scan records `scan_error` keyed `scan_error:<night>`, distinct from `scan_finished`, and the next successful scan resolves it.
 31. If the activity database cannot be opened, plan saves still return 200 and the failure is logged.
