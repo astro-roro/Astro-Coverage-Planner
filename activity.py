@@ -191,10 +191,11 @@ def valid_night(text) -> bool:
 _REDACT = "[redacted]"
 _SCRUBS = (
     (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=\-]+"), r"\1" + _REDACT),
-    (re.compile(r"(?i)\b(token\s*=\s*)[^\s&;,\"']+"), r"\1" + _REDACT),
-    (re.compile(r"(?i)\b(password\s*=\s*)[^\s&;,\"']+"), r"\1" + _REDACT),
+    # Any key that ends in token or password: access_token=, ACP_API_TOKEN=, db_password=.
+    (re.compile(r"(?i)\b([\w\-]*token\s*=\s*)[^\s&;,\"']+"), r"\1" + _REDACT),
+    (re.compile(r"(?i)\b([\w\-]*password\s*=\s*)[^\s&;,\"']+"), r"\1" + _REDACT),
     (re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^\s/@:]+:[^\s/@]+@"), r"\1" + _REDACT + "@"),
-    (re.compile(r"(?i)\b[A-Za-z]:[\\/]Users[\\/][^\\/\s]+[\\/]"), "~\\\\"),
+    (re.compile(r"(?i)\b[A-Za-z]:[\\/]Users[\\/][^\\/\r\n]+[\\/]"), "~\\\\"),
     (re.compile(r"/Users/[^/\s]+/"), "~/"),
 )
 
@@ -408,6 +409,10 @@ def _clean_master(raw) -> dict:
     return out
 
 
+def needs_you_in(raw: dict) -> bool:
+    return raw.get("needs_you") is True
+
+
 def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
     """A clean event from what a sender gave, or ValueError saying why not."""
     if not isinstance(raw, dict):
@@ -452,7 +457,12 @@ def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
     if seq is not None and (isinstance(seq, bool) or not isinstance(seq, int)):
         raise ValueError("seq must be an integer")
 
-    at = parse_at(raw["at"]) if raw.get("at") not in (None, "") else now
+    has_at = raw.get("at") not in (None, "")
+    if not allow_acp and not has_at and (needs_you_in(raw) or raw.get("resolves")):
+        # Resolving compares event times, so a sender that opens or closes an
+        # item has to say when it happened.
+        raise ValueError("at is required for events that need you or resolve others")
+    at = parse_at(raw["at"]) if has_at else now
     night = raw.get("night")
     if night in (None, ""):
         night = night_of(at)
@@ -655,6 +665,7 @@ def record(**fields) -> dict | None:
     try:
         if not enabled():
             return None
+        fields.setdefault("at", datetime.now(timezone.utc).isoformat())
         out = ingest([fields], allow_acp=True)
         for bad in out["rejected"]:
             logger.warning("activity event %r rejected: %s", bad["key"], bad["error"])

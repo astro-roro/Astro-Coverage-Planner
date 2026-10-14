@@ -188,8 +188,10 @@ export function setupActivity({ openPlan, showOnMap }) {
     try {
       const page = await getJson(`/api/activity/night/${encodeURIComponent(night)}?offset=${n.events.length}`);
       if (!page.gone) {
-        const merged = mergeNights([n], [{ night, events: page.events, more: page.more }]);
-        st.nights = st.nights.map(x => (x.night === night ? { ...merged[0], more: page.more } : x));
+        const byId = new Map(n.events.map(e => [e.id, e]));
+        for (const e of page.events) byId.set(e.id, e);
+        st.nights = st.nights.map(x => (x.night === night
+          ? { night, events: [...byId.values()], more: page.more } : x));
       }
     } catch { /* leave the button for another try */ }
     render();

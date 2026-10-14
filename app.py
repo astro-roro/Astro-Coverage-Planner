@@ -4584,13 +4584,13 @@ def api_plan(plan_id: str):
 
 def _record_plan_created(plan: dict) -> None:
     activity.record(
-        type="plan_created", key=f"plan_created:{plan.get('id')}",
+        type="plan_created", key=f"plan_created:{plan.get('id')}:{activity.current_night()}",
         title=f"Plan created: {activity.plan_name(plan)}", refs=activity.plan_refs(plan))
 
 
 def _record_plan_deleted(plan: dict) -> None:
     activity.record(
-        type="plan_deleted", key=f"plan_deleted:{plan.get('id')}",
+        type="plan_deleted", key=f"plan_deleted:{plan.get('id')}:{activity.current_night()}",
         title=f"Plan deleted: {activity.plan_name(plan)}", refs=activity.plan_refs(plan))
 
 
@@ -5416,7 +5416,7 @@ def _record_goal_reached(plan: dict, row: dict) -> None:
     goal = fr.goal_hours(row)
     filt = str(row.get("filter") or "")
     activity.record(
-        type="goal_reached", key=f"goal:{plan.get('id')}:{filt}:{goal:g}",
+        type="goal_reached", key=f"goal:{plan.get('id')}:{row.get('id')}:{goal:g}",
         title=f"{activity.plan_name(plan)}: {filt} reached its goal of {goal:g} h",
         refs={**activity.plan_refs(plan), "filter": filt}, data={"goal_h": round(goal, 4)})
 
@@ -5448,12 +5448,17 @@ def _record_progress(plan: dict, before: dict, after: dict, unknown: list, newly
         merge, type="progress_report", key=f"progress_report:{plan_id}:{night}", night=night,
         refs=activity.plan_refs(plan), title="progress", data={})
     if unknown:
-        activity.record(
-            type="progress_unknown", key=f"progress_unknown:{plan_id}:{night}", night=night,
-            severity="warn", needs_you=True, resolve_key=f"progress:{plan_id}",
+        # A report count in the content, so a repeat after a clean report
+        # changes it and reopens the item.
+        def merge_unknown(previous):
+            return {"data": {"reports": int(_carried(previous, "reports")) + 1}}
+
+        activity.record_merged(
+            merge_unknown, type="progress_unknown", key=f"progress_unknown:{plan_id}:{night}",
+            night=night, severity="warn", needs_you=True, resolve_key=f"progress:{plan_id}",
             title=f"{name}: a progress report named filters the plan has no goal for",
             detail="Unknown: " + ", ".join(str(u) for u in unknown),
-            refs=activity.plan_refs(plan))
+            refs=activity.plan_refs(plan), data={})
     for row in newly:
         _record_goal_reached(plan, row)
 
