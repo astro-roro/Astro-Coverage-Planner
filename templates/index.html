@@ -233,6 +233,16 @@
           </details>
 
         </section>
+
+        {% if activity_enabled %}
+        <!-- The Activity tab: what happened night by night, and what needs a
+             person. Built by static/activity-ui.mjs from /api/activity. -->
+        <section class="side-tab" data-tab="activity" hidden>
+          <div id="activityBody" class="activity" aria-live="polite">
+            <div class="panel-loading">Loading activity…</div>
+          </div>
+        </section>
+        {% endif %}
       </aside>
     </div>
 
@@ -253,6 +263,15 @@
         <span id="railLibraryBadge" class="rail-badge" hidden></span>
         <span class="rail-tip">Sources, scan health, rigs, catalogues</span>
       </button>
+      {% if activity_enabled %}
+      <button type="button" class="rail-btn" data-tab="activity" aria-pressed="false" aria-controls="sidePanel">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="rail-lbl">Activity</span>
+        <span id="railActivityBadge" class="rail-badge" hidden></span>
+        <span id="railActivityDot" class="rail-dot" hidden></span>
+        <span class="rail-tip">What happened, night by night</span>
+      </button>
+      {% endif %}
     </nav>
   </main>
 
