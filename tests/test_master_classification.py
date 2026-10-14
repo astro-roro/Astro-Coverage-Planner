@@ -69,3 +69,26 @@ class TestMasterClassification(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLocalNormalizationReference(unittest.TestCase):
+    """WBPP writes its local normalization reference into the master folder.
+
+    It is one registered sub, not an integration, but the folder name used to
+    make it a master. 154 of them sat in the scan health count of unsolved
+    masters on 2026-10-14.
+    """
+    REF = Path("/a/Calibrated/190MN/Helix/master/"
+               "LN_Reference_Light_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-H_mono.xisf")
+
+    def test_ln_reference_in_master_folder_is_not_a_master(self):
+        self.assertEqual(bam.classify_by_header(_meta(), self.REF, SMALL), "processed")
+
+    def test_ln_reference_with_a_master_imagetyp_is_still_not_a_master(self):
+        self.assertEqual(
+            bam.classify_by_header(_meta(imagetyp="Master Light", ncombine=40), self.REF, BIG),
+            "processed")
+
+    def test_the_real_master_beside_it_still_is(self):
+        real = self.REF.with_name("masterLight_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-H_mono.xisf")
+        self.assertEqual(bam.classify_by_header(_meta(), real, SMALL), "master")
