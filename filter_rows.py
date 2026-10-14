@@ -83,6 +83,35 @@ def row_filter(name: str | None) -> str:
     return known_filter(name) or (name or "").strip()
 
 
+def resolve_to_wheel(name: str | None, slots) -> str | None:
+    """The wheel slot a filter is written under, or None when no slot is the
+    same filter (docs/specs/gear-templates.md section 2).
+
+    An exact match wins, then a match ignoring case and surrounding spaces,
+    then the first slot whose alias-table spelling equals the filter's. A
+    spelling the table does not know passes through unchanged, so "R Stars"
+    and "Antlia Ha" resolve to nothing. Mirrors `resolve_to_wheel` in the
+    sync and `TsFilterNames.ResolveToWheel` in the plugin;
+    tests/fixtures/wheel_resolve_cases.json drives all three.
+    """
+    if name is None or not str(name).strip() or not slots:
+        return None
+    wanted = str(name)
+    names = [s for s in slots if isinstance(s, str) and s.strip()]
+    for s in names:
+        if s == wanted:
+            return s
+    low = wanted.strip().lower()
+    for s in names:
+        if s.strip().lower() == low:
+            return s
+    spelling = _alias(wanted)
+    for s in names:
+        if _alias(s) == spelling:
+            return s
+    return None
+
+
 def filter_sort_key(name: str) -> tuple[int, str]:
     try:
         return (FILTER_ORDER.index(name), "")
@@ -219,11 +248,130 @@ def filter_goals_view(plan: dict | None) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Gear templates on rows (docs/specs/gear-templates.md sections 3 and 11)
+# ---------------------------------------------------------------------------
+
+
+def camera_templates(camera: dict | None, filt: str | None,
+                     templated: bool | None = None) -> list[dict] | None:
+    """The gear templates of *camera* on the filter a row names, or None when
+    the camera has no gear templates at all (a gear file not yet migrated, or
+    no camera). An empty list means the camera has templates but none for
+    this filter. *templated* says whether the gear file is in the new shape;
+    left out, it is read from the camera's filters, which cannot tell a
+    migrated camera with no filters from an old one."""
+    if not isinstance(camera, dict) or not isinstance(camera.get("filters"), dict):
+        return None
+    filters = camera["filters"]
+    if templated is None:
+        templated = any(isinstance(v, dict) and isinstance(v.get("templates"), list) for v in filters.values())
+    if not templated:
+        return None
+    name = str(filt or "").strip()
+    cfg = filters.get(name)
+    if not isinstance(cfg, dict):
+        want = row_filter(name)
+        cfg = next((v for k, v in filters.items() if row_filter(str(k)) == want and isinstance(v, dict)), None)
+    tpls = cfg.get("templates") if isinstance(cfg, dict) else None
+    return [t for t in tpls if isinstance(t, dict)] if isinstance(tpls, list) else []
+
+
+def find_template(tpls: list[dict], name) -> dict | None:
+    """The template a row's `template` name stands for: the exact name, then
+    an earlier name in `aliases`, then a name in `ts_names`."""
+    if not isinstance(name, str):
+        return None
+    for key in ("name", "aliases", "ts_names"):
+        for t in tpls:
+            held = t.get(key)
+            if (held == name) if key == "name" else (isinstance(held, list) and name in held):
+                return t
+    return None
+
+
+def template_names(tpl: dict | None) -> set[str]:
+    """Every name a row may still carry for this template."""
+    if not isinstance(tpl, dict):
+        return set()
+    out = {tpl.get("name")} if isinstance(tpl.get("name"), str) else set()
+    for key in ("aliases", "ts_names"):
+        if isinstance(tpl.get(key), list):
+            out.update(n for n in tpl[key] if isinstance(n, str))
+    return out
+
+
+def repair_rows(rows, camera: dict | None, plan_id=None, templated: bool | None = None) -> bool:
+    """Give every row its `template_id` (section 3). Returns whether any row
+    changed.
+
+    A row whose `template_id` names a template of the camera on its filter
+    takes that template's name. Otherwise the id is found from `template` by
+    name, then `aliases`, then `ts_names`, with no fallback to the starred
+    template. A row nothing matches keeps its name and gets
+    `template_unresolved`, and is logged. A camera with no gear templates is
+    left alone.
+    """
+    changed = False
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        tpls = camera_templates(camera, row.get("filter"), templated)
+        if tpls is None:
+            continue
+        tid = row.get("template_id")
+        tpl = next((t for t in tpls if t.get("id") == tid), None) if tid else None
+        if tpl is None:
+            tpl = find_template(tpls, row.get("template"))
+        if tpl is None:
+            if row.get("template_unresolved") is not True:
+                logging.warning("plan %r: row %r template %r is not in gear for filter %r",
+                                _safe_log(plan_id), _safe_log(row.get("id")),
+                                _safe_log(row.get("template")), _safe_log(row.get("filter")))
+                row["template_unresolved"] = True
+                changed = True
+            if "template_id" in row:
+                del row["template_id"]
+                changed = True
+            continue
+        if row.get("template_id") != tpl.get("id"):
+            row["template_id"] = tpl.get("id")
+            changed = True
+        if row.get("template") != tpl.get("name"):
+            row["template"] = tpl.get("name")
+            changed = True
+        if "template_unresolved" in row:
+            del row["template_unresolved"]
+            changed = True
+    return changed
+
+
+def _round4(v: float) -> float:
+    return round(v + 0.0, 4)
+
+
+def set_row_sub(row: dict, new_sub: float) -> None:
+    """Move a row to *new_sub*, as the editor's `setRowTemplate` does: the
+    goal keeps the hours it stood for when the sub crosses 60 s and the row
+    changes unit, and otherwise keeps its own number."""
+    hours = goal_hours(row)
+    row["template_sub_s"] = int(new_sub) if float(new_sub).is_integer() else new_sub
+    unit = "fr" if new_sub < FRAME_UNIT_BELOW_S else "h"
+    if unit != row.get("unit"):
+        if unit == "fr":
+            row["target_frames"] = max(0, math.ceil(hours * 3600.0 / new_sub - 1e-9)) if hours > 0 else 0
+            row.pop("target_hours", None)
+        else:
+            row["target_hours"] = _round4(hours)
+            row.pop("target_frames", None)
+        row["unit"] = unit
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
 
-def validate_rows(rows, camera: dict | None) -> str | None:
+def validate_rows(rows, camera: dict | None, plan_id=None, templated: bool | None = None) -> str | None:
     """The `filter_rows` checks `_validate_plan_payload` makes (section 3).
 
     Assigns an id to a row that arrives without one. Returns an error string,
@@ -255,12 +403,25 @@ def validate_rows(rows, camera: dict | None) -> str | None:
         template = row.get("template")
         if not isinstance(template, str) or not template.strip():
             return f"{where}.template must be a non-empty string"
+        if camera_filters is not None and filt not in camera_filters and row_filter(filt) not in camera_filters:
+            return f"{where}.filter {filt!r} is not a filter on this plan's camera"
+        tpls = camera_templates(camera, filt, templated)
+        if tpls is not None:
+            tid = row.get("template_id")
+            if tid is not None:
+                tpl = next((t for t in tpls if t.get("id") == tid), None) if isinstance(tid, str) else None
+                if tpl is None:
+                    return f"{where}.template_id {tid!r} is not a template of this plan's camera on filter {filt!r}"
+                if template != tpl.get("name"):
+                    return f"{where}.template must equal the name of template_id {tid!r}, {tpl.get('name')!r}"
+                row.pop("template_unresolved", None)
+            else:
+                repair_rows([row], camera, plan_id, templated)
+                template = row.get("template")
         pair = (filt, template)
         if pair in seen_pairs:
             return f"two rows have filter {filt!r} and template {template!r}"
         seen_pairs.add(pair)
-        if camera_filters is not None and filt not in camera_filters and row_filter(filt) not in camera_filters:
-            return f"{where}.filter {filt!r} is not a filter on this plan's camera"
         sub = row.get("template_sub_s")
         sub_v = _num(sub)
         if isinstance(sub, bool) or sub_v is None or sub_v <= 0:
@@ -580,7 +741,8 @@ def validate_accepted(body) -> str | None:
 
 
 def apply_accepted(plan: dict, body: dict, received_at: str,
-                   canon_filter: Callable[[str], str | None]) -> list[dict]:
+                   canon_filter: Callable[[str], str | None],
+                   names_for_row: Callable[[dict], set[str]] | None = None) -> list[dict]:
     """Store AAC's figures on *plan* and return the `unknown_rows`.
 
     A row is stored only when its id is on the plan, its echoed filter reaches
@@ -590,7 +752,9 @@ def apply_accepted(plan: dict, body: dict, received_at: str,
     `goal_at_send`, the row's goal in its own unit at that moment, so a
     `complete` flag stops counting once the goal is raised. Values may go
     down. `actual_hours` is never touched. The caller has run
-    `validate_accepted`.
+    `validate_accepted`. *names_for_row* gives the earlier names a row's
+    template went by, so a rename between AAC reading the plans and writing
+    back does not drop the block (gear templates spec section 7).
     """
     by_id = {r.get("id"): r for r in rows_of(plan)}
     unknown: list[dict] = []
@@ -602,7 +766,9 @@ def apply_accepted(plan: dict, body: dict, received_at: str,
         echoed = entry["filter"]
         filter_ok = echoed == row.get("filter") or row_filter(echoed) == row.get("filter") \
             or (canon_filter(echoed) or None) == row.get("filter")
-        if not filter_ok or entry["template"] != row.get("template"):
+        template_ok = entry["template"] == row.get("template") or (
+            names_for_row is not None and entry["template"] in names_for_row(row))
+        if not filter_ok or not template_ok:
             row.pop("aac", None)
             unknown.append({"id": entry["id"], "reason":
                             f"row now has filter {row.get('filter')} and template {row.get('template')}"})

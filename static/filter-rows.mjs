@@ -4,12 +4,13 @@
 // docs/specs/goal-panel-and-ts-order.md sections 1, 3 and 6.
 //
 // A plan's `filter_rows` is an ordered list, and the order is the shooting
-// order. Each row: { id, filter, template, template_sub_s, unit ("h" | "fr"),
-// target_hours | target_frames, actual_hours, aac? }. ACP never edits a sub
-// length: the row holds a snapshot of its template's sub, nothing more.
+// order. Each row: { id, filter, template, template_id, template_sub_s, unit
+// ("h" | "fr"), target_hours | target_frames, actual_hours, aac? }. The row
+// holds a snapshot of its template's sub; a gear edit moves it only while the
+// row follows the template (docs/specs/gear-templates.md sections 3 and 4).
 
 // Default side panel width, in px. app.js starts its panel state from this.
-export const SIDE_PANEL_DEFAULT_W = 380;
+export const SIDE_PANEL_DEFAULT_W = 420;
 
 // Card grid: position, filter, template, remove button. Column 3 takes the
 // rest and may shrink to nothing, so long template names truncate rather than
@@ -102,12 +103,16 @@ export function setRowUnit(row, unit) {
 // Point a row at a template (or a typed-in new one) in place. The sub comes
 // from the template. Under 60 s the row counts frames, otherwise hours. A
 // unit change keeps the hours the goal stood for (worked out with the old
-// sub); the same unit keeps the number as typed.
-export function setRowTemplate(row, name, subS) {
+// sub); the same unit keeps the number as typed. `templateId` is the gear
+// template's id; choosing a template clears `template_unresolved`.
+export function setRowTemplate(row, name, subS, templateId) {
   const hours = rowGoalHours(row);
   const sub = num(subS) > 0 ? num(subS) : DEFAULT_SUB_S;
   const unit = unitForSub(sub);
   row.template = name;
+  if (templateId) row.template_id = templateId;
+  else delete row.template_id;
+  delete row.template_unresolved;
   row.template_sub_s = sub;
   if (unit !== row.unit) {
     if (unit === "fr") {
@@ -132,23 +137,15 @@ export function setRowGoal(row, value) {
 
 // --- templates ---
 
-// Templates for one filter, one per name (a plugin list can carry the same
-// name for several profiles), sorted by name.
-export function templatesForFilter(templates, filter) {
-  const want = String(filter || "").trim().toLowerCase();
-  const seen = new Set();
-  const out = [];
-  for (const t of templates || []) {
-    if (String(t?.filter || "").trim().toLowerCase() !== want) continue;
-    if (!t.name || seen.has(t.name)) continue;
-    seen.add(t.name);
-    out.push(t);
-  }
-  return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+// The gear templates of one camera filter, in gear order. Each has
+// { id, name, sub_s, starred, ... } (gear.json version 3).
+export function templatesForFilter(camera, filter) {
+  const list = camera?.filters?.[filter]?.templates;
+  return Array.isArray(list) ? list.filter(t => t && t.name) : [];
 }
 
 export function templateSub(t) {
-  const s = num(t?.default_exposure_s);
+  const s = num(t?.sub_s);
   return s > 0 ? s : DEFAULT_SUB_S;
 }
 
@@ -156,58 +153,80 @@ function fmtSub(s) {
   return Number.isInteger(s) ? String(s) : String(round4(s));
 }
 
-export function templateLabel(name, sub) {
-  return `${name} · ${fmtSub(sub)} s`;
+export function templateLabel(name, sub, starred = false) {
+  return `${name} \u00b7 ${fmtSub(sub)} s${starred ? " \u2605" : ""}`;
 }
 
-// The options for a row's template drop-down: the filter's templates, the
-// row's current template if the list lacks it (so an empty or missing list
-// still shows what the row has), then "New template…".
-export function templateOptions(row, templates) {
-  const opts = templatesForFilter(templates, row.filter).map(t => ({
-    value: t.name,
-    label: templateLabel(t.name, templateSub(t)),
+// The gear template a row names: by `template_id`, else by name. An
+// unresolved row names none.
+export function rowTemplate(row, camera) {
+  if (!row || row.template_unresolved) return null;
+  const list = templatesForFilter(camera, row.filter);
+  if (row.template_id) return list.find(t => t.id === row.template_id) || null;
+  return list.find(t => t.name === row.template) || null;
+}
+
+// The options for a row's template drop-down: the camera's gear templates
+// for the row's filter in gear order (the starred one marked), the row's own
+// template when gear has none by that name (an unresolved row, or a camera
+// with no templates), then "New template…". An option's value is the gear
+// template's id.
+export function templateOptions(row, camera) {
+  const current = rowTemplate(row, camera);
+  const opts = templatesForFilter(camera, row.filter).map(t => ({
+    value: t.id,
+    label: templateLabel(t.name, templateSub(t), t.starred === true),
     sub: templateSub(t),
-    selected: t.name === row.template,
+    selected: current ? t.id === current.id : false,
   }));
-  if (row.template && !opts.some(o => o.value === row.template)) {
+  if (row.template && !current) {
     opts.unshift({
-      value: row.template,
+      value: "",
       label: templateLabel(row.template, rowSub(row)),
       sub: rowSub(row),
       selected: true,
     });
   }
-  opts.push({ value: NEW_TEMPLATE_VALUE, label: "New template…", sub: null, selected: false });
+  opts.push({ value: NEW_TEMPLATE_VALUE, label: "New template\u2026", sub: null, selected: false });
   return opts;
+}
+
+// What a row's card flags beside its sub (section 7). `differs` reads
+// "180 s, template says 120 s" when the row's own sub is not its template's.
+// `unresolved` is true for a row whose template gear no longer has.
+export function rowFlags(row, camera) {
+  const t = rowTemplate(row, camera);
+  let differs = null;
+  if (t && num(row.template_sub_s) > 0 && Math.abs(num(row.template_sub_s) - templateSub(t)) > 1e-9) {
+    differs = `${fmtSub(num(row.template_sub_s))} s, template says ${fmtSub(templateSub(t))} s`;
+  }
+  const unresolved = row?.template_unresolved === true;
+  const wheel = camera?.wheel?.filters?.[row?.filter]?.state;
+  const offWheel = wheel === "not_on_wheel";
+  return { differs, unresolved, offWheel };
 }
 
 // --- adding a row ---
 
-// A filter's usual template: the camera's ts_template_name when the list has
-// it, else the first template for the filter by name. With no usable
-// template, the camera's name or "{filter} ({camera name})" and its default
-// sub (else 300).
-export function usualTemplate(filter, camera, templates) {
-  const cfg = camera?.filters?.[filter] || {};
-  const list = templatesForFilter(templates, filter);
-  const usual = list.find(t => t.name === cfg.ts_template_name) || list[0];
-  if (usual) return { template: usual.name, sub: templateSub(usual) };
-  return {
-    template: cfg.ts_template_name || `${filter} (${camera?.name || "camera"})`,
-    sub: num(cfg.default_sub_s) > 0 ? num(cfg.default_sub_s) : DEFAULT_SUB_S,
-  };
+// A filter's usual template: its starred gear template, else the first. With
+// none, "{filter} ({camera name})" and sub 300 (not in gear).
+export function usualTemplate(filter, camera) {
+  const list = templatesForFilter(camera, filter);
+  const usual = list.find(t => t.starred === true) || list[0];
+  if (usual) return { template: usual.name, template_id: usual.id, sub: templateSub(usual) };
+  return { template: `${filter} (${camera?.name || "camera"})`, template_id: null, sub: DEFAULT_SUB_S };
 }
 
 // A new row for the "+ Add filter" button. The filter is the first one in
-// drop-down order that no row uses yet (else the first again), with its usual
+// drop-down order that no row uses yet (else the first again), on its starred
 // template. The goal starts at 0 in the unit the sub implies.
-export function newFilterRow({ rows, camera, templates, id }) {
+export function newFilterRow({ rows, camera, id }) {
   const filters = cameraFilters(camera);
   const used = new Set((rows || []).map(r => r.filter));
   const filter = filters.find(f => !used.has(f)) || filters[0];
-  const { template, sub } = usualTemplate(filter, camera, templates);
+  const { template, template_id, sub } = usualTemplate(filter, camera);
   const row = { id, filter, template, template_sub_s: sub, unit: unitForSub(sub), actual_hours: 0 };
+  if (template_id) row.template_id = template_id;
   if (row.unit === "fr") row.target_frames = 0;
   else row.target_hours = 0;
   return row;
@@ -272,7 +291,10 @@ export function rowProgress(row) {
 function filterOptionsHtml(row, camera) {
   const names = cameraFilters(camera);
   if (row.filter && !names.includes(row.filter)) names.push(row.filter);
-  return names.map(f => `<option value="${esc(f)}"${f === row.filter ? " selected" : ""}>${esc(f)}</option>`).join("");
+  return names.map(f => {
+    const off = camera?.wheel?.filters?.[f]?.state === "not_on_wheel";
+    return `<option value="${esc(f)}"${f === row.filter ? " selected" : ""}>${esc(off ? `${f} \u00b7 not on the wheel yet` : f)}</option>`;
+  }).join("");
 }
 
 // The grab handle in a card's first column: the position number over a 6-dot
@@ -288,15 +310,21 @@ export function handleHtml(index, smart = false) {
 
 // One card. `colors` maps filter name to dot colour. `smart` disables the
 // handle.
-export function cardHtml(row, index, { camera, templates, colors = {}, smart = false } = {}) {
+export function cardHtml(row, index, { camera, colors = {}, smart = false } = {}) {
   const p = rowProgress(row);
   const dot = colors[row.filter] || "#888";
   const frames = row.unit === "fr";
   const goalVal = frames ? num(row.target_frames) : num(row.target_hours);
-  const tmplOpts = templateOptions(row, templates)
+  const tmplOpts = templateOptions(row, camera)
     .map(o => `<option value="${esc(o.value)}"${o.selected ? " selected" : ""}>${esc(o.label)}</option>`)
     .join("");
   const cur = templateLabel(row.template, rowSub(row));
+  const flags = rowFlags(row, camera);
+  const notes = [
+    flags.unresolved ? `<span class="fr-flag fr-flag-warn">template not in gear</span>` : "",
+    flags.differs ? `<span class="fr-flag">${esc(flags.differs)}</span>` : "",
+    flags.offWheel ? `<span class="fr-flag fr-flag-warn">Not synced until ${esc(row.filter)} is on the wheel</span>` : "",
+  ].filter(Boolean).join("");
   return `<div class="fr-card${p.finished ? " fr-done" : ""}" data-row-id="${esc(row.id)}">
     ${handleHtml(index, smart)}
     <div class="fr-filter"><span class="fr-dot" style="background:${esc(dot)}"></span><select class="fr-filter-sel" aria-label="Filter">${filterOptionsHtml(row, camera)}</select></div>
@@ -304,6 +332,7 @@ export function cardHtml(row, index, { camera, templates, colors = {}, smart = f
     <button type="button" class="fr-remove" title="Remove this filter" aria-label="Remove this filter">×</button>
     <div class="fr-goal"><input type="number" class="fr-goal-input" min="0" step="${frames ? 1 : 0.5}" value="${goalVal}" aria-label="Goal"><select class="fr-unit-sel" aria-label="Unit"><option value="h"${frames ? "" : " selected"}>h</option><option value="fr"${frames ? " selected" : ""}>fr</option></select></div>
     <div class="fr-progress"><div class="fr-bar"><i style="width:${p.pct.toFixed(1)}%"></i></div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div></div>
+    ${notes ? `<div class="fr-notes">${notes}</div>` : ""}
   </div>`;
 }
 
