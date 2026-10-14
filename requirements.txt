@@ -19,3 +19,5 @@ croniter>=6.2.4
 # Used by the live-page publisher (scripts/publish_shooting.py, /api/publish/shooting)
 # to upload shooting.json over SFTP. See docs/sharing.md.
 paramiko>=5.0.0
+# Time zone data for the Activity tab's night rule (ACP_ACTIVITY_TZ); Windows has none of its own.
+tzdata>=2025.2; sys_platform == "win32"
