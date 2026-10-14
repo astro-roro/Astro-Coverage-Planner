@@ -36,7 +36,8 @@ def iso_ago(**delta) -> str:
 
 
 def ev(key="k1", **kw):
-    base = {"source": "plugin", "key": key, "type": "imaging_target", "title": "Imaging"}
+    base = {"source": "plugin", "key": key, "type": "imaging_target", "title": "Imaging",
+            "at": datetime.now(timezone.utc).isoformat()}
     base.update(kw)
     return base
 
@@ -154,7 +155,7 @@ class TestPosting(ActivityCase):
             ev("bad-severity", severity="fatal"),
             ev("weird-type", type="not_a_type"),
             ev("long-detail", detail="d" * 3000),
-            ev("no-at"),
+            {"source": "plugin", "key": "no-at", "type": "imaging_target", "title": "Imaging"},
         ]
         out = self.post(*batch).get_json()
         self.assertEqual(out["stored"], 3)
@@ -238,6 +239,21 @@ class TestResolving(ActivityCase):
         self.post(built)
         self.post(queued)
         self.assertEqual(self.summary()["needs_you"], 0)
+
+    def test_14_posted_needs_you_and_resolves_must_carry_at(self):
+        for source in ("plugin", "aac"):
+            out = self.post(
+                {"source": source, "key": "a", "title": "t", "needs_you": True, "resolve_key": "r"},
+                {"source": source, "key": "b", "title": "t", "resolves": ["r"]}).get_json()
+            self.assertEqual(out["stored"], 0)
+            self.assertEqual(len(out["rejected"]), 2)
+            self.assertTrue(all("at" in r["error"].split() for r in out["rejected"]), out)
+        ok = self.post(ev("c", needs_you=True, resolve_key="r")).get_json()
+        self.assertEqual(ok["stored"], 1)
+        # ACP's own events always carry a time.
+        app.record_activity(type="ts_push", key="own", title="t", needs_you=True, resolve_key="own")
+        own = [e for e in self.all_events() if e["key"] == "own"][0]
+        self.assertTrue(own["at"])
 
     def test_14_a_resolve_from_before_a_new_queueing_does_not_close_it(self):
         self.post(self.built(at=iso_ago(days=1)))
@@ -372,6 +388,16 @@ class TestReading(ActivityCase):
         self.assertEqual(r.status_code, 403)
 
 
+class TestForwardedOrigin(ActivityCase):
+    def test_24_behind_a_proxy_the_forwarded_host_counts(self):
+        proxy = {"Origin": "https://acp.example.org", "X-Forwarded-Host": "acp.example.org"}
+        ok = self.client.post("/api/activity/seen", headers={**self.h, **proxy})
+        self.assertEqual(ok.status_code, 200)
+        other = {"Origin": "https://evil.example", "X-Forwarded-Host": "acp.example.org"}
+        self.assertEqual(self.client.post("/api/activity/seen", headers={**self.h, **other}).status_code, 403)
+        self.assertEqual(self.client.post("/api/activity/seen", headers=self.h).status_code, 200)
+
+
 class TestPlanEvents(ActivityCase):
     def put_plan(self, plan, expect=200):
         r = self.client.put(f"/api/plans/{plan['id']}", json=plan, headers=self.h)
@@ -396,10 +422,11 @@ class TestPlanEvents(ActivityCase):
     def test_plan_created_and_deleted(self):
         self.assertEqual(self.client.post("/api/plans", json=self.plan(), headers=self.h).status_code, 201)
         created = self.of_type("plan_created")
-        self.assertEqual([e["key"] for e in created], ["plan_created:M42"])
+        night = activity.current_night()
+        self.assertEqual([e["key"] for e in created], [f"plan_created:M42:{night}"])
         self.assertEqual(created[0]["refs"]["plan_id"], "M42")
         self.assertEqual(self.client.delete("/api/plans/M42", headers=self.h).status_code, 204)
-        self.assertEqual([e["key"] for e in self.of_type("plan_deleted")], ["plan_deleted:M42"])
+        self.assertEqual([e["key"] for e in self.of_type("plan_deleted")], [f"plan_deleted:M42:{night}"])
 
     def test_25_an_edit_is_recorded_and_the_nights_edits_accumulate(self):
         self.write_plans([self.plan()])
@@ -474,6 +501,14 @@ class TestPlanEvents(ActivityCase):
         self.assertEqual(report["key"], f"progress_report:M42:{night}")
         self.assertEqual(report["data"]["filters"]["Ha"]["hours"], 5.5)
 
+    def test_27_an_unknown_filter_again_after_a_clean_report_reopens_the_item(self):
+        self.write_plans([self.plan(filter_rows=self.rows())])
+        self.progress({"SII": {"acquired_hours": 1.0}})
+        self.progress({"Ha": {"acquired_hours": 5.5}})
+        self.assertEqual(self.summary()["needs_you"], 0)
+        self.progress({"SII": {"acquired_hours": 1.0}})
+        self.assertEqual(self.summary()["needs_you"], 1)
+
     def test_progress_report_feeds_last_night(self):
         self.write_plans([self.plan(filter_rows=self.rows())])
         self.progress({"Ha": {"acquired_hours": 5.5}})
@@ -491,7 +526,7 @@ class TestPlanEvents(ActivityCase):
         self.write_plans([self.plan(filter_rows=self.rows())])
         self.progress({"Ha": {"acquired_hours": 6.0}})
         goal = self.of_type("goal_reached")
-        self.assertEqual([e["key"] for e in goal], ["goal:M42:Ha:6"])
+        self.assertEqual([e["key"] for e in goal], [f"goal:M42:{HA_ID}:6"])
         self.progress({"Ha": {"acquired_hours": 6.5}})
         self.assertEqual(len(self.of_type("goal_reached")), 1)
 
@@ -503,7 +538,7 @@ class TestPlanEvents(ActivityCase):
         self.put_plan(plan)
         self.progress({"Ha": {"acquired_hours": 8.0}})
         self.assertEqual(sorted(e["key"] for e in self.of_type("goal_reached")),
-                         ["goal:M42:Ha:6", "goal:M42:Ha:8"])
+                         [f"goal:M42:{HA_ID}:6", f"goal:M42:{HA_ID}:8"])
 
     def accepted(self, complete, seconds=21600.0, frames=72):
         row = {"id": HA_ID, "filter": "Ha", "template": "Ha", "accepted_seconds": seconds,
@@ -518,7 +553,7 @@ class TestPlanEvents(ActivityCase):
         self.assertEqual(self.accepted(False, seconds=3600.0, frames=12).status_code, 200)
         self.assertEqual(self.of_type("goal_reached"), [])
         self.assertEqual(self.accepted(True).status_code, 200)
-        self.assertEqual([e["key"] for e in self.of_type("goal_reached")], ["goal:M42:Ha:6"])
+        self.assertEqual([e["key"] for e in self.of_type("goal_reached")], [f"goal:M42:{HA_ID}:6"])
         self.accepted(True)
         self.assertEqual(len(self.of_type("goal_reached")), 1)
         counts = self.of_type("accepted_counts")
@@ -630,19 +665,26 @@ class TestStoreRules(ActivityCase):
 
     def test_33_secrets_and_home_folders_are_scrubbed(self):
         self.post(ev(
-            title="Authorization: Bearer abc123 token=abc password=hunter2 https://u:p@host/",
+            title="Authorization: Bearer abc123 token=abc password=hunter2 https://u:p@host/ "
+                  "access_token=at1 api_token=at2 ACP_API_TOKEN=at3 db_password=at4",
             detail="saved to /Users/rohan/Pictures/x.fits",
             data={"note": "C:\\Users\\Astro\\Pictures\\x.fits", "nested": {"url": "https://u:p@host/"}},
             refs={"plan_id": "p1", "evil": "dropped", "target": "C:\\Users\\Astro\\Pictures\\x.fits"}))
         e = self.all_events()[0]
         for secret in ("abc123", "=abc", "hunter2", "u:p@"):
             self.assertNotIn(secret, e["title"])
-        self.assertEqual(e["title"].count("[redacted]"), 4)
+        for secret in ("at1", "at2", "at3", "at4"):
+            self.assertNotIn(secret, e["title"])
+        self.assertEqual(e["title"].count("[redacted]"), 8)
         self.assertEqual(e["data"]["note"], "~\\Pictures\\x.fits")
         self.assertEqual(e["data"]["nested"]["url"], "https://[redacted]@host/")
         self.assertEqual(e["detail"], "saved to ~/Pictures/x.fits")
         self.assertEqual(e["refs"]["target"], "~\\Pictures\\x.fits")
         self.assertNotIn("evil", e["refs"])
+
+    def test_33_a_windows_user_name_with_a_space_is_stripped(self):
+        self.post(ev(detail="C:\\Users\\John Smith\\Pictures\\x.fits"))
+        self.assertEqual(self.all_events()[0]["detail"], "~\\Pictures\\x.fits")
 
     def test_34_pruned_nights_leave_tombstones(self):
         os.environ["ACP_ACTIVITY_KEEP_NIGHTS"] = "2"

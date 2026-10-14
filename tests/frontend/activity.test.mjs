@@ -159,6 +159,20 @@ describe("mergeNights", () => {
   });
 });
 
+describe("mergeNights with a complete refetch", () => {
+  it("drops an event that was deleted when the refetched night is complete", () => {
+    const have = [{ night: "2026-10-13", more: 0, events: [row({ id: 1 }), row({ id: 2 })] }];
+    const got = [{ night: "2026-10-13", more: 0, events: [row({ id: 2 })] }];
+    assert.deepEqual(mergeNights(have, got)[0].events.map(e => e.id), [2]);
+  });
+
+  it("keeps loaded events when the refetch is only the first page of a long night", () => {
+    const have = [{ night: "2026-10-13", more: 0, events: [row({ id: 1 }), row({ id: 201 })] }];
+    const got = [{ night: "2026-10-13", more: 50, events: [row({ id: 1 })] }];
+    assert.deepEqual(mergeNights(have, got)[0].events.map(e => e.id), [1, 201]);
+  });
+});
+
 describe("headings and boxes", () => {
   it("names a night from its start date", () => {
     assert.equal(nightHeading("2026-10-13"), "Tue 13 to Wed 14 Oct");

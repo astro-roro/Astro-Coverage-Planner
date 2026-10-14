@@ -199,7 +199,10 @@ export function mergeNights(have, got) {
       byNight.set(incoming.night, { ...incoming, events: [...incoming.events] });
       continue;
     }
-    const byId = new Map(cur.events.map(e => [e.id, e]));
+    // A night that came back complete (nothing more to fetch) is the whole
+    // truth, so an event deleted since the last fetch drops out. A night that
+    // was cut at its first page keeps the extra events already loaded.
+    const byId = new Map((incoming.more ? cur.events : []).map(e => [e.id, e]));
     for (const e of incoming.events) byId.set(e.id, e);
     const events = [...byId.values()].sort((a, b) => whenOf(a) - whenOf(b) || a.id - b.id);
     const extra = events.length - incoming.events.length;
