@@ -759,7 +759,7 @@ export function gearEditorHtml(state) {
     : "";
   return `<div class="ge" data-gear-editor>
     <div class="ge-head">
-      <a href="#" data-act="back">← Plans</a>
+      <a class="back-link" href="#" data-act="back">← Back to plans</a>
       <h2>Gear</h2>
       <button type="button" class="ge-save" data-act="save">Save</button>
     </div>

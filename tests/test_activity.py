@@ -338,10 +338,11 @@ class TestReading(ActivityCase):
                         for i in range(start, start + 50)])
         night = self.get("/api/activity?nights=1").get_json()["nights"][0]
         self.assertEqual((len(night["events"]), night["more"]), (200, 50))
-        self.assertEqual([e["title"] for e in night["events"]][:2], ["row 0", "row 1"])
+        # Newest first within a night (Rohan, 2026-10-14); older pages follow.
+        self.assertEqual([e["title"] for e in night["events"]][:2], ["row 249", "row 248"])
         rest = self.get("/api/activity/night/2026-10-13?offset=200").get_json()
         self.assertEqual((len(rest["events"]), rest["more"]), (50, 0))
-        self.assertEqual(rest["events"][0]["title"], "row 200")
+        self.assertEqual(rest["events"][0]["title"], "row 49")
         self.assertEqual(self.get("/api/activity/night/2026-10-13?offset=x").status_code, 400)
         self.assertEqual(self.get("/api/activity/night/bad").status_code, 400)
 
