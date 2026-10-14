@@ -157,3 +157,7 @@ If you'd like to poke around the viewer before doing the work to scan your archi
 **Can't reach `http://127.0.0.1:5555/` from another machine** — by default ACP only listens on the local loopback interface for security. To expose it on your LAN, set `HOST=0.0.0.0` before launching, but be aware that ACP has no authentication and exposes your archive paths over HTTP — only do this on a trusted network.
 
 **Anything else** — open an issue at <https://github.com/astro-roro/Astro-Coverage-Planner/issues> with the command you ran and the full error.
+
+## Backing up the Activity history
+
+The Activity tab keeps its history in `activity.sqlite`, beside `plans.json` (or wherever `ACP_ACTIVITY_DB` points). Back it up with the rest of the data directory. Deleting it clears the history and nothing else. Settings: `ACP_ACTIVITY=off` switches the tab off, `ACP_ACTIVITY_TZ` sets the zone whose local noon ends a night (default `Australia/Sydney`), `ACP_ACTIVITY_KEEP_NIGHTS` prunes older nights (unset keeps everything), and `ACP_ACTIVITY_PATH_MAP` is a JSON list of `{"from", "mac", "windows"}` entries that turn AAC's container paths into copyable Mac and Windows folders. See `docs/specs/activity-tab.md`.

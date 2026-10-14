@@ -380,3 +380,7 @@ The legacy `/api/export/priority` CSV route stays for backwards compatibility, s
 ### Without `mocpy`
 
 `/api/gaps` and `/api/gaps/moc.fits` return `503` (MOC algebra is the whole point of these routes). `/api/export/priority` still works, it falls back to the original inline implementation. `pip install mocpy` to enable the full gap-finder UI.
+
+## Activity: `/api/activity`
+
+The Activity tab's events, in `docs/specs/activity-tab.md`. `POST /api/activity/events` takes `{"events": [...]}` (up to 100, 2 MiB) from the plugin, AAC or anything else with the token, and answers `{stored, updated, unchanged, stale, rejected}`; it answers 403 while `ACP_API_TOKEN` is unset. `GET /api/activity?nights=5&before=<night>`, `GET /api/activity/night/<night>?offset=200`, `GET /api/activity/summary`, `POST /api/activity/seen`, `POST /api/activity/events/<id>/dismiss` and `/restore`, and `GET`/`PUT /api/activity/prefs` serve the tab. With `ACP_ACTIVITY=off` all of them answer 404.
