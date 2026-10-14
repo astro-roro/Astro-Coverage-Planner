@@ -127,9 +127,8 @@ let _pressInfo = null;        // {x, y, t, dragged}, last mousedown over the map
 // --- Planner mode globals ---
 let planningMode = false;      // false = Coverage mode, true = Planning mode
 let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_rows, priority, ...}]
-let gear = { telescopes: [], cameras: [] };  // /api/gear response (v2)
+let gear = { telescopes: [], cameras: [], rev: 0, conflict_count: 0, wheel_unlinked: [] };  // /api/gear response (v3)
 let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on the server
-let tsTemplates = { available: false, templates: [] }; // /api/ts-templates response
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
 let editingPlanOriginalSettings = null; // {state, priority, minimum_time_min, filter_switch_frequency, smart_exposure_order} as loaded, so savePlan() knows whether to also hit the project settings route
@@ -695,6 +694,29 @@ import {
   templatesForFilter,
   usualTemplate,
 } from "./filter-rows.mjs";
+import {
+  CONFLICT_MESSAGE,
+  addFilter as geAddFilter,
+  addTemplate as geAddTemplate,
+  buildSavePayload,
+  duplicateCamera,
+  duplicateTemplate as geDuplicateTemplate,
+  findTemplate as geFindTemplate,
+  applySaveFailure,
+  gearFromResponse,
+  refreshGearBadge,
+  reloadDraft,
+  gearEditorHtml,
+  newCamera,
+  removeFilter as geRemoveFilter,
+  removeTemplate as geRemoveTemplate,
+  setTemplateField,
+  starTemplate as geStarTemplate,
+  subImpact,
+  templateNote,
+  templateStatus,
+  STATUS_LABEL,
+} from "./gear-editor.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -868,6 +890,7 @@ async function saveTelescopeColour(name, colour) {
     if (!r.ok) return false;
     const j = await r.json();
     gear.telescope_colours = j.telescope_colours || {};
+    if (j.rev != null) gear.rev = j.rev;
   } catch { return false; }
   applyTelescopeColours();
   redrawFootprints();
@@ -3105,6 +3128,7 @@ async function _afterApplyRefreshRail() {
   // user sees the new/updated entries without a hard F5. Best-effort.
   try {
     if (typeof loadPlans === "function") await loadPlans();
+    if (typeof loadGear === "function") await loadGear();
     if (typeof panelMode !== "undefined" && panelMode === "plan-list" &&
         typeof renderPlanList === "function") {
       renderPlanList();
@@ -6199,7 +6223,7 @@ function init() {
     // first updateObsNow uses the saved active site rather than the hardcoded
     // Sydney fallback in `currentSite`).
     await Promise.all([
-      loadGear(), loadPlans(), loadTsTemplates(), loadTargetOverrides(), loadHidden(),
+      loadGear(), loadPlans(), loadTargetOverrides(), loadHidden(),
       loadPublishConfig(), initSites(), catalogReady,
     ]);
     // The legend was drawn before gear loaded; redraw it with the saved picks.
@@ -6281,11 +6305,17 @@ async function loadGear() {
   try {
     const r = await fetch("/api/gear");
     const g = await r.json();
-    gear = {
-      version: g.version || 2, telescopes: g.telescopes || [], cameras: g.cameras || [],
-      telescope_colours: g.telescope_colours || {},
-    };
-  } catch { gear = { telescopes: [], cameras: [], telescope_colours: {} }; }
+    gear = gearFromResponse(g);
+  } catch { gear = { telescopes: [], cameras: [], telescope_colours: {}, rev: 0, conflict_count: 0, wheel_unlinked: [] }; }
+  updateGearBadge();
+}
+
+// The red count on the plans page's Gear button: held template settings
+// (docs/specs/gear-templates.md section 6).
+function updateGearBadge() {
+  const btn = document.getElementById("planGear");
+  if (!btn) return;
+  refreshGearBadge(btn, gear.conflict_count || 0);
 }
 
 // Merge telescopes/cameras discovered in the coverage manifest into gear.json.
@@ -6305,13 +6335,19 @@ async function seedGearFromManifest() {
   }
 }
 
-async function saveGear() {
+// POST the whole gear document. Returns {ok, rev} or {ok: false, status, error}.
+async function postGear(draft) {
   const r = await fetch("/api/gear", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ telescopes: gear.telescopes, cameras: gear.cameras }),
+    body: JSON.stringify(buildSavePayload(draft, gear.rev)),
   });
-  return r.ok;
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const plansList = Array.isArray(j.plans) ? j.plans : [];
+    return { ok: false, status: r.status, error: j.error || r.statusText, plans: plansList, rows: j.rows };
+  }
+  return { ok: true, rev: j.rev, ignored: j.ignored, sub_changes: j.sub_changes || [], notes: j.notes || [] };
 }
 
 async function loadPlans() {
@@ -6371,11 +6407,6 @@ async function setTargetFinished(targetId, finished) {
   } catch (e) {
     console.warn("target-overrides write failed", e);
   }
-}
-
-async function loadTsTemplates() {
-  try { const r = await fetch("/api/ts-templates"); tsTemplates = await r.json(); }
-  catch { tsTemplates = { available: false, templates: [] }; }
 }
 
 function deg2hms(deg) {
@@ -6754,6 +6785,7 @@ function renderPlanList() {
   // claims this slot.
   wireReplaceableButton("sync-to-nina");
   panel.querySelector("#planGear").addEventListener("click", () => renderGearEditor());
+  updateGearBadge();
   for (const btn of panel.querySelectorAll(".plan-view-toggle button")) {
     btn.addEventListener("click", () => {
       planListView = btn.dataset.view === "projects" ? "projects" : "plans";
@@ -6905,13 +6937,12 @@ function renderPlanListItems() {
   list.innerHTML = html;
 }
 
-// What the filter-row cards need to draw: the plan's camera, the TS template
-// list (empty when none has loaded), the dot colours, and for the controls
+// What the filter-row cards need to draw: the plan's camera (with its gear
+// templates and wheel), the dot colours, and for the controls
 // above the list the N to offer for "Rotate every" and the project note.
 function filterRowsContext() {
   return {
     camera: editingPlan ? planCamera(editingPlan) : null,
-    templates: tsTemplates && tsTemplates.available ? (tsTemplates.templates || []) : [],
     colors: FILTER_COLORS,
     rotateN: editingRotateN,
     projectNote: orderProjectNote(editingPlan),
@@ -6961,7 +6992,6 @@ function wireFilterRows(panel) {
       editingPlan.filter_rows.push(newFilterRow({
         rows: editingPlan.filter_rows,
         camera: planCamera(editingPlan),
-        templates: filterRowsContext().templates,
         id: crypto.randomUUID(),
       }));
       redrawFilterRows(panel);
@@ -7086,30 +7116,57 @@ function wireFilterRows(panel) {
     card.classList.toggle("fr-done", next.classList.contains("fr-done"));
     card.querySelector(".fr-progress").innerHTML = next.querySelector(".fr-progress").innerHTML;
   });
-  host.addEventListener("change", e => {
+  host.addEventListener("change", async e => {
     const row = rowOf(e.target);
     if (!row) return;
     const ctx = filterRowsContext();
     if (e.target.classList.contains("fr-unit-sel")) {
       setRowUnit(row, e.target.value);
     } else if (e.target.classList.contains("fr-filter-sel")) {
-      const { template, sub } = usualTemplate(e.target.value, ctx.camera, ctx.templates);
+      const { template, template_id, sub } = usualTemplate(e.target.value, ctx.camera);
       row.filter = e.target.value;
-      setRowTemplate(row, template, sub);
+      setRowTemplate(row, template, sub, template_id);
     } else if (e.target.classList.contains("fr-tmpl-sel")) {
       if (e.target.value === NEW_TEMPLATE_VALUE) {
         const name = (window.prompt("New template name?") || "").trim();
         const sub = parseFloat(window.prompt("Sub length in seconds?", String(row.template_sub_s || 300)));
-        if (name && isFinite(sub) && sub > 0) setRowTemplate(row, name, sub);
+        if (name && isFinite(sub) && sub > 0) {
+          const made = await createGearTemplate(ctx.camera, row.filter, name, sub);
+          if (made) setRowTemplate(row, made.name, made.sub_s, made.id);
+        }
       } else {
-        const t = templatesForFilter(ctx.templates, row.filter).find(x => x.name === e.target.value);
-        if (t) setRowTemplate(row, t.name, templateSub(t));
+        const t = templatesForFilter(ctx.camera, row.filter).find(x => x.id === e.target.value);
+        if (t) setRowTemplate(row, t.name, templateSub(t), t.id);
       }
     } else {
       return;
     }
     redrawFilterRows(panel);
   });
+}
+
+// "New template…" in the plan editor: add a gear template through the API
+// and mirror it into the loaded gear. Returns the template, or null with an
+// alert when the server refused.
+async function createGearTemplate(camera, filter, name, sub_s) {
+  if (!camera) return null;
+  try {
+    const r = await fetch("/api/gear/templates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ camera_id: camera.id, filter, name, sub_s, gain: -1, offset: -1, bin: 1 }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(`Couldn't add the template: ${j.error || r.status}`); return null; }
+    const t = { ...j.template, status: "new", conflicts: [], used_by: 0 };
+    const cfg = camera.filters?.[filter];
+    if (cfg) (cfg.templates = cfg.templates || []).push(t);
+    gear.rev = j.rev ?? gear.rev;
+    return t;
+  } catch (e) {
+    alert(`Couldn't add the template: ${e}`);
+    return null;
+  }
 }
 
 function renderPlanEditor(plan) {
@@ -7563,6 +7620,7 @@ async function syncPlans() {
     });
   }
   await loadPlans();
+  await loadGear();
 }
 
 function redrawPlanFootprints() {
@@ -7779,220 +7837,354 @@ function renderGearEditor() {
   saveUiState();
   const panel = document.getElementById("panelBody");
   if (!panel) return;
-  // Work on a deep clone so Cancel discards cleanly.
-  const draft = JSON.parse(JSON.stringify({ telescopes: gear.telescopes || [], cameras: gear.cameras || [] }));
-  const FILTER_KEYS = ["Ha", "OIII", "SII", "L", "R", "G", "B", "V"];
+  const clone = o => JSON.parse(JSON.stringify(o));
+  // The draft is a deep clone, so Cancel and the back link discard it. `saved`
+  // is gear as loaded, for the subs on file.
+  const state = {
+    tab: "cameras",
+    doc: clone({ telescopes: gear.telescopes || [], cameras: gear.cameras || [] }),
+    saved: clone({ telescopes: gear.telescopes || [], cameras: gear.cameras || [] }),
+    plans,
+    wheelUnlinked: gear.wheel_unlinked || [],
+    openCamera: (gear.cameras || [])[0]?.id || null,
+    openTemplate: null, openTelescope: null, menu: null, addFilterFor: null, message: null,
+    colourOf: name => gearTelescopeColour(name),
+  };
+  const uniqueId = (base, list) => {
+    let id = _slugId(base);
+    for (let i = 2; list.some(x => x.id === id); i++) id = `${_slugId(base)}-${i}`;
+    return id;
+  };
+  const camOf = id => state.doc.cameras.find(c => c.id === id);
+  const tplOf = id => geFindTemplate(state.doc, id);
+  const root = () => panel.querySelector("[data-gear-editor]");
 
   function render() {
-    const telRows = draft.telescopes.map((t, i) => `
-      <tr data-tel="${i}">
-        <td><input type="text" data-field="name"             value="${esc(t.name || "")}" placeholder="Telescope name"></td>
-        <td><input type="number" data-field="focal_length_mm" value="${t.focal_length_mm ?? ""}" step="1" style="width:70px"></td>
-        <td><input type="number" data-field="aperture_mm"     value="${t.aperture_mm ?? ""}" step="1" style="width:60px"></td>
-        <td><input type="color" class="tele-swatch tele-swatch-pick" data-tel-colour="${i}"
-              value="${esc(gearTelescopeColour(t.name || ""))}"
-              title="Colour for this telescope. Saved as soon as you pick it${gear.telescope_colours?.[t.name] ? "; right-click to go back to automatic" : ""}."></td>
-        <td><button type="button" class="btn-danger" data-del-tel="${i}">✕</button></td>
-      </tr>`).join("");
-
-    const camRows = draft.cameras.map((c, i) => {
-      const dims = c.sensor_px || [0, 0];
-      c.filters = c.filters || {};
-      const camFilterKeys = Object.keys(c.filters);
-      const filtersBody = camFilterKeys.length === 0
-        ? `<tr><td colspan="6" style="color:#78839a;font-size:11px">No filters. Add one below.</td></tr>`
-        : camFilterKeys.map(f => {
-            const fc = c.filters[f] || {};
-            return `<tr data-filter="${esc(f)}">
-              <td style="padding-right:4px">${esc(f)}</td>
-              <td><input type="number" data-field="default_sub_s" value="${fc.default_sub_s ?? ""}" step="10" style="width:60px" placeholder="sub s"></td>
-              <td><input type="number" data-field="gain"          value="${fc.gain ?? -1}" step="1" style="width:48px"></td>
-              <td><input type="number" data-field="offset"        value="${fc.offset ?? -1}" step="1" style="width:48px"></td>
-              <td><input type="number" data-field="bin"           value="${fc.bin ?? 1}" step="1" min="1" style="width:36px"></td>
-              <td><button type="button" class="btn-danger" data-del-filter="${esc(f)}" title="Remove filter">✕</button></td>
-            </tr>`;
-          }).join("");
-      const addOptions = FILTER_KEYS
-        .filter(k => !(k in c.filters))
-        .map(k => `<option value="${k}">${k}</option>`).join("");
-      return `<div class="cam-block" data-cam="${i}" style="border:1px solid #2a3246;border-radius:4px;padding:6px 8px;margin-bottom:8px">
-        <div style="display:flex;gap:6px;align-items:center">
-          <input type="text"   data-field="name"           value="${esc(c.name || "")}" placeholder="Camera name" style="flex:1;min-width:0">
-          <button type="button" class="btn-danger" data-del-cam="${i}">✕</button>
-        </div>
-        <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
-          <input type="number" data-field="pixel_size_um"  value="${c.pixel_size_um ?? ""}" step="0.01" placeholder="px µm" style="flex:1;min-width:0">
-          <input type="number" data-field="sensor_w"       value="${dims[0] ?? ""}" step="1" placeholder="w px" style="flex:1;min-width:0">
-          <input type="number" data-field="sensor_h"       value="${dims[1] ?? ""}" step="1" placeholder="h px" style="flex:1;min-width:0">
-        </div>
-        <details style="margin-top:4px" open>
-          <summary style="font-size:11px;color:#78839a;cursor:pointer">Filters, ${camFilterKeys.length} (sub s · gain · offset · bin)</summary>
-          <table class="goals-table" style="margin-top:4px"><tbody>${filtersBody}</tbody></table>
-          <div style="display:flex;gap:4px;align-items:center;margin-top:4px;font-size:11px">
-            <select data-role="add-filter-preset" style="width:70px">
-              <option value="">Pick…</option>
-              ${addOptions}
-              <option value="__custom__">Custom…</option>
-            </select>
-            <input type="text" data-role="add-filter-name" placeholder="or type name" style="flex:1;max-width:100px">
-            <button type="button" data-role="add-filter-btn" class="btn-primary" style="font-size:10px;padding:2px 8px">+ Add filter</button>
-          </div>
-          <div style="font-size:10px;color:#78839a;margin-top:2px">Gain/offset/bin/sub become TS ExposureTemplate fields on sync. TS template mapping is set from the plan editor.</div>
-        </details>
-      </div>`;
-    }).join("");
-
-    panel.innerHTML = `
-      <a class="back-link" id="backToPlans" href="#">← Back to plans</a>
-      <h3>Edit gear</h3>
-      <fieldset>
-        <legend>Telescopes <button type="button" id="addTel" class="btn-primary" style="float:right;font-size:10px;padding:2px 8px">+ Add</button></legend>
-        <table class="goals-table" style="width:100%">
-          <thead><tr><th style="text-align:left">Name</th><th>Focal (mm)</th><th>Aperture (mm)</th><th>Colour</th><th></th></tr></thead>
-          <tbody>${telRows || `<tr><td colspan="5" style="color:#78839a">No telescopes yet.</td></tr>`}</tbody>
-        </table>
-      </fieldset>
-      <fieldset>
-        <legend>Cameras <button type="button" id="addCam" class="btn-primary" style="float:right;font-size:10px;padding:2px 8px">+ Add</button></legend>
-        ${camRows || `<div style="color:#78839a;font-size:12px">No cameras yet.</div>`}
-      </fieldset>
-      <div class="plan-editor-actions">
-        <button type="button" id="gearSave" class="btn-primary">Save gear</button>
-        <button type="button" id="gearCancel">Cancel</button>
-        <button type="button" id="gearScanCoverage" style="margin-left:auto" title="Scan coverage manifest for telescopes/cameras not yet in gear">Scan coverage</button>
-      </div>`;
-
-    // Telescope row inputs
-    panel.querySelectorAll("tr[data-tel]").forEach(tr => {
-      const idx = parseInt(tr.dataset.tel, 10);
-      tr.querySelectorAll("input[data-field]").forEach(inp => inp.addEventListener("input", e => {
-        const key = e.target.dataset.field;
-        const v = e.target.value;
-        draft.telescopes[idx][key] = (key === "name") ? v : (parseFloat(v) || 0);
-      }));
-    });
-    panel.querySelectorAll("input[data-tel-colour]").forEach(inp => {
-      const idx = parseInt(inp.dataset.telColour, 10);
-      const nameNow = () => (draft.telescopes[idx]?.name || "").trim();
-      inp.addEventListener("change", async () => {
-        if (nameNow()) { await saveTelescopeColour(nameNow(), inp.value); render(); }
-      });
-      inp.addEventListener("contextmenu", async evt => {
-        if (!gear.telescope_colours?.[nameNow()]) return;
-        evt.preventDefault();
-        await saveTelescopeColour(nameNow(), null);
-        render();
-      });
-    });
-    panel.querySelectorAll("[data-del-tel]").forEach(b => b.addEventListener("click", () => {
-      draft.telescopes.splice(parseInt(b.dataset.delTel, 10), 1);
-      render();
-    }));
-    panel.querySelector("#addTel").addEventListener("click", () => {
-      draft.telescopes.push({ id: _slugId("telescope-" + (draft.telescopes.length + 1)), name: "New telescope", focal_length_mm: 500, aperture_mm: 80 });
-      render();
-    });
-
-    // Camera block inputs
-    panel.querySelectorAll(".cam-block").forEach(block => {
-      const idx = parseInt(block.dataset.cam, 10);
-      block.querySelectorAll("input[data-field]").forEach(inp => inp.addEventListener("input", e => {
-        const key = e.target.dataset.field;
-        const v = e.target.value;
-        const cam = draft.cameras[idx];
-        if (key === "name") cam.name = v;
-        else if (key === "pixel_size_um") cam.pixel_size_um = parseFloat(v) || 0;
-        else if (key === "sensor_w") { cam.sensor_px = cam.sensor_px || [0, 0]; cam.sensor_px[0] = parseInt(v) || 0; }
-        else if (key === "sensor_h") { cam.sensor_px = cam.sensor_px || [0, 0]; cam.sensor_px[1] = parseInt(v) || 0; }
-      }));
-      block.querySelectorAll("tr[data-filter]").forEach(tr => {
-        const f = tr.dataset.filter;
-        tr.querySelectorAll("input[data-field]").forEach(inp => inp.addEventListener("input", e => {
-          const key = e.target.dataset.field;
-          const v = parseFloat(e.target.value);
-          const cam = draft.cameras[idx];
-          cam.filters = cam.filters || {};
-          cam.filters[f] = cam.filters[f] || {};
-          cam.filters[f][key] = isFinite(v) ? v : null;
-        }));
-      });
-      block.querySelectorAll("[data-del-filter]").forEach(b => b.addEventListener("click", () => {
-        const f = b.dataset.delFilter;
-        const cam = draft.cameras[idx];
-        if (cam.filters && f in cam.filters) delete cam.filters[f];
-        render();
-      }));
-      const addBtn = block.querySelector("[data-role=add-filter-btn]");
-      if (addBtn) addBtn.addEventListener("click", () => {
-        const cam = draft.cameras[idx];
-        const presetSel = block.querySelector("[data-role=add-filter-preset]");
-        const nameIn = block.querySelector("[data-role=add-filter-name]");
-        let name = (nameIn?.value || "").trim();
-        const preset = presetSel?.value || "";
-        if (!name && preset && preset !== "__custom__") name = preset;
-        if (!name) { nameIn?.focus(); return; }
-        cam.filters = cam.filters || {};
-        if (name in cam.filters) { alert(`Filter "${name}" already exists on ${cam.name || "camera"}.`); return; }
-        const isLum = /^L$|lum/i.test(name);
-        const isNarrow = /^(Ha|OIII|SII|NII|OI)$/i.test(name);
-        cam.filters[name] = {
-          ts_template_id: null,
-          ts_template_name: null,
-          default_sub_s: isNarrow ? 300 : (isLum ? 120 : 120),
-          gain: -1, offset: -1, bin: 1,
-        };
-        render();
-      });
-    });
-    panel.querySelectorAll("[data-del-cam]").forEach(b => b.addEventListener("click", () => {
-      draft.cameras.splice(parseInt(b.dataset.delCam, 10), 1);
-      render();
-    }));
-    panel.querySelector("#addCam").addEventListener("click", () => {
-      const defaults = {};
-      for (const f of FILTER_KEYS) defaults[f] = { ts_template_id: null, ts_template_name: null, default_sub_s: 300, gain: -1, offset: -1, bin: 1 };
-      draft.cameras.push({
-        id: _slugId("camera-" + (draft.cameras.length + 1)),
-        name: "New camera",
-        pixel_size_um: 3.76,
-        sensor_px: [6000, 4000],
-        filters: defaults,
-      });
-      render();
-    });
-
-    panel.querySelector("#gearSave").addEventListener("click", async () => {
-      // Ensure each row has a stable id (derived from name if missing)
-      for (const t of draft.telescopes) if (!t.id) t.id = _slugId(t.name);
-      for (const c of draft.cameras)    if (!c.id) c.id = _slugId(c.name);
-      gear.telescopes = draft.telescopes;
-      gear.cameras = draft.cameras;
-      const ok = await saveGear();
-      if (!ok) { alert("Save failed"); return; }
-      renderPlanList();
-    });
-    panel.querySelector("#gearCancel").addEventListener("click", () => renderPlanList());
-    panel.querySelector("#backToPlans").addEventListener("click", e => { e.preventDefault(); renderPlanList(); });
-    panel.querySelector("#gearScanCoverage")?.addEventListener("click", async () => {
-      // Persist any in-progress edits first so the scan merges into the saved state.
-      gear.telescopes = draft.telescopes;
-      gear.cameras = draft.cameras;
-      const saveOk = await saveGear();
-      if (!saveOk) { alert("Couldn't save current edits before scanning."); return; }
-      const j = await seedGearFromManifest();
-      await loadGear();
-      draft.telescopes = JSON.parse(JSON.stringify(gear.telescopes));
-      draft.cameras = JSON.parse(JSON.stringify(gear.cameras));
-      render();
-      const addedT = j?.added_telescopes || [];
-      const addedC = j?.added_cameras || [];
-      if (addedT.length || addedC.length) {
-        alert(`Added from coverage:\n• Telescopes: ${addedT.join(", ") || "none"}\n• Cameras: ${addedC.join(", ") || "none"}`);
-      } else {
-        alert("No new gear found in coverage (all telescopes/cameras already present).");
-      }
-    });
+    const body = panel.querySelector(".ge-body");
+    const top = body ? body.scrollTop : 0;
+    panel.innerHTML = gearEditorHtml(state);
+    const nb = panel.querySelector(".ge-body");
+    if (nb) nb.scrollTop = top;
   }
+
+  // Redraw one template's line, note and sub-change list after a field edit,
+  // without touching the inputs (they keep focus).
+  function refreshTemplate(id) {
+    const hit = tplOf(id);
+    if (!hit) return;
+    const { camera, template: t } = hit;
+    const q = sel => panel.querySelector(sel);
+    const name = q(`[data-line-name="${id}"]`); if (name) name.textContent = t.name;
+    const sub = q(`[data-line-sub="${id}"]`); if (sub) sub.textContent = `${Number.isInteger(t.sub_s) ? t.sub_s : Math.round(t.sub_s * 10000) / 10000} s`;
+    const status = templateStatus(t, camera);
+    const pill = q(`[data-line-pill="${id}"]`);
+    if (pill) { pill.className = `ge-pill ge-pill-${status}`; pill.textContent = STATUS_LABEL[status] || status; }
+    const note = q(`[data-note="${id}"]`); if (note) note.textContent = templateNote(t, camera);
+    const impact = q(`[data-impact="${id}"]`);
+    if (impact) {
+      const saved = geFindTemplate(state.saved, id);
+      const lines = saved ? subImpact(state.plans, camera, t, saved.template.sub_s, t.sub_s).lines : [];
+      impact.replaceChildren(...lines.map(l => { const d = document.createElement("div"); d.textContent = l; return d; }));
+    }
+  }
+
+  // After a route that changed the file on the server (a resolve, a NINA
+  // name): reload gear, adopt its derived data and rev, and keep the draft.
+  async function adoptServer(resolved) {
+    await loadGear();
+    for (const dc of state.doc.cameras) {
+      const fc = gear.cameras.find(c => c.id === dc.id);
+      if (!fc) continue;
+      dc.wheel = fc.wheel;
+      dc.template_edit_blocked = fc.template_edit_blocked;
+      if (fc.nina_names) dc.nina_names = fc.nina_names;
+      for (const [fname, cfg] of Object.entries(dc.filters || {})) {
+        for (const t of cfg.templates || []) {
+          const ft = (fc.filters?.[fname]?.templates || []).find(x => x.id === t.id);
+          if (!ft) continue;
+          for (const k of ["status", "conflicts", "used_by", "note", "ts", "aliases", "ts_names"]) t[k] = ft[k];
+          if (resolved && resolved.id === t.id) t[resolved.field] = ft[resolved.field];
+        }
+      }
+    }
+    state.saved = clone({ telescopes: gear.telescopes || [], cameras: gear.cameras || [] });
+    state.wheelUnlinked = gear.wheel_unlinked || [];
+  }
+
+  async function save() {
+    for (const c of state.doc.cameras) {
+      for (const [f, cfg] of Object.entries(c.filters || {})) {
+        for (const t of cfg.templates || []) {
+          if (!String(t.name || "").trim()) {
+            state.message = { text: `${c.name || "A camera"}, ${f}: a template needs a name.` };
+            render();
+            return;
+          }
+        }
+      }
+    }
+    for (const t of state.doc.telescopes) if (!t.id) t.id = uniqueId(t.name, state.doc.telescopes);
+    for (const c of state.doc.cameras) if (!c.id) c.id = uniqueId(c.name, state.doc.cameras);
+    const btn = panel.querySelector("[data-act=save]");
+    if (btn) btn.disabled = true;
+    const res = await postGear(state.doc);
+    if (res.ok) {
+      await loadGear();
+      await loadPlans();
+      if (res.ignored?.length) alert("Gear was saved by an out-of-date page: filters and templates were left as they are. Reload the page.");
+      renderPlanList();
+      return;
+    }
+    applySaveFailure(state, res);
+    render();
+  }
+
+  async function scanCoverage() {
+    // Persist any in-progress edits first so the scan merges into saved state.
+    const res = await postGear(state.doc);
+    if (!res.ok) {
+      applySaveFailure(state, res, true);
+      render();
+      return;
+    }
+    const j = await seedGearFromManifest();
+    await loadGear();
+    state.doc = clone({ telescopes: gear.telescopes, cameras: gear.cameras });
+    state.saved = clone(state.doc);
+    state.wheelUnlinked = gear.wheel_unlinked || [];
+    render();
+    const addedT = j?.added_telescopes || [];
+    const addedC = j?.added_cameras || [];
+    if (addedT.length || addedC.length) {
+      alert(`Added from coverage:\n• Telescopes: ${addedT.join(", ") || "none"}\n• Cameras: ${addedC.join(", ") || "none"}`);
+    } else {
+      alert("No new gear found in coverage (all telescopes/cameras already present).");
+    }
+  }
+
+  async function post(url, body) {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, body: j };
+  }
+
+  async function onAction(act, el) {
+    const camId = el.closest("[data-cam]")?.dataset.cam || state.openCamera;
+    const cam = camOf(state.openCamera);
+    switch (act) {
+      case "back": renderPlanList(); return;
+      case "save": await save(); return;
+      case "tab": state.tab = el.dataset.tab; state.menu = null; break;
+      case "reload":
+        if (!(await reloadDraft(state, confirm, async () => { await loadGear(); return gear; }))) return;
+        if (!camOf(state.openCamera)) state.openCamera = state.doc.cameras[0]?.id || null;
+        break;
+      case "scan": await scanCoverage(); return;
+      case "open-cam": state.openCamera = camId; state.openTemplate = null; state.addFilterFor = null; break;
+      case "toggle-cam": state.openCamera = null; state.openTemplate = null; state.addFilterFor = null; break;
+      case "cam-menu": state.menu = state.menu === state.openCamera ? null : state.openCamera; break;
+      case "dup-cam": {
+        if (!cam) return;
+        const copy = duplicateCamera(cam, uniqueId(`${cam.name} copy`, state.doc.cameras));
+        state.doc.cameras.splice(state.doc.cameras.indexOf(cam) + 1, 0, copy);
+        state.openCamera = copy.id; state.menu = null; break;
+      }
+      case "link-cam": {
+        if (!cam) return;
+        state.menu = null;
+        if (!state.saved.cameras.some(c => c.id === cam.id)) { alert("Save this camera first, then link it."); render(); return; }
+        const guess = state.wheelUnlinked[0]?.camera_name || "";
+        const name = (window.prompt("Name NINA gives this camera?", guess) || "").trim();
+        if (!name) { render(); return; }
+        const res = await post(`/api/gear/cameras/${encodeURIComponent(cam.id)}/nina-names`, { name });
+        if (!res.ok) { state.message = { text: `Couldn't link: ${res.body.error || res.status}` }; render(); return; }
+        await adoptServer();
+        break;
+      }
+      case "del-cam": {
+        if (!cam) return;
+        state.menu = null;
+        const using = state.plans.filter(p => p.camera_id === cam.id).length;
+        if (using) { alert(`${using} plan${using === 1 ? " uses" : "s use"} ${cam.name || "this camera"}, so it cannot be removed.`); render(); return; }
+        if (!confirm(`Remove ${cam.name || "this camera"} and its templates? This applies when you press Save.`)) { render(); return; }
+        state.doc.cameras = state.doc.cameras.filter(c => c !== cam);
+        state.openCamera = null; break;
+      }
+      case "add-cam": {
+        const c = newCamera(uniqueId("camera", state.doc.cameras));
+        state.doc.cameras.push(c);
+        state.openCamera = c.id; state.openTemplate = null; break;
+      }
+      case "add-unlinked": {
+        const name = el.dataset.name;
+        const c = newCamera(uniqueId(name, state.doc.cameras), name);
+        state.doc.cameras.push(c);
+        state.openCamera = c.id; break;
+      }
+      case "link-unlinked": {
+        if (!cam || !state.saved.cameras.some(c => c.id === cam.id)) { alert("Open the saved camera to link it to, then press Link again."); return; }
+        if (!confirm(`Link NINA's '${el.dataset.name}' to ${cam.name}?`)) return;
+        const res = await post(`/api/gear/cameras/${encodeURIComponent(cam.id)}/nina-names`, { name: el.dataset.name });
+        if (!res.ok) { state.message = { text: `Couldn't link: ${res.body.error || res.status}` }; render(); return; }
+        await adoptServer();
+        break;
+      }
+      case "open-add-filter": state.addFilterFor = state.openCamera; break;
+      case "cancel-add-filter": state.addFilterFor = null; break;
+      case "add-filter":
+      case "add-filter-typed": {
+        if (!cam) return;
+        const typed = act === "add-filter" ? el.dataset.name : (panel.querySelector("[data-role=add-filter-name]")?.value || "");
+        const res = geAddFilter(cam, typed);
+        if (!res.ok) {
+          const err = panel.querySelector("[data-role=add-filter-error]");
+          if (err) err.textContent = res.error; else { state.message = { text: res.error }; render(); }
+          return;
+        }
+        state.addFilterFor = null;
+        state.openTemplate = cam.filters[res.name].templates[0].id; break;
+      }
+      case "del-filter": {
+        if (!cam) return;
+        if (!geRemoveFilter(cam, el.dataset.filter)) return;
+        break;
+      }
+      case "add-tpl": {
+        if (!cam) return;
+        const f = el.dataset.filter;
+        const list = cam.filters[f].templates || [];
+        const starred = list.find(t => t.starred) || list[0];
+        const t = geAddTemplate(cam, f, { name: `${f} ${list.length + 1}`, sub_s: starred?.sub_s, gain: starred?.gain, offset: starred?.offset, bin: starred?.bin });
+        state.openTemplate = t.id;
+        render();
+        panel.querySelector(`[data-tpl="${t.id}"][data-field=name]`)?.select();
+        return;
+      }
+      case "toggle-tpl": state.openTemplate = state.openTemplate === el.dataset.tpl ? null : el.dataset.tpl; break;
+      case "dup-tpl": {
+        if (!cam) return;
+        const t = geDuplicateTemplate(cam, el.dataset.filter, el.dataset.tpl);
+        if (t) state.openTemplate = t.id;
+        break;
+      }
+      case "del-tpl": {
+        if (!cam) return;
+        if (geRemoveTemplate(cam, el.dataset.filter, el.dataset.tpl)) state.openTemplate = null;
+        break;
+      }
+      case "resolve": {
+        const res = await post(`/api/gear/templates/${encodeURIComponent(el.dataset.tpl)}/resolve`,
+          { profile_id: el.dataset.profile, field: el.dataset.field, take: el.dataset.take });
+        if (!res.ok) { state.message = { text: `Couldn't settle that: ${res.body.error || res.status}` }; render(); return; }
+        await adoptServer({ id: el.dataset.tpl, field: el.dataset.field });
+        break;
+      }
+      case "open-tel": state.openTelescope = el.dataset.tel; state.menu = null; break;
+      case "tel-menu": state.menu = state.menu === `tel:${state.openTelescope}` ? null : `tel:${state.openTelescope}`; break;
+      case "del-tel": {
+        state.doc.telescopes = state.doc.telescopes.filter(t => t.id !== state.openTelescope);
+        state.openTelescope = null; state.menu = null; break;
+      }
+      case "add-tel": {
+        const t = { id: uniqueId("telescope", state.doc.telescopes), name: "New telescope", focal_length_mm: 500, aperture_mm: 80 };
+        state.doc.telescopes.push(t);
+        state.openTelescope = t.id; break;
+      }
+      default: return;
+    }
+    render();
+  }
+
+  panel.onclick = e => {
+    if (panelMode !== "gear-edit" || !e.target.closest("[data-gear-editor]")) return;
+    const el = e.target.closest("[data-act]");
+    const act = el?.dataset.act;
+    if (act === "star") return; // the checkbox acts on change
+    if (state.menu && act !== "cam-menu" && act !== "tel-menu") {
+      state.menu = null;
+      if (!act) { render(); return; }
+    }
+    if (!act) return;
+    if (el.tagName === "A") e.preventDefault();
+    if (el.disabled) return;
+    onAction(act, el);
+  };
+
+  panel.oninput = e => {
+    if (panelMode !== "gear-edit" || !e.target.closest("[data-gear-editor]")) return;
+    const t = e.target;
+    if (t.dataset.field && t.dataset.tpl && t.dataset.field !== "gain" && t.dataset.field !== "offset") {
+      const hit = tplOf(t.dataset.tpl);
+      if (!hit) return;
+      const ok = setTemplateField(hit.template, t.dataset.field, t.value);
+      t.setAttribute("aria-invalid", ok ? "false" : "true");
+      if (ok) refreshTemplate(t.dataset.tpl);
+      return;
+    }
+    if (t.dataset.camField) {
+      const c = camOf(state.openCamera);
+      if (!c) return;
+      const key = t.dataset.camField;
+      if (key === "name") c.name = t.value;
+      else if (key === "pixel_size_um") c.pixel_size_um = parseFloat(t.value) || 0;
+      else if (key === "sensor_w") { c.sensor_px = c.sensor_px || [0, 0]; c.sensor_px[0] = parseInt(t.value, 10) || 0; }
+      else if (key === "sensor_h") { c.sensor_px = c.sensor_px || [0, 0]; c.sensor_px[1] = parseInt(t.value, 10) || 0; }
+      return;
+    }
+    if (t.dataset.telField) {
+      const tel = state.doc.telescopes.find(x => x.id === state.openTelescope);
+      if (!tel) return;
+      const key = t.dataset.telField;
+      if (key === "name") tel.name = t.value;
+      else if (key === "focal_length_mm" || key === "aperture_mm") tel[key] = parseFloat(t.value) || 0;
+    }
+  };
+
+  panel.onchange = async e => {
+    if (panelMode !== "gear-edit" || !e.target.closest("[data-gear-editor]")) return;
+    const t = e.target;
+    if (t.dataset.act === "star") {
+      const hit = tplOf(t.dataset.tpl);
+      if (hit) { geStarTemplate(hit.camera, hit.filter, hit.template.id); render(); }
+      return;
+    }
+    if (t.dataset.field && (t.dataset.field === "gain" || t.dataset.field === "offset")) {
+      const hit = tplOf(t.dataset.tpl);
+      if (!hit) return;
+      if (!setTemplateField(hit.template, t.dataset.field, t.value)) {
+        t.value = hit.template[t.dataset.field] < 0 ? "Default" : String(hit.template[t.dataset.field]);
+        return;
+      }
+      t.value = hit.template[t.dataset.field] < 0 ? "Default" : String(hit.template[t.dataset.field]);
+      refreshTemplate(t.dataset.tpl);
+      return;
+    }
+    if (t.dataset.camField) { render(); return; }
+    if (t.dataset.telField) {
+      const tel = state.doc.telescopes.find(x => x.id === state.openTelescope);
+      if (tel && t.dataset.telField === "default_camera_id") tel.default_camera_id = t.value || null;
+      render();
+      return;
+    }
+    if (t.dataset.telColour) {
+      const tel = state.doc.telescopes.find(x => x.id === t.dataset.telColour);
+      const name = (tel?.name || "").trim();
+      if (name) { await saveTelescopeColour(name, t.value); render(); }
+    }
+  };
+
+  panel.oncontextmenu = async e => {
+    if (panelMode !== "gear-edit") return;
+    const inp = e.target.closest?.("input[data-tel-colour]");
+    if (!inp) return;
+    const tel = state.doc.telescopes.find(x => x.id === inp.dataset.telColour);
+    const name = (tel?.name || "").trim();
+    if (!name || !gear.telescope_colours?.[name]) return;
+    e.preventDefault();
+    await saveTelescopeColour(name, null);
+    render();
+  };
+
   render();
 }
 
