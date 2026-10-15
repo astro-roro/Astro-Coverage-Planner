@@ -1049,8 +1049,16 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .fr-card input.fr-goal-input { flex: 1 1 0; width: 0; }
 .fr-card select.fr-unit-sel { flex: 0 0 auto; width: 42px; }
 .fr-progress { grid-column: 3; grid-row: 2; }
-.fr-bar { height: 5px; background: #2a3246; border-radius: 3px; overflow: hidden; }
+.fr-bar { display: flex; height: 5px; background: #2a3246; border-radius: 3px; overflow: hidden; }
 .fr-bar > i { display: block; height: 100%; background: #4da6ff; }
+/* Rows AAC tracks: amber for accepted, amber stripes for shot but not yet
+   graded, green once the goal is done. Same amber and green as the goal
+   status badges (.goal-status.partial / .done). */
+.fr-bar.fr-bar-aac > i { background: #c9a86a; }
+.fr-card.fr-done .fr-bar > i { background: #5fb36a; }
+.fr-pending-bar { display: block; height: 100%;
+  background: repeating-linear-gradient(135deg, #c9a86a 0 3px, rgba(201, 168, 106, 0.25) 3px 6px); }
+.fr-pending { font-size: 10px; color: #c9a86a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-prog-text { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; color: #a2aec2; white-space: nowrap; overflow: hidden; }
 .fr-add { align-self: flex-start; font-size: 11px; }
 
@@ -2423,6 +2431,8 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   font-size: 11px;
   color: #8d99ad;
 }
+/* One filter: dot, name, bar and figures stay on one line and wrap together. */
+.activity .shot-row .fl { display: flex; align-items: center; gap: 6px; flex: 1 1 240px; min-width: 0; white-space: nowrap; }
 .activity .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #8d99ad; flex: 0 0 auto; }
 .activity .dot.f-ha { background: #ff6b6b; }
 .activity .dot.f-oiii { background: #4da6ff; }
