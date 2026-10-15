@@ -1072,12 +1072,21 @@ def _last_night(conn) -> dict | None:
                             "goal": round(_hours(f.get("goal")), 2),
                             "done": _hours(f.get("goal")) > 0 and _hours(f.get("hours")) >= _hours(f.get("goal"))})
         if filters:
+            # Finished means the whole plan, not one row: a goal was reached
+            # tonight and every filter with a goal is at it. A star row
+            # filling up while Ha was at 2.4 of 5 h used to mark the Helix
+            # finished (2026-10-16). The report carries every filter, so the
+            # check also sees filters that added nothing tonight.
+            all_goals = [f for f in (e["data"].get("filters") or {}).values()
+                         if isinstance(f, dict) and _hours(f.get("goal")) > 0]
+            whole = bool(all_goals) and all(_hours(f.get("hours")) >= _hours(f.get("goal"))
+                                            for f in all_goals)
             targets[e["refs"].get("plan_id") or e["key"]] = {
                 "plan_id": e["refs"].get("plan_id"),
                 "target": e["refs"].get("target") or e["title"],
                 "ra_deg": e["refs"].get("ra_deg"), "dec_deg": e["refs"].get("dec_deg"),
                 "filters": filters, "hours": round(sum(f["delta_h"] for f in filters), 2),
-                "finished": e["refs"].get("plan_id") in finished}
+                "finished": e["refs"].get("plan_id") in finished and whole}
     # Before the plugin posts imaging_target events of its own, only the
     # progress reports carry hours. Once it does, frames fill in any target
     # a report has not covered.
