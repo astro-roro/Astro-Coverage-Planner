@@ -242,8 +242,11 @@ export function lastNightHtml(last) {
       const pct = hasGoal ? Math.min(100, Math.round((Number(f.hours) / Number(f.goal)) * 100)) : null;
       const tail = hasGoal ? `<span class="bar" aria-label="${esc(fmtH(f.hours))} of ${esc(fmtH(f.goal))} h">` +
         `<i class="${f.done ? "done" : ""}" style="width:${pct}%"></i></span>${esc(fmtH(f.hours))} / ${esc(fmtH(f.goal))} h` : "";
-      return `${filterDot(f.filter)}${esc(f.filter)} +${esc(fmtH(f.delta_h))} h${tail}`;
-    }).join(" ");
+      // One group per filter, so a line break never lands between a filter's
+      // name and its bar (seen on the Helix: "Ha +0.2 h" ended one line and
+      // its bar started the next).
+      return `<span class="fl">${filterDot(f.filter)}<span>${esc(f.filter)} +${esc(fmtH(f.delta_h))} h</span>${tail}</span>`;
+    }).join("");
     const links = linksHtml({ plan_id: t.plan_id });
     return `<div class="shot-row" role="listitem"><span class="name">${esc(t.target)}</span>` +
       `<span class="hrs">${esc(fmtH(t.hours))} h</span>` +
