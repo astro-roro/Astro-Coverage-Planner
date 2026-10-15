@@ -264,26 +264,61 @@ export function rowDone(row) {
   return num(row?.actual_hours);
 }
 
+// What Target Scheduler has shot that AAC has not looked at yet, in the row's
+// own unit. actual_hours is TS's acquired total from the plugin's live
+// reports; aac.seen_* is everything AAC has graded, accepted or not. So the
+// difference is frames taken since AAC's last pass, and it falls back to 0 on
+// its own once AAC catches up. Rows without AAC figures have nothing waiting:
+// their bar already shows actual_hours.
+export function rowPending(row) {
+  const aac = row?.aac;
+  if (!aac) return 0;
+  const hasFrames = aac.seen_frames != null && Number.isFinite(Number(aac.seen_frames));
+  const hasSeconds = aac.seen_seconds != null && Number.isFinite(Number(aac.seen_seconds));
+  // A block stored before AAC sent seen figures: what AAC has looked at is
+  // unknown, so claim nothing is waiting rather than the whole total.
+  if (!hasFrames && !hasSeconds) return 0;
+  const sub = rowSub(row);
+  if (row?.unit === "fr") {
+    const shot = Math.round(num(row.actual_hours) * 3600 / sub);
+    const seen = hasFrames ? Math.round(num(aac.seen_frames)) : Math.round(num(aac.seen_seconds) / sub);
+    return Math.max(0, shot - seen);
+  }
+  if (!hasSeconds) return 0;
+  const pending = num(row.actual_hours) - num(aac.seen_seconds) / 3600;
+  // Under half a sub is rounding between the two counts, not a frame.
+  return pending * 3600 >= sub / 2 ? pending : 0;
+}
+
 export function rowGoal(row) {
   return row?.unit === "fr" ? Math.round(num(row.target_frames)) : num(row?.target_hours);
 }
 
-// {left, right, finished, noGoal, pct} for the progress block. `left` is the
-// "3.0 / 4.2 h" text, `right` the "1.2 h left", "done" or "set a goal" text.
+// {left, right, finished, noGoal, pct, pendingPct, pendingText} for the
+// progress block. `left` is the "3.0 / 4.2 h" text, `right` the "1.2 h left",
+// "done" or "set a goal" text. `pendingPct` is the striped part of the bar
+// after `pct` (shot, waiting for AAC), and `pendingText` its line under the
+// bar, empty when nothing is waiting.
 export function rowProgress(row) {
   const goal = rowGoal(row);
   const done = rowDone(row);
+  const pending = rowPending(row);
   const frames = row?.unit === "fr";
   const fmt = v => (frames ? String(v) : v.toFixed(1));
   const u = frames ? "fr" : "h";
   const finished = row?.aac ? row.aac.complete === true : (goal > 0 && done >= goal);
+  const pendingText = pending > 0
+    ? `+${frames ? pending : pending.toFixed(2)} ${u} shot, waiting for AAC`
+    : "";
   if (!(goal > 0)) {
-    return { left: "", right: "set a goal", finished: false, noGoal: true, pct: 0 };
+    return { left: "", right: "set a goal", finished: false, noGoal: true, pct: 0, pendingPct: 0, pendingText };
   }
   const left = `${fmt(done)} / ${fmt(goal)} ${u}`;
   const remain = Math.max(0, goal - done);
   const right = finished ? "done" : `${fmt(remain)} ${u} left`;
-  return { left, right, finished, noGoal: false, pct: Math.min(100, Math.max(0, done / goal * 100)) };
+  const pct = Math.min(100, Math.max(0, done / goal * 100));
+  const pendingPct = finished ? 0 : Math.min(100 - pct, pending / goal * 100);
+  return { left, right, finished, noGoal: false, pct, pendingPct, pendingText };
 }
 
 // --- markup ---
@@ -331,7 +366,7 @@ export function cardHtml(row, index, { camera, colors = {}, smart = false } = {}
     <select class="fr-tmpl-sel" aria-label="TS template" title="${esc(cur)}">${tmplOpts}</select>
     <button type="button" class="fr-remove" title="Remove this filter" aria-label="Remove this filter">×</button>
     <div class="fr-goal"><input type="number" class="fr-goal-input" min="0" step="${frames ? 1 : 0.5}" value="${goalVal}" aria-label="Goal"><select class="fr-unit-sel" aria-label="Unit"><option value="h"${frames ? "" : " selected"}>h</option><option value="fr"${frames ? " selected" : ""}>fr</option></select></div>
-    <div class="fr-progress"><div class="fr-bar"><i style="width:${p.pct.toFixed(1)}%"></i></div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div></div>
+    <div class="fr-progress"><div class="fr-bar${row.aac ? " fr-bar-aac" : ""}"><i style="width:${p.pct.toFixed(1)}%"></i>${p.pendingPct > 0 ? `<b class="fr-pending-bar" style="width:${p.pendingPct.toFixed(1)}%"></b>` : ""}</div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div>${p.pendingText ? `<div class="fr-pending">${esc(p.pendingText)}</div>` : ""}</div>
     ${notes ? `<div class="fr-notes">${notes}</div>` : ""}
   </div>`;
 }

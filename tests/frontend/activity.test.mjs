@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   DEFAULT_CHIPS,
   chipOf,
@@ -15,6 +16,8 @@ import {
   renderRowHtml,
   visibleRows,
 } from "../../static/activity.mjs";
+
+const css = readFileSync(new URL("../../static/style.css", import.meta.url), "utf8");
 
 const row = (over = {}) => ({
   id: 1, source: "acp", key: "k", type: "plan_edited", at: "2026-10-13T19:10:00+11:00",
@@ -199,6 +202,15 @@ describe("headings and boxes", () => {
     assert.ok(html.includes("Finished"));
     assert.ok(!html.includes("P<1>"));
     assert.equal(lastNightHtml(null), "");
+  });
+
+  it("keeps each filter's name, bar and figures in one group that wraps whole", () => {
+    const html = lastNightHtml({ night: "2026-10-15", total_h: 0.3, targets: [{ target: "Helix Nebula", hours: 0.3, plan_id: "p",
+      filters: [{ filter: "B", delta_h: 0.06, hours: 0.06, goal: 0.06, done: true },
+                { filter: "Ha", delta_h: 0.2, hours: 0.2, goal: 5 }] }] });
+    assert.equal((html.match(/class="fl"/g) || []).length, 2);
+    assert.match(html, /<span class="fl"><span class="dot f-ha"><\/span><span>Ha \+0\.2 h<\/span><span class="bar"/);
+    assert.match(css, /\.activity \.shot-row \.fl \{[^}]*display: flex[^}]*white-space: nowrap/);
   });
 
   it("Needs you lists items with a dismiss and says how many more", () => {

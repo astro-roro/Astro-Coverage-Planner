@@ -243,6 +243,75 @@ describe("U11: AAC figures", () => {
   });
 });
 
+describe("shot, waiting for AAC", () => {
+  // actual_hours is Target Scheduler's acquired total; aac.seen_* is what AAC
+  // has graded, accepted or not. The gap is frames AAC has not reached yet.
+  const hrs = (extra = {}) => row({ target_hours: 4, actual_hours: 2.5,
+    aac: { accepted_seconds: 5400, seen_seconds: 7200, complete: false }, ...extra });
+
+  it("stripes the hours AAC has not seen, after the accepted part", () => {
+    const p = rowProgress(hrs());
+    assert.equal(p.left, "1.5 / 4.0 h");
+    assert.equal(p.right, "2.5 h left");
+    assert.equal(p.pct, 37.5);
+    assert.equal(p.pendingPct, 12.5);
+    assert.equal(p.pendingText, "+0.50 h shot, waiting for AAC");
+    const html = cardHtml(hrs(), 0, { camera: CAMERA, templates: TEMPLATES });
+    assert.match(html, /class="fr-bar fr-bar-aac"/);
+    assert.match(html, /class="fr-pending-bar" style="width:12.5%"/);
+    assert.match(html, /<div class="fr-pending">\+0.50 h shot, waiting for AAC<\/div>/);
+  });
+
+  it("counts frames in a frame row", () => {
+    const r = row({ unit: "fr", template: "R Stars", template_sub_s: 15, target_frames: 15,
+      actual_hours: 15 * 15 / 3600, aac: { accepted_frames: 0, seen_frames: 0, complete: false } });
+    const p = rowProgress(r);
+    assert.equal(p.left, "0 / 15 fr");
+    assert.equal(p.pendingPct, 100);
+    assert.equal(p.pendingText, "+15 fr shot, waiting for AAC");
+  });
+
+  it("shows nothing waiting once AAC has seen everything", () => {
+    const p = rowProgress(hrs({ actual_hours: 2.0 }));
+    assert.equal(p.pendingPct, 0);
+    assert.equal(p.pendingText, "");
+    assert.ok(!cardHtml(hrs({ actual_hours: 2.0 }), 0, { camera: CAMERA, templates: TEMPLATES }).includes("fr-pending"));
+  });
+
+  it("ignores a gap smaller than half a sub", () => {
+    const p = rowProgress(hrs({ actual_hours: 2.0 + 60 / 3600, template_sub_s: 300 }));
+    assert.equal(p.pendingText, "");
+  });
+
+  it("never claims more than AAC has seen when TS reports less", () => {
+    assert.equal(rowProgress(hrs({ actual_hours: 1.0 })).pendingPct, 0);
+  });
+
+  it("claims nothing for a block stored without seen figures", () => {
+    const r = row({ target_hours: 4.2, actual_hours: 4.2, aac: { accepted_seconds: 10800, complete: false } });
+    assert.equal(rowProgress(r).pendingText, "");
+  });
+
+  it("caps the stripes at the goal and drops them once done", () => {
+    assert.equal(rowProgress(hrs({ actual_hours: 9 })).pendingPct, 62.5);
+    const done = rowProgress(hrs({ actual_hours: 9, aac: { accepted_seconds: 14400, seen_seconds: 14400, complete: true } }));
+    assert.equal(done.pendingPct, 0);
+    assert.equal(done.finished, true);
+  });
+
+  it("leaves rows without AAC figures as a plain bar", () => {
+    const r = row({ target_hours: 4, actual_hours: 2.5 });
+    assert.equal(rowProgress(r).pendingPct, 0);
+    assert.match(cardHtml(r, 0, { camera: CAMERA, templates: TEMPLATES }), /class="fr-bar"/);
+  });
+
+  it("colours accepted amber, stripes amber, and finished green", () => {
+    assert.match(css, /\.fr-bar\.fr-bar-aac > i \{ background: #c9a86a; \}/);
+    assert.match(css, /\.fr-card\.fr-done \.fr-bar > i \{ background: #5fb36a; \}/);
+    assert.match(css, /\.fr-pending-bar \{[^}]*repeating-linear-gradient/);
+  });
+});
+
 describe("U12: no template list, no stray comma", () => {
   it("offers the current template and New template…", () => {
     const opts = templateOptions(row({ template: "Ha (Cam)", template_sub_s: 300 }), { filters: {} });
