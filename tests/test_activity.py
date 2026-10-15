@@ -531,6 +531,34 @@ class TestPlanEvents(ActivityCase):
         self.progress({"Ha": {"acquired_hours": 6.5}})
         self.assertEqual(len(self.of_type("goal_reached")), 1)
 
+    def two_rows(self):
+        return [*self.rows(actual=2.0, goal=5.0),
+                {"id": "row-g-stars", "filter": "G", "template": "G Stars", "template_sub_s": 15,
+                 "unit": "h", "target_hours": 0.0625, "actual_hours": 0.0}]
+
+    def test_one_row_reaching_its_goal_does_not_finish_the_target(self):
+        # The Helix on 2026-10-15: the star rows hit their goal, Ha was at 2.4 of 5 h.
+        self.write_plans([self.plan(filter_rows=self.two_rows())])
+        self.progress({"G": {"acquired_hours": 0.0625}, "Ha": {"acquired_hours": 2.4}})
+        self.assertEqual(len(self.of_type("goal_reached")), 1)
+        [target] = self.summary()["last_night"]["targets"]
+        self.assertFalse(target["finished"])
+
+    def test_target_finishes_when_every_filter_is_at_goal(self):
+        self.write_plans([self.plan(filter_rows=self.two_rows())])
+        self.progress({"G": {"acquired_hours": 0.0625}, "Ha": {"acquired_hours": 5.0}})
+        [target] = self.summary()["last_night"]["targets"]
+        self.assertTrue(target["finished"])
+
+    def test_a_filter_with_no_new_hours_still_counts_against_finished(self):
+        # Ha adds nothing tonight and is short, so it is not in the card's
+        # filters, but the target is still not finished.
+        self.write_plans([self.plan(filter_rows=self.two_rows())])
+        self.progress({"G": {"acquired_hours": 0.0625}})
+        [target] = self.summary()["last_night"]["targets"]
+        self.assertEqual([f["filter"] for f in target["filters"]], ["G"])
+        self.assertFalse(target["finished"])
+
     def test_28_raising_the_goal_makes_a_new_key(self):
         self.write_plans([self.plan(filter_rows=self.rows(actual=5.0))])
         self.progress({"Ha": {"acquired_hours": 6.0}})
