@@ -680,6 +680,7 @@ import {
   NEW_TEMPLATE_VALUE,
   filterListHtml,
   hoursByFilter,
+  planPanelCount,
   newFilterRow,
   orderExplanation,
   moveRow,
@@ -6990,6 +6991,7 @@ function filterRowsContext() {
     colors: FILTER_COLORS,
     rotateN: editingRotateN,
     projectNote: orderProjectNote(editingPlan),
+    panels: editingPlan ? planPanelCount(editingPlan) : 1,
   };
 }
 
@@ -7419,11 +7421,13 @@ function renderPlanEditor(plan) {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
     editingPlan.target.mosaic.rows = Math.max(1, parseInt(e.target.value) || 1);
     updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
+    redrawFilterRows(panel);
   });
   panel.querySelector("#f_mcols")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
     editingPlan.target.mosaic.cols = Math.max(1, parseInt(e.target.value) || 1);
     updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
+    redrawFilterRows(panel);
   });
   panel.querySelector("#f_moverlap")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };

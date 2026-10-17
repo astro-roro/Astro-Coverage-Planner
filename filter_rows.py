@@ -198,8 +198,30 @@ def goal_hours(row: dict) -> float:
     return _num(row.get("target_hours")) or 0.0
 
 
+def panel_count(plan: dict | None) -> int:
+    """How many panels the plan's mosaic has: rows x cols, 1 for a plan that
+    is not a mosaic or whose mosaic block is junk. The same clamp the TS
+    export uses (`_build_ts_export`), so goals and exported targets agree."""
+    mosaic = ((plan or {}).get("target") or {}).get("mosaic")
+    if not isinstance(mosaic, dict):
+        return 1
+
+    def dim(key) -> int:
+        v = mosaic.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return 1
+        return max(1, int(v))
+
+    return dim("rows") * dim("cols")
+
+
 def hours_by_filter(plan: dict | None) -> dict[str, dict]:
     """Goal and actual hours per filter, summed over the filter's rows.
+
+    A row's goal is per panel (the TS export gives every panel the full row
+    goal), so for a mosaic `target_hours` here is the row goal times the panel
+    count: a 2 x 1 mosaic with an 8 h L goal wants 16 h of L. `actual_hours`
+    is the plan's single stored figure and is not scaled.
 
     The one place readers that want a total per filter (coverage, the live
     page, plan matching) get it from.
@@ -212,6 +234,10 @@ def hours_by_filter(plan: dict | None) -> dict[str, dict]:
         entry = out.setdefault(name, {"target_hours": 0.0, "actual_hours": 0.0})
         entry["target_hours"] += goal_hours(row)
         entry["actual_hours"] += _num(row.get("actual_hours")) or 0.0
+    panels = panel_count(plan)
+    if panels > 1:
+        for entry in out.values():
+            entry["target_hours"] *= panels
     return out
 
 

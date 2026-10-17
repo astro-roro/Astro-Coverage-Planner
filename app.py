@@ -5317,7 +5317,7 @@ def api_plan_progress(plan_id: str):
     updated, unknown, not_lowered = {}, [], []
     tracking = activity.enabled()
     hours_before = copy.deepcopy(fr.hours_by_filter(plan)) if tracking else {}
-    reached_before = {r.get("id"): _row_at_goal(r) for r in rows} if tracking else {}
+    reached_before = {r.get("id"): _row_at_goal(r, plan) for r in rows} if tracking else {}
     for name, template, cfg in reports:
         # "Antlia Ha" from the plugin lands on the plan's Ha rows.
         canon = canon_filter(name) or str(name)
@@ -5355,7 +5355,7 @@ def api_plan_progress(plan_id: str):
         plan_copy = copy.deepcopy(plan)
         hours_after = fr.hours_by_filter(plan_copy)
         newly = [r for r in fr.rows_of(plan_copy)
-                 if _row_at_goal(r) and not reached_before.get(r.get("id"), False)]
+                 if _row_at_goal(r, plan_copy) and not reached_before.get(r.get("id"), False)]
         _activity_later(lambda: _record_progress(plan_copy, hours_before, hours_after,
                                                  list(unknown), newly))
 
@@ -5406,14 +5406,15 @@ def api_plan_accepted(plan_id: str):
                     "filed_through_night": body["filed_through_night"]})
 
 
-def _row_at_goal(row: dict) -> bool:
-    goal = fr.goal_hours(row)
+def _row_at_goal(row: dict, plan: dict) -> bool:
+    # A mosaic row's goal is per panel; the stored actual covers the plan.
+    goal = fr.goal_hours(row) * fr.panel_count(plan)
     actual = fr._num(row.get("actual_hours")) or 0.0
     return goal > 0 and actual >= goal
 
 
 def _record_goal_reached(plan: dict, row: dict) -> None:
-    goal = fr.goal_hours(row)
+    goal = fr.goal_hours(row) * fr.panel_count(plan)
     filt = str(row.get("filter") or "")
     activity.record(
         type="goal_reached", key=f"goal:{plan.get('id')}:{row.get('id')}:{goal:g}",

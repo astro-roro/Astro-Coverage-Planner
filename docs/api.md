@@ -271,6 +271,8 @@ Records what a session actually acquired against a plan's per-filter goals:
 
 Each entry updates `filter_goals.<f>.actual_hours`. Hours only ever go up: NINA's own acquired count drops legitimately when frames are culled or a project is reset, and silently rewinding a plan the user has watched fill up is worse than being one session stale. Pass `"force": true` to overwrite downward on purpose. Filter names are canonicalised, so a plugin reporting "Antlia Ha" updates the plan's `Ha` goal.
 
+A mosaic's goals are per panel, so the plan's total goal for a filter is the row goal times rows x cols, and the planner works out hours left against that total. `actual_hours` is still one figure for the whole plan: the payload has no panel field today.
+
 `acquired_count` is validated but not stored: the plan schema carries hours, and `/api/sync` derives the acquired sub count from hours and sub exposure. Filters the plan has no goal for are ignored rather than invented.
 
 ```json

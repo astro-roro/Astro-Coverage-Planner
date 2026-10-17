@@ -1059,6 +1059,7 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .fr-pending-bar { display: block; height: 100%;
   background: repeating-linear-gradient(135deg, #c9a86a 0 3px, rgba(201, 168, 106, 0.25) 3px 6px); }
 .fr-pending { font-size: 10px; color: #c9a86a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-panels { font-size: 10px; color: #78839a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-prog-text { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; color: #a2aec2; white-space: nowrap; overflow: hidden; }
 .fr-add { align-self: flex-start; font-size: 11px; }
 

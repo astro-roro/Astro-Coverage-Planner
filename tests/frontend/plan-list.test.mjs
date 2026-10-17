@@ -84,10 +84,13 @@ describe("planHoursLeft and planProgress", () => {
     assert.equal(planHoursLeft(p), 4);
   });
 
-  it("multiplies by the mosaic panel count", () => {
+  it("counts a mosaic's goal per panel and takes the plan's one actual off the total", () => {
+    // 5 h on each of 6 panels is 30 h wanted. The plan's single 1 h actual
+    // comes off that total, where this used to scale the remainder by 6 and
+    // so assume every panel was as far along as the stored figure.
     const p = plan("x", { goals: { Ha: [5, 1] }, mosaic: { rows: 2, cols: 3 } });
-    assert.equal(planHoursLeft(p), 24);
-    assert.deepEqual(planProgress(p), { done: 6, total: 30 });
+    assert.equal(planHoursLeft(p), 29);
+    assert.deepEqual(planProgress(p), { done: 1, total: 30 });
   });
 
   it("caps progress at the goal so an overshoot can't hide an empty filter", () => {

@@ -2,7 +2,9 @@
 // the search box, how they sort, and how they roll up into projects. Kept
 // out of app.js so tests/frontend/ can check them without a browser.
 
-import { hoursByFilter } from "./filter-rows.mjs";
+import { hoursByFilter, planPanelCount } from "./filter-rows.mjs";
+
+export { planPanelCount };
 
 export const PLAN_STATES = ["active", "draft", "inactive", "closed"];
 export const DEFAULT_PLAN_STATES = ["active", "draft"];
@@ -21,21 +23,15 @@ export function planProject(plan) {
   return plan?.project_name || NO_PROJECT;
 }
 
-export function planPanelCount(plan) {
-  const m = plan?.target?.mosaic || {};
-  const rows = Math.max(1, parseInt(m.rows) || 1);
-  const cols = Math.max(1, parseInt(m.cols) || 1);
-  return rows * cols;
-}
-
 // Hours still to shoot, summed over every filter (the rows of one filter add
-// up first) and multiplied by the mosaic panel count. Same sum the plan row has always shown.
+// up first). hoursByFilter already scales a mosaic's goal by its panel count,
+// so a 2 x 1 mosaic with an 8 h L goal and nothing shot has 16 h left.
 export function planHoursLeft(plan) {
   let left = 0;
   for (const g of Object.values(hoursByFilter(plan))) {
     left += Math.max(0, (g?.target_hours || 0) - (g?.actual_hours || 0));
   }
-  return left * planPanelCount(plan);
+  return left;
 }
 
 // Hours done and hours wanted, for a progress bar. Hours shot past a goal
@@ -47,8 +43,7 @@ export function planProgress(plan) {
     total += t;
     done += Math.min(Math.max(0, g?.actual_hours || 0), t);
   }
-  const k = planPanelCount(plan);
-  return { done: done * k, total: total * k };
+  return { done, total };
 }
 
 export function planMatchesQuery(plan, query) {

@@ -234,8 +234,19 @@ export function newFilterRow({ rows, camera, id }) {
 
 // --- totals for readers that want one figure per filter ---
 
+// How many panels the plan's mosaic has: rows x cols, 1 when it is not a
+// mosaic. Mirrors panel_count in filter_rows.py.
+export function planPanelCount(plan) {
+  const m = plan?.target?.mosaic || {};
+  const rows = Math.max(1, parseInt(m.rows) || 1);
+  const cols = Math.max(1, parseInt(m.cols) || 1);
+  return rows * cols;
+}
+
 // {filter: {target_hours, actual_hours}} summed over a plan's rows. Frame rows
-// count as target_frames x template_sub_s / 3600 hours.
+// count as target_frames x template_sub_s / 3600 hours. A row's goal is per
+// panel, so a mosaic's target_hours is the goal times the panel count;
+// actual_hours is the plan's single stored figure.
 export function hoursByFilter(plan) {
   const out = {};
   for (const r of plan?.filter_rows || []) {
@@ -244,6 +255,8 @@ export function hoursByFilter(plan) {
     e.target_hours += rowGoalHours(r);
     e.actual_hours += num(r.actual_hours);
   }
+  const k = planPanelCount(plan);
+  if (k > 1) for (const e of Object.values(out)) e.target_hours *= k;
   return out;
 }
 
@@ -294,13 +307,16 @@ export function rowGoal(row) {
   return row?.unit === "fr" ? Math.round(num(row.target_frames)) : num(row?.target_hours);
 }
 
-// {left, right, finished, noGoal, pct, pendingPct, pendingText} for the
-// progress block. `left` is the "3.0 / 4.2 h" text, `right` the "1.2 h left",
+// {left, right, finished, noGoal, pct, pendingPct, pendingText, panelText}
+// for the progress block. `panels` is the plan's mosaic panel count: the row's
+// goal is per panel, so the bar measures against goal x panels and
+// `panelText` says how that total is made up. `left` is the "3.0 / 4.2 h" text, `right` the "1.2 h left",
 // "done" or "set a goal" text. `pendingPct` is the striped part of the bar
 // after `pct` (shot, waiting for AAC), and `pendingText` its line under the
 // bar, empty when nothing is waiting.
-export function rowProgress(row) {
-  const goal = rowGoal(row);
+export function rowProgress(row, panels = 1) {
+  const k = Math.max(1, Math.floor(Number(panels)) || 1);
+  const goal = rowGoal(row) * k;
   const done = rowDone(row);
   const pending = rowPending(row);
   const frames = row?.unit === "fr";
@@ -311,14 +327,15 @@ export function rowProgress(row) {
     ? `+${frames ? pending : pending.toFixed(2)} ${u} shot, waiting for AAC`
     : "";
   if (!(goal > 0)) {
-    return { left: "", right: "set a goal", finished: false, noGoal: true, pct: 0, pendingPct: 0, pendingText };
+    return { left: "", right: "set a goal", finished: false, noGoal: true, pct: 0, pendingPct: 0, pendingText, panelText: "" };
   }
   const left = `${fmt(done)} / ${fmt(goal)} ${u}`;
   const remain = Math.max(0, goal - done);
   const right = finished ? "done" : `${fmt(remain)} ${u} left`;
   const pct = Math.min(100, Math.max(0, done / goal * 100));
   const pendingPct = finished ? 0 : Math.min(100 - pct, pending / goal * 100);
-  return { left, right, finished, noGoal: false, pct, pendingPct, pendingText };
+  const panelText = k > 1 ? `${k} panels × ${fmt(rowGoal(row))} ${u}` : "";
+  return { left, right, finished, noGoal: false, pct, pendingPct, pendingText, panelText };
 }
 
 // --- markup ---
@@ -345,8 +362,8 @@ export function handleHtml(index, smart = false) {
 
 // One card. `colors` maps filter name to dot colour. `smart` disables the
 // handle.
-export function cardHtml(row, index, { camera, colors = {}, smart = false } = {}) {
-  const p = rowProgress(row);
+export function cardHtml(row, index, { camera, colors = {}, smart = false, panels = 1 } = {}) {
+  const p = rowProgress(row, panels);
   const dot = colors[row.filter] || "#888";
   const frames = row.unit === "fr";
   const goalVal = frames ? num(row.target_frames) : num(row.target_hours);
@@ -366,7 +383,7 @@ export function cardHtml(row, index, { camera, colors = {}, smart = false } = {}
     <select class="fr-tmpl-sel" aria-label="TS template" title="${esc(cur)}">${tmplOpts}</select>
     <button type="button" class="fr-remove" title="Remove this filter" aria-label="Remove this filter">×</button>
     <div class="fr-goal"><input type="number" class="fr-goal-input" min="0" step="${frames ? 1 : 0.5}" value="${goalVal}" aria-label="Goal"><select class="fr-unit-sel" aria-label="Unit"><option value="h"${frames ? "" : " selected"}>h</option><option value="fr"${frames ? " selected" : ""}>fr</option></select></div>
-    <div class="fr-progress"><div class="fr-bar${row.aac ? " fr-bar-aac" : ""}"><i style="width:${p.pct.toFixed(1)}%"></i>${p.pendingPct > 0 ? `<b class="fr-pending-bar" style="width:${p.pendingPct.toFixed(1)}%"></b>` : ""}</div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div>${p.pendingText ? `<div class="fr-pending">${esc(p.pendingText)}</div>` : ""}</div>
+    <div class="fr-progress"><div class="fr-bar${row.aac ? " fr-bar-aac" : ""}"><i style="width:${p.pct.toFixed(1)}%"></i>${p.pendingPct > 0 ? `<b class="fr-pending-bar" style="width:${p.pendingPct.toFixed(1)}%"></b>` : ""}</div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div>${p.panelText ? `<div class="fr-panels">${esc(p.panelText)}</div>` : ""}${p.pendingText ? `<div class="fr-pending">${esc(p.pendingText)}</div>` : ""}</div>
     ${notes ? `<div class="fr-notes">${notes}</div>` : ""}
   </div>`;
 }
@@ -432,7 +449,8 @@ export function orderControlsHtml(plan, { rotateN, projectNote = "" } = {}) {
 export function filterListHtml(plan, ctx = {}) {
   const rows = plan?.filter_rows || [];
   const smart = smartOrder(plan);
-  const cards = rows.map((r, i) => cardHtml(r, i, { ...ctx, smart })).join("");
+  const panels = planPanelCount(plan);
+  const cards = rows.map((r, i) => cardHtml(r, i, { ...ctx, smart, panels })).join("");
   const note = rows.length
     ? ""
     : `<div class="fr-empty">No filters yet. Add one to set a goal.</div>`;
