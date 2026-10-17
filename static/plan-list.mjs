@@ -2,7 +2,7 @@
 // the search box, how they sort, and how they roll up into projects. Kept
 // out of app.js so tests/frontend/ can check them without a browser.
 
-import { hoursByFilter, planPanelCount } from "./filter-rows.mjs";
+import { hoursByFilter, mosaicDims, panelKey, planPanelCount, rowGoalHours, rowPanels } from "./filter-rows.mjs";
 
 export { planPanelCount };
 
@@ -29,9 +29,38 @@ export function planProject(plan) {
 export function planHoursLeft(plan) {
   let left = 0;
   for (const g of Object.values(hoursByFilter(plan))) {
-    left += Math.max(0, (g?.target_hours || 0) - (g?.actual_hours || 0));
+    left += Math.max(0, (g?.target_hours || 0) - (g?.credited_hours ?? g?.actual_hours ?? 0));
   }
   return left;
+}
+
+// Hours left per panel, for a mosaic whose rows track panels: [{key, left,
+// byFilter: {filter: hours left}}] in row-major order. A panel is measured
+// against its own goal on every row that has a panels map; rows without one
+// have no panel figures and are left out, so null means there is nothing to
+// break down (not a mosaic, or no row has a map).
+export function planPanelLeft(plan) {
+  const dims = mosaicDims(plan);
+  if (dims.rows * dims.cols < 2) return null;
+  const tracked = (plan?.filter_rows || []).filter(r => r?.filter && rowPanels(r, dims));
+  if (!tracked.length) return null;
+  const out = [];
+  for (let r = 0; r < dims.rows; r++) {
+    for (let c = 0; c < dims.cols; c++) {
+      const key = panelKey(r, c);
+      const byFilter = {};
+      let left = 0;
+      for (const row of tracked) {
+        const goal = rowGoalHours(row);
+        const have = rowPanels(row, dims)[key] || 0;
+        const remain = Math.max(0, goal - have);
+        byFilter[row.filter] = (byFilter[row.filter] || 0) + remain;
+        left += remain;
+      }
+      out.push({ key, left, byFilter });
+    }
+  }
+  return out;
 }
 
 // Hours done and hours wanted, for a progress bar. Hours shot past a goal
@@ -41,7 +70,7 @@ export function planProgress(plan) {
   for (const g of Object.values(hoursByFilter(plan))) {
     const t = Math.max(0, g?.target_hours || 0);
     total += t;
-    done += Math.min(Math.max(0, g?.actual_hours || 0), t);
+    done += Math.min(Math.max(0, g?.credited_hours ?? g?.actual_hours ?? 0), t);
   }
   return { done, total };
 }

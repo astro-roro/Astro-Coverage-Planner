@@ -21,6 +21,7 @@ import copy
 import datetime
 import logging
 import math
+import re
 import uuid
 from typing import Callable
 
@@ -29,6 +30,10 @@ from typing import Callable
 FILTER_ORDER = ("L", "R", "G", "B", "Ha", "OIII", "SII")
 
 UNITS = ("h", "fr")
+
+# Upper bound on a row's `panels` map, a little above the 400 panels the
+# visibility API accepts.
+MAX_PANELS = 400
 
 # A sub shorter than this is a star or calibration-style row, counted in
 # frames rather than hours.
@@ -198,13 +203,25 @@ def goal_hours(row: dict) -> float:
     return _num(row.get("target_hours")) or 0.0
 
 
-def panel_count(plan: dict | None) -> int:
-    """How many panels the plan's mosaic has: rows x cols, 1 for a plan that
-    is not a mosaic or whose mosaic block is junk. The same clamp the TS
-    export uses (`_build_ts_export`), so goals and exported targets agree."""
+# A mosaic panel's key, "row,col" counted from 1: the key ts_links uses in
+# `target_ids_by_panel` ("1,1" is R1C1, "2,1" is R2C1).
+_PANEL_KEY = re.compile(r"^[1-9][0-9]{0,2},[1-9][0-9]{0,2}$")
+
+
+def valid_panel_key(key) -> bool:
+    return isinstance(key, str) and _PANEL_KEY.match(key) is not None
+
+
+def panel_key(row_idx: int, col_idx: int) -> str:
+    """The key for the panel at zero-based (row_idx, col_idx)."""
+    return f"{row_idx + 1},{col_idx + 1}"
+
+
+def mosaic_dims(plan: dict | None) -> tuple[int, int]:
+    """(rows, cols) of the plan's mosaic, (1, 1) when it is not one."""
     mosaic = ((plan or {}).get("target") or {}).get("mosaic")
     if not isinstance(mosaic, dict):
-        return 1
+        return 1, 1
 
     def dim(key) -> int:
         v = mosaic.get(key)
@@ -212,7 +229,57 @@ def panel_count(plan: dict | None) -> int:
             return 1
         return max(1, int(v))
 
-    return dim("rows") * dim("cols")
+    return dim("rows"), dim("cols")
+
+
+def panel_count(plan: dict | None) -> int:
+    """How many panels the plan's mosaic has: rows x cols, 1 for a plan that
+    is not a mosaic or whose mosaic block is junk. The same clamp the TS
+    export uses (`_build_ts_export`), so goals and exported targets agree."""
+    rows, cols = mosaic_dims(plan)
+    return rows * cols
+
+
+def row_panels(row: dict, plan: dict | None = None) -> dict[str, float] | None:
+    """The row's per-panel acquired hours, or None when it has no `panels`
+    map. With *plan* given, keys outside the mosaic's grid are left out (a
+    mosaic that shrank keeps its old keys until the next report)."""
+    raw = row.get("panels")
+    if not isinstance(raw, dict):
+        return None
+    rows, cols = mosaic_dims(plan) if plan is not None else (None, None)
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        v = _num(value)
+        if v is None or v < 0 or not valid_panel_key(key):
+            continue
+        if rows is not None:
+            r, c = (int(x) for x in key.split(","))
+            if r > rows or c > cols:
+                continue
+        out[key] = v
+    return out
+
+
+def credited_hours(row: dict, plan: dict | None = None) -> float:
+    """Hours of a row that count toward its goal. With a `panels` map each
+    panel counts up to its own goal and no more, so a panel shot past its goal
+    cannot pay for a neighbour. Without one it is the plan's single
+    `actual_hours`, as before."""
+    panels = row_panels(row, plan)
+    if panels is None:
+        return _num(row.get("actual_hours")) or 0.0
+    goal = goal_hours(row)
+    return sum(min(v, goal) for v in panels.values())
+
+
+def sync_actuals(plan: dict | None) -> None:
+    """Make `actual_hours` the sum of the row's panel hours wherever the row
+    has a `panels` map. Rows without one are left alone."""
+    for row in rows_of(plan):
+        panels = row_panels(row)
+        if panels is not None:
+            row["actual_hours"] = round(sum(panels.values()), 4)
 
 
 def hours_by_filter(plan: dict | None) -> dict[str, dict]:
@@ -474,6 +541,26 @@ def validate_rows(rows, camera: dict | None, plan_id=None, templated: bool | Non
             ah_v = _num(ah)
             if isinstance(ah, bool) or ah_v is None or ah_v < 0:
                 return f"{where}.actual_hours must be a number of at least 0"
+        err = validate_panels(row.get("panels"), f"{where}.panels")
+        if err:
+            return err
+    return None
+
+
+def validate_panels(panels, where: str = "panels") -> str | None:
+    """A per-panel map: {"1,1": hours, ...}. None is allowed (no map)."""
+    if panels is None:
+        return None
+    if not isinstance(panels, dict):
+        return f"{where} must be an object keyed by \"row,col\""
+    if len(panels) > MAX_PANELS:
+        return f"{where} has more than {MAX_PANELS} panels"
+    for key, value in panels.items():
+        if not valid_panel_key(key):
+            return f"{where} key {_safe_log(key)!r} must look like \"1,1\" (row,col from 1)"
+        v = _num(value)
+        if isinstance(value, bool) or v is None or v < 0:
+            return f"{where}[{key!r}] must be a number of at least 0"
     return None
 
 

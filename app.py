@@ -4508,6 +4508,7 @@ def api_plans():
     previous = next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None)
     before = copy.deepcopy(previous) if previous is not None and activity.enabled() else None
     fr.keep_aac(payload, previous)
+    fr.sync_actuals(payload)
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -4574,6 +4575,7 @@ def api_plan(plan_id: str):
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     _keep_rows_from_old_page(payload, existing)
     fr.keep_aac(payload, existing)
+    fr.sync_actuals(payload)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     if before is not None:
@@ -5248,6 +5250,14 @@ def _validate_progress_payload(payload) -> str | None:
             count = cfg["acquired_count"]
             if isinstance(count, bool) or not isinstance(count, int) or count < 0:
                 return f"{name}.acquired_count must be an integer >= 0"
+        if cfg.get("panels") is not None:
+            err = fr.validate_panels(cfg["panels"], f"{name}.panels")
+            if err:
+                return err
+            for key, val in cfg["panels"].items():
+                if val > MAX_ACQUIRED_HOURS:
+                    return (f"{name}.panels[{key!r}] must be <= "
+                            f"{MAX_ACQUIRED_HOURS} (got {val!r})")
     if "force" in payload and not isinstance(payload["force"], bool):
         return "force must be a boolean"
     for field in ("source", "at"):
@@ -5314,7 +5324,7 @@ def api_plan_progress(plan_id: str):
         reports = [(name, None, cfg) for name, cfg in payload["filters"].items()]
 
     force = bool(payload.get("force"))
-    updated, unknown, not_lowered = {}, [], []
+    updated, unknown, not_lowered, panel_rows_kept = {}, [], [], []
     tracking = activity.enabled()
     hours_before = copy.deepcopy(fr.hours_by_filter(plan)) if tracking else {}
     reached_before = {r.get("id"): _row_at_goal(r, plan) for r in rows} if tracking else {}
@@ -5338,12 +5348,37 @@ def api_plan_progress(plan_id: str):
             continue
         row = hits[0]
         key = row.get("template") if template is not None else row.get("filter")
+        reported = cfg.get("panels")
+        if isinstance(reported, dict) and reported:
+            # Per-panel report: merge it into the row's map. A panel only goes
+            # up unless `force`, which replaces the whole map. actual_hours
+            # becomes the sum of the map, whatever acquired_hours said.
+            stored = fr.row_panels(row) or {}
+            merged = {} if force else dict(stored)
+            for pkey, hours in reported.items():
+                hours = float(hours)
+                if not force and hours < stored.get(pkey, 0.0):
+                    not_lowered.append(f"{key}#{pkey}")
+                    continue
+                merged[pkey] = hours
+            if merged != stored or "panels" not in row:
+                row["panels"] = {k: round(v, 4) for k, v in sorted(merged.items())}
+                fr.sync_actuals({"filter_rows": [row]})
+                updated[key] = row["actual_hours"]
+            continue
         new_hours = _num(cfg.get("acquired_hours"))
         current = _num(row.get("actual_hours")) or 0.0
+        if isinstance(row.get("panels"), dict) and not force:
+            # The row is tracked per panel, so the per-panel figures are the
+            # record. A report with one figure for the whole plan cannot say
+            # which panel it belongs to; leave the map and the sum alone.
+            panel_rows_kept.append(key)
+            continue
         if new_hours < current and not force:
             not_lowered.append(key)
             continue
         row["actual_hours"] = new_hours
+        row.pop("panels", None)
         updated[key] = new_hours
 
     if updated:
@@ -5365,6 +5400,7 @@ def api_plan_progress(plan_id: str):
         "updated": updated,
         "unknown_filters": unknown,
         "not_lowered": not_lowered,
+        "panel_rows_kept": panel_rows_kept,
     })
 
 
@@ -5407,9 +5443,10 @@ def api_plan_accepted(plan_id: str):
 
 
 def _row_at_goal(row: dict, plan: dict) -> bool:
-    # A mosaic row's goal is per panel; the stored actual covers the plan.
+    # A mosaic row's goal is per panel. With a panels map each panel counts up
+    # to its own goal; without one the stored actual covers the plan.
     goal = fr.goal_hours(row) * fr.panel_count(plan)
-    actual = fr._num(row.get("actual_hours")) or 0.0
+    actual = fr.credited_hours(row, plan)
     return goal > 0 and actual >= goal
 
 
@@ -5997,6 +6034,16 @@ def _ts_database_version(ts_db_path: str | None = None) -> str:
         return "0"
 
 
+def _panel_acquired(spec: dict, panel: dict, multi: bool) -> int:
+    """Frames already acquired on one exported target. A mosaic whose row
+    tracks panels gives each panel its own count (a panel with no entry has
+    none); anything else gets the plan's figure, as before."""
+    by_panel = spec.get("acquired_by_panel")
+    if multi and by_panel is not None:
+        return int(by_panel.get(fr.panel_key(panel["row"], panel["col"]), 0))
+    return int(spec["acquired"])
+
+
 def _mosaic_panel_centers(ra_c: float, dec_c: float, fov_w_arcmin: float, fov_h_arcmin: float,
                           rot_deg: float, rows: int, cols: int, overlap_pct: float) -> list[dict]:
     """Return per-panel centers [{row, col, ra_deg, dec_deg}] for an rows×cols mosaic
@@ -6151,6 +6198,11 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                 fname = str(row.get("filter") or "")
                 sub_s = fr.sub_s(row)
                 acquired = int(round(float(row.get("actual_hours") or 0) * 3600.0 / max(1.0, sub_s)))
+                # Per-panel hours, as frames, when the row tracks them. Only a
+                # mosaic reads them; a single target uses the plan's figure.
+                by_panel = fr.row_panels(row, pl)
+                if by_panel is not None:
+                    by_panel = {k: int(round(v * 3600.0 / max(1.0, sub_s))) for k, v in by_panel.items()}
                 # Dedupe ExposureTemplate by (camera_id, template name): the
                 # row names its template, and gain/offset/etc live on the camera.
                 tpl_name = str(row.get("template") or fname)
@@ -6190,6 +6242,7 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                     "sub_s": sub_s,
                     "desired": desired,
                     "acquired": acquired,
+                    "acquired_by_panel": by_panel,
                     "template_id": tpl["Id"],
                 })
 
@@ -6222,8 +6275,8 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                                             # but setting explicitly is safer.
                     "Exposure": float(spec["sub_s"]),
                     "Desired": int(spec["desired"]),
-                    "Acquired": int(spec["acquired"]),
-                    "Accepted": int(spec["acquired"]),
+                    "Acquired": _panel_acquired(spec, panel, multi),
+                    "Accepted": _panel_acquired(spec, panel, multi),
                     "IsEnabled": True,
                     "ExposureTemplateId": int(spec["template_id"]),
                 } for spec in exp_plan_specs]

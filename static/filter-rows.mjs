@@ -234,26 +234,69 @@ export function newFilterRow({ rows, camera, id }) {
 
 // --- totals for readers that want one figure per filter ---
 
+// The plan's mosaic grid, {rows, cols}, 1 x 1 when it is not a mosaic.
+export function mosaicDims(plan) {
+  const m = plan?.target?.mosaic || {};
+  return {
+    rows: Math.max(1, parseInt(m.rows) || 1),
+    cols: Math.max(1, parseInt(m.cols) || 1),
+  };
+}
+
 // How many panels the plan's mosaic has: rows x cols, 1 when it is not a
 // mosaic. Mirrors panel_count in filter_rows.py.
 export function planPanelCount(plan) {
-  const m = plan?.target?.mosaic || {};
-  const rows = Math.max(1, parseInt(m.rows) || 1);
-  const cols = Math.max(1, parseInt(m.cols) || 1);
+  const { rows, cols } = mosaicDims(plan);
   return rows * cols;
 }
 
-// {filter: {target_hours, actual_hours}} summed over a plan's rows. Frame rows
-// count as target_frames x template_sub_s / 3600 hours. A row's goal is per
-// panel, so a mosaic's target_hours is the goal times the panel count;
-// actual_hours is the plan's single stored figure.
+// A panel's key, "row,col" from 1, the key ts_links uses.
+export function panelKey(rowIdx, colIdx) {
+  return `${rowIdx + 1},${colIdx + 1}`;
+}
+
+// A row's per-panel acquired hours as {key: hours} for the panels inside
+// `dims` ({rows, cols}; omit to keep every key), or null when the row has no
+// `panels` map. Mirrors row_panels in filter_rows.py.
+export function rowPanels(row, dims = null) {
+  const raw = row?.panels;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const m = /^([1-9][0-9]*),([1-9][0-9]*)$/.exec(key);
+    const v = Number(value);
+    if (!m || !Number.isFinite(v) || v < 0) continue;
+    if (dims && (Number(m[1]) > dims.rows || Number(m[2]) > dims.cols)) continue;
+    out[key] = v;
+  }
+  return out;
+}
+
+// Hours of a row that count toward its goal: with a panels map each panel
+// counts up to its own goal and no more; without one, actual_hours.
+export function creditedHours(row, dims = null) {
+  const panels = rowPanels(row, dims);
+  if (!panels) return num(row?.actual_hours);
+  const goal = rowGoalHours(row);
+  return Object.values(panels).reduce((t, v) => t + Math.min(v, goal), 0);
+}
+
+// {filter: {target_hours, actual_hours, credited_hours}} summed over a plan's
+// rows. Frame rows count as target_frames x template_sub_s / 3600 hours. A
+// row's goal is per panel, so a mosaic's target_hours is the goal times the
+// panel count. actual_hours is what was shot (the sum of the panels when a row
+// has a panels map). credited_hours is what counts toward the goal: the same,
+// except that each panel counts up to its own goal and no more.
 export function hoursByFilter(plan) {
   const out = {};
+  const dims = mosaicDims(plan);
   for (const r of plan?.filter_rows || []) {
     if (!r?.filter) continue;
-    const e = out[r.filter] || (out[r.filter] = { target_hours: 0, actual_hours: 0 });
+    const e = out[r.filter] || (out[r.filter] = { target_hours: 0, actual_hours: 0, credited_hours: 0 });
     e.target_hours += rowGoalHours(r);
-    e.actual_hours += num(r.actual_hours);
+    const panels = rowPanels(r, dims);
+    e.actual_hours += panels ? Object.values(panels).reduce((t, v) => t + v, 0) : num(r.actual_hours);
+    e.credited_hours += creditedHours(r, dims);
   }
   const k = planPanelCount(plan);
   if (k > 1) for (const e of Object.values(out)) e.target_hours *= k;
@@ -265,16 +308,39 @@ export function hoursByFilter(plan) {
 // What a row has done, in its own unit. AAC's accepted figures win when the
 // row has an aac block (section 6); otherwise actual_hours, with frame rows
 // converted to whole frames.
-export function rowDone(row) {
+export function rowDone(row, dims = null) {
   const sub = rowSub(row);
   const aac = row?.aac;
+  const shot = rowPanels(row, dims) ? creditedHours(row, dims) : num(row?.actual_hours);
   if (row?.unit === "fr") {
     if (aac && Number.isFinite(Number(aac.accepted_frames))) return Math.round(num(aac.accepted_frames));
     if (aac && Number.isFinite(Number(aac.accepted_seconds))) return Math.round(num(aac.accepted_seconds) / sub);
-    return Math.round(num(row.actual_hours) * 3600 / sub);
+    return Math.round(shot * 3600 / sub);
   }
   if (aac && Number.isFinite(Number(aac.accepted_seconds))) return num(aac.accepted_seconds) / 3600;
-  return num(row?.actual_hours);
+  return shot;
+}
+
+// Per-panel progress for a row that has a panels map: one entry per panel of
+// the grid, in row-major order, {key, done, goal, left, finished}, in the
+// row's own unit. A panel counts up to its own goal. Null without a map.
+export function rowPanelProgress(row, dims) {
+  const panels = rowPanels(row, dims);
+  if (!panels) return null;
+  const frames = row?.unit === "fr";
+  const sub = rowSub(row);
+  const goal = rowGoal(row);
+  const out = [];
+  for (let r = 0; r < dims.rows; r++) {
+    for (let c = 0; c < dims.cols; c++) {
+      const key = panelKey(r, c);
+      const hours = panels[key] || 0;
+      const done = frames ? Math.round(hours * 3600 / sub) : hours;
+      const left = Math.max(0, goal - done);
+      out.push({ key, done, goal, left, finished: goal > 0 && done >= goal });
+    }
+  }
+  return out;
 }
 
 // What Target Scheduler has shot that AAC has not looked at yet, in the row's
@@ -315,9 +381,12 @@ export function rowGoal(row) {
 // after `pct` (shot, waiting for AAC), and `pendingText` its line under the
 // bar, empty when nothing is waiting.
 export function rowProgress(row, panels = 1) {
-  const k = Math.max(1, Math.floor(Number(panels)) || 1);
+  // `panels` is the plan's mosaic: a panel count, or its {rows, cols}, which
+  // also lets the row's per-panel breakdown be read.
+  const dims = panels && typeof panels === "object" ? panels : null;
+  const k = dims ? dims.rows * dims.cols : Math.max(1, Math.floor(Number(panels)) || 1);
   const goal = rowGoal(row) * k;
-  const done = rowDone(row);
+  const done = rowDone(row, dims);
   const pending = rowPending(row);
   const frames = row?.unit === "fr";
   const fmt = v => (frames ? String(v) : v.toFixed(1));
@@ -327,7 +396,7 @@ export function rowProgress(row, panels = 1) {
     ? `+${frames ? pending : pending.toFixed(2)} ${u} shot, waiting for AAC`
     : "";
   if (!(goal > 0)) {
-    return { left: "", right: "set a goal", finished: false, noGoal: true, pct: 0, pendingPct: 0, pendingText, panelText: "" };
+    return { left: "", right: "set a goal", finished: false, noGoal: true, pct: 0, pendingPct: 0, pendingText, panelText: "", panelLines: [] };
   }
   const left = `${fmt(done)} / ${fmt(goal)} ${u}`;
   const remain = Math.max(0, goal - done);
@@ -335,7 +404,13 @@ export function rowProgress(row, panels = 1) {
   const pct = Math.min(100, Math.max(0, done / goal * 100));
   const pendingPct = finished ? 0 : Math.min(100 - pct, pending / goal * 100);
   const panelText = k > 1 ? `${k} panels × ${fmt(rowGoal(row))} ${u}` : "";
-  return { left, right, finished, noGoal: false, pct, pendingPct, pendingText, panelText };
+  const byPanel = k > 1 && dims ? rowPanelProgress(row, dims) : null;
+  const panelLines = byPanel ? byPanel.map(p => ({
+    key: p.key, finished: p.finished,
+    text: p.finished ? "done" : `${fmt(p.left)} ${u} left`,
+    title: `${p.key}: ${fmt(p.done)} / ${fmt(p.goal)} ${u}`,
+  })) : [];
+  return { left, right, finished, noGoal: false, pct, pendingPct, pendingText, panelText, panelLines };
 }
 
 // --- markup ---
@@ -383,7 +458,7 @@ export function cardHtml(row, index, { camera, colors = {}, smart = false, panel
     <select class="fr-tmpl-sel" aria-label="TS template" title="${esc(cur)}">${tmplOpts}</select>
     <button type="button" class="fr-remove" title="Remove this filter" aria-label="Remove this filter">×</button>
     <div class="fr-goal"><input type="number" class="fr-goal-input" min="0" step="${frames ? 1 : 0.5}" value="${goalVal}" aria-label="Goal"><select class="fr-unit-sel" aria-label="Unit"><option value="h"${frames ? "" : " selected"}>h</option><option value="fr"${frames ? " selected" : ""}>fr</option></select></div>
-    <div class="fr-progress"><div class="fr-bar${row.aac ? " fr-bar-aac" : ""}"><i style="width:${p.pct.toFixed(1)}%"></i>${p.pendingPct > 0 ? `<b class="fr-pending-bar" style="width:${p.pendingPct.toFixed(1)}%"></b>` : ""}</div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div>${p.panelText ? `<div class="fr-panels">${esc(p.panelText)}</div>` : ""}${p.pendingText ? `<div class="fr-pending">${esc(p.pendingText)}</div>` : ""}</div>
+    <div class="fr-progress"><div class="fr-bar${row.aac ? " fr-bar-aac" : ""}"><i style="width:${p.pct.toFixed(1)}%"></i>${p.pendingPct > 0 ? `<b class="fr-pending-bar" style="width:${p.pendingPct.toFixed(1)}%"></b>` : ""}</div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div>${p.panelText ? `<div class="fr-panels">${esc(p.panelText)}</div>` : ""}${p.panelLines.length ? `<div class="fr-panel-list">${p.panelLines.map(l => `<span class="fr-panel${l.finished ? " fr-panel-done" : ""}" title="${esc(l.title)}">${esc(l.key)} ${esc(l.text)}</span>`).join("")}</div>` : ""}${p.pendingText ? `<div class="fr-pending">${esc(p.pendingText)}</div>` : ""}</div>
     ${notes ? `<div class="fr-notes">${notes}</div>` : ""}
   </div>`;
 }
@@ -449,7 +524,7 @@ export function orderControlsHtml(plan, { rotateN, projectNote = "" } = {}) {
 export function filterListHtml(plan, ctx = {}) {
   const rows = plan?.filter_rows || [];
   const smart = smartOrder(plan);
-  const panels = planPanelCount(plan);
+  const panels = mosaicDims(plan);
   const cards = rows.map((r, i) => cardHtml(r, i, { ...ctx, smart, panels })).join("");
   const note = rows.length
     ? ""
