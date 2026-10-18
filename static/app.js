@@ -6042,6 +6042,20 @@ function init() {
     return;
   }
 
+  // The manifest does not need the map, so fetch it while Aladin starts
+  // and await it below. The no-op catch stops an unhandled-rejection
+  // warning if Aladin fails first; the await still throws the real error.
+  const manifestReady = (async () => {
+    const r = await fetch("/api/manifest");
+    if (!r.ok) {
+      const err = new Error("manifest request failed");
+      err.status = r.status;
+      throw err;
+    }
+    return r.json();
+  })();
+  manifestReady.catch(() => {});
+
   const aladinReady = withTimeout(
     A.init,
     ALADIN_INIT_TIMEOUT_MS,
@@ -6233,13 +6247,7 @@ function init() {
     });
 
     // Load manifest
-    const r = await fetch("/api/manifest");
-    if (!r.ok) {
-      const err = new Error("manifest request failed");
-      err.status = r.status;
-      throw err;
-    }
-    manifest = await r.json();
+    manifest = await manifestReady;
 
     // Show the onboarding banner if the manifest is empty (fresh install).
     // The user can dismiss it; we don't pin the dismissal across reloads
@@ -6260,14 +6268,13 @@ function init() {
     const catalogReady = setupCatalogOverlays();
     setupPlannerUI();
 
-    // Auto-import any manifest-discovered telescopes/cameras before first gear load
-    // so the planner sees the user's actual rigs from the start.
-    await seedGearFromManifest();
     // Load planner data in parallel with catalogs (sites included so the
     // first updateObsNow uses the saved active site rather than the hardcoded
-    // Sydney fallback in `currentSite`).
+    // Sydney fallback in `currentSite`). Auto-importing manifest-discovered
+    // telescopes/cameras must finish before the first gear load so the
+    // planner sees the user's actual rigs; nothing else here reads gear.
     await Promise.all([
-      loadGear(), loadPlans(), loadTargetOverrides(), loadHidden(),
+      seedGearFromManifest().then(loadGear), loadPlans(), loadTargetOverrides(), loadHidden(),
       loadPublishConfig(), initSites(), catalogReady,
     ]);
     // The legend was drawn before gear loaded; redraw it with the saved picks.
