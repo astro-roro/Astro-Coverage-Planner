@@ -634,6 +634,7 @@ import {
   resolveTileDraw,
   retryDelayMs, sourcesNeedRetry, extensionStatusModel,
   railTabWidthPx, railWidthDefault, layerStateMessage, bridgeRequest,
+  extPostPathOk, parsePostBody,
 } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
@@ -4322,7 +4323,7 @@ const sourceUsable = s => { const st = sourceStateOf(s); return st === "ready" |
 // Take a fresh summary: set up state for new sources, keep what the user has
 // already chosen for known ones, redraw the rail and load tiles for any
 // enabled source that has just become ready.
-function applyTileSources(summary) {
+function applyTileSources(summary, { loadTiles = true } = {}) {
   const before = new Map(tileSources.map(s => [s.id, sourceStateOf(s)]));
   tileSources = summary;
   const saved = _loadInvState();
@@ -4355,10 +4356,12 @@ function applyTileSources(summary) {
   renderInventoryRail();
   renderExtensionStatus();
   // Lazy-load tiles for whichever sources are enabled and usable.
-  for (const s of tileSources) {
-    if (!invState[s.id].enabled || !sourceUsable(s)) continue;
-    if (before.get(s.id) !== sourceStateOf(s)) delete tileData[s.id];
-    ensureTilesLoaded(s.id);
+  if (loadTiles) {
+    for (const s of tileSources) {
+      if (!invState[s.id].enabled || !sourceUsable(s)) continue;
+      if (before.get(s.id) !== sourceStateOf(s)) delete tileData[s.id];
+      ensureTilesLoaded(s.id);
+    }
   }
   broadcastLayerState();
 }
@@ -4599,22 +4602,15 @@ async function ensureTilesLoaded(sourceId) {
 // source, so this refetches every source's summary and the tiles of the
 // enabled ones, redraws, and re-renders an open tile panel from the new data.
 async function refreshExtensionTiles() {
-  if (!tileSources.length) return;
-  try {
-    const r = await fetch("/api/tile-sources");
-    const d = await r.json();
-    if (Array.isArray(d?.sources)) {
-      for (const fresh of d.sources) {
-        const i = tileSources.findIndex(s => s.id === fresh.id);
-        if (i >= 0) tileSources[i] = fresh;
-      }
-    }
-  } catch (e) {
-    console.warn("tile source refresh failed:", e);
+  const summary = await fetchTileSourceSummary();
+  if (summary && summary.length) {
+    const accordion = document.getElementById("railInventory");
+    if (accordion) accordion.hidden = false;
+    applyTileSources(summary, { loadTiles: false });
   }
   for (const s of tileSources) {
     delete tileData[s.id];
-    if (invState[s.id]?.enabled) await ensureTilesLoaded(s.id);
+    if (invState[s.id]?.enabled && sourceUsable(s)) await ensureTilesLoaded(s.id);
   }
   if (panelMode === "tile-detail" && selectedTileKey) {
     const [sid, ...rest] = selectedTileKey.split("/");
@@ -4622,6 +4618,8 @@ async function refreshExtensionTiles() {
     const tile = (tileData[sid] || []).find(t => String(t.id) === tid);
     if (tile) renderTilePanel(tile, sid);
   }
+  broadcastLayerState();
+  scheduleTileSourceRetry(0);
 }
 
 // --- Horizon overlay (Plan A.6 / step 7) --------------------------------
@@ -5096,12 +5094,43 @@ function wireExtTilePanel(container, findPlan, tileNavEntry) {
         else showTilePanelNotice(container, "That plan is not loaded in ACP.");
       },
       newPlan: a => promotePlanAt({ ra: a.ra, dec: a.dec, name: a.name, fromTile: tileNavEntry() }),
+      post: a => postFromTilePanel(container, a),
       goto: a => {
         activityShowOnMap(a.ra, a.dec);
         if (a.fov != null && typeof aladin?.setFoV === "function") aladin.setFoV(a.fov);
       },
     });
   });
+}
+
+// data-acp-post: POST a JSON body to an extension route, then refresh the
+// tile sources the way an Apply does. A bad path or body sends nothing.
+async function postFromTilePanel(container, a) {
+  if (!extPostPathOk(a.path)) {
+    showTilePanelNotice(container, "That action's path is not allowed.");
+    return;
+  }
+  const parsed = parsePostBody(a.rawBody);
+  if (!parsed.ok) {
+    showTilePanelNotice(container, "That action's body is not valid JSON.");
+    return;
+  }
+  let resp;
+  try {
+    resp = await fetch(a.path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed.body),
+    });
+  } catch (e) {
+    showTilePanelNotice(container, `Request failed: ${e}`);
+    return;
+  }
+  if (!resp.ok) {
+    showTilePanelNotice(container, `Request failed (${resp.status}).`);
+    return;
+  }
+  await refreshExtensionTiles();
 }
 
 // ACP has no toast, so a short-lived note sits at the top of the container.
@@ -6186,6 +6215,7 @@ window.addEventListener("message", e => {
   if (!req) return;
   if (req.kind === "layer-set") setLayerEnabled(req.id, req.enabled);
   else if (req.kind === "time-aware-set") { if (req.enabled !== timeAware) setTimeAware(req.enabled); }
+  else if (req.kind === "tiles-refresh") refreshExtensionTiles();
   else {
     try { e.source.postMessage(layerStateNow(), location.origin); } catch { /* frame gone */ }
   }

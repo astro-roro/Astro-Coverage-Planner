@@ -122,7 +122,7 @@ export function tilePanelTitleHtml(sourceLabel, tileId, esc) {
   return `${above}<h3>${esc(id)}</h3>`;
 }
 
-const ACTION_SELECTOR = "[data-acp-plan-id],[data-acp-new-plan],[data-acp-goto]";
+const ACTION_SELECTOR = "[data-acp-plan-id],[data-acp-new-plan],[data-acp-goto],[data-acp-post]";
 
 function degAttr(el, name) {
   const raw = el.getAttribute(name);
@@ -141,6 +141,10 @@ export function tilePanelAction(target, root) {
     const id = (el.getAttribute("data-acp-plan-id") || "").trim();
     return id ? { type: "plan", id } : null;
   }
+  if (el.hasAttribute("data-acp-post")) {
+    return { type: "post", path: el.getAttribute("data-acp-post") || "",
+             rawBody: el.getAttribute("data-acp-body") };
+  }
   const ra = degAttr(el, "data-ra"), dec = degAttr(el, "data-dec");
   if (ra == null || dec == null || dec < -90 || dec > 90) return null;
   const raN = ((ra % 360) + 360) % 360;
@@ -154,10 +158,11 @@ export function tilePanelAction(target, root) {
 
 // Runs a tile panel action through the supplied handlers. Returns true when
 // an action was found, so the caller can stop the click's default.
-export function runTilePanelAction(action, { openPlan, newPlan, goto }) {
+export function runTilePanelAction(action, { openPlan, newPlan, goto, post }) {
   if (!action) return false;
   if (action.type === "plan") openPlan(action.id);
   else if (action.type === "new-plan") newPlan(action);
+  else if (action.type === "post") post(action);
   else goto(action);
   return true;
 }
@@ -308,8 +313,31 @@ export function bridgeRequest(event, frames, origin) {
     if (typeof d.id !== "string" || !d.id || d.id.length > 200 || typeof d.enabled !== "boolean") return null;
     return { kind: "layer-set", id: d.id, enabled: d.enabled };
   }
+  if (d.type === "acp:tiles:refresh") return { kind: "tiles-refresh" };
   if (d.type === "acp:time-aware:set") {
     return typeof d.enabled === "boolean" ? { kind: "time-aware-set", enabled: d.enabled } : null;
   }
   return null;
+}
+
+// --- data-acp-post ---------------------------------------------------------
+
+// A path a tile panel may POST to: same-origin, under /api/ext/, checked the
+// way rail tab pages are (no scheme or host, backslashes, control characters,
+// encoded dots or slashes, or dot segments) and with something after the prefix.
+export function extPostPathOk(path) {
+  if (typeof path !== "string" || !path.startsWith("/api/ext/") || path.length <= "/api/ext/".length) return false;
+  if (path.startsWith("//") || path.includes("\\") || /[\x00-\x1f\x7f]/.test(path)) return false;
+  const bare = path.split("?")[0].split("#")[0];
+  if (/%(2e|2f|5c)/i.test(bare)) return false;
+  if (bare.split("/").some(seg => seg === ".." || seg === ".")) return false;
+  return bare.length > "/api/ext/".length;
+}
+
+// The body of a data-acp-post element: absent or blank means {}, otherwise
+// it must be valid JSON. Returns {ok: true, body} or {ok: false}.
+export function parsePostBody(raw) {
+  if (raw == null || String(raw).trim() === "") return { ok: true, body: {} };
+  try { return { ok: true, body: JSON.parse(raw) }; }
+  catch { return { ok: false }; }
 }

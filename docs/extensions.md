@@ -144,6 +144,8 @@ Elements inside `panel_html` can trigger ACP actions through data attributes. Cl
 - `data-acp-new-plan` with `data-ra` and `data-dec` in degrees, and an optional `data-name`, opens the same new-plan editor that "Create new plan from this tile" uses, centred on that position and named from `data-name`.
 - `data-acp-goto` with `data-ra` and `data-dec` in degrees, and an optional `data-fov` in degrees, pans the sky map there and sets the field of view when `data-fov` is given.
 
+- `data-acp-post="<path>"` with an optional `data-acp-body='<json>'` POSTs that JSON body (`{}` when absent) to the path as `application/json`. The path must be a same-origin relative path under `/api/ext/`, with no host, `..` or `.` segments, backslashes or encoded dots and slashes. On a 2xx reply ACP refreshes tile sources and tiles as it does after an extension Apply, redraws the map, re-renders the open tile panel and sends `acp:layers` to the rail iframes. On any other status a short note with the status appears at the top of the panel. A bad path or a body that is not valid JSON sends nothing and shows a note.
+
 An action with a missing or invalid `data-ra` or `data-dec` (not a number, or a declination outside -90 to 90) does nothing.
 
 - `status` in the source's `metadata()`. Return `"loading"` while the source is still starting up and ACP lists it as loading and asks again (see below). Any other value is ignored.
@@ -351,6 +353,8 @@ A rail tab page can read and change the map's tile layers and time-aware mode wi
 - `{type: "acp:layers:get"}` asks for the current state. ACP replies to that iframe.
 - `{type: "acp:layer:set", id: "<source id>", enabled: true | false}` switches a tile source on or off exactly as its rail checkbox does, including remembering it. Sources that are loading or in error are ignored.
 - `{type: "acp:time-aware:set", enabled: true | false}` switches time-aware mode as the existing control does.
+
+- `{type: "acp:tiles:refresh"}` makes ACP refresh tile sources and tiles, as after an Apply. Use it when the page has changed something server-side by its own means.
 
 ACP sends `{type: "acp:layers", timeAware: bool, layers: [{id, label, enabled, color, kind, extension}]}` in reply to a get, and to every open rail iframe whenever a layer or time-aware mode changes, whoever changed it. `kind` is always `"tiles"`. Only tile sources are included: the built-in map overlays (catalogues, survey layers and the like) are toggled through a different mechanism and are not part of the bridge.
 

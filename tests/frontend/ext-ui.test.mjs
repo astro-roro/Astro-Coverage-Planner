@@ -6,6 +6,7 @@ import {
   tileStyleFrom, resolveTileDraw,
   retryDelayMs, sourcesNeedRetry, extensionStatusModel, sourceState,
   railTabWidthPx, railWidthDefault, layerStateMessage, bridgeRequest,
+  extPostPathOk, parsePostBody,
 } from "../../static/ext-ui.mjs";
 
 const esc = s => String(s).replace(/[&<>"']/g, c => (
@@ -167,7 +168,7 @@ function el(attrs, parent = null) {
     closest: () => {
       for (let x = node; x; x = x.parent) {
         if (x.hasAttribute?.("data-acp-plan-id") || x.hasAttribute?.("data-acp-new-plan")
-          || x.hasAttribute?.("data-acp-goto")) return x;
+          || x.hasAttribute?.("data-acp-goto") || x.hasAttribute?.("data-acp-post")) return x;
       }
       return null;
     },
@@ -429,5 +430,61 @@ describe("bridgeRequest", () => {
     ]) {
       assert.equal(bridgeRequest(ev(d), [frame], origin), null, JSON.stringify(d));
     }
+  });
+});
+
+describe("extPostPathOk", () => {
+  it("accepts relative paths under /api/ext/", () => {
+    for (const p of ["/api/ext/nights/apply", "/api/ext/x/y?a=1", "/api/ext/nights-x/go/now"]) {
+      assert.equal(extPostPathOk(p), true, p);
+    }
+  });
+
+  it("rejects other prefixes, hosts, traversal, encoded separators and junk", () => {
+    for (const p of [
+      "/api/ext/", "/api/ext", "/api/other/x", "https://x.test/api/ext/a", "//x.test/api/ext/a",
+      "api/ext/a", "/api/ext/../x", "/api/ext/a/./b", "/api/ext/%2e%2e/x", "/api/ext/a%2Fb",
+      "/api/ext/a\\b", "/api/ext/a\nb", "javascript:alert(1)", "/api/ext/?x", null, 3, undefined,
+    ]) {
+      assert.equal(extPostPathOk(p), false, String(p));
+    }
+  });
+});
+
+describe("parsePostBody", () => {
+  it("defaults to an empty object when absent or blank", () => {
+    assert.deepEqual(parsePostBody(null), { ok: true, body: {} });
+    assert.deepEqual(parsePostBody(undefined), { ok: true, body: {} });
+    assert.deepEqual(parsePostBody("  "), { ok: true, body: {} });
+  });
+  it("parses valid JSON", () => {
+    assert.deepEqual(parsePostBody('{"a":[1,2]}'), { ok: true, body: { a: [1, 2] } });
+  });
+  it("reports bad JSON so no request is sent", () => {
+    assert.deepEqual(parsePostBody("{a:1}"), { ok: false });
+    assert.deepEqual(parsePostBody("{"), { ok: false });
+  });
+});
+
+describe("data-acp-post action and refresh request", () => {
+  const root = el({});
+  it("reads the path and raw body off the element", () => {
+    const a = el({ "data-acp-post": "/api/ext/n/go", "data-acp-body": '{"x":1}' }, root);
+    assert.deepEqual(tilePanelAction(a, root), { type: "post", path: "/api/ext/n/go", rawBody: '{"x":1}' });
+    const b = el({ "data-acp-post": "/api/ext/n/go" }, root);
+    assert.equal(tilePanelAction(b, root).rawBody, null);
+  });
+  it("dispatches post to its handler", () => {
+    const seen = [];
+    runTilePanelAction({ type: "post", path: "/api/ext/n/go", rawBody: null },
+      { post: a => seen.push(a.path) });
+    assert.deepEqual(seen, ["/api/ext/n/go"]);
+  });
+  it("accepts acp:tiles:refresh from a rail iframe only", () => {
+    const frame = {};
+    const ok = { origin: "https://a.test", source: frame, data: { type: "acp:tiles:refresh" } };
+    assert.deepEqual(bridgeRequest(ok, [frame], "https://a.test"), { kind: "tiles-refresh" });
+    assert.equal(bridgeRequest({ ...ok, origin: "https://b.test" }, [frame], "https://a.test"), null);
+    assert.equal(bridgeRequest({ ...ok, source: {} }, [frame], "https://a.test"), null);
   });
 });
