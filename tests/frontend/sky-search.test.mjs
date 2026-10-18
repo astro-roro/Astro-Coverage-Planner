@@ -1,12 +1,17 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import zlib from "node:zlib";
 import {
   MAX_RADIUS_DEG,
   VIZIER_CATALOGUES,
   angSepArcmin,
   applyFilters,
   applyIdents,
+  astrobinParam,
+  astrobinSearchUrl,
+  msgpackString,
+  zlibStored,
   buildIdentAdql,
   buildSimbadAdql,
   catalogueIds,
@@ -505,5 +510,83 @@ describe("SIMBAD identifiers", () => {
     assert.equal(r.ok, true);
     assert.equal(r.identFailed, true);
     assert.ok(r.items.length > 0);
+  });
+});
+
+describe("AstroBin search link", () => {
+  // Reads a link back the way AstroBin's app does: base64, zlib, MessagePack
+  // string, then key=value pairs with JSON for objects.
+  function readLink(url) {
+    const u = new URL(url);
+    const bytes = zlib.inflateSync(Buffer.from(u.searchParams.get("p"), "base64"));
+    let n, off;
+    if ((bytes[0] & 0xe0) === 0xa0) { n = bytes[0] & 31; off = 1; }
+    else if (bytes[0] === 0xd9) { n = bytes[1]; off = 2; }
+    else if (bytes[0] === 0xda) { n = (bytes[1] << 8) | bytes[2]; off = 3; }
+    else throw new Error("not a msgpack string");
+    assert.equal(bytes.length, off + n, "string length matches the header");
+    const qs = bytes.subarray(off).toString("utf8");
+    const model = {};
+    for (const [k, v] of new URLSearchParams(qs)) model[k] = JSON.parse(v);
+    return { u, model };
+  }
+
+  it("writes MessagePack string headers by length", () => {
+    assert.deepEqual([...msgpackString("")], [0xa0]);
+    assert.equal(msgpackString("a".repeat(31))[0], 0xbf);
+    assert.deepEqual([...msgpackString("a".repeat(32)).subarray(0, 2)], [0xd9, 32]);
+    assert.deepEqual([...msgpackString("a".repeat(256)).subarray(0, 3)], [0xda, 1, 0]);
+    // Two bytes per character, so the header counts bytes, not characters.
+    assert.equal(msgpackString("°").length, 3);
+  });
+  it("writes a zlib stream any inflater reads, across block boundaries", () => {
+    for (const n of [0, 1, 300, 65535, 65536, 140000]) {
+      const data = Uint8Array.from({ length: n }, (_, i) => (i * 7) & 255);
+      assert.deepEqual([...zlib.inflateSync(zlibStored(data))], [...data], `length ${n}`);
+    }
+  });
+  it("reproduces the p value AstroBin itself uses for an empty search", () => {
+    // www.astrobin.com/search/ redirects to ...search?p=eJxbAAAAoQCh
+    const theirs = zlib.inflateSync(Buffer.from("eJxbAAAAoQCh", "base64"));
+    assert.deepEqual([...theirs], [...msgpackString("")]);
+    assert.deepEqual([...zlib.inflateSync(Buffer.from(astrobinParam({}), "base64"))], [...theirs]);
+  });
+  it("centres on the object in AstroBin's units", () => {
+    const { u, model } = readLink(astrobinSearchUrl({ ra: 83.82, dec: -5.39, fovArcminShort: 120, fovArcminLong: 160 }));
+    assert.equal(u.origin + u.pathname, "https://app.astrobin.com/search");
+    assert.equal(model.coords.raCenter, 335.28); // minutes of time: 83.82 deg x 4
+    assert.equal(model.coords.decCenter, -5.39);
+  });
+  it("wraps RA into 0-1440 minutes and clamps Dec", () => {
+    assert.equal(readLink(astrobinSearchUrl({ ra: -10, dec: 0 })).model.coords.raCenter, 1400);
+    assert.equal(readLink(astrobinSearchUrl({ ra: 360, dec: 0 })).model.coords.raCenter, 0);
+    assert.equal(readLink(astrobinSearchUrl({ ra: 10, dec: 95 })).model.coords.decCenter, 90);
+  });
+  it("searches half to double the rig's field radius", () => {
+    // 120' x 160' frame: half diagonal 100' = 1.667 degrees.
+    const { model } = readLink(astrobinSearchUrl({ ra: 10, dec: 10, fovArcminShort: 120, fovArcminLong: 160 }));
+    assert.deepEqual(model.field_radius, { min: 0.8, max: 3.4 });
+    assert.equal(model.coords.radius, 1); // half the short side
+  });
+  it("rounds the band outwards and caps it at 180 degrees", () => {
+    const { model } = readLink(astrobinSearchUrl({ ra: 0, dec: 0, fovArcminShort: 60000, fovArcminLong: 60000 }));
+    assert.equal(model.field_radius.max, 180);
+  });
+  it("keeps a minimum centre tolerance for a tiny frame", () => {
+    const { model } = readLink(astrobinSearchUrl({ ra: 0, dec: 0, fovArcminShort: 5, fovArcminLong: 8 }));
+    assert.equal(model.coords.radius, 0.1);
+  });
+  it("sends only the position for Any size", () => {
+    for (const fov of [{}, { fovArcminShort: null, fovArcminLong: null }, { fovArcminShort: 0, fovArcminLong: 0 }]) {
+      const { model } = readLink(astrobinSearchUrl({ ra: 10, dec: 20, ...fov }));
+      assert.deepEqual(Object.keys(model), ["coords"]);
+      assert.equal(model.coords.radius, 0.5);
+    }
+  });
+  it("percent-encodes the base64 so the link survives as one query value", () => {
+    const url = astrobinSearchUrl({ ra: 10, dec: 20, fovArcminShort: 120, fovArcminLong: 160 });
+    const raw = url.split("?p=")[1];
+    assert.match(raw, /^[A-Za-z0-9%._~-]+$/);
+    assert.ok(!/[+/=]/.test(raw));
   });
 });

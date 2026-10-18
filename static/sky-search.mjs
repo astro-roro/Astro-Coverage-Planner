@@ -611,6 +611,101 @@ export function countBy(items, keysOf) {
   return n;
 }
 
+// ---- AstroBin search link ----------------------------------------------------
+
+// AstroBin keeps the whole search in one query value, p. Read from its web app
+// (app.astrobin.com, main bundle, 2026-10-18; its source is not public):
+//   model  -> "key=value&key=value", objects as JSON, every part URI-encoded
+//   string -> MessagePack string -> zlib -> base64 -> encodeURIComponent
+// An empty search is MessagePack "" = 0xA0, whose zlib/base64 form is
+// "eJxbAAAAoQCh", which is exactly what www.astrobin.com/search/ redirects to.
+// The filters used here are the "coords" filter in "Center + radius" mode
+// ({ raCenter, decCenter, radius }: RA in minutes of time 0-1440, Dec and radius
+// in degrees) and the "field_radius" range filter ({ min, max } in degrees).
+// Both are paid-tier filters on AstroBin's side.
+export const ASTROBIN_SEARCH = "https://app.astrobin.com/search";
+const ANY_SIZE_RADIUS_DEG = 0.5;
+const MIN_COORD_RADIUS_DEG = 0.1;
+
+// MessagePack for a single string (str8/16/32 as needed).
+export function msgpackString(str) {
+  const bytes = new TextEncoder().encode(str);
+  const n = bytes.length;
+  let head;
+  if (n < 32) head = [0xa0 | n];
+  else if (n < 256) head = [0xd9, n];
+  else if (n < 65536) head = [0xda, n >> 8, n & 255];
+  else head = [0xdb, (n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  return Uint8Array.from([...head, ...bytes]);
+}
+
+function adler32(bytes) {
+  let a = 1, b = 0;
+  for (const x of bytes) { a = (a + x) % 65521; b = (b + a) % 65521; }
+  return ((b << 16) | a) >>> 0;
+}
+
+// A zlib stream made of stored (uncompressed) blocks. It is a valid stream any
+// inflater reads, and it saves shipping a compressor for a few hundred bytes.
+export function zlibStored(bytes) {
+  const out = [0x78, 0x01];
+  const total = bytes.length;
+  let pos = 0;
+  do {
+    const len = Math.min(65535, total - pos);
+    const last = pos + len >= total ? 1 : 0;
+    out.push(last, len & 255, len >> 8, ~len & 255, (~len >> 8) & 255);
+    for (let i = 0; i < len; i++) out.push(bytes[pos + i]);
+    pos += len;
+  } while (pos < total);
+  const ad = adler32(bytes);
+  out.push((ad >>> 24) & 255, (ad >>> 16) & 255, (ad >>> 8) & 255, ad & 255);
+  return Uint8Array.from(out);
+}
+
+function toBase64(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s);
+}
+
+// The value of p for a model such as { coords: {...}, field_radius: {...} }.
+export function astrobinParam(model) {
+  const qs = Object.keys(model).map(k => {
+    const v = model[k];
+    if (v === null || v === undefined) return "";
+    const text = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return `${encodeURIComponent(k)}=${encodeURIComponent(text)}`;
+  }).filter(Boolean).join("&");
+  return toBase64(zlibStored(msgpackString(qs)));
+}
+
+const round = (v, places) => Number(v.toFixed(places));
+
+// A search for images centred near the object. fovArcminShort and
+// fovArcminLong are the rig's frame sides; leave them out for "Any size" and
+// only the position is sent.
+// With a rig: the field radius (half the frame diagonal) is searched from half
+// to double its nominal value, and field centres within half the short side of
+// the object are accepted. Without one: centres within 0.5 degrees.
+export function astrobinSearchUrl({ ra, dec, fovArcminShort = null, fovArcminLong = null }) {
+  const raMinutes = round((((ra % 360) + 360) % 360) * 4, 3);
+  const decDeg = round(Math.max(-90, Math.min(90, dec)), 4);
+  const hasRig = fovArcminShort > 0 && fovArcminLong > 0;
+  const coordRadius = hasRig
+    ? Math.max(MIN_COORD_RADIUS_DEG, round(fovArcminShort / 60 / 2, 2))
+    : ANY_SIZE_RADIUS_DEG;
+  const model = { coords: { raCenter: raMinutes, decCenter: decDeg, radius: coordRadius } };
+  if (hasRig) {
+    const nominal = Math.hypot(fovArcminShort, fovArcminLong) / 2 / 60;
+    model.field_radius = {
+      min: Math.floor(nominal * 0.5 * 10) / 10,
+      max: Math.min(180, Math.ceil(nominal * 2 * 10) / 10),
+    };
+  }
+  return `${ASTROBIN_SEARCH}?p=${encodeURIComponent(astrobinParam(model))}`;
+}
+
 // ---- outline -------------------------------------------------------------
 
 // Points of an ellipse on the sky, for the temporary outline overlay. major

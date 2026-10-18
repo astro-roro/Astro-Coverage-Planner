@@ -13,6 +13,7 @@ import {
   TYPE_BUCKETS,
   VIZIER_CATALOGUES,
   applyFilters,
+  astrobinSearchUrl,
   catalogueIds,
   countBy,
   dedupe,
@@ -129,6 +130,11 @@ export function setupSkySearch(deps) {
     const wide = rig && o.major !== null && o.major > Math.min(rig.fovW, rig.fovH);
     const meta = [o.typeLabel, o.catalogues.join(", "), `${fmtDist(o.distArcmin)} from centre`];
     if (wide) meta.push("wider than your frame");
+    const astrobin = astrobinSearchUrl({
+      ra: o.ra, dec: o.dec,
+      fovArcminShort: rig ? Math.min(rig.fovW, rig.fovH) : null,
+      fovArcminLong: rig ? Math.max(rig.fovW, rig.fovH) : null,
+    });
     return `<div class="ss-row" data-i="${i}">
       <div class="ss-main">
         <span class="ss-name">${esc(o.name)}</span>
@@ -140,6 +146,7 @@ export function setupSkySearch(deps) {
         <button type="button" class="link-btn" data-act="centre">Centre</button>
         <button type="button" class="link-btn" data-act="outline">Outline</button>
         <button type="button" class="link-btn" data-act="plan">+ Plan</button>
+        <a class="link-btn" href="${esc(astrobin)}" target="_blank" rel="noopener noreferrer" title="Images on AstroBin near this position${rig ? ", with a field like your rig's" : ""}">AstroBin</a>
       </div>
     </div>`;
   }
