@@ -331,6 +331,11 @@ function applyUiStatePreManifest() {
 
   if (s.planningMode === true) {
     planningMode = true;
+    // setPlanningMode(true) reopens this plan's editor once plans are loaded,
+    // and falls back to the plan list if the plan no longer exists.
+    if (typeof s.selectedPlanId === "string" || typeof s.selectedPlanId === "number") {
+      selectedPlanId = s.selectedPlanId;
+    }
   }
 }
 
