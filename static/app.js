@@ -621,6 +621,7 @@ import {
   withTimeout,
 } from "./init-error.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
+import { deg2hms, deg2dms, parseRA, parseDec, parseCoordPair } from "./coords.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
@@ -6453,28 +6454,6 @@ async function setTargetFinished(targetId, finished) {
   }
 }
 
-function deg2hms(deg) {
-  if (deg == null || !isFinite(deg)) return "";
-  const d = ((deg % 360) + 360) % 360;
-  const hrs = d / 15;
-  const h = Math.floor(hrs);
-  const mflt = (hrs - h) * 60;
-  const m = Math.floor(mflt);
-  const s = (mflt - m) * 60;
-  return `${String(h).padStart(2, "0")}h ${String(m).padStart(2, "0")}m ${s.toFixed(2)}s`;
-}
-
-function deg2dms(deg) {
-  if (deg == null || !isFinite(deg)) return "";
-  const sign = deg < 0 ? "-" : "+";
-  const a = Math.abs(deg);
-  const d = Math.floor(a);
-  const mflt = (a - d) * 60;
-  const m = Math.floor(mflt);
-  const s = (mflt - m) * 60;
-  return `${sign}${String(d).padStart(2, "0")}° ${String(m).padStart(2, "0")}' ${s.toFixed(2)}"`;
-}
-
 function planTelescope(plan) {
   return gear.telescopes?.find(t => t.id === plan.telescope_id) || gear.telescopes?.[0] || null;
 }
@@ -7261,14 +7240,14 @@ function renderPlanEditor(plan) {
         </label>
         ${targetClassFieldHtml(editingPlan)}
         <div class="coord-row">
-          <label style="flex:1"><span class="lab">RA (deg)</span>
-            <input type="number" step="0.1" id="f_ra" value="${Number(tg.center_ra_deg).toFixed(3)}">
+          <label style="flex:1"><span class="lab">RA</span>
+            <input type="text" inputmode="decimal" id="f_ra" placeholder="deg, 05h35m17s or paste a pair" autocomplete="off" value="${Number(tg.center_ra_deg).toFixed(3)}">
           </label>
           <span class="hms" id="f_ra_hms">${deg2hms(tg.center_ra_deg)}</span>
         </div>
         <div class="coord-row">
-          <label style="flex:1"><span class="lab">Dec (deg)</span>
-            <input type="number" step="0.1" id="f_dec" value="${Number(tg.center_dec_deg).toFixed(3)}">
+          <label style="flex:1"><span class="lab">Dec</span>
+            <input type="text" inputmode="decimal" id="f_dec" placeholder="deg or -05d23m28s" autocomplete="off" value="${Number(tg.center_dec_deg).toFixed(3)}">
           </label>
           <span class="hms" id="f_dec_dms">${deg2dms(tg.center_dec_deg)}</span>
         </div>
@@ -7382,14 +7361,39 @@ function renderPlanEditor(plan) {
   panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
   panel.querySelector("#f_target_class")?.addEventListener("change", e => { setTargetClass(editingPlan, e.target.value); });
-  panel.querySelector("#f_ra")?.addEventListener("input", e => {
-    const v = parseFloat(e.target.value);
-    if (isFinite(v)) { editingPlan.target.center_ra_deg = v; document.getElementById("f_ra_hms").textContent = deg2hms(v); redrawPlanFootprints(); schedulePlanVisRefresh(); }
-  });
-  panel.querySelector("#f_dec")?.addEventListener("input", e => {
-    const v = parseFloat(e.target.value);
-    if (isFinite(v)) { editingPlan.target.center_dec_deg = v; document.getElementById("f_dec_dms").textContent = deg2dms(v); redrawPlanFootprints(); schedulePlanVisRefresh(); }
-  });
+  const raInput = panel.querySelector("#f_ra");
+  const decInput = panel.querySelector("#f_dec");
+  const isPlainDecimal = s => /^\s*[+-]?(\d+\.?\d*|\.\d+)\s*$/.test(s);
+  const applyCoord = (el, parse, key, readoutId, toText) => {
+    const v = parse(el.value);
+    el.classList.toggle("invalid", v === null);
+    if (v === null) return;
+    editingPlan.target[key] = v;
+    document.getElementById(readoutId).textContent = toText(v);
+    redrawPlanFootprints();
+    schedulePlanVisRefresh();
+  };
+  const applyRA = () => applyCoord(raInput, parseRA, "center_ra_deg", "f_ra_hms", deg2hms);
+  const applyDec = () => applyCoord(decInput, parseDec, "center_dec_deg", "f_dec_dms", deg2dms);
+  const settleOnBlur = (el, parse) => {
+    const v = parse(el.value);
+    if (v !== null && isPlainDecimal(el.value)) el.value = v.toFixed(4);
+  };
+  raInput?.addEventListener("input", applyRA);
+  decInput?.addEventListener("input", applyDec);
+  raInput?.addEventListener("blur", () => settleOnBlur(raInput, parseRA));
+  decInput?.addEventListener("blur", () => settleOnBlur(decInput, parseDec));
+  const onPastePair = e => {
+    const pair = parseCoordPair(e.clipboardData?.getData("text") || "");
+    if (!pair) return;
+    e.preventDefault();
+    raInput.value = pair.ra.toFixed(4);
+    decInput.value = pair.dec.toFixed(4);
+    applyRA();
+    applyDec();
+  };
+  raInput?.addEventListener("paste", onPastePair);
+  decInput?.addEventListener("paste", onPastePair);
   panel.querySelector("#f_rot")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value);
     if (isFinite(v)) { editingPlan.target.rotation_deg = v; redrawPlanFootprints(); schedulePlanVisRefresh(); }
@@ -7826,8 +7830,8 @@ function onMapMouseMove(evt) {
     if (!world) return;
     editingPlan.target.center_ra_deg = world[0];
     editingPlan.target.center_dec_deg = world[1];
-    const raEl = document.getElementById("f_ra"); if (raEl) raEl.value = world[0].toFixed(3);
-    const decEl = document.getElementById("f_dec"); if (decEl) decEl.value = world[1].toFixed(3);
+    const raEl = document.getElementById("f_ra"); if (raEl) { raEl.value = world[0].toFixed(3); raEl.classList.remove("invalid"); }
+    const decEl = document.getElementById("f_dec"); if (decEl) { decEl.value = world[1].toFixed(3); decEl.classList.remove("invalid"); }
     const rahms = document.getElementById("f_ra_hms"); if (rahms) rahms.textContent = deg2hms(world[0]);
     const ddms = document.getElementById("f_dec_dms"); if (ddms) ddms.textContent = deg2dms(world[1]);
   } else if (dragState.mode === "rotate") {
