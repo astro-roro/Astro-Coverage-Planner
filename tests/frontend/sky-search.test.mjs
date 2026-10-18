@@ -5,7 +5,15 @@ import {
   MAX_RADIUS_DEG,
   VIZIER_CATALOGUES,
   angSepArcmin,
+  applyFilters,
+  applyIdents,
+  buildIdentAdql,
   buildSimbadAdql,
+  catalogueIds,
+  countBy,
+  fillMatches,
+  fillRange,
+  typeBucket,
   buildVizierUrl,
   cleanSimbadName,
   dedupe,
@@ -29,10 +37,13 @@ const fx = JSON.parse(readFileSync(new URL("../fixtures/sky_search_m42.json", im
 const cat = key => VIZIER_CATALOGUES.find(c => c.key === key);
 
 // Answers from the recording instead of the network.
-function recordedFetch({ failSimbad = false, hang = false } = {}) {
+function recordedFetch({ failSimbad = false, hang = false, failIdent = false } = {}) {
   return async (url, init = {}) => {
     if (hang) return new Promise((_, rej) => init.signal.addEventListener("abort", () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }))));
     if (String(url).includes("sim-tap")) {
+      if (String(init.body).includes("FROM+ident")) {
+        return failIdent ? new Response("busy", { status: 503 }) : new Response(JSON.stringify(fx["simbad-ident"]));
+      }
       if (failSimbad) return new Response("busy", { status: 503 });
       const sized = String(init.body).includes("IS+NOT+NULL");
       return new Response(JSON.stringify(fx[sized ? "simbad-sized" : "simbad-unsized"]));
@@ -72,7 +83,7 @@ describe("angSepArcmin", () => {
 describe("ADQL builder", () => {
   it("builds a cone and a type list for the sized query", () => {
     const q = buildSimbadAdql(83.82, -5.39, 0.7);
-    assert.match(q, /^SELECT TOP 1000 main_id, otype, ra, dec, galdim_majaxis, galdim_minaxis, galdim_angle FROM basic WHERE /);
+    assert.match(q, /^SELECT TOP 1000 oid, main_id, otype, ra, dec, galdim_majaxis, galdim_minaxis, galdim_angle FROM basic WHERE /);
     assert.match(q, /CONTAINS\(POINT\('ICRS',ra,dec\),CIRCLE\('ICRS',83\.82000,-5\.39000,0\.70000\)\)=1/);
     assert.match(q, /galdim_majaxis IS NOT NULL/);
     assert.match(q, /otype IN \('HII'/);
@@ -339,5 +350,160 @@ describe("searching with recorded replies", () => {
     const fetchImpl = async () => new Response(JSON.stringify(full));
     const r = await searchSimbad(cone, { fetchImpl });
     assert.equal(r.truncated, true);
+  });
+});
+
+describe("type buckets", () => {
+  const b = group => typeBucket({ group });
+  it("files every group into a bucket", () => {
+    assert.equal(b("emission"), "emission");
+    assert.equal(b("pn"), "pn");
+    assert.equal(b("snr"), "snr");
+    assert.equal(b("reflection"), "reflection");
+    assert.equal(b("dark"), "dark");
+    assert.equal(b("galaxy"), "galaxy");
+    assert.equal(b("cluster"), "cluster");
+  });
+  it("sends shells, generic nebulae and anything new to Other", () => {
+    assert.equal(b("shell"), "other");
+    assert.equal(b("nebula"), "other");
+    assert.equal(b("something-new"), "other");
+  });
+});
+
+describe("catalogue matching", () => {
+  const obj = (name, aliases = []) => ({ name, aliases });
+  it("matches on aliases, so a hidden M or NGC designation counts", () => {
+    const ids = catalogueIds(obj("Orion Nebula", ["M 42", "NGC 1976", "Sh 2-281", "LBN 974"]));
+    assert.deepEqual(ids.sort(), ["lynds", "messier", "ngcic", "sharpless"]);
+  });
+  it("reads each catalogue's naming", () => {
+    assert.deepEqual(catalogueIds(obj("Sh2-281")), ["sharpless"]);
+    assert.deepEqual(catalogueIds(obj("RCW 134")), ["rcw"]);
+    assert.deepEqual(catalogueIds(obj("Gum 12")), ["gum"]);
+    assert.deepEqual(catalogueIds(obj("LDN 1641")), ["lynds"]);
+    assert.deepEqual(catalogueIds(obj("B 33")), ["lynds"]);
+    assert.deepEqual(catalogueIds(obj("vdB 52")), ["vdb"]);
+    assert.deepEqual(catalogueIds(obj("PHR1744-3355", ["PN G355.6-02.3"])), ["mash"]);
+    assert.deepEqual(catalogueIds(obj("Orion A", ["WISE G209.037-19.377"])), ["wise"]);
+    assert.deepEqual(catalogueIds(obj("IC 434")), ["ngcic"]);
+  });
+  it("does not take other names for a catalogue", () => {
+    assert.deepEqual(catalogueIds(obj("MCG+01-02-003")), ["other"]);
+    assert.deepEqual(catalogueIds(obj("[MML2017] 4808")), ["other"]);
+    assert.deepEqual(catalogueIds(obj("Barnard's Loop")), ["other"]);
+  });
+});
+
+describe("frame fill", () => {
+  const well = fillRange("well");
+  const small = fillRange("small");
+  const mosaic = fillRange("mosaic");
+  it("includes both ends of 'frames well'", () => {
+    assert.equal(fillMatches(0.2, well), true);
+    assert.equal(fillMatches(0.9, well), true);
+    assert.equal(fillMatches(0.199, well), false);
+    assert.equal(fillMatches(0.901, well), false);
+  });
+  it("gives exactly 20% to 'frames well', not 'small'", () => {
+    assert.equal(fillMatches(0.199, small), true);
+    assert.equal(fillMatches(0.2, small), false);
+  });
+  it("gives exactly 100% to neither 'mosaic' nor 'frames well'", () => {
+    assert.equal(fillMatches(1, mosaic), false);
+    assert.equal(fillMatches(1.001, mosaic), true);
+    assert.equal(fillMatches(0.95, mosaic), false);
+    assert.equal(fillMatches(1, well), false);
+  });
+  it("takes custom percentages, with either end left open", () => {
+    const r = fillRange("custom", "10", "50");
+    assert.equal(fillMatches(0.1, r), true);
+    assert.equal(fillMatches(0.5, r), true);
+    assert.equal(fillMatches(0.51, r), false);
+    const open = fillRange("custom", "", "30");
+    assert.equal(fillMatches(0.0001, open), true);
+    assert.equal(fillMatches(0.31, open), false);
+    assert.equal(fillRange("custom", "", "").min, null);
+  });
+  it("treats an unknown preset as 'any'", () => {
+    assert.equal(fillMatches(5, fillRange("nonsense")), true);
+  });
+});
+
+describe("applyFilters", () => {
+  const o = (name, major, group = "emission", aliases = []) => ({ name, aliases, major, group });
+  const items = [
+    o("Sh2-1", 20, "emission"),
+    o("Orion", 90, "emission", ["M 42"]),
+    o("M 31", 190, "galaxy"),
+    o("Mystery", null, "pn"),
+    o("Tiny", 0.5, "pn"),
+  ];
+  const base = { minArcmin: 0, fill: null, shortSideArcmin: 100, showUnknown: true, typesOff: new Set(), catsOff: new Set() };
+  const names = f => applyFilters(items, f).map(x => x.name);
+  it("keeps everything when nothing is switched off", () => {
+    assert.equal(names(base).length, 5);
+  });
+  it("drops the types switched off", () => {
+    assert.deepEqual(names({ ...base, typesOff: new Set(["galaxy", "pn"]) }), ["Sh2-1", "Orion"]);
+  });
+  it("keeps an object when any of its names is in a catalogue that is on", () => {
+    // Orion is Messier by alias only, Sh2-1 is Sharpless, M 31 is Messier, the others are Other.
+    assert.ok(!names({ ...base, catsOff: new Set(["messier"]) }).includes("Orion"));
+    assert.deepEqual(names({ ...base, catsOff: new Set(["sharpless", "other"]) }), ["Orion", "M 31"]);
+    assert.deepEqual(names({ ...base, catsOff: new Set(["messier", "other"]) }), ["Sh2-1"]);
+  });
+  it("applies the pixel minimum to known sizes only", () => {
+    assert.deepEqual(names({ ...base, minArcmin: 10 }), ["Sh2-1", "Orion", "M 31", "Mystery"]);
+  });
+  it("applies the fill range as major over the short side", () => {
+    // Short side 100: Sh2-1 fills 0.2, Orion 0.9, M 31 1.9, Tiny 0.005.
+    assert.deepEqual(names({ ...base, fill: fillRange("well") }), ["Sh2-1", "Orion", "Mystery"]);
+    assert.deepEqual(names({ ...base, fill: fillRange("mosaic") }), ["M 31", "Mystery"]);
+    assert.deepEqual(names({ ...base, fill: fillRange("small") }), ["Mystery", "Tiny"]);
+  });
+  it("keeps size-unknown objects through every size filter, and drops them when asked", () => {
+    assert.ok(names({ ...base, minArcmin: 50, fill: fillRange("mosaic") }).includes("Mystery"));
+    const off = names({ ...base, showUnknown: false });
+    assert.ok(!off.includes("Mystery"));
+    assert.equal(off.length, 4);
+  });
+  it("lets size-unknown objects be dropped by type like any other", () => {
+    assert.ok(!names({ ...base, typesOff: new Set(["pn"]) }).includes("Mystery"));
+  });
+  it("counts a chip over the other filters only", () => {
+    const f = { ...base, typesOff: new Set(["emission"]), minArcmin: 10 };
+    const counts = countBy(applyFilters(items, f, "types"), x => [typeBucket(x)]);
+    assert.equal(counts.get("emission"), 2);
+    assert.equal(counts.get("galaxy"), 1);
+    assert.equal(counts.get("pn"), 1); // Mystery stays, Tiny is under the minimum
+  });
+});
+
+describe("SIMBAD identifiers", () => {
+  it("builds one query for a list of object ids", () => {
+    const q = buildIdentAdql([810146, 5, "x"]);
+    assert.match(q, /^SELECT oidref, id FROM ident WHERE oidref IN \(810146,5\) AND \(id LIKE 'M %'/);
+  });
+  it("adds identifiers to the right object as aliases, once", () => {
+    const items = [{ oid: 7, name: "Orion Nebula", aliases: [] }, { oid: 8, name: "X", aliases: [] }];
+    const reply = { data: [[7, "M  42"], [7, "M  42"], [7, "Orion Nebula"], [9, "NGC 1"]] };
+    assert.equal(applyIdents(items, reply), 1);
+    assert.deepEqual(items[0].aliases, ["M 42"]);
+    assert.deepEqual(items[1].aliases, []);
+  });
+  it("makes a SIMBAD object Messier or NGC through the recorded lookup", async () => {
+    const r = await searchSimbad(fx.cone, { fetchImpl: recordedFetch() });
+    assert.equal(r.ok, true);
+    assert.equal(r.identFailed, false);
+    const merged = dedupe(r.items);
+    assert.ok(merged.some(m => catalogueIds(m).some(id => id === "messier" || id === "ngcic")));
+    assert.ok(r.items.some(i => i.aliases.length > 0));
+  });
+  it("still returns the search when the identifier lookup fails", async () => {
+    const r = await searchSimbad(fx.cone, { fetchImpl: recordedFetch({ failIdent: true }) });
+    assert.equal(r.ok, true);
+    assert.equal(r.identFailed, true);
+    assert.ok(r.items.length > 0);
   });
 });

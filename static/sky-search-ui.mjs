@@ -5,16 +5,23 @@
 
 import { esc } from "./activity.mjs";
 import {
+  CATALOGUE_CHIPS,
   DEFAULT_MIN_PX,
+  FILL_PRESETS,
   GROUPS,
   MAX_RADIUS_DEG,
+  TYPE_BUCKETS,
   VIZIER_CATALOGUES,
+  applyFilters,
+  catalogueIds,
+  countBy,
   dedupe,
-  filterBySize,
+  fillRange,
   formatArcmin,
   listRigs,
   minSizeArcmin,
   searchAll,
+  typeBucket,
   viewCone,
   withDistances,
 } from "./sky-search.mjs";
@@ -30,16 +37,30 @@ const SORTS = [
   { id: "name", label: "Name" },
 ];
 
+const DEFAULT_PREFS = {
+  rigId: null, minPx: DEFAULT_MIN_PX, sort: "type",
+  typesOff: [], catsOff: [], fillPreset: "any", fillMin: "", fillMax: "", showUnknown: true,
+};
+
+// Chips are remembered as the ones switched off, so a type or catalogue added
+// later starts on.
 function loadPrefs() {
   try {
     const s = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") || {};
+    const ids = (v, all) => (Array.isArray(v) ? v.filter(x => all.includes(x)) : []);
     return {
       rigId: typeof s.rigId === "string" ? s.rigId : null,
       minPx: Number.isFinite(s.minPx) && s.minPx >= 0 ? s.minPx : DEFAULT_MIN_PX,
       sort: SORTS.some(o => o.id === s.sort) ? s.sort : "type",
+      typesOff: ids(s.typesOff, TYPE_BUCKETS.map(t => t.id)),
+      catsOff: ids(s.catsOff, [...CATALOGUE_CHIPS.map(c => c.id), "other"]),
+      fillPreset: s.fillPreset === "custom" || FILL_PRESETS[s.fillPreset] ? s.fillPreset : "any",
+      fillMin: typeof s.fillMin === "string" ? s.fillMin : "",
+      fillMax: typeof s.fillMax === "string" ? s.fillMax : "",
+      showUnknown: s.showUnknown !== false,
     };
   } catch {
-    return { rigId: null, minPx: DEFAULT_MIN_PX, sort: "type" };
+    return { ...DEFAULT_PREFS };
   }
 }
 
@@ -123,24 +144,49 @@ export function setupSkySearch(deps) {
     </div>`;
   }
 
+  function filterState(rig) {
+    return {
+      minArcmin: rig ? minSizeArcmin(rig.scale, prefs.minPx) : 0,
+      fill: rig && prefs.fillPreset !== "any" ? fillRange(prefs.fillPreset, prefs.fillMin, prefs.fillMax) : null,
+      shortSideArcmin: rig ? Math.min(rig.fovW, rig.fovH) : 0,
+      showUnknown: prefs.showUnknown,
+      typesOff: new Set(prefs.typesOff),
+      catsOff: new Set(prefs.catsOff),
+    };
+  }
+
+  // Each chip counts what the other filters leave, so its number is what
+  // switching it on would show.
+  function chipsHtml(all, f) {
+    const typeCounts = countBy(applyFilters(all, f, "types"), o => [typeBucket(o)]);
+    const catCounts = countBy(applyFilters(all, f, "cats"), catalogueIds);
+    const chip = (kind, id, label, n, off) =>
+      `<button type="button" class="ss-chip tog${off ? "" : " on"}" data-kind="${kind}" data-id="${esc(id)}" aria-pressed="${!off}">${esc(label)} ${n || 0}</button>`;
+    return `<div class="ss-chiprow"><span class="lab">Type</span>${TYPE_BUCKETS.map(t =>
+        chip("type", t.id, t.label, typeCounts.get(t.id), prefs.typesOff.includes(t.id))).join("")}</div>`
+      + `<div class="ss-chiprow"><span class="lab">Catalogue</span>${[...CATALOGUE_CHIPS, { id: "other", label: "Other" }].map(c =>
+        chip("cat", c.id, c.label, catCounts.get(c.id), prefs.catsOff.includes(c.id))).join("")}</div>`
+      + `<button type="button" class="link-btn" id="ssReset">Reset filters</button>`;
+  }
+
   function drawResults() {
     const host = root?.querySelector("#ssResults");
     if (!host || !results) return;
     const { rig } = rigsAndPick();
-    const minArcmin = rig ? minSizeArcmin(rig.scale, prefs.minPx) : 0;
+    const f = filterState(rig);
     const all = withDistances(dedupe(results.items), results.centre);
-    const shown = sorted(filterBySize(all, minArcmin));
+    const shown = sorted(applyFilters(all, f));
     results.shown = shown;
     deps.overlay.showAll(shown);
+    root.querySelector("#ssFilters").innerHTML = chipsHtml(all, f);
 
-    const hidden = all.length - shown.length;
     const unknown = shown.filter(o => o.major === null).length;
-    const lines = [`${shown.length} shown`];
-    if (hidden > 0) lines.push(`${hidden} hidden as smaller than ${prefs.minPx} px (${formatArcmin(minArcmin)})`);
+    const lines = [`Showing ${shown.length} of ${all.length}`];
+    if (f.minArcmin > 0) lines.push(`under ${prefs.minPx} px (${formatArcmin(f.minArcmin)}) hidden`);
     if (unknown > 0) lines.push(`${unknown} with no size on file`);
     let html = `<div class="ss-count">${esc(lines.join(DOT))}</div>`;
     if (!shown.length) {
-      html += `<div class="tr-empty">Nothing found${all.length ? " at this size. Lower the minimum or pick Any size." : " in this view."}</div>`;
+      html += `<div class="tr-empty">Nothing matches${all.length ? ". Loosen a filter above." : " in this view."}</div>`;
     } else if (prefs.sort === "type") {
       for (const g of GROUPS) {
         const rows = shown.map((o, i) => [o, i]).filter(([o]) => o.group === g.id);
@@ -163,13 +209,20 @@ export function setupSkySearch(deps) {
       : "Every object is shown whatever its size.";
     const px = root.querySelector("#ssMinPx");
     if (px) px.disabled = !rig;
+    // Fill is a share of the frame, so it means nothing without a rig.
+    for (const id of ["#ssFill", "#ssFillMin", "#ssFillMax"]) {
+      const el = root.querySelector(id);
+      if (el) el.disabled = !rig;
+    }
+    const custom = root.querySelector("#ssFillCustom");
+    if (custom) custom.hidden = prefs.fillPreset !== "custom";
   }
 
   function drawStatus(reports, waiting) {
     const el = root?.querySelector("#ssStatus");
     if (!el) return;
     const chips = reports.map(r => r.ok
-      ? `<span class="ss-chip ok" title="${r.truncated ? "Hit the row limit: the smallest objects are missing" : ""}">${esc(r.label)} ${r.items.length}${r.truncated ? "+" : ""}</span>`
+      ? `<span class="ss-chip ok" title="${[r.truncated ? "Hit the row limit: the smallest objects are missing." : "", r.identFailed ? "Messier and NGC names could not be fetched, so the catalogue chips may miss some." : ""].join(" ").trim()}">${esc(r.label)} ${r.items.length}${r.truncated ? "+" : ""}</span>`
       : `<span class="ss-chip bad" title="${esc(r.error)}">${esc(r.label)} failed</span>`);
     if (waiting > 0) chips.push(`<span class="ss-chip">${waiting} still searching</span>`);
     el.innerHTML = chips.join("");
@@ -216,6 +269,8 @@ export function setupSkySearch(deps) {
     if (!host) return;
     prefs = loadPrefs();
     const { rigs, pick } = rigsAndPick();
+    const fillOpts = [...Object.entries(FILL_PRESETS).map(([id, p]) => [id, p.label]), ["custom", "Custom"]]
+      .map(([id, label]) => `<option value="${id}"${id === prefs.fillPreset ? " selected" : ""}>${esc(label)}</option>`).join("");
     const rigOpts = rigs.map(r => `<option value="${esc(r.id)}"${r.id === pick ? " selected" : ""}>${esc(r.label)}</option>`).join("")
       + `<option value="${ANY_RIG}"${pick === ANY_RIG ? " selected" : ""}>Any size</option>`;
     host.innerHTML = `<div id="skySearchRoot" class="ss-root">
@@ -226,9 +281,16 @@ export function setupSkySearch(deps) {
         <label><span class="lab">Rig</span><select id="ssRig">${rigOpts}</select></label>
         <label><span class="lab">Hide under</span><input type="number" id="ssMinPx" min="0" step="5" value="${esc(prefs.minPx)}"> px</label>
         <div class="ss-rig-info" id="ssRigInfo"></div>
+        <label><span class="lab">Fills frame</span><select id="ssFill">${fillOpts}</select></label>
+        <div id="ssFillCustom" class="ss-fill-custom" hidden>
+          <input type="number" id="ssFillMin" min="0" step="5" placeholder="min" value="${esc(prefs.fillMin)}"> to
+          <input type="number" id="ssFillMax" min="0" step="5" placeholder="max" value="${esc(prefs.fillMax)}"> % of the short side
+        </div>
+        <label><span class="lab">Size unknown</span><input type="checkbox" id="ssUnknown"${prefs.showUnknown ? " checked" : ""}> include</label>
         <label><span class="lab">Sort</span><select id="ssSort">${SORTS.map(s => `<option value="${s.id}"${s.id === prefs.sort ? " selected" : ""}>${esc(s.label)}</option>`).join("")}</select></label>
         <button type="button" class="primary" id="ssAgain">Search this view</button>
       </div>
+      <div id="ssFilters" class="ss-filters"></div>
       <div class="ss-status" id="ssStatus"></div>
       <div id="ssResults"></div>
     </div>`;
@@ -252,6 +314,45 @@ export function setupSkySearch(deps) {
       const v = Number(e.target.value);
       prefs.minPx = Number.isFinite(v) && v >= 0 ? v : DEFAULT_MIN_PX;
       e.target.value = prefs.minPx;
+      savePrefs(prefs);
+      drawResults();
+    });
+    root.querySelector("#ssFill").addEventListener("change", e => {
+      prefs.fillPreset = e.target.value;
+      savePrefs(prefs);
+      drawRigInfo();
+      drawResults();
+    });
+    for (const [id, key] of [["#ssFillMin", "fillMin"], ["#ssFillMax", "fillMax"]]) {
+      root.querySelector(id).addEventListener("change", e => {
+        prefs[key] = e.target.value;
+        savePrefs(prefs);
+        drawResults();
+      });
+    }
+    root.querySelector("#ssUnknown").addEventListener("change", e => {
+      prefs.showUnknown = e.target.checked;
+      savePrefs(prefs);
+      drawResults();
+    });
+    root.querySelector("#ssFilters").addEventListener("click", e => {
+      if (e.target.closest("#ssReset")) {
+        prefs = { ...prefs, typesOff: [], catsOff: [], fillPreset: "any", fillMin: "", fillMax: "", showUnknown: true };
+        root.querySelector("#ssFill").value = "any";
+        root.querySelector("#ssFillMin").value = "";
+        root.querySelector("#ssFillMax").value = "";
+        root.querySelector("#ssUnknown").checked = true;
+        savePrefs(prefs);
+        drawRigInfo();
+        drawResults();
+        return;
+      }
+      const chip = e.target.closest("button[data-kind]");
+      if (!chip) return;
+      const key = chip.dataset.kind === "type" ? "typesOff" : "catsOff";
+      const off = new Set(prefs[key]);
+      if (off.has(chip.dataset.id)) off.delete(chip.dataset.id); else off.add(chip.dataset.id);
+      prefs[key] = [...off];
       savePrefs(prefs);
       drawResults();
     });

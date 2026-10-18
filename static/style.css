@@ -2631,3 +2631,10 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .ss-size.unknown { color: #78839a; font-style: italic; }
 .ss-meta, .ss-alias { font-size: 12px; color: #78839a; }
 .ss-actions { display: flex; gap: 12px; margin-top: 2px; }
+.ss-chiprow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+.ss-chiprow .lab { font-size: 12px; color: #78839a; min-width: 62px; }
+.ss-chip.tog { cursor: pointer; opacity: 0.55; }
+.ss-chip.tog.on { opacity: 1; background: #2a4f7a; border-color: #4a7ec0; color: #f0f5ff; }
+.ss-fill-custom { font-size: 12px; color: #a2aec2; margin-bottom: 6px; }
+.ss-fill-custom input { width: 60px; }
+.ss-filters { margin: 6px 0; }

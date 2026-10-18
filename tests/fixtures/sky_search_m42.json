@@ -8,6 +8,12 @@
  "simbad-sized": {
   "metadata": [
    {
+    "name": "oid",
+    "description": "Object internal identifier",
+    "datatype": "LONG",
+    "ucd": "meta.record"
+   },
+   {
     "name": "main_id",
     "description": "Main identifier for an object",
     "datatype": "CHAR",
@@ -63,6 +69,7 @@
   ],
   "data": [
    [
+    810146,
     "M  42",
     "HII",
     83.8201,
@@ -72,6 +79,7 @@
     90
    ],
    [
+    16011581,
     "[ABB2014] WISE G209.107-19.510",
     "HII",
     83.74785593695012,
@@ -81,6 +89,7 @@
     32767
    ],
    [
+    16011578,
     "[ABB2014] WISE G208.445-18.994",
     "HII",
     83.92407536285816,
@@ -90,6 +99,7 @@
     32767
    ],
    [
+    798229,
     "SH  2-279",
     "HII",
     83.81734523575561,
@@ -99,6 +109,7 @@
     90
    ],
    [
+    5195819,
     "TGU H1490 P20",
     "DNe",
     83.2,
@@ -108,6 +119,7 @@
     90
    ],
    [
+    16011580,
     "[ABB2014] WISE G209.037-19.377",
     "HII",
     83.83706711037678,
@@ -117,6 +129,7 @@
     32767
    ],
    [
+    808519,
     "[KC97c] G208.4-19.1",
     "HII",
     83.84041666666666,
@@ -126,6 +139,7 @@
     90
    ],
    [
+    5195829,
     "TGU H1490 P30",
     "DNe",
     84.1,
@@ -135,6 +149,7 @@
     90
    ],
    [
+    5195857,
     "TGU H1490 P58",
     "DNe",
     84.45000000000002,
@@ -144,6 +159,7 @@
     90
    ],
    [
+    5195822,
     "TGU H1490 P23",
     "DNe",
     84.325,
@@ -153,6 +169,7 @@
     90
    ],
    [
+    23975205,
     "[ABB2014] WISE G208.921-19.268",
     "HII",
     83.88404,
@@ -162,6 +179,7 @@
     32767
    ],
    [
+    23978438,
     "[ABB2014] WISE G208.367-19.124",
     "HII",
     83.77515,
@@ -175,6 +193,12 @@
  "simbad-unsized": {
   "metadata": [
    {
+    "name": "oid",
+    "description": "Object internal identifier",
+    "datatype": "LONG",
+    "ucd": "meta.record"
+   },
+   {
     "name": "main_id",
     "description": "Main identifier for an object",
     "datatype": "CHAR",
@@ -230,6 +254,7 @@
   ],
   "data": [
    [
+    810116,
     "NAME OrionBar D5",
     "HII",
     83.83254166666667,
@@ -239,6 +264,7 @@
     null
    ],
    [
+    800938,
     "PP  32",
     "ISM",
     83.96416666666667,
@@ -248,6 +274,7 @@
     null
    ],
    [
+    829397,
     "LV 1",
     "ISM",
     83.82,
@@ -257,6 +284,7 @@
     null
    ],
    [
+    808506,
     "[GSL2002]  16",
     "HII",
     83.82583333333334,
@@ -266,6 +294,7 @@
     null
    ],
    [
+    810805,
     "[GS55]  65",
     "ISM",
     83.725,
@@ -275,6 +304,7 @@
     null
    ],
    [
+    811055,
     "[BOM2000] w012-407",
     "ISM",
     83.755,
@@ -284,6 +314,7 @@
     null
    ],
    [
+    810904,
     "[BOM2000] w030-524",
     "ISM",
     83.7625,
@@ -293,6 +324,7 @@
     null
    ],
    [
+    809994,
     "[H53b]  5a",
     "RNe",
     84.25,
@@ -302,6 +334,7 @@
     null
    ],
    [
+    801811,
     "PSH 326",
     "ISM",
     83.85591666666667,
@@ -311,6 +344,7 @@
     null
    ],
    [
+    5540342,
     "[THT2009] IRS 4",
     "RNe",
     83.85083333333334,
@@ -320,6 +354,7 @@
     null
    ],
    [
+    801051,
     "[MGR2000a] IRAS 00494+5617 P1",
     "HII",
     83.80997923050883,
@@ -329,6 +364,7 @@
     null
    ],
    [
+    808381,
     "Ced  55d",
     "ISM",
     83.82499999999999,
@@ -338,6 +374,7 @@
     null
    ],
    [
+    810115,
     "NAME OrionBar D2",
     "HII",
     83.83916666666666,
@@ -347,6 +384,7 @@
     null
    ],
    [
+    810117,
     "NAME OrionBar D8",
     "HII",
     83.82591666666666,
@@ -357,16 +395,51 @@
    ]
   ]
  },
+ "simbad-ident": {
+  "metadata": [
+   {
+    "name": "oidref",
+    "description": "Object internal identifier",
+    "datatype": "LONG",
+    "ucd": "meta.record"
+   },
+   {
+    "name": "id",
+    "description": "Identifier",
+    "datatype": "CHAR",
+    "arraysize": "*",
+    "ucd": "meta.id"
+   }
+  ],
+  "data": [
+   [
+    810146,
+    "LBN 209.13-19.35"
+   ],
+   [
+    810146,
+    "LBN   974"
+   ],
+   [
+    810146,
+    "M  42"
+   ],
+   [
+    810146,
+    "NGC  1976"
+   ]
+  ]
+ },
  "vizier": {
-  "VII/216": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=RCW,MajAxis,MinAxis,IDs\n\n#RESOURCE=yCat_7216\n#Name: VII/216\n#Title: H-{alpha} emission regions in Southern Milky Way (Rodgers+ 1960)\n#Coosys\tB1950:\teq_FK4 B1950\n#Table\tVII_216_rcw:\n#Name: VII/216/rcw\n#Title: The Catalogue (tables 2 and 3 of the paper)\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tRCW\t(I3)\tRCW id number\t[ucd=meta.id;meta.main]\n#Column\tMajAxis\t(I3)\tMajor Axis Size (arc minutes)\t[ucd=phys.angSize]\n#Column\tMinAxis\t(I3)\tMinor Axis Size (arc minutes)\t[ucd=phys.angSize]\n#Column\tIDs\t(a32)\tCross Reference Identifications\t[ucd=meta.id]\n",
-  "VII/220A": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=Barn,Diam\n\n#RESOURCE=yCat_7220\n#Name: VII/220A\n#Title: Barnard's Catalogue of 349 Dark Objects in the Sky (Barnard, 1927)\n#Coosys\tB1875:\teq_FK4 B1875\n#Table\tVII_220A_barnard:\n#Name: VII/220A/barnard\n#Title: Positions and Diameters\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tBarn\t(A4)\t[ 0-9a]! Barnard number\t[ucd=meta.id;meta.main]\n#Column\tDiam\t(F5.1)\t? Diameter of the nebula\t[ucd=phys.angSize]\n",
-  "J/ApJS/212/1/wisecat": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -sort=-Rad\n\n#RESOURCE=yCat_22120001\n#Name: J/ApJS/212/1\n#Title: The WISE catalog of Galactic HII regions (Anderson+, 2014)\n#Coosys\tG:\tgalactic\n#Table\tJ_ApJS_212_1_wisecat:\n#Name: J/ApJS/212/1/wisecat\n#Title: WISE catalog of Galactic HII regions with molecular line velocities and distances (tables 2, 5 and 6)\n#Column\t_RAJ2000\t(F9.5)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F9.5)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tWISE\t(A15)\tWISE identifier (GLLL.lll+BB.bbb) (1)\t[ucd=meta.id;meta.main]\n#Column\tCl\t(A1)\t[KGCQ?] Classification of HII region (2)\t[ucd=meta.code.class]\n#Column\tRad\t(I4)\t[5/5689] Radius\t[ucd=phys.angSize;src]\n#Column\tHIIName\t(a36)\tHII region identifier\t[ucd=meta.id;obs.field]\n#Column\tName\t(a21)\tSource name (5)\t[ucd=meta.id.assoc]\n_RAJ2000\t_DEJ2000\tWISE\tCl\tRad\tHIIName\tName\ndeg\tdeg\t \t \tarcsec\t \t\n---------\t---------\t---------------\t-\t----\t------------------------------------\t---------------------\n083.74786\t-05.52714\tG209.107-19.510\tK\t1739\tG209.010-19.380; Orion A            \t\n083.92408\t-04.73656\tG208.445-18.994\tQ\t1077\t                                    \t\n083.83707\t-05.40815\tG209.037-19.377\tK\t 546\tG209.010-19.380; Orion A            \t\n083.88404\t-05.26166\tG208.921-19.268\tK\t 312\tG209.010-19.380; Orion A            \t\n083.77515\t-04.72969\tG208.367-19.124\tQ\t 127\t                                    \t\n\n",
-  "VII/9": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=Seq,Diam1,Diam2,Name\n\n#RESOURCE=yCat_7009\n#Name: VII/9\n#Title: Lynds' Catalogue of Bright Nebulae (Lynds 1965)\n#Coosys\tB1950:\teq_FK4 B1950\n#Table\tVII_9_catalog:\n#Name: VII/9/catalog\n#Title: The LBN Catalogue\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tSeq\t(I4)\t[1/1125]+ Running number (1)\t[ucd=meta.id;meta.main]\n#Column\tDiam1\t(I4)\tLargest dimension of nebula\t[ucd=phys.size;stat.max]\n#Column\tDiam2\t(I3)\tSmallest dimension of nebula\t[ucd=phys.angSize;src]\n#Column\tName\t(a8)\tOther name of nebulosity (5)\t[ucd=meta.id]\n_RAJ2000\t_DEJ2000\tSeq\tDiam1\tDiam2\tName\ndeg\tdeg\t \tarcmin\tarcmin\t\n--------\t--------\t----\t----\t---\t--------\n083.8641\t -5.4688\t 974\t  90\t 60\tNGC 1976\n\n",
-  "VII/284/snrs": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=SNR,MajDiam,MinDiam,Names\n\n#RESOURCE=yCat_7284\n#Name: VII/284\n#Title: A Catalogue of Galactic Supernova Remnants (Green, 2019)\n#Table\tVII_284_snrs:\n#Name: VII/284/snrs\n#Title: Supernova Remnant catalogue\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tSNR\t(A11)\t*Supernova Remnant designation\t[ucd=meta.id;meta.main]\n#Column\tMajDiam\t(F5.1)\tMajor Angular Size of remnant\t[ucd=phys.angSize]\n#Column\tMinDiam\t(F5.1)\t? Minor Angular Size of remnant\t[ucd=phys.angSize]\n#Column\tNames\t(a26)\tOther names commonly used\t[ucd=meta.id]\n",
-  "VII/20": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=Sh2,Diam\n\n#RESOURCE=yCat_7020\n#Name: VII/20\n#Title: Catalogue of HII Regions (Sharpless 1959)\n#Coosys\tB1900:\teq_FK4 B1900\n#Table\tVII_20_catalog:\n#Name: VII/20/catalog\n#Title: The Sharpless (Sh 2) Catalogue\n#Column\t_RAJ2000\t(F10.6)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F10.6)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tSh2\t(I4)\t[1/313]+ Sharpless HII catalog number\t[ucd=meta.id;meta.main]\n#Column\tDiam\t(I4)\tMaximun angular diameter of H II region\t[ucd=phys.angSize;src]\n_RAJ2000\t_DEJ2000\tSh2\tDiam\ndeg\tdeg\t \tarcmin\n----------\t----------\t----\t----\n083.834046\t -4.800897\t 279\t  20\n083.727577\t -5.466568\t 281\t  60\n\n",
-  "V/127A/mash2": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=PNG,Name,MajDiam,MinDiam\n\n#RESOURCE=yCat_5127\n#Name: V/127A\n#Title: MASH Catalogues of Planetary Nebulae (Parker+ 2006-2008)\n#Table\tV_127A_mash2:\n#Name: V/127A/mash2\n#Title: The MASH-II Supplement (from paper II)\n#Column\t_RAJ2000\t(F10.6)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F10.6)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tPNG\t(A12)\tName of PN, based on Galactic position (1)\t[ucd=meta.ref]\n#Column\tName\t(A13)\tUsual name of the PN (2)\t[ucd=meta.id]\n#Column\tMajDiam\t(F6.1)\t? Major diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n#Column\tMinDiam\t(F6.1)\t? Minor diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n",
-  "V/127A/mash1": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=PNG,Name,MajDiam,MinDiam\n\n#RESOURCE=yCat_5127\n#Name: V/127A\n#Title: MASH Catalogues of Planetary Nebulae (Parker+ 2006-2008)\n#Table\tV_127A_mash1:\n#Name: V/127A/mash1\n#Title: The MASH Catalog of Planetary Nebulae (paper I)\n#Column\t_RAJ2000\t(F10.6)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F10.6)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tPNG\t(A12)\tName of PN, based on Galactic position (1)\t[ucd=meta.id;meta.main]\n#Column\tName\t(A13)\tUsual name of the PN (2)\t[ucd=meta.id]\n#Column\tMajDiam\t(F6.1)\t? Major diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n#Column\tMinDiam\t(F6.1)\t? Minor diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n",
-  "VII/7A": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=LDN,Area\n\n#RESOURCE=yCat_7007\n#Name: VII/7A\n#Title: Lynds' Catalogue of Dark Nebulae (LDN) (Lynds 1962)\n#Coosys\tB1950:\teq_FK4 B1950\n#Table\tVII_7A_ldn:\n#Name: VII/7A/ldn\n#Title: The LDN Catalogue\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tLDN\t(I4)\t[1/1802]?+ Catalogue number from original published version (ApJS 7, 1)\t[ucd=meta.id]\n#Column\tArea\t(F7.3)\tArea, in square degrees, of the Cloud\t[ucd=phys.area;instr]\n_RAJ2000\t_DEJ2000\tLDN\tArea\ndeg\tdeg\t \tdeg2\n--------\t--------\t----\t-------\n083.3625\t -5.7997\t1640\t  0.018\n\n",
-  "VII/21": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T05:17:47 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=VdB,BRadMax,RRadMax\n\n#RESOURCE=yCat_7021\n#Name: VII/21\n#Title: Catalogue of Reflection Nebulae (Van den Bergh, 1966)\n#Coosys\tJ2000_2000.000:\teq_FK5 J2000\n#Table\tVII_21_catalog:\n#Name: VII/21/catalog\n#Title: The catalogue (Table I of publication) (corrected version, 13-Nov-2022)\n#Column\t_RAJ2000\t(F11.7)\tRight ascension (FK5, Equinox=J2000.0) at Epoch=J2000. (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F11.7)\tDeclination (FK5, Equinox=J2000.0) at Epoch=J2000. (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tVdB\t(I3)\t[1-158]+ van den Bergh catalog number (1)\t[ucd=meta.id;meta.main]\n#Column\tBRadMax\t(F5.1)\t? Maximum radii observed on blue PSS prints\t[ucd=phys.angSize]\n#Column\tRRadMax\t(F5.1)\t? Maximum radii observed on red PSS prints\t[ucd=phys.angSize]\n"
+  "VII/20": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:30 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=Sh2,Diam\n\n#RESOURCE=yCat_7020\n#Name: VII/20\n#Title: Catalogue of HII Regions (Sharpless 1959)\n#Coosys\tB1900:\teq_FK4 B1900\n#Table\tVII_20_catalog:\n#Name: VII/20/catalog\n#Title: The Sharpless (Sh 2) Catalogue\n#Column\t_RAJ2000\t(F10.6)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F10.6)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tSh2\t(I4)\t[1/313]+ Sharpless HII catalog number\t[ucd=meta.id;meta.main]\n#Column\tDiam\t(I4)\tMaximun angular diameter of H II region\t[ucd=phys.angSize;src]\n_RAJ2000\t_DEJ2000\tSh2\tDiam\ndeg\tdeg\t \tarcmin\n----------\t----------\t----\t----\n083.834046\t -4.800897\t 279\t  20\n083.727577\t -5.466568\t 281\t  60\n\n",
+  "VII/7A": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:30 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=LDN,Area\n\n#RESOURCE=yCat_7007\n#Name: VII/7A\n#Title: Lynds' Catalogue of Dark Nebulae (LDN) (Lynds 1962)\n#Coosys\tB1950:\teq_FK4 B1950\n#Table\tVII_7A_ldn:\n#Name: VII/7A/ldn\n#Title: The LDN Catalogue\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tLDN\t(I4)\t[1/1802]?+ Catalogue number from original published version (ApJS 7, 1)\t[ucd=meta.id]\n#Column\tArea\t(F7.3)\tArea, in square degrees, of the Cloud\t[ucd=phys.area;instr]\n_RAJ2000\t_DEJ2000\tLDN\tArea\ndeg\tdeg\t \tdeg2\n--------\t--------\t----\t-------\n083.3625\t -5.7997\t1640\t  0.018\n\n",
+  "VII/216": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:30 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=RCW,MajAxis,MinAxis,IDs\n\n#RESOURCE=yCat_7216\n#Name: VII/216\n#Title: H-{alpha} emission regions in Southern Milky Way (Rodgers+ 1960)\n#Coosys\tB1950:\teq_FK4 B1950\n#Table\tVII_216_rcw:\n#Name: VII/216/rcw\n#Title: The Catalogue (tables 2 and 3 of the paper)\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tRCW\t(I3)\tRCW id number\t[ucd=meta.id;meta.main]\n#Column\tMajAxis\t(I3)\tMajor Axis Size (arc minutes)\t[ucd=phys.angSize]\n#Column\tMinAxis\t(I3)\tMinor Axis Size (arc minutes)\t[ucd=phys.angSize]\n#Column\tIDs\t(a32)\tCross Reference Identifications\t[ucd=meta.id]\n",
+  "VII/21": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:30 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=VdB,BRadMax,RRadMax\n\n#RESOURCE=yCat_7021\n#Name: VII/21\n#Title: Catalogue of Reflection Nebulae (Van den Bergh, 1966)\n#Coosys\tJ2000_2000.000:\teq_FK5 J2000\n#Table\tVII_21_catalog:\n#Name: VII/21/catalog\n#Title: The catalogue (Table I of publication) (corrected version, 13-Nov-2022)\n#Column\t_RAJ2000\t(F11.7)\tRight ascension (FK5, Equinox=J2000.0) at Epoch=J2000. (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F11.7)\tDeclination (FK5, Equinox=J2000.0) at Epoch=J2000. (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tVdB\t(I3)\t[1-158]+ van den Bergh catalog number (1)\t[ucd=meta.id;meta.main]\n#Column\tBRadMax\t(F5.1)\t? Maximum radii observed on blue PSS prints\t[ucd=phys.angSize]\n#Column\tRRadMax\t(F5.1)\t? Maximum radii observed on red PSS prints\t[ucd=phys.angSize]\n",
+  "VII/220A": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:31 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=Barn,Diam\n\n#RESOURCE=yCat_7220\n#Name: VII/220A\n#Title: Barnard's Catalogue of 349 Dark Objects in the Sky (Barnard, 1927)\n#Coosys\tB1875:\teq_FK4 B1875\n#Table\tVII_220A_barnard:\n#Name: VII/220A/barnard\n#Title: Positions and Diameters\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tBarn\t(A4)\t[ 0-9a]! Barnard number\t[ucd=meta.id;meta.main]\n#Column\tDiam\t(F5.1)\t? Diameter of the nebula\t[ucd=phys.angSize]\n",
+  "VII/284/snrs": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:30 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=SNR,MajDiam,MinDiam,Names\n\n#RESOURCE=yCat_7284\n#Name: VII/284\n#Title: A Catalogue of Galactic Supernova Remnants (Green, 2019)\n#Table\tVII_284_snrs:\n#Name: VII/284/snrs\n#Title: Supernova Remnant catalogue\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tSNR\t(A11)\t*Supernova Remnant designation\t[ucd=meta.id;meta.main]\n#Column\tMajDiam\t(F5.1)\tMajor Angular Size of remnant\t[ucd=phys.angSize]\n#Column\tMinDiam\t(F5.1)\t? Minor Angular Size of remnant\t[ucd=phys.angSize]\n#Column\tNames\t(a26)\tOther names commonly used\t[ucd=meta.id]\n",
+  "V/127A/mash2": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:31 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=PNG,Name,MajDiam,MinDiam\n\n#RESOURCE=yCat_5127\n#Name: V/127A\n#Title: MASH Catalogues of Planetary Nebulae (Parker+ 2006-2008)\n#Table\tV_127A_mash2:\n#Name: V/127A/mash2\n#Title: The MASH-II Supplement (from paper II)\n#Column\t_RAJ2000\t(F10.6)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F10.6)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tPNG\t(A12)\tName of PN, based on Galactic position (1)\t[ucd=meta.ref]\n#Column\tName\t(A13)\tUsual name of the PN (2)\t[ucd=meta.id]\n#Column\tMajDiam\t(F6.1)\t? Major diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n#Column\tMinDiam\t(F6.1)\t? Minor diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n",
+  "J/ApJS/212/1/wisecat": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:31 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -sort=-Rad\n\n#RESOURCE=yCat_22120001\n#Name: J/ApJS/212/1\n#Title: The WISE catalog of Galactic HII regions (Anderson+, 2014)\n#Coosys\tG:\tgalactic\n#Table\tJ_ApJS_212_1_wisecat:\n#Name: J/ApJS/212/1/wisecat\n#Title: WISE catalog of Galactic HII regions with molecular line velocities and distances (tables 2, 5 and 6)\n#Column\t_RAJ2000\t(F9.5)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F9.5)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tWISE\t(A15)\tWISE identifier (GLLL.lll+BB.bbb) (1)\t[ucd=meta.id;meta.main]\n#Column\tCl\t(A1)\t[KGCQ?] Classification of HII region (2)\t[ucd=meta.code.class]\n#Column\tRad\t(I4)\t[5/5689] Radius\t[ucd=phys.angSize;src]\n#Column\tHIIName\t(a36)\tHII region identifier\t[ucd=meta.id;obs.field]\n#Column\tName\t(a21)\tSource name (5)\t[ucd=meta.id.assoc]\n_RAJ2000\t_DEJ2000\tWISE\tCl\tRad\tHIIName\tName\ndeg\tdeg\t \t \tarcsec\t \t\n---------\t---------\t---------------\t-\t----\t------------------------------------\t---------------------\n083.74786\t-05.52714\tG209.107-19.510\tK\t1739\tG209.010-19.380; Orion A            \t\n083.92408\t-04.73656\tG208.445-18.994\tQ\t1077\t                                    \t\n083.83707\t-05.40815\tG209.037-19.377\tK\t 546\tG209.010-19.380; Orion A            \t\n083.88404\t-05.26166\tG208.921-19.268\tK\t 312\tG209.010-19.380; Orion A            \t\n083.77515\t-04.72969\tG208.367-19.124\tQ\t 127\t                                    \t\n\n",
+  "V/127A/mash1": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:31 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=PNG,Name,MajDiam,MinDiam\n\n#RESOURCE=yCat_5127\n#Name: V/127A\n#Title: MASH Catalogues of Planetary Nebulae (Parker+ 2006-2008)\n#Table\tV_127A_mash1:\n#Name: V/127A/mash1\n#Title: The MASH Catalog of Planetary Nebulae (paper I)\n#Column\t_RAJ2000\t(F10.6)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F10.6)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tPNG\t(A12)\tName of PN, based on Galactic position (1)\t[ucd=meta.id;meta.main]\n#Column\tName\t(A13)\tUsual name of the PN (2)\t[ucd=meta.id]\n#Column\tMajDiam\t(F6.1)\t? Major diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n#Column\tMinDiam\t(F6.1)\t? Minor diameter of the PN from H{alpha} image\t[ucd=phys.angSize]\n",
+  "VII/9": "#\n#   VizieR Astronomical Server vizier.cds.unistra.fr\n#    Date: 2026-10-18T10:07:31 [V7.6.1]\n#   In case of problem, please report to:\tcds-question@unistra.fr\n#\n#\n#Coosys\tJ2000:\teq_FK5 J2000\n#Constraint -out=Seq,Diam1,Diam2,Name\n\n#RESOURCE=yCat_7009\n#Name: VII/9\n#Title: Lynds' Catalogue of Bright Nebulae (Lynds 1965)\n#Coosys\tB1950:\teq_FK4 B1950\n#Table\tVII_9_catalog:\n#Name: VII/9/catalog\n#Title: The LBN Catalogue\n#Column\t_RAJ2000\t(F8.4)\tRight ascension (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.ra]\n#Column\t_DEJ2000\t(F8.4)\tDeclination (FK5, Equinox=J2000.0) (computed by VizieR, not part of the original data. The format may include more digits than the original data because of internal accuracy requirements in VizieR and across other CDS services)\t[ucd=pos.eq.dec]\n#Column\tSeq\t(I4)\t[1/1125]+ Running number (1)\t[ucd=meta.id;meta.main]\n#Column\tDiam1\t(I4)\tLargest dimension of nebula\t[ucd=phys.size;stat.max]\n#Column\tDiam2\t(I3)\tSmallest dimension of nebula\t[ucd=phys.angSize;src]\n#Column\tName\t(a8)\tOther name of nebulosity (5)\t[ucd=meta.id]\n_RAJ2000\t_DEJ2000\tSeq\tDiam1\tDiam2\tName\ndeg\tdeg\t \tarcmin\tarcmin\t\n--------\t--------\t----\t----\t---\t--------\n083.8641\t -5.4688\t 974\t  90\t 60\tNGC 1976\n\n"
  }
 }

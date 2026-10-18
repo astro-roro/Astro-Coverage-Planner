@@ -35,10 +35,11 @@ export const GROUPS = [
   { id: "shell", label: "Bubbles and shells" },
   { id: "nebula", label: "Other nebulae" },
   { id: "galaxy", label: "Galaxies" },
+  { id: "cluster", label: "Star clusters" },
 ];
 
 // SIMBAD object-type codes (otypedef, checked 2026-10-18) per group, with the
-// plain name shown in the Type column. Stars, clusters, radio and X-ray
+// plain name shown in the Type column. Stars, radio and X-ray
 // sources, dense cores and molecular clouds (thousands of CO clumps that are
 // not imaging targets) are left out on purpose.
 const SIMBAD_TYPES = {
@@ -58,6 +59,8 @@ const SIMBAD_TYPES = {
   ISM: ["nebula", "Interstellar medium"],
   flt: ["nebula", "Filament"],
   CGb: ["nebula", "Cometary globule"],
+  OpC: ["cluster", "Open cluster"],
+  GlC: ["cluster", "Globular cluster"],
   G: ["galaxy", "Galaxy"],
   GiG: ["galaxy", "Galaxy"],
   GiP: ["galaxy", "Galaxy in pair"],
@@ -125,7 +128,7 @@ export function buildSimbadAdql(ra, dec, radiusDeg, { sized = true, limit = SIMB
   const where = sized
     ? `galdim_majaxis IS NOT NULL AND otype IN (${list(Object.keys(SIMBAD_TYPES))})`
     : `galdim_majaxis IS NULL AND otype IN (${list(UNSIZED_OK)})`;
-  return `SELECT TOP ${Math.floor(limit)} main_id, otype, ra, dec, galdim_majaxis, galdim_minaxis, galdim_angle `
+  return `SELECT TOP ${Math.floor(limit)} oid, main_id, otype, ra, dec, galdim_majaxis, galdim_minaxis, galdim_angle `
     + `FROM basic WHERE ${coneAdql(ra, dec, radiusDeg)} AND ${where}`
     + (sized ? " ORDER BY galdim_majaxis DESC" : "");
 }
@@ -147,6 +150,7 @@ export function normaliseSimbad(reply) {
     const major = positive(num(row[at("galdim_majaxis")]));
     const minor = positive(num(row[at("galdim_minaxis")]));
     out.push({
+      oid: num(row[at("oid")]),
       name: cleanSimbadName(row[at("main_id")]),
       aliases: [],
       group: info[0],
@@ -317,20 +321,61 @@ async function fetchWithTimeout(fetchImpl, url, init, timeoutMs) {
 
 // Every source resolves to { label, ok, items, truncated, error }. One that
 // fails reports its error and leaves the others alone.
+// SIMBAD's main_id often hides the designation people know (M 42 comes back as
+// "NAME Orion Nebula"). One extra query fetches the Messier, NGC, IC, Sharpless
+// and similar identifiers for the objects found, so the catalogue filter and
+// the names can use them. It covers the largest IDENT_MAX objects and is
+// best-effort: if it fails the search still returns what it has.
+const IDENT_MAX = 900;
+const IDENT_CHUNK = 300;
+const IDENT_LIKES = ["M %", "NGC %", "IC %", "Sh 2-%", "SH 2-%", "RCW %", "Gum %", "LBN %", "LDN %", "B %", "vdB %", "VDB %", "PN G%"];
+
+export function buildIdentAdql(oids) {
+  const list = oids.map(o => Math.floor(Number(o))).filter(Number.isFinite).join(",");
+  const likes = IDENT_LIKES.map(l => `id LIKE '${l}'`).join(" OR ");
+  return `SELECT oidref, id FROM ident WHERE oidref IN (${list}) AND (${likes})`;
+}
+
+// Adds the identifiers in a TAP reply ({ data: [[oidref, id]] }) to the items
+// they belong to, as aliases. Returns how many were added.
+export function applyIdents(items, reply) {
+  const byOid = new Map();
+  for (const o of items) if (o.oid !== null && o.oid !== undefined) byOid.set(o.oid, o);
+  let added = 0;
+  for (const [oidref, id] of reply?.data || []) {
+    const o = byOid.get(Number(oidref));
+    const name = cleanSimbadName(id);
+    if (!o || !name || name === o.name || o.aliases.includes(name)) continue;
+    o.aliases.push(name);
+    added++;
+  }
+  return added;
+}
+
 export async function searchSimbad(cone, { fetchImpl = fetch, timeoutMs = 25000 } = {}) {
   const base = { label: "SIMBAD", items: [], truncated: false };
-  const ask = async sized => {
-    const body = new URLSearchParams({
-      request: "doQuery", lang: "adql", format: "json",
-      query: buildSimbadAdql(cone.ra, cone.dec, cone.radiusDeg, { sized }),
-    });
+  const post = async query => {
+    const body = new URLSearchParams({ request: "doQuery", lang: "adql", format: "json", query });
     const r = await fetchWithTimeout(fetchImpl, SIMBAD_TAP, { method: "POST", body }, timeoutMs);
-    const reply = await r.json();
+    return r.json();
+  };
+  const ask = async sized => {
+    const reply = await post(buildSimbadAdql(cone.ra, cone.dec, cone.radiusDeg, { sized }));
     return { items: normaliseSimbad(reply), full: (reply.data || []).length >= SIMBAD_LIMIT };
   };
   try {
     const [a, b] = await Promise.all([ask(true), ask(false)]);
-    return { ...base, ok: true, items: [...a.items, ...b.items], truncated: a.full || b.full };
+    const items = [...a.items, ...b.items];
+    const out = { ...base, ok: true, items, truncated: a.full || b.full, identFailed: false };
+    const oids = items.filter(o => o.oid !== null)
+      .sort((x, y) => (y.major ?? -1) - (x.major ?? -1)).slice(0, IDENT_MAX).map(o => o.oid);
+    const chunks = [];
+    for (let i = 0; i < oids.length; i += IDENT_CHUNK) chunks.push(oids.slice(i, i + IDENT_CHUNK));
+    const replies = await Promise.allSettled(chunks.map(c => post(buildIdentAdql(c))));
+    for (const r of replies) {
+      if (r.status === "fulfilled") applyIdents(items, r.value); else out.identFailed = true;
+    }
+    return out;
   } catch (e) {
     return { ...base, ok: false, error: String(e?.message || e) };
   }
@@ -469,6 +514,101 @@ export function dedupe(items) {
 
 export function withDistances(items, centre) {
   return items.map(o => ({ ...o, distArcmin: angSepArcmin(centre[0], centre[1], o.ra, o.dec) }));
+}
+
+// ---- filters over what was found ------------------------------------------
+
+// Type chips. Each group the sources use files into one bucket.
+export const TYPE_BUCKETS = [
+  { id: "emission", label: "Emission/HII" },
+  { id: "pn", label: "Planetary nebula" },
+  { id: "snr", label: "SNR" },
+  { id: "reflection", label: "Reflection" },
+  { id: "dark", label: "Dark nebula" },
+  { id: "galaxy", label: "Galaxy" },
+  { id: "cluster", label: "Cluster" },
+  { id: "other", label: "Other" },
+];
+const GROUP_BUCKET = {
+  emission: "emission", pn: "pn", snr: "snr", reflection: "reflection",
+  dark: "dark", galaxy: "galaxy", cluster: "cluster",
+};
+export const typeBucket = o => GROUP_BUCKET[o.group] || "other";
+
+// Catalogue chips, matched on any of an object's names (its own and the
+// "also" aliases). An object that matches none is "Other".
+export const CATALOGUE_CHIPS = [
+  { id: "messier", label: "Messier", re: /^M\s?\d/ },
+  { id: "ngcic", label: "NGC/IC", re: /^(NGC|IC)\s?\d/ },
+  { id: "sharpless", label: "Sharpless", re: /^(Sh2|Sh 2|SH 2|SH2)\s?-?\s?\d/ },
+  { id: "rcw", label: "RCW", re: /^RCW\s?\d/ },
+  { id: "gum", label: "Gum", re: /^Gum\s?\d/i },
+  { id: "lynds", label: "Lynds/Barnard", re: /^(LBN|LDN|B)\s?\d/ },
+  { id: "vdb", label: "vdB", re: /^vdB\s?-?\d/i },
+  { id: "mash", label: "MASH/PN G", re: /^(PN G|PHR\d|MPA\d|MASH)/ },
+  { id: "wise", label: "WISE HII", re: /^WISE G\d/ },
+];
+
+export function catalogueIds(o) {
+  const names = [o.name, ...(o.aliases || [])].map(n => String(n).replace(/\s+/g, " ").trim());
+  const hit = CATALOGUE_CHIPS.filter(c => names.some(n => c.re.test(n))).map(c => c.id);
+  return hit.length ? hit : ["other"];
+}
+
+// How much of the frame's short side an object's long axis fills.
+export const FILL_PRESETS = {
+  any: { label: "Any", min: null, max: null },
+  well: { label: "Frames well (20-90%)", min: 0.2, max: 0.9 },
+  small: { label: "Small in frame (under 20%)", min: null, max: 0.2, maxExclusive: true },
+  mosaic: { label: "Mosaic (over 100%)", min: 1, max: null, minExclusive: true },
+};
+
+const blank = v => v === "" || v === null || v === undefined;
+
+export function fillRange(preset, customMinPct, customMaxPct) {
+  if (preset === "custom") {
+    return {
+      min: blank(customMinPct) || !Number.isFinite(Number(customMinPct)) ? null : Number(customMinPct) / 100,
+      max: blank(customMaxPct) || !Number.isFinite(Number(customMaxPct)) ? null : Number(customMaxPct) / 100,
+    };
+  }
+  return FILL_PRESETS[preset] || FILL_PRESETS.any;
+}
+
+export function fillMatches(ratio, range) {
+  if (!range) return true;
+  if (range.min !== null && range.min !== undefined) {
+    if (range.minExclusive ? !(ratio > range.min) : !(ratio >= range.min)) return false;
+  }
+  if (range.max !== null && range.max !== undefined) {
+    if (range.maxExclusive ? !(ratio < range.max) : !(ratio <= range.max)) return false;
+  }
+  return true;
+}
+
+// The one place the filters combine. skip names a filter to leave out
+// ("types" or "cats"), which is how each chip row counts what it would add.
+// f: { minArcmin, fill (range), shortSideArcmin, showUnknown,
+//      typesOff (Set), catsOff (Set) }
+export function applyFilters(items, f, skip = null) {
+  return items.filter(o => {
+    if (o.major === null) return f.showUnknown !== false;
+    if (f.minArcmin > 0 && o.major < f.minArcmin) return false;
+    if (f.fill && f.shortSideArcmin > 0 && !fillMatches(o.major / f.shortSideArcmin, f.fill)) return false;
+    return true;
+  }).filter(o => {
+    if (skip !== "types" && f.typesOff?.has(typeBucket(o))) return false;
+    if (skip !== "cats" && f.catsOff?.size) {
+      if (catalogueIds(o).every(id => f.catsOff.has(id))) return false;
+    }
+    return true;
+  });
+}
+
+export function countBy(items, keysOf) {
+  const n = new Map();
+  for (const o of items) for (const k of keysOf(o)) n.set(k, (n.get(k) || 0) + 1);
+  return n;
 }
 
 // ---- outline -------------------------------------------------------------
