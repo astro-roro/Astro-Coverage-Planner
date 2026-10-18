@@ -101,10 +101,10 @@ Configuration, all environment variables, matching the rest of ACP:
 
 | Variable | Meaning |
 |---|---|
-| `ACP_PUBLISH_DEST` | SFTP destination, for example `linuxuser@100.106.46.47:/home/astrowithroro.com/public_html/live/shooting.json`. Publishing refuses to run when unset. |
+| `ACP_PUBLISH_DEST` | SFTP destination, for example `user@your-host:/var/www/site/live/shooting.json`. Publishing refuses to run when unset. |
 | `ACP_PUBLISH_SSH_KEY` | Optional path to the key. Defaults to whatever SSH would use. |
 
-The push is initiated from the ACP machine, never from Canopus, which keeps to the rule that Canopus only ever receives. The web root on Canopus is owned by `astro2735` and the SSH user is `linuxuser`, so a one-off setup step creates `public_html/live/` owned by `linuxuser` with mode 755. After that the upload writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
+The push is initiated from the ACP machine, never from the web host, which keeps to the rule that the web host only ever receives. The web root is owned by a different account from the SSH user, so a one-off setup step creates `live/` owned by the SSH user with mode 755. After that the upload writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
 
 There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a rescan and returns the upload result, so a "Publish now" button in the plan rail works without a terminal.
 
