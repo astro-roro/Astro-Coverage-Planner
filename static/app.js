@@ -624,7 +624,10 @@ import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
-import { listModeFor } from "./panel-nav.mjs";
+import { listModeFor, createNavStack } from "./panel-nav.mjs";
+
+// Back targets for screens opened from a tile panel (see panel-nav.mjs).
+const navStack = createNavStack();
 import {
   railIconPath, railTabsFrom, fillColorFor, tilePlansHtml,
   tilePanelModeOf, tilePanelTitleHtml, tilePanelAction, runTilePanelAction,
@@ -1112,6 +1115,7 @@ function _upcomingCompare(a, b) {
 }
 
 function renderTargetList() {
+  navStack.clear();
   panelMode = "list";
   updateSearchVisibility();
   selectedTargetId = null;
@@ -1224,6 +1228,7 @@ function renderTargetList() {
 }
 
 function renderTargetPanel(t) {
+  navStack.clear();
   panelMode = "detail";
   updateSearchVisibility();
   selectedTargetId = t.target_id;
@@ -4825,6 +4830,7 @@ function renderTileOverlay(sourceId) {
 
 // --- Tile detail panel (Plan 2a) -----------------------------------------
 function renderTilePanel(tile, sourceId) {
+  navStack.clear();
   panelMode = "tile-detail";
   updateSearchVisibility();
   selectedTileKey = `${sourceId}/${tile.id}`;
@@ -4954,25 +4960,33 @@ function renderTilePanel(tile, sourceId) {
   panel.querySelectorAll(".tile-plan-link").forEach(a => a.addEventListener("click", e => {
     e.preventDefault();
     const pl = findPlan(a.dataset.planId);
-    if (pl) activityOpenPlan(pl.id);
+    if (pl) activityOpenPlan(pl.id, tileNavEntry());
   }));
   document.getElementById("tileCreatePlan")?.addEventListener("click", () => {
-    promotePlanFromTile(tile, sourceMeta);
+    promotePlanFromTile(tile, sourceMeta, tileNavEntry());
   });
   document.getElementById("tileOpenPlan")?.addEventListener("click", () => {
     if (planInfo.plan) {
       if (!planningMode) setPlanningMode(true);
+      navStack.push({ ...tileNavEntry(), dest: `plan:${planInfo.plan.id}` });
       renderPlanEditor(planInfo.plan);
     }
   });
+  // What a screen opened from this panel needs in order to come back here.
+  const tileNavEntry = () => ({
+    kind: "tile", sourceId, tileId: tile.id,
+    title: tile.id ? String(tile.id) : sourceLabel,
+    scrollTop: document.getElementById("panelBody")?.scrollTop || 0,
+  });
+
   const extPanel = panel.querySelector(".ext-tile-panel");
-  if (extPanel) wireExtTilePanel(extPanel, findPlan);
+  if (extPanel) wireExtTilePanel(extPanel, findPlan, tileNavEntry);
   if (!replaceMode) loadTileVisibility(tile);
 }
 
 // Click handling for the data-acp-* hooks in an extension's panel_html.
 // One delegated listener on the container, so HTML added later still works.
-function wireExtTilePanel(container, findPlan) {
+function wireExtTilePanel(container, findPlan, tileNavEntry) {
   container.addEventListener("click", e => {
     const action = tilePanelAction(e.target, container);
     if (!action) return;
@@ -4980,10 +4994,10 @@ function wireExtTilePanel(container, findPlan) {
     runTilePanelAction(action, {
       openPlan: pid => {
         const pl = findPlan(pid);
-        if (pl) activityOpenPlan(pl.id);
+        if (pl) activityOpenPlan(pl.id, tileNavEntry());
         else showTilePanelNotice(container, "That plan is not loaded in ACP.");
       },
-      newPlan: a => promotePlanAt({ ra: a.ra, dec: a.dec, name: a.name }),
+      newPlan: a => promotePlanAt({ ra: a.ra, dec: a.dec, name: a.name, fromTile: tileNavEntry() }),
       goto: a => {
         activityShowOnMap(a.ra, a.dec);
         if (a.fov != null && typeof aladin?.setFoV === "function") aladin.setFoV(a.fov);
@@ -5279,7 +5293,7 @@ function planPeakPanelsMonth(plan) {
 // derived from the source label + tile id, and opens the editor. FOV is
 // owned by the gear preset (per design decision 2d), left to the user
 // to pick when they choose telescope/camera in the editor.
-function promotePlanFromTile(tile, sourceMeta) {
+function promotePlanFromTile(tile, sourceMeta, fromTile = null) {
   const sourceLabel = sourceMeta?.label || "";
   const tileId = tile.id || "";
   promotePlanAt({
@@ -5287,12 +5301,13 @@ function promotePlanFromTile(tile, sourceMeta) {
     dec: Number(tile.dec_deg),
     name: [sourceLabel, tileId].filter(Boolean).join(" · ") || "From tile",
     projectName: sourceLabel,
+    fromTile,
   });
 }
 
 // Opens the plan editor on a new plan centred on (ra, dec). Shared by the
 // tile panel's own button and the data-acp-new-plan hook in extension HTML.
-function promotePlanAt({ ra, dec, name, projectName }) {
+function promotePlanAt({ ra, dec, name, projectName, fromTile = null }) {
   if (!planningMode) setPlanningMode(true);
   const p = newEmptyPlan();
   // newEmptyPlan reads the current Aladin centre, overwrite with the given
@@ -5307,7 +5322,19 @@ function promotePlanAt({ ra, dec, name, projectName }) {
   // "Unassigned". User can override before saving.
   if (projectName && !p.project_name) p.project_name = projectName;
   plans.push(p);
+  if (fromTile) navStack.push({ ...fromTile, dest: `plan:${p.id}` });
   renderPlanEditor(p);
+}
+
+// Back control on a screen opened from a tile panel: pops the entry and
+// shows that tile panel again, scrolled to where it was.
+function reopenTileFromNav() {
+  const entry = navStack.pop();
+  const tile = entry && (tileData[entry.sourceId] || []).find(t => String(t.id) === String(entry.tileId));
+  if (!tile) { renderPlanList(); return; }
+  renderTilePanel(tile, entry.sourceId);
+  const body = document.getElementById("panelBody");
+  if (body) body.scrollTop = entry.scrollTop || 0;
 }
 
 async function loadCatalogs() {
@@ -6166,12 +6193,13 @@ function setupSidePanel() {
 
 // Open a plan in the editor from an Activity row, the way the map's own
 // "Open" menu item does.
-function activityOpenPlan(planId) {
+function activityOpenPlan(planId, fromTile = null) {
   const pl = plans.find(p => p.id === planId);
   if (!pl) return;
   const go = () => {
     revealMainSidePanel();
     if (!planningMode) setPlanningMode(true);
+    if (fromTile) navStack.push({ ...fromTile, dest: `plan:${pl.id}` });
     panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
     renderPlanEditor(pl);
   };
@@ -6955,6 +6983,7 @@ function projectRowHtml(r) {
 }
 
 function renderPlanList() {
+  navStack.clear();
   panelMode = "plan-list";
   updateSearchVisibility();
   editingPlan = null;
@@ -7393,6 +7422,7 @@ async function createGearTemplate(camera, filter, name, sub_s) {
 }
 
 function renderPlanEditor(plan) {
+  const tileBack = navStack.bind(`plan:${plan.id}`);
   panelMode = "plan-edit";
   updateSearchVisibility();
   selectedPlanId = plan.id;
@@ -7427,7 +7457,9 @@ function renderPlanEditor(plan) {
   const tg = editingPlan.target;
 
   panel.innerHTML = `
-    <a class="back-link" id="backToPlans" href="#">← Back to plans</a>
+    ${tileBack
+      ? `<a class="back-link" id="backToTile" href="#">← Back to ${esc(tileBack.title)}</a>`
+      : `<a class="back-link" id="backToPlans" href="#">← Back to plans</a>`}
     <h3>Plan: ${esc(tg.name || "(unnamed)")}</h3>
     <form class="plan-form" id="planForm" onsubmit="return false">
       <fieldset>
@@ -7648,6 +7680,10 @@ function renderPlanEditor(plan) {
     } catch (e) { alert("Lookup failed: " + e); }
   });
 
+  panel.querySelector("#backToTile")?.addEventListener("click", e => {
+    e.preventDefault();
+    requestNavigateAwayFromPlanEdit(reopenTileFromNav);
+  });
   panel.querySelector("#backToPlans")?.addEventListener("click", e => {
     e.preventDefault();
     // Discard scratch (unsaved) plan
