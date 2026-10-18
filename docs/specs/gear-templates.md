@@ -32,7 +32,7 @@ The mockup is three artboards: Main (a camera with its filters and templates), T
 
 ## 1. What the data says today
 
-All figures are from the scratch copy of Voyager's database taken on 12 October (`schedulerdb.sqlite`, opened read-only) and `gear.json` beside it. The wheel slots in the NINA profile on Voyager were confirmed on 13 October as L, R, G, B, H, O, S.
+All figures are from the scratch copy of IMAGING-PC's database taken on 12 October (`schedulerdb.sqlite`, opened read-only) and `gear.json` beside it. The wheel slots in the NINA profile on IMAGING-PC were confirmed on 13 October as L, R, G, B, H, O, S.
 
 - Profile `9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7` holds 20 templates. Ids 1 to 10 are Rohan's: L, R, G, B at 180 s, R Stars, G Stars, B Stars at 15 s, and H, O, S at 300 s. Ids 11 to 20 are ACP's copies at offset -1: OIII, Ha, SII at 300 s, B, G, L, R at 120 s named "B", "G (ZWO ASI6200MM Pro)", "L", "R (ZWO ASI6200MM Pro)", and three star templates at 15 s.
 - Rohan said his originals use offset 25. Nine of the ten do. Id 3 (G, 180 s) has offset -1.
@@ -65,7 +65,7 @@ NINA's fingerprint was reported as listing B, G, Ha, L, OIII, R, SII, while TS t
 - Frames TS saved are tagged with the template's filtername: `acquiredimage.filtername` holds B 54, G 54, R 54, H 99, O 74, S 3. The newest H frame is 10 October 2026 (UTC). TS shot Ha because the wheel slot is named "H", and ACP's template 12 ("Ha") carries filtername "H".
 - Templates 11, 12 and 13 were made by ACP's writer with names OIII, Ha, SII. Their filternames are O, H, S, which only the plugin's wheel rename writes.
 
-Conclusion, confirmed from NINA's profile on Voyager on 13 October: the wheel slots are L, R, G, B, H, O, S. ACP's stored fingerprint hid them by folding, and nothing was shot wrongly.
+Conclusion, confirmed from NINA's profile on IMAGING-PC on 13 October: the wheel slots are L, R, G, B, H, O, S. ACP's stored fingerprint hid them by folding, and nothing was shot wrongly.
 
 ### The rule this design uses
 
@@ -678,7 +678,7 @@ Restore `gear.json.bak-*` and `plans.json.bak-*` together. The rows and the gear
 
 ## 12. Build order
 
-Each phase ends with its tests passing in every repo it touches. The plugin goes first and the ACP and sync changes follow together, because ACP deploys on merge and the plugin has to be on Voyager before ACP can rely on it. The spec has 131 tests across sections 4 to 11, and each one belongs to a phase below.
+Each phase ends with its tests passing in every repo it touches. The plugin goes first and the ACP and sync changes follow together, because ACP deploys on merge and the plugin has to be on IMAGING-PC before ACP can rely on it. The spec has 131 tests across sections 4 to 11, and each one belongs to a phase below.
 
 | Phase | Content | Tests | Repos |
 |---|---|---|---|
@@ -688,7 +688,7 @@ Each phase ends with its tests passing in every repo it touches. The plugin goes
 | 3 | The Python writer: three-way template writes with the hold rule, rename by id, skip not-on-wheel, the sub rules, `refresh_template_subs` rule, plan repoint rule, template results, the pull, adoption, shared wheel case file, host import `load_fingerprints`, golden rows | W3 (Python half), S1 to S26, S28 to S31, S27, M3 to M5, M10 to M12 | ACP, acp-nina-ts-sync |
 | 5 | The Tidy screen and `POST /api/gear/tidy`, repointing and star moves in both writers | T1 to T18 (with T12b) | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 
-Phases 1, 2 and 3 merge together as one ACP and sync release after the plugin is on Voyager. The old editor cannot save filters against the new store (the old-page rule ignores them on purpose), so shipping the data before the editor would leave gear unsaveable. The migration, which is the step that is hard to undo, ships with them, and the backup covers it. The server guard in section 4 refuses renames and sub changes for a camera until a links-capable plugin has reported for one of its profiles, so an older plugin cannot meet a renamed template.
+Phases 1, 2 and 3 merge together as one ACP and sync release after the plugin is on IMAGING-PC. The old editor cannot save filters against the new store (the old-page rule ignores them on purpose), so shipping the data before the editor would leave gear unsaveable. The migration, which is the step that is hard to undo, ships with them, and the backup covers it. The server guard in section 4 refuses renames and sub changes for a camera until a links-capable plugin has reported for one of its profiles, so an older plugin cannot meet a renamed template.
 
 The parity checks are a gate on the ACP deploy, not part of phase 4. Before phases 1 to 3 are deployed, three things must pass: W3 in all three languages against the shared `wheel_resolve_cases.json`, S27 (the plugin's rows equal the golden rows phase 3 wrote), and G21 with a name-only fingerprint. Phase 4 alone proves only the fallback against today's ACP (L5), the off-wheel difference (L6) and the plugin-side facts (L1 to L4). The fixtures are created in phase 4 and used by phase 3's tests, which land after it.
 
@@ -700,7 +700,7 @@ The full ACP and Python suites still pass at the end of each phase. The goal pan
 
 ### Manual check on the imaging PC
 
-After phases 1 to 3 are deployed (the phase 4 plugin is already on Voyager), with NINA closed and `schedulerdb.sqlite` backed up first:
+After phases 1 to 3 are deployed (the phase 4 plugin is already on IMAGING-PC), with NINA closed and `schedulerdb.sqlite` backed up first:
 
 - [ ] In ACP, change template "Ha" offset from Default to 25. Run Sync for tonight. In TS's Database Manager, the template named Ha (id 12) shows offset 25 and nothing else on it changed.
 - [ ] In TS, change that template's sub to 240, run Sync for tonight, and confirm ACP's gear shows Ha at 240 s with the note "Changed in TS".
@@ -722,7 +722,7 @@ After phases 1 to 3 are deployed (the phase 4 plugin is already on Voyager), wit
 
 ## Assumptions made
 
-1. The raw wheel slot names on Rohan's rig are L, R, G, B, H, O and S, in slots 0 to 6. Confirmed on 13 Oct 2026 from NINA's profile `9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7` on Voyager and the plugin's log line `filters [L, R, G, B, H, O, S]` from the 15:01 runs on 11 and 12 Oct.
+1. The raw wheel slot names on Rohan's rig are L, R, G, B, H, O and S, in slots 0 to 6. Confirmed on 13 Oct 2026 from NINA's profile `9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7` on IMAGING-PC and the plugin's log line `filters [L, R, G, B, H, O, S]` from the 15:01 runs on 11 and 12 Oct.
 2. The conflict rule is hold, not overwrite (section 8). A field changed in both places is left alone and the gear editor offers Keep ACP's and Take TS's.
 3. ACP also pulls a TS-side edit into gear when ACP has not changed that field, for the primary profile only. Rohan's decision names only the push guard. Without a pull, ACP would show and divide by a sub TS no longer uses.
 4. Tidy and adoption group templates by ACP filter and sub class (under 60 s is "short"), not by name, so "R Stars" is never merged into "R". The mockup shows one "Stars" group for R, G and B. This spec shows three groups of two.

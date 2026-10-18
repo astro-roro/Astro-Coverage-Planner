@@ -103,7 +103,7 @@ For `/mnt/remotes/NAS/Astro/Library/Example_Target/RIG_CAMERA/masters/full_maste
 - `windows_folder`: `\\NAS\share\Astro\Library\Example_Target\RIG_CAMERA\masters\`
 - `file_name`: `full_master_Ha.fit`
 
-A path matching no entry is shown as `(unmapped) <basename>` in both folder fields, with `file_name` set to the basename. The Windows share name is an assumption to confirm in Explorer on Voyager before phase 3 ships.
+A path matching no entry is shown as `(unmapped) <basename>` in both folder fields, with `file_name` set to the basename. The Windows share name is an assumption to confirm in Explorer on IMAGING-PC before phase 3 ships.
 
 ## Redaction
 
@@ -121,7 +121,7 @@ All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or th
 - `POST /api/activity/events/<id>/dismiss` and `/restore`.
 - `GET /api/activity/prefs` and `PUT /api/activity/prefs` with `{ "chips": { "<chip id>": bool } }`. Unknown chip ids are dropped and missing ones take their defaults.
 
-`has_new` and row highlighting both use `max(received_at, updated_at)` against `last_seen`. `last_seen` is shared across browsers on purpose, so opening the tab on the Mac clears the dot on Voyager too.
+`has_new` and row highlighting both use `max(received_at, updated_at)` against `last_seen`. `last_seen` is shared across browsers on purpose, so opening the tab on the Mac clears the dot on IMAGING-PC too.
 
 ## Phase 1: ACP and the sync extension
 
@@ -277,7 +277,7 @@ The feature only adds things. `ACP_ACTIVITY=off` makes every activity route answ
 
 - **Master previews.** Default: none in any phase of this spec. AAC writing a small stretched JPEG for ACP to serve would be a separate spec.
 - **Where failures appear.** Default: inline in the timeline as error rows that ignore the chips, and in the Needs you box until resolved, dismissed or expired. No separate failures panel.
-- **Windows share name.** Default: `\\NAS\share\`, to confirm in Explorer on Voyager before phase 3.
+- **Windows share name.** Default: `\\NAS\share\`, to confirm in Explorer on IMAGING-PC before phase 3.
 
 ## Out of scope
 

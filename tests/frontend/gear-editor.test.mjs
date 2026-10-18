@@ -1,7 +1,7 @@
 // Phase 2 of docs/specs/gear-templates.md: the gear editor (section 6) and the
 // plan editor's template drop-down and flags (section 7). Test ids (U1, P1 and
 // so on) are the spec's. The fixture is what GET /api/gear serves for the
-// migrated gear with the Voyager wheel (L R G B H O S) and a plan set that
+// migrated gear with the IMAGING-PC wheel (L R G B H O S) and a plan set that
 // uses the templates as often as the live data does; regenerate it with
 // tests/fixtures/make_gear_editor_fixture.py.
 
@@ -203,7 +203,7 @@ describe("U5: a filter that is not on the wheel", () => {
   const st = editorState();
   const cam = camOf(st);
   cam.filters.V = { templates: [{ id: "v-1", name: "V", sub_s: 120, gain: -1, offset: -1, bin: 1, starred: true,
-    status: "waiting", conflicts: [], used_by: 0, note: "V is not on the wheel of Voyager yet." }] };
+    status: "waiting", conflicts: [], used_by: 0, note: "V is not on the wheel of IMAGING-PC yet." }] };
   cam.wheel.filters.V = { state: "not_on_wheel", slots: {} };
   const html = gearEditorHtml(st);
   const v = boxes(html).find(b => b.name === "V");
@@ -215,7 +215,7 @@ describe("U5: a filter that is not on the wheel", () => {
   });
   it("says the sync skips it", () => {
     st.openTemplate = "v-1";
-    assert.match(gearEditorHtml(st), /V is not on the wheel of Voyager yet\. The sync skips it and says so in its notes\./);
+    assert.match(gearEditorHtml(st), /V is not on the wheel of IMAGING-PC yet\. The sync skips it and says so in its notes\./);
   });
   it("works the state out for a filter added in the draft", () => {
     const st2 = editorState();

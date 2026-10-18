@@ -5796,7 +5796,7 @@ def _load_ts_templates_store() -> dict:
 def _plugin_templates_response(path: Path, error: str):
     """Answer from the lists the plugin posted, or None when there are none.
 
-    The server case: ACP on Brutix has no TS database file, so the plugin
+    The server case: ACP on homeserver has no TS database file, so the plugin
     sends the list instead (docs/specs/goal-panel-and-ts-order.md section 2).
     """
     profiles = _load_ts_templates_store()

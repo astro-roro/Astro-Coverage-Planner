@@ -27,7 +27,7 @@ A better project-level view in ACP is later work, outside this spec.
 These facts shape every rule below.
 
 - A new plan starts as `state: "draft"` (`static/app.js:6012`), and ACP has no control to change it. That is why all 47 of Rohan's plans are drafts.
-- ACP's own `/api/sync` skips drafts (`app.py:4409`). The plugin ignores `state` entirely, so it pushes drafts anyway. 46 of the 47 are live in Voyager's TS as active projects.
+- ACP's own `/api/sync` skips drafts (`app.py:4409`). The plugin ignores `state` entirely, so it pushes drafts anyway. 46 of the 47 are live in IMAGING-PC's TS as active projects.
 - Both writers hardcode project `state = 1` (`convert.py:180`, `TsEntities.cs`). So every push marks the project active, and undoes a pause made in TS.
 - The plugin's update by guid (`TsUpsert.cs:270`) rewrites every project column except `createdate` and `flatsHandling`. Every push therefore resets dither, custom horizon, the grader and the rest to 0. The update through `ts_refs` writes only `name`, `priority`, `minimumaltitude` and `meridianwindow` (`TsSchema.cs:118`).
 - ACP already has `priority`, `min_altitude_deg` and `meridian_window_min` on each plan, in the editor and in the export. Minimum time is written as 0 (`app.py:4360`).
@@ -301,7 +301,7 @@ This builds TS's import zip. TS imports it as new projects every time, so it has
 - Sync for tonight with one inactive plan that has a TS row writes state 2 to that row and inserts nothing. With an inactive plan that has no row, it writes nothing.
 - The fingerprint body carries `supports_state: true`.
 
-## 8. Build order and the live test on Voyager
+## 8. Build order and the live test on IMAGING-PC
 
 ### Build order
 
@@ -309,15 +309,15 @@ This builds TS's import zip. TS imports it as new projects every time, so it has
 2. Plugin: the column sets, the snapshot, Sync for tonight's state-only writes, `supports_state`, then the copied golden rows.
 3. ACP core: validation, the migration, the settings route, the UI, `/api/plans/match` and `/api/sync`. PR #97 is closed unmerged, and its tests move here.
 
-ACP core goes last on purpose. It is the only piece that deploys on merge, and the migration is the only step that is hard to undo. Until the plugin is installed on Voyager, a plan set inactive in ACP will not reach TS.
+ACP core goes last on purpose. It is the only piece that deploys on merge, and the migration is the only step that is hard to undo. Until the plugin is installed on IMAGING-PC, a plan set inactive in ACP will not reach TS.
 
-### Live run on Voyager
+### Live run on IMAGING-PC
 
 Nothing in TS is edited from the first step to the last.
 
 - [ ] Cancel the current pending upload from its review page.
-- [ ] Merge the extension and copy it to Brutix. Merge ACP core, which deploys. Check the log says 47 plans moved to active, and ACP shows no badges.
-- [ ] Install the plugin on Voyager and restart NINA.
+- [ ] Merge the extension and copy it to homeserver. Merge ACP core, which deploys. Check the log says 47 plans moved to active, and ACP shows no badges.
+- [ ] Install the plugin on IMAGING-PC and restart NINA.
 - [ ] Back up `schedulerdb.sqlite` with NINA closed, then open NINA.
 - [ ] Press "Send TS to ACP". The review page shows the 9 inactive projects as TS-only changes to inactive, and no other state change.
 - [ ] Apply. ACP shows those 9 plans with the Inactive badge.

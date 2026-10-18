@@ -59,7 +59,7 @@ TS reuses a stored cadence before anything else. `Planning/FilterCadenceFactory.
 
 ### What that means for Rohan's database today
 
-Three targets have override orders in the scratch copy of Voyager's database from 12 October 18:46. They are G7.7-3.7, Dolphin Nebula and Helix Nebula. The rows appeared between the 15:01 backups of 11 and 12 October, so they were set in TS on 11 October. Their projects have a switch frequency of 0. TS therefore rotates one frame per filter on those three targets, rather than finishing each filter. Helix's order is OIII, Ha, SII, B, G, R. B, G and R are complete, so Helix now shoots one frame each of OIII, Ha and SII in turn.
+Three targets have override orders in the scratch copy of IMAGING-PC's database from 12 October 18:46. They are G7.7-3.7, Dolphin Nebula and Helix Nebula. The rows appeared between the 15:01 backups of 11 and 12 October, so they were set in TS on 11 October. Their projects have a switch frequency of 0. TS therefore rotates one frame per filter on those three targets, rather than finishing each filter. Helix's order is OIII, Ha, SII, B, G, R. B, G and R are complete, so Helix now shoots one frame each of OIII, Ha and SII in turn.
 
 ### What the sync writes so TS shoots in ACP's order
 
@@ -180,7 +180,7 @@ The fix adds one constant near the top of `static/app.js`, `const EMPTY_CELL = "
 
 ## 2. The TS template list from the plugin
 
-`/api/ts-templates` (`app.py:4370-4408`) reads the TS database at `TS_DB_PATH`. On Brutix that file does not exist, so ACP has no template list.
+`/api/ts-templates` (`app.py:4370-4408`) reads the TS database at `TS_DB_PATH`. On homeserver that file does not exist, so ACP has no template list.
 
 The plugin sends the list instead.
 
@@ -619,7 +619,7 @@ Each phase ends with its tests passing in every repo it touches.
 | 5 | Filter order: dragging, the drop line, arrow keys, the oracle, the override writer, the nightly cadence reset, the importer's order. Tests U6 to U8, O1 to O11, R2. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 | 6 | AAC dependencies. Tests A1 to A6. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 
-Phase 3 ships the migration and the importer change together, so no push can run between them. Within phase 3 the plugin goes onto Voyager before ACP core merges, as in `ts-project-settings.md` section 8. ACP deploys on merge, and the migration is the step that is hard to undo.
+Phase 3 ships the migration and the importer change together, so no push can run between them. Within phase 3 the plugin goes onto IMAGING-PC before ACP core merges, as in `ts-project-settings.md` section 8. ACP deploys on merge, and the migration is the step that is hard to undo.
 
 ### Rolling back the plugin
 
@@ -631,7 +631,7 @@ Phases 3 to 6 regenerate `golden-rows.json` with `tests/dump_golden_rows.py` and
 
 ### Manual check on the imaging PC
 
-I cannot run TS here, so the order needs one check on Voyager after phase 5 ships. Back up `schedulerdb.sqlite` first, with NINA closed.
+I cannot run TS here, so the order needs one check on IMAGING-PC after phase 5 ships. Back up `schedulerdb.sqlite` first, with NINA closed.
 
 - [ ] Set Helix's rows in ACP to OIII, Ha, SII with "Finish each", and run Sync for tonight.
 - [ ] In TS's Database Manager, open Helix. The exposure order line shows OIII repeated, then Ha, then SII (`TargetViewVM.cs:606-622`).
