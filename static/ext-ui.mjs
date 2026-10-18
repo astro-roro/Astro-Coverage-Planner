@@ -160,3 +160,41 @@ export function runTilePanelAction(action, { openPlan, newPlan, goto }) {
   else goto(action);
   return true;
 }
+
+// --- Per-tile style override ----------------------------------------------
+
+const HEX_COLOUR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+// The valid parts of a tile's metadata.style: {color, fill_opacity,
+// line_width}. A key that fails validation is left out. fill_opacity is
+// present as null when the tile asks for outline only.
+export function tileStyleFrom(metadata) {
+  const raw = metadata?.style;
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  if (typeof raw.color === "string" && HEX_COLOUR.test(raw.color)) {
+    // Always six digits, because callers append an alpha pair to it.
+    out.color = raw.color.length === 4
+      ? "#" + raw.color.slice(1).split("").map(c => c + c).join("") : raw.color;
+  }
+  if ("fill_opacity" in raw) {
+    const f = raw.fill_opacity;
+    if (f === null) out.fill_opacity = null;
+    else if (typeof f === "number" && Number.isFinite(f) && f >= 0 && f <= 1) out.fill_opacity = f;
+  }
+  const w = raw.line_width;
+  if (typeof w === "number" && Number.isFinite(w) && w >= 0.5 && w <= 6) out.line_width = w;
+  return out;
+}
+
+// What to draw for one tile. Colour: tile style, else the colour ACP resolved
+// from facet or priority. Fill opacity: tile style (null means none), else
+// the source's. Line width: tile style, else the default.
+export function resolveTileDraw(metadata, baseColor, sourceFillOpacity, defaultLineWidth = 0.5) {
+  const s = tileStyleFrom(metadata);
+  return {
+    color: s.color ?? baseColor,
+    fillOpacity: "fill_opacity" in s ? s.fill_opacity : sourceFillOpacity,
+    lineWidth: s.line_width ?? defaultLineWidth,
+  };
+}

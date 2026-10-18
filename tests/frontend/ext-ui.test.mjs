@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   railIconPath, railPageOk, railTabsFrom, fillColorFor, tilePlansHtml,
   tilePanelModeOf, tilePanelTitleHtml, tilePanelAction, runTilePanelAction,
+  tileStyleFrom, resolveTileDraw,
 } from "../../static/ext-ui.mjs";
 
 const esc = s => String(s).replace(/[&<>"']/g, c => (
@@ -234,5 +235,59 @@ describe("runTilePanelAction", () => {
     calls.length = 0;
     assert.equal(runTilePanelAction(null, handlers), false);
     assert.deepEqual(calls, []);
+  });
+});
+
+describe("tileStyleFrom", () => {
+  it("keeps valid keys", () => {
+    assert.deepEqual(
+      tileStyleFrom({ style: { color: "#ff8800", fill_opacity: 0.3, line_width: 2 } }),
+      { color: "#ff8800", fill_opacity: 0.3, line_width: 2 });
+    assert.deepEqual(tileStyleFrom({ style: { color: "#ff8800", line_width: 0.5 } }),
+      { color: "#ff8800", line_width: 0.5 });
+  });
+
+  it("keeps fill_opacity null as outline only", () => {
+    assert.deepEqual(tileStyleFrom({ style: { fill_opacity: null } }), { fill_opacity: null });
+  });
+
+  it("ignores each invalid key without affecting the others", () => {
+    assert.deepEqual(
+      tileStyleFrom({ style: { color: "red", fill_opacity: 1.5, line_width: 7 } }), {});
+    assert.deepEqual(
+      tileStyleFrom({ style: { color: "#abc", fill_opacity: "0.5", line_width: 0.4 } }), { color: "#aabbcc" });
+    assert.deepEqual(tileStyleFrom({ style: { line_width: NaN, fill_opacity: NaN } }), {});
+  });
+
+  it("returns nothing for a missing or malformed style", () => {
+    for (const m of [undefined, {}, { style: null }, { style: "x" }, { style: [1] }]) {
+      assert.deepEqual(tileStyleFrom(m), {}, JSON.stringify(m));
+    }
+  });
+});
+
+describe("resolveTileDraw", () => {
+  it("uses the base colour, source fill and default width with no tile style", () => {
+    assert.deepEqual(resolveTileDraw({}, "#111111", 0.2),
+      { color: "#111111", fillOpacity: 0.2, lineWidth: 0.5 });
+    assert.deepEqual(resolveTileDraw(undefined, "#111111", undefined, 1),
+      { color: "#111111", fillOpacity: undefined, lineWidth: 1 });
+  });
+
+  it("lets the tile style beat the facet or priority colour, source fill and default width", () => {
+    assert.deepEqual(
+      resolveTileDraw({ style: { color: "#abc", fill_opacity: 0.6, line_width: 3 } }, "#111111", 0.2),
+      { color: "#aabbcc", fillOpacity: 0.6, lineWidth: 3 });
+  });
+
+  it("treats a null tile fill as outline only even when the source fills", () => {
+    assert.equal(resolveTileDraw({ style: { fill_opacity: null } }, "#111111", 0.2).fillOpacity, null);
+    assert.equal(fillColorFor("#111111", null), null);
+  });
+
+  it("falls back per key when a tile key is invalid", () => {
+    assert.deepEqual(
+      resolveTileDraw({ style: { color: "blue", fill_opacity: 2, line_width: 9 } }, "#111111", 0.2),
+      { color: "#111111", fillOpacity: 0.2, lineWidth: 0.5 });
   });
 });

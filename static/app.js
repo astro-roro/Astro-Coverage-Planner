@@ -631,6 +631,7 @@ const navStack = createNavStack();
 import {
   railIconPath, railTabsFrom, fillColorFor, tilePlansHtml,
   tilePanelModeOf, tilePanelTitleHtml, tilePanelAction, runTilePanelAction,
+  resolveTileDraw,
 } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
@@ -4799,17 +4800,19 @@ function renderTileOverlay(sourceId) {
     if (!_tilePassesFilters(tile, st, getPlanInfo)) continue;
     const corners = _tileFootprint(tile);
     if (!corners) continue;
-    const color = _tileColorFor(tile, st);
+    // A tile's metadata.style can override colour, fill and line width.
+    const draw = resolveTileDraw(tile.metadata, _tileColorFor(tile, st), fillOpacity);
+    const color = draw.color;
     const alphaHex = _tileFillAlphaHex(tile.per_band);
     planInfo = getPlanInfo();
     const polyOpts = {
       color: color,
-      lineWidth: 0.5,
+      lineWidth: draw.lineWidth,
       fillColor: color + alphaHex,
     };
     // A source that declares metadata.fill_opacity gets its footprints
     // filled at that opacity. Without it the polygons stay as they were.
-    const solidFill = fillColorFor(color, fillOpacity);
+    const solidFill = fillColorFor(color, draw.fillOpacity);
     if (solidFill) { polyOpts.fill = true; polyOpts.fillColor = solidFill; }
     const poly = A.polygon(corners, polyOpts);
     if (poly && tile && (tile.id || tile.score != null)) {
