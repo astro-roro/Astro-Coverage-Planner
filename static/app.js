@@ -620,6 +620,11 @@ import {
   webgl2Available,
   withTimeout,
 } from "./init-error.mjs";
+import {
+  filterHiddenCount,
+  filterHiddenNoteText,
+  initialFilterSelection,
+} from "./filter-defaults.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
@@ -1173,14 +1178,25 @@ function renderTargetList() {
          aria-pressed="${showHiddenTargets}">Show hidden (${nHidden})</button></div>`
     : "";
 
+  // Targets the filter chips alone hide: they would show with every available
+  // filter ticked and the logic back on "any".
+  const nFilterHidden = filterHiddenCount(
+    manifest.targets, targetMatches, t => withAllFilters(() => targetMatches(t)));
+  const filterNoteText = filterHiddenNoteText(nFilterHidden);
+  const filterNote = filterNoteText
+    ? `<div class="filter-hide-note">${esc(filterNoteText)} <button type="button" id="filterShowAll" class="link-btn">show all</button></div>`
+    : "";
+
   panel.innerHTML = `
     <div class="panel-list">
       <h3>Targets <span class="tr-count">${matches.length} of ${nListable}</span>${sortCtl}</h3>
+      ${filterNote}
       ${hiddenToggle}
       <ul class="target-list">${rows || empty}</ul>
     </div>`;
   panel.querySelector(".target-row.is-picked")?.scrollIntoView?.({ block: "nearest" });
 
+  panel.querySelector("#filterShowAll")?.addEventListener("click", resetFilterSelection);
   panel.querySelector("#targetHiddenToggle")?.addEventListener("click", () => {
     showHiddenTargets = !showHiddenTargets;
     try { localStorage.setItem("acp.show_hidden_targets", showHiddenTargets ? "on" : "off"); }
@@ -5252,6 +5268,28 @@ function _availableFilters() {
   return [...canon, ...(anyOsc ? [RGB_CHIP] : []), ...extras];
 }
 
+// Run fn with every available filter ticked and the logic on "any", then put
+// the real selection back.
+function withAllFilters(fn) {
+  const prevFilters = selectedFilters;
+  const prevLogic = filterLogic;
+  selectedFilters = new Set(_availableFilters());
+  filterLogic = "any";
+  try { return fn(); }
+  finally { selectedFilters = prevFilters; filterLogic = prevLogic; }
+}
+
+// The "show all" link in the target list note: tick every filter again.
+function resetFilterSelection() {
+  selectedFilters = new Set(_availableFilters());
+  filterLogic = "any";
+  const sel = document.getElementById("filterLogic");
+  if (sel) sel.value = "any";
+  renderFilterChips();
+  saveUiState();
+  redrawFootprints();
+}
+
 function renderFilterChips() {
   const host = document.getElementById("filterChips");
   if (!host) return;
@@ -6253,6 +6291,9 @@ function init() {
     selectedTelescopes = new Set(sorted); // all enabled by default
     renderTelescopeLegend(sorted);
 
+    // With no saved selection, start with every filter the archive has data
+    // for ticked, so broadband-only and OSC targets show on first open.
+    selectedFilters = initialFilterSelection(loadUiState().filters, _availableFilters());
     setupFilterUI();
     // Kick off the catalogue chip render in parallel with the rest; we
     // await the resulting promise alongside everything else below so
