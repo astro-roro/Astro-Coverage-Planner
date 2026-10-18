@@ -625,7 +625,7 @@ import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { listModeFor, createNavStack } from "./panel-nav.mjs";
-import { splitAtSeam, crossesSeam, projectionHasSeam, seamRaFor } from "./seam.mjs";
+import { splitAtViewSeam, crossesViewSeam, projectionHasSeam } from "./seam.mjs";
 
 // Back targets for screens opened from a tile panel (see panel-nav.mjs).
 const navStack = createNavStack();
@@ -4853,25 +4853,32 @@ function _tileTooltip(tile) {
   return parts.filter(Boolean).join(" · ");
 }
 
-// RA of the seam of the current all-sky projection, or null when the map has
-// none to cross (orthographic, gnomonic) or isn't in an equatorial frame.
-// Aladin centres Aitoff and Mollweide on the view, so the seam is 180
-// degrees of RA from the view centre, not at RA 0.
-function currentSeamRa() {
+// The view centre {ra, dec} when the map is in an all-sky projection with a
+// seam to cross (Aitoff, Mollweide), or null (orthographic, gnomonic, or not
+// an equatorial frame). Aladin puts the view centre in the middle of the map
+// with north up, so unless the centre is on the equator the seam is not a
+// meridian of constant RA but a great circle 180 degrees of longitude from the
+// centre in the rotated frame, and dragging rolls that frame. seam.mjs works in
+// that frame.
+function currentSeamView() {
   if (!aladin) return null;
   if (!projectionHasSeam(document.getElementById("projSel")?.value)) return null;
   const frame = document.getElementById("frameSel")?.value;
   if (frame && frame !== "equatorial") return null;
   try {
     const c = aladin.getRaDec();
-    if (c && c.length === 2 && Number.isFinite(c[0])) return seamRaFor(c[0]);
+    if (c && c.length === 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])) {
+      // Dragging the sky rolls the view about its centre, which turns the seam.
+      const roll = typeof aladin.getRotation === "function" ? Number(aladin.getRotation()) : 0;
+      return { ra: c[0], dec: c[1], roll: Number.isFinite(roll) ? roll : 0 };
+    }
   } catch { /* view not ready */ }
   return null;
 }
 
-// What each tile overlay was last drawn against: the seam RA used (or null)
-// and whether any tile had to be split. A pan only redraws a source when a
-// split tile exists before or after it.
+// What each tile overlay was last drawn against: the view centre used (or
+// null) and whether any tile had to be split. A pan only redraws a source when
+// a split tile exists before or after it.
 const _tileSeamState = {};
 let _tileSeamTimer = null;
 
@@ -4880,25 +4887,31 @@ function scheduleTileSeamUpdate(delayMs = 150) {
   _tileSeamTimer = setTimeout(updateTileSeams, delayMs);
 }
 
+// True when the view moved far enough to need the cuts redone.
+function seamViewMoved(prev, next) {
+  if (!prev || !next) return (prev == null) !== (next == null);
+  const dRa = Math.abs(((next.ra - prev.ra + 540) % 360) - 180);
+  const dRoll = Math.abs(((next.roll - prev.roll + 540) % 360) - 180);
+  return dRa > 0.02 || Math.abs(next.dec - prev.dec) > 0.02 || dRoll > 0.02;
+}
+
 function updateTileSeams() {
-  const seam = currentSeamRa();
+  const view = currentSeamView();
   for (const sourceId of Object.keys(_tileSeamState)) {
     const st = invState[sourceId];
     const tiles = tileData[sourceId];
     const prev = _tileSeamState[sourceId];
     if (!st?.enabled || !tiles) continue;
-    const moved = (prev.seam == null) !== (seam == null)
-      || (seam != null && Math.abs(((seam - prev.seam + 540) % 360) - 180) > 0.02);
-    if (!moved) continue;
+    if (!seamViewMoved(prev.view, view)) continue;
     let needs = prev.crossing;
-    if (!needs && seam != null) {
+    if (!needs && view) {
       needs = tiles.some(t => {
         const corners = _tileFootprint(t);
-        return corners && crossesSeam(corners, seam);
+        return corners && crossesViewSeam(corners, view);
       });
     }
     if (needs) renderTileOverlay(sourceId);
-    else prev.seam = seam;
+    else prev.view = view;
   }
 }
 
@@ -4925,7 +4938,7 @@ function renderTileOverlay(sourceId) {
   }
   ovr.removeAll();
   let drawn = 0;
-  const seamRa = currentSeamRa();
+  const seamView = currentSeamView();
   let anySplit = false;
   // Memoise plan mosaic-bounds corners for this render pass only (plans can
   // be edited in place between renders, so the cache must not persist).
@@ -4962,15 +4975,15 @@ function renderTileOverlay(sourceId) {
     // Over the projection's seam a polygon would be drawn the long way round,
     // so it is cut into one part per side. Clicks still hit-test the original
     // corners, so every part belongs to the same tile.
-    let shapes = [corners];
-    if (seamRa != null && crossesSeam(corners, seamRa)) {
-      const dec0 = Number(tile.dec_deg);
-      const pole = Number.isFinite(dec0) ? (dec0 < 0 ? -1 : 1) : undefined;
-      shapes = splitAtSeam(corners, seamRa, { pole }).map(part => part.points);
+    let shapes = [{ points: corners, closed: true }];
+    if (seamView && crossesViewSeam(corners, seamView)) {
+      const hint = [Number(tile.ra_deg), Number(tile.dec_deg)];
+      // Outline-only tiles are cut into open lines, so no edge is added along the seam.
+      shapes = splitAtViewSeam(corners, seamView, { hint, fill: !!polyOpts.fill });
       anySplit = true;
     }
-    const polys = shapes.map(points => {
-      const poly = A.polygon(points, polyOpts);
+    const polys = shapes.map(({ points, closed }) => {
+      const poly = closed ? A.polygon(points, polyOpts) : A.polyline(points, polyOpts);
       if (poly && tile && (tile.id || tile.score != null)) {
         poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
       }
@@ -4980,7 +4993,7 @@ function renderTileOverlay(sourceId) {
     tileHitList.push({ poly: polys[0], polys, tile, source_id: sourceId, corners, plan_state: planInfo.state, plan: planInfo.plan });
     drawn++;
   }
-  _tileSeamState[sourceId] = { seam: seamRa, crossing: anySplit };
+  _tileSeamState[sourceId] = { view: seamView, crossing: anySplit };
   // Update the counter pill in the rail to reflect the filtered subset.
   const block = document.querySelector(`.inv-source[data-source-id="${sourceId}"]`);
   const total = (tileSources.find(x => x.id === sourceId) || {}).n_tiles || tiles.length;
