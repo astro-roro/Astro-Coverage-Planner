@@ -625,6 +625,7 @@ import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { listModeFor, createNavStack } from "./panel-nav.mjs";
+import { splitAtSeam, crossesSeam, projectionHasSeam, seamRaFor } from "./seam.mjs";
 
 // Back targets for screens opened from a tile panel (see panel-nav.mjs).
 const navStack = createNavStack();
@@ -4852,6 +4853,55 @@ function _tileTooltip(tile) {
   return parts.filter(Boolean).join(" · ");
 }
 
+// RA of the seam of the current all-sky projection, or null when the map has
+// none to cross (orthographic, gnomonic) or isn't in an equatorial frame.
+// Aladin centres Aitoff and Mollweide on the view, so the seam is 180
+// degrees of RA from the view centre, not at RA 0.
+function currentSeamRa() {
+  if (!aladin) return null;
+  if (!projectionHasSeam(document.getElementById("projSel")?.value)) return null;
+  const frame = document.getElementById("frameSel")?.value;
+  if (frame && frame !== "equatorial") return null;
+  try {
+    const c = aladin.getRaDec();
+    if (c && c.length === 2 && Number.isFinite(c[0])) return seamRaFor(c[0]);
+  } catch { /* view not ready */ }
+  return null;
+}
+
+// What each tile overlay was last drawn against: the seam RA used (or null)
+// and whether any tile had to be split. A pan only redraws a source when a
+// split tile exists before or after it.
+const _tileSeamState = {};
+let _tileSeamTimer = null;
+
+function scheduleTileSeamUpdate(delayMs = 150) {
+  clearTimeout(_tileSeamTimer);
+  _tileSeamTimer = setTimeout(updateTileSeams, delayMs);
+}
+
+function updateTileSeams() {
+  const seam = currentSeamRa();
+  for (const sourceId of Object.keys(_tileSeamState)) {
+    const st = invState[sourceId];
+    const tiles = tileData[sourceId];
+    const prev = _tileSeamState[sourceId];
+    if (!st?.enabled || !tiles) continue;
+    const moved = (prev.seam == null) !== (seam == null)
+      || (seam != null && Math.abs(((seam - prev.seam + 540) % 360) - 180) > 0.02);
+    if (!moved) continue;
+    let needs = prev.crossing;
+    if (!needs && seam != null) {
+      needs = tiles.some(t => {
+        const corners = _tileFootprint(t);
+        return corners && crossesSeam(corners, seam);
+      });
+    }
+    if (needs) renderTileOverlay(sourceId);
+    else prev.seam = seam;
+  }
+}
+
 function renderTileOverlay(sourceId) {
   if (!aladin) return;
   const st = invState[sourceId];
@@ -4875,6 +4925,8 @@ function renderTileOverlay(sourceId) {
   }
   ovr.removeAll();
   let drawn = 0;
+  const seamRa = currentSeamRa();
+  let anySplit = false;
   // Memoise plan mosaic-bounds corners for this render pass only (plans can
   // be edited in place between renders, so the cache must not persist).
   // tilePlanInfo() is O(plans) per tile; without this, ~40 tiles × ~10 plans
@@ -4907,14 +4959,28 @@ function renderTileOverlay(sourceId) {
     // filled at that opacity. Without it the polygons stay as they were.
     const solidFill = fillColorFor(color, draw.fillOpacity);
     if (solidFill) { polyOpts.fill = true; polyOpts.fillColor = solidFill; }
-    const poly = A.polygon(corners, polyOpts);
-    if (poly && tile && (tile.id || tile.score != null)) {
-      poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
+    // Over the projection's seam a polygon would be drawn the long way round,
+    // so it is cut into one part per side. Clicks still hit-test the original
+    // corners, so every part belongs to the same tile.
+    let shapes = [corners];
+    if (seamRa != null && crossesSeam(corners, seamRa)) {
+      const dec0 = Number(tile.dec_deg);
+      const pole = Number.isFinite(dec0) ? (dec0 < 0 ? -1 : 1) : undefined;
+      shapes = splitAtSeam(corners, seamRa, { pole }).map(part => part.points);
+      anySplit = true;
     }
-    ovr.add(poly);
-    tileHitList.push({ poly, tile, source_id: sourceId, corners, plan_state: planInfo.state, plan: planInfo.plan });
+    const polys = shapes.map(points => {
+      const poly = A.polygon(points, polyOpts);
+      if (poly && tile && (tile.id || tile.score != null)) {
+        poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
+      }
+      ovr.add(poly);
+      return poly;
+    });
+    tileHitList.push({ poly: polys[0], polys, tile, source_id: sourceId, corners, plan_state: planInfo.state, plan: planInfo.plan });
     drawn++;
   }
+  _tileSeamState[sourceId] = { seam: seamRa, crossing: anySplit };
   // Update the counter pill in the rail to reflect the filtered subset.
   const block = document.querySelector(`.inv-source[data-source-id="${sourceId}"]`);
   const total = (tileSources.find(x => x.id === sourceId) || {}).n_tiles || tiles.length;
@@ -5613,10 +5679,12 @@ function setupFilterUI() {
   document.getElementById("projSel").addEventListener("change", e => {
     aladin.setProjection(e.target.value);
     saveUiState();
+    scheduleTileSeamUpdate(0);
   });
   document.getElementById("frameSel").addEventListener("change", e => {
     aladin.setFrame(e.target.value);
     saveUiState();
+    scheduleTileSeamUpdate(0);
   });
   document.getElementById("skyMore")?.addEventListener("click", () => { openAladinSurveyBrowser(); });
   document.getElementById("skySel").addEventListener("change", e => {
@@ -6575,8 +6643,8 @@ function init() {
     });
 
     // Reset cycle state on any camera movement, previous stack indices stop making sense.
-    aladin.on("zoomChanged", () => { lastClickStack = null; });
-    aladin.on("positionChanged", () => { lastClickStack = null; });
+    aladin.on("zoomChanged", () => { lastClickStack = null; scheduleTileSeamUpdate(); });
+    aladin.on("positionChanged", () => { lastClickStack = null; scheduleTileSeamUpdate(); });
 
     // Persist the chosen HiPS survey across reloads. Aladin v3 may or may not emit
     // "layerChanged" depending on build; a 3s poll is a cheap backstop.
