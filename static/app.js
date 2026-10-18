@@ -624,6 +624,7 @@ import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
+import { listModeFor } from "./panel-nav.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
@@ -4882,7 +4883,9 @@ function renderTilePanel(tile, sourceId) {
     </div>`;
 
   document.getElementById("backToList")?.addEventListener("click", e => {
-    e.preventDefault(); renderTargetList();
+    e.preventDefault();
+    if (listModeFor(planningMode) === "plan-list") renderPlanList();
+    else renderTargetList();
   });
   document.getElementById("tileCreatePlan")?.addEventListener("click", () => {
     promotePlanFromTile(tile, sourceMeta);
