@@ -2442,7 +2442,21 @@ def _summarise_tile_source(src) -> dict:
         "bands": sorted(bands),
         "facets": _coerce_facets(meta.get("facets")),
         "color_facet": meta.get("color_facet") or "",
+        "fill_opacity": _coerce_fill_opacity(meta.get("fill_opacity")),
     }
+
+
+def _coerce_fill_opacity(raw) -> float | None:
+    """A source's optional ``fill_opacity`` as a float in 0..1, else None.
+
+    None means "not set": the frontend keeps its default footprint drawing.
+    Booleans, NaN and out-of-range numbers count as not set, so a typo can't
+    paint a source solid or invisible.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    v = float(raw)
+    return v if 0.0 <= v <= 1.0 else None
 
 
 def _coerce_facets(raw) -> list[dict]:
@@ -2643,8 +2657,15 @@ def api_extensions_manifest():
                       frontend calls this first and shows the response in a
                       modal with [Apply]/[Cancel] before hitting ``endpoint``.
       ``interval_s``  Required on "toggle" actions. Poll interval in seconds.
+
+    An entry may also carry ``rail_tabs``, a list of
+    ``{"id", "label", "icon", "page"}`` dicts that add tabs to the right
+    rail. Those are validated here (invalid tabs are dropped with a logged
+    warning, see ``extensions.sanitise_rail_tabs``); everything else passes
+    through verbatim.
     """
-    return jsonify(list(app.extensions_manifest))
+    from extensions import sanitise_rail_tabs
+    return jsonify([sanitise_rail_tabs(e) for e in app.extensions_manifest])
 
 
 @app.route("/api/sources")

@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -27,7 +28,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from flask import Flask
 
-__all__ = ["load_extensions", "default_extensions_dir"]
+__all__ = ["load_extensions", "default_extensions_dir", "sanitise_rail_tabs"]
 
 logger = logging.getLogger("acp.extensions")
 
@@ -84,6 +85,86 @@ def routes_outside_api(before: set[str], after: set[str]) -> list[str]:
     so the warning reads the same on every start.
     """
     return sorted(r for r in (after - before) if not r.startswith("/api/"))
+
+
+_RAIL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_warned_rail_tabs: set[tuple[str, str, str]] = set()
+
+
+def rail_page_prefixes(extension_id: str) -> list[str]:
+    """URL prefixes a rail tab page of *extension_id* may live under.
+
+    The extension id as written, and the same id with underscores turned
+    into hyphens (``nina_ts_sync`` and ``nina-ts-sync``), since extensions
+    name their routes in either style. Empty when the id is not a plain
+    slug, which also rules out ids that could smuggle path characters.
+    """
+    if not isinstance(extension_id, str) or not _RAIL_ID_RE.match(extension_id):
+        return []
+    forms = [extension_id, extension_id.replace("_", "-")]
+    return [f"/api/ext/{f}" for f in dict.fromkeys(forms)]
+
+
+def rail_page_ok(extension_id: str, page: object) -> bool:
+    """True when *page* is a same-origin path inside the extension's prefix."""
+    if not isinstance(page, str) or not page.startswith("/"):
+        return False
+    if page.startswith("//") or "\\" in page or any(ord(c) < 0x20 or c == "\x7f" for c in page):
+        return False
+    path = page.split("?", 1)[0].split("#", 1)[0]
+    if re.search(r"%(2e|2f|5c)", path, re.IGNORECASE):
+        return False
+    if any(seg in ("..", ".") for seg in path.split("/")):
+        return False
+    return any(path == p or path.startswith(p + "/")
+               for p in rail_page_prefixes(extension_id))
+
+
+def sanitise_rail_tabs(entry: dict) -> dict:
+    """Return *entry* with only its valid ``rail_tabs`` kept.
+
+    A rail tab is ``{"id", "label", "icon", "page"}``. ``id`` is a short
+    slug, ``label`` a non-empty string, ``icon`` an optional name, and
+    ``page`` a relative path under ``/api/ext/<the extension's prefix>``
+    (see ``rail_page_ok``). Bad tabs are dropped with one warning each; the
+    rest of the entry passes through untouched. Entries without ``rail_tabs``
+    are returned as they are.
+    """
+    if not isinstance(entry, dict) or "rail_tabs" not in entry:
+        return entry
+    ext = entry.get("extension")
+    raw = entry.get("rail_tabs")
+    kept: list[dict] = []
+    seen: set[str] = set()
+    for tab in raw if isinstance(raw, list) else []:
+        tid = tab.get("id") if isinstance(tab, dict) else None
+        label = tab.get("label") if isinstance(tab, dict) else None
+        page = tab.get("page") if isinstance(tab, dict) else None
+        reason = None
+        if not isinstance(tid, str) or not _RAIL_ID_RE.match(tid):
+            reason = "id must be a short slug"
+        elif tid in seen:
+            reason = "duplicate id"
+        elif not isinstance(label, str) or not label.strip():
+            reason = "label must be a non-empty string"
+        elif not rail_page_ok(ext, page):
+            reason = (f"page must be a relative path under "
+                      f"{' or '.join(rail_page_prefixes(ext)) or '/api/ext/<extension>'}")
+        if reason:
+            key = (str(ext), str(tid), str(page))
+            if key not in _warned_rail_tabs:
+                _warned_rail_tabs.add(key)
+                logger.warning("Extension %r rail tab %r rejected: %s (page=%r)",
+                               ext, tid, reason, page)
+            continue
+        seen.add(tid)
+        icon = tab.get("icon")
+        kept.append({"id": tid, "label": label.strip(),
+                     "icon": icon if isinstance(icon, str) else "",
+                     "page": page})
+    out = dict(entry)
+    out["rail_tabs"] = kept
+    return out
 
 
 def load_extensions(app: "Flask") -> list[str]:
