@@ -189,5 +189,32 @@ class TestFillOpacity(unittest.TestCase):
             self.assertIsNone(self._opacity(fill_opacity=bad), repr(bad))
 
 
+class TestTilePanel(unittest.TestCase):
+    def setUp(self):
+        self._saved = list(getattr(app, "tile_sources", []))
+        app.tile_sources.clear()
+        self.client = app.test_client()
+
+    def tearDown(self):
+        app.tile_sources.clear()
+        app.tile_sources.extend(self._saved)
+
+    def _panel(self, **meta):
+        app.tile_sources[:] = [_FakeTiles("s", **meta)]
+        src = self.client.get("/api/tile-sources").get_json()["sources"][0]
+        return src["tile_panel"]
+
+    def test_unset_is_null(self):
+        self.assertIsNone(self._panel())
+
+    def test_replace_and_append_pass_through(self):
+        self.assertEqual(self._panel(tile_panel="replace"), "replace")
+        self.assertEqual(self._panel(tile_panel="append"), "append")
+
+    def test_anything_else_is_null(self):
+        for bad in ("Replace", "none", "", True, 1, None, ["replace"]):
+            self.assertIsNone(self._panel(tile_panel=bad), repr(bad))
+
+
 if __name__ == "__main__":
     unittest.main()

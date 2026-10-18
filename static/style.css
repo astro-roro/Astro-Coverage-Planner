@@ -2613,3 +2613,28 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .tile-plans { list-style: none; margin: 4px 0 0; padding: 0; }
 .tile-plans li { margin: 0 0 6px; }
 .tile-plan-detail { color: #78839a; font-size: 11px; margin-top: 1px; }
+
+/* Tile panel: source label above the tile id, and extension-supplied HTML. */
+.tile-source-label { color: #78839a; font-size: 11px; margin-top: 8px; }
+.ext-tile-panel a,
+.ext-tile-panel [data-acp-plan-id],
+.ext-tile-panel [data-acp-new-plan],
+.ext-tile-panel [data-acp-goto],
+.tile-plans a.tile-plan-link {
+  color: #7fb2ff;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ext-tile-panel a:hover,
+.ext-tile-panel [data-acp-plan-id]:hover,
+.ext-tile-panel [data-acp-new-plan]:hover,
+.ext-tile-panel [data-acp-goto]:hover,
+.tile-plans a.tile-plan-link:hover { color: #a9cbff; }
+.ext-tile-notice {
+  background: #2a3346;
+  border-radius: 4px;
+  color: #e0e4ea;
+  font-size: 12px;
+  margin: 6px 0;
+  padding: 6px 8px;
+}

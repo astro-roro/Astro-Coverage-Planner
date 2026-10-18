@@ -625,7 +625,10 @@ import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { listModeFor } from "./panel-nav.mjs";
-import { railIconPath, railTabsFrom, fillColorFor, tilePlansHtml } from "./ext-ui.mjs";
+import {
+  railIconPath, railTabsFrom, fillColorFor, tilePlansHtml,
+  tilePanelModeOf, tilePanelTitleHtml, tilePanelAction, runTilePanelAction,
+} from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
@@ -4896,11 +4899,16 @@ function renderTilePanel(tile, sourceId) {
   const findPlan = pid => plans.find(p => p.id === pid || (p.guid && p.guid === pid));
   const extPlansHtml = tilePlansHtml(tile.metadata?.plans, esc, pid => !!findPlan(pid));
 
-  panel.innerHTML = `
-    <div>
-      <a class="back-link" id="backToList" href="#">← Back to list</a>
-      <h3>${esc(sourceLabel)} · <span style="color:#a2aec2">${esc(tile.id || "")}</span></h3>
+  // Extension-supplied panel HTML (tile.metadata.panel_html), trusted like the
+  // rest of the extension but scoped under .ext-tile-panel so its classes
+  // stay out of ACP's styles. A source with tile_panel "replace" shows only
+  // this and the title.
+  const replaceMode = tilePanelModeOf(sourceMeta) === "replace";
+  const rawPanelHtml = tile.metadata?.panel_html;
+  const extPanelHtml = typeof rawPanelHtml === "string" && rawPanelHtml
+    ? `<div class="ext-tile-panel">${rawPanelHtml}</div>` : "";
 
+  const standardHtml = replaceMode ? "" : `
       ${visPlaceholder}
 
       <h4>Position</h4>
@@ -4929,7 +4937,13 @@ function renderTilePanel(tile, sourceId) {
       <div class="tile-actions">
         <div class="tile-suggestion">${suggestion}</div>
         <button id="tileCreatePlan" class="primary">Create new plan from this tile</button>
-      </div>
+      </div>`;
+
+  panel.innerHTML = `
+    <div>
+      <a class="back-link" id="backToList" href="#">← Back to list</a>
+      ${tilePanelTitleHtml(sourceLabel, tile.id, esc)}
+      ${replaceMode ? extPanelHtml : standardHtml + extPanelHtml}
     </div>`;
 
   document.getElementById("backToList")?.addEventListener("click", e => {
@@ -4951,7 +4965,42 @@ function renderTilePanel(tile, sourceId) {
       renderPlanEditor(planInfo.plan);
     }
   });
-  loadTileVisibility(tile);
+  const extPanel = panel.querySelector(".ext-tile-panel");
+  if (extPanel) wireExtTilePanel(extPanel, findPlan);
+  if (!replaceMode) loadTileVisibility(tile);
+}
+
+// Click handling for the data-acp-* hooks in an extension's panel_html.
+// One delegated listener on the container, so HTML added later still works.
+function wireExtTilePanel(container, findPlan) {
+  container.addEventListener("click", e => {
+    const action = tilePanelAction(e.target, container);
+    if (!action) return;
+    e.preventDefault();
+    runTilePanelAction(action, {
+      openPlan: pid => {
+        const pl = findPlan(pid);
+        if (pl) activityOpenPlan(pl.id);
+        else showTilePanelNotice(container, "That plan is not loaded in ACP.");
+      },
+      newPlan: a => promotePlanAt({ ra: a.ra, dec: a.dec, name: a.name }),
+      goto: a => {
+        activityShowOnMap(a.ra, a.dec);
+        if (a.fov != null && typeof aladin?.setFoV === "function") aladin.setFoV(a.fov);
+      },
+    });
+  });
+}
+
+// ACP has no toast, so a short-lived note sits at the top of the container.
+function showTilePanelNotice(container, text) {
+  container.querySelector(".ext-tile-notice")?.remove();
+  const n = document.createElement("div");
+  n.className = "ext-tile-notice";
+  n.setAttribute("role", "status");
+  n.textContent = text;
+  container.prepend(n);
+  setTimeout(() => n.remove(), 4000);
 }
 
 // Build sparkline + Now/Trend chips against an arbitrary {ra, dec} point by
@@ -5231,21 +5280,32 @@ function planPeakPanelsMonth(plan) {
 // owned by the gear preset (per design decision 2d), left to the user
 // to pick when they choose telescope/camera in the editor.
 function promotePlanFromTile(tile, sourceMeta) {
-  if (!planningMode) setPlanningMode(true);
-  const p = newEmptyPlan();
-  // newEmptyPlan reads the current Aladin centre, overwrite with the tile's
-  // own centre so the editor opens framed on the right spot regardless of
-  // where the user happened to be panned.
-  p.target.center_ra_deg = Number(tile.ra_deg);
-  p.target.center_dec_deg = Number(tile.dec_deg);
-  p.target.rotation_deg = 0;
   const sourceLabel = sourceMeta?.label || "";
   const tileId = tile.id || "";
-  p.target.name = [sourceLabel, tileId].filter(Boolean).join(" · ") || "From tile";
+  promotePlanAt({
+    ra: Number(tile.ra_deg),
+    dec: Number(tile.dec_deg),
+    name: [sourceLabel, tileId].filter(Boolean).join(" · ") || "From tile",
+    projectName: sourceLabel,
+  });
+}
+
+// Opens the plan editor on a new plan centred on (ra, dec). Shared by the
+// tile panel's own button and the data-acp-new-plan hook in extension HTML.
+function promotePlanAt({ ra, dec, name, projectName }) {
+  if (!planningMode) setPlanningMode(true);
+  const p = newEmptyPlan();
+  // newEmptyPlan reads the current Aladin centre, overwrite with the given
+  // position so the editor opens framed on the right spot regardless of
+  // where the user happened to be panned.
+  p.target.center_ra_deg = ra;
+  p.target.center_dec_deg = dec;
+  p.target.rotation_deg = 0;
+  p.target.name = name || "New plan";
   // Pre-fill project_name from the source label so the TS sync groups
   // tile-derived plans under a meaningful project node instead of
   // "Unassigned". User can override before saving.
-  if (sourceLabel && !p.project_name) p.project_name = sourceLabel;
+  if (projectName && !p.project_name) p.project_name = projectName;
   plans.push(p);
   renderPlanEditor(p);
 }

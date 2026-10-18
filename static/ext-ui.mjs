@@ -104,3 +104,59 @@ export function tilePlansHtml(plans, esc, isKnown = () => true) {
   }
   return rows.length ? `<ul class="tile-plans">${rows.join("")}</ul>` : "";
 }
+
+// "replace" hides ACP's own tile panel sections so a source can show only its
+// own panel_html; "append" (the default) adds panel_html after them.
+export function tilePanelModeOf(sourceMeta) {
+  return sourceMeta?.tile_panel === "replace" ? "replace" : "append";
+}
+
+// Heading for a tile panel: the tile id as the title, with the source label
+// as a small muted line above it. A tile with no id falls back to the label.
+export function tilePanelTitleHtml(sourceLabel, tileId, esc) {
+  const label = typeof sourceLabel === "string" ? sourceLabel : "";
+  const id = tileId == null ? "" : String(tileId);
+  if (!id) return `<h3>${esc(label)}</h3>`;
+  const above = label ? `<div class="tile-source-label">${esc(label)}</div>` : "";
+  return `${above}<h3>${esc(id)}</h3>`;
+}
+
+const ACTION_SELECTOR = "[data-acp-plan-id],[data-acp-new-plan],[data-acp-goto]";
+
+function degAttr(el, name) {
+  const raw = el.getAttribute(name);
+  if (raw == null || String(raw).trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Reads the data-acp-* action off the element a click landed on (or its
+// nearest ancestor inside `root`). Returns null when there is no action or
+// its coordinates are unusable, so a malformed attribute does nothing.
+export function tilePanelAction(target, root) {
+  const el = target?.closest?.(ACTION_SELECTOR);
+  if (!el || (root && !root.contains(el))) return null;
+  if (el.hasAttribute("data-acp-plan-id")) {
+    const id = (el.getAttribute("data-acp-plan-id") || "").trim();
+    return id ? { type: "plan", id } : null;
+  }
+  const ra = degAttr(el, "data-ra"), dec = degAttr(el, "data-dec");
+  if (ra == null || dec == null || dec < -90 || dec > 90) return null;
+  const raN = ((ra % 360) + 360) % 360;
+  if (el.hasAttribute("data-acp-new-plan")) {
+    const name = (el.getAttribute("data-name") || "").trim();
+    return { type: "new-plan", ra: raN, dec, name };
+  }
+  const fov = degAttr(el, "data-fov");
+  return { type: "goto", ra: raN, dec, fov: fov != null && fov > 0 ? fov : null };
+}
+
+// Runs a tile panel action through the supplied handlers. Returns true when
+// an action was found, so the caller can stop the click's default.
+export function runTilePanelAction(action, { openPlan, newPlan, goto }) {
+  if (!action) return false;
+  if (action.type === "plan") openPlan(action.id);
+  else if (action.type === "new-plan") newPlan(action);
+  else goto(action);
+  return true;
+}

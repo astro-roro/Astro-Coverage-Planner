@@ -132,6 +132,18 @@ Two optional extras make tiles carry more than coverage:
 - `fill_opacity` in the source's `metadata()` (a number from 0 to 1). When set, ACP draws that source's footprints filled at that opacity, in each tile's usual colour. When absent, or not a number in range, footprints stay as they were. The value is reported as `fill_opacity` by `GET /api/tile-sources` (`null` when unset).
 - `plans` in a tile's `metadata`, a list of `{"plan_id": str | null, "name": str, "detail": str}`. The tile panel shows a Plans list. A name is a link when `plan_id` is set and matches a plan ACP has loaded (by plan `id` or `guid`), and clicking it switches to Planning mode and opens that plan. With `plan_id` null, or an id ACP doesn't know, the name is plain text. `detail` appears as muted text under the name. All of it is escaped. Other metadata keys are not displayed, as before.
 
+- `panel_html` in a tile's `metadata` (a string). ACP puts it in the tile panel inside a container with the class `ext-tile-panel`, under the title. It is inserted as written, because extensions are trusted server-side code, so escape any user-supplied text yourself. ACP styles links inside that container with its own link colour. Prefix your own CSS classes (for example `nights-`) so they do not clash with ACP's.
+- `tile_panel` in the source's `metadata()`, either `"replace"` or `"append"`. With `"replace"`, tiles of that source show only the Back link, the title and `panel_html`: ACP leaves out the Position table, facet chips, per-band coverage, the Plans list, the bands note and the "Create new plan from this tile" button. With `"append"`, or when unset, `panel_html` follows the standard sections. Any other value counts as unset. `GET /api/tile-sources` reports it as `tile_panel` (`null` when unset).
+- The tile panel title is the tile `id`, with the source label as a small muted line above it.
+
+Elements inside `panel_html` can trigger ACP actions through data attributes. Clicking the element (or anything inside it) runs the action.
+
+- `data-acp-plan-id="<id>"` opens the loaded plan whose `id` or `guid` matches, as the Plans list links do: it switches to Planning, pans the map and opens the editor. If no loaded plan matches, a short note appears at the top of the panel and nothing else happens.
+- `data-acp-new-plan` with `data-ra` and `data-dec` in degrees, and an optional `data-name`, opens the same new-plan editor that "Create new plan from this tile" uses, centred on that position and named from `data-name`.
+- `data-acp-goto` with `data-ra` and `data-dec` in degrees, and an optional `data-fov` in degrees, pans the sky map there and sets the field of view when `data-fov` is given.
+
+An action with a missing or invalid `data-ra` or `data-dec` (not a number, or a declination outside -90 to 90) does nothing.
+
 After any extension action's apply step succeeds, ACP refetches tile sources and redraws the enabled ones, so the map doesn't show layers from before the change. ACP doesn't know which extension owns which source, so it refreshes all of them.
 
 ### `CategorisedCatalogSource` — point catalogues with category chips

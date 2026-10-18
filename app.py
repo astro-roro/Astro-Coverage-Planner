@@ -2443,6 +2443,7 @@ def _summarise_tile_source(src) -> dict:
         "facets": _coerce_facets(meta.get("facets")),
         "color_facet": meta.get("color_facet") or "",
         "fill_opacity": _coerce_fill_opacity(meta.get("fill_opacity")),
+        "tile_panel": meta.get("tile_panel") if meta.get("tile_panel") in ("replace", "append") else None,
     }
 
 
