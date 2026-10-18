@@ -2118,6 +2118,58 @@ def _without_archive_paths(obj, roots: list[str]):
     return obj
 
 
+# Fields the page never reads from /api/manifest. They are most of the bytes:
+# folder_sub_buckets alone is over half. The target detail panel fetches
+# master_files from /api/target/<id> when it opens. app.py and
+# scripts/sanitise_manifest.py read per_master_fov and corners_galactic from
+# the manifest on disk, not from this response.
+_MANIFEST_TARGET_OMIT = ("folder_sub_buckets", "per_master_fov", "corners_galactic", "master_files")
+_MANIFEST_FILTER_OMIT = ("paths", "folder_sub_buckets")
+
+# (manifest object, serialised body). Keyed on the loaded manifest object, which
+# load_manifest replaces whenever the file's mtime changes, so a rescan
+# invalidates it and every other request reuses the bytes. Kept as bytes so a
+# conditional-GET or gzip hook can use them without rebuilding.
+_manifest_body_cache: tuple[dict, bytes] | None = None
+_manifest_body_lock = threading.Lock()
+
+
+def _build_manifest_payload(m: dict) -> dict:
+    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
+    slim_targets = []
+    for t in m["targets"]:
+        ft = {f: {k: v for k, v in d.items() if k not in _MANIFEST_FILTER_OMIT}
+              for f, d in t["filters"].items()}
+        slim = {k: v for k, v in t.items() if k not in _MANIFEST_TARGET_OMIT}
+        slim["filters"] = ft
+        slim_targets.append(slim)
+    return _without_archive_paths({
+        "scan_date": m.get("scan_date"),
+        "total_targets": m.get("total_targets"),
+        "total_integration_hours": m.get("total_integration_hours"),
+        "total_captured_hours": m.get("total_captured_hours", 0),
+        "total_integrated_hours": m.get("total_integrated_hours", 0),
+        "targets": slim_targets,
+        "scan_health": _scan_health(m),
+    }, roots)
+
+
+def manifest_body_bytes(m: dict) -> bytes:
+    """The serialised /api/manifest body for a loaded manifest, built once per
+    load. Same bytes jsonify would send, trailing newline included."""
+    global _manifest_body_cache
+    cached = _manifest_body_cache
+    if cached is not None and cached[0] is m:
+        return cached[1]
+    with _manifest_body_lock:
+        cached = _manifest_body_cache
+        if cached is not None and cached[0] is m:
+            return cached[1]
+        body = app.json.response(_build_manifest_payload(m)).get_data()
+        _manifest_body_cache = (m, body)
+        return body
+
+
 @app.route("/api/manifest")
 def api_manifest():
     m = load_manifest()
@@ -2133,20 +2185,7 @@ def api_manifest():
             "total_integrated_hours": 0,
             "targets": [],
         })
-    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
-    slim_targets = []
-    for t in m["targets"]:
-        ft = {f: {k: v for k, v in d.items() if k != "paths"} for f, d in t["filters"].items()}
-        slim_targets.append({**t, "filters": ft})
-    return jsonify(_without_archive_paths({
-        "scan_date": m.get("scan_date"),
-        "total_targets": m.get("total_targets"),
-        "total_integration_hours": m.get("total_integration_hours"),
-        "total_captured_hours": m.get("total_captured_hours", 0),
-        "total_integrated_hours": m.get("total_integrated_hours", 0),
-        "targets": slim_targets,
-        "scan_health": _scan_health(m),
-    }, roots))
+    return app.response_class(manifest_body_bytes(m), mimetype="application/json")
 
 
 def _scan_health(m: dict) -> dict | None:

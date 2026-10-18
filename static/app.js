@@ -1345,8 +1345,7 @@ function renderTargetPanel(t) {
         <tbody>${filterRows}</tbody>
       </table>
 
-      <h4>Master files (${t.master_files.length})</h4>
-      <div class="pathlist">${t.master_files.slice(0, 12).map(p => esc(p.replace(/\\/g, "/"))).join("<br>")}${t.master_files.length > 12 ? "<br>…" : ""}</div>
+      <div id="masterFilesBox">${masterFilesHtml(_masterFilesCache.get(t.target_id))}</div>
 
       <h4 id="catMatchHdr" style="display:none">Nearby catalog objects</h4>
       <div id="catMatches"></div>
@@ -1361,6 +1360,40 @@ function renderTargetPanel(t) {
 
   // If catalog overlays loaded, show nearby entries
   showCatalogMatchesFor(t);
+
+  loadMasterFiles(t.target_id);
+}
+
+// /api/manifest leaves master_files out to keep the first load small, so the
+// detail panel fetches them from /api/target/<id> when it opens. Cached per
+// target for the page's lifetime.
+const _masterFilesCache = new Map();  // target_id -> string[]
+
+function masterFilesHtml(files) {
+  if (files === null) return `<h4>Master files</h4><div class="pathlist">Unavailable</div>`;
+  if (!Array.isArray(files)) return `<h4>Master files</h4><div class="pathlist">Loading…</div>`;
+  return `<h4>Master files (${files.length})</h4>
+      <div class="pathlist">${files.slice(0, 12).map(p => esc(String(p).replace(/\\/g, "/"))).join("<br>")}${files.length > 12 ? "<br>…" : ""}</div>`;
+}
+
+async function loadMasterFiles(targetId) {
+  if (_masterFilesCache.has(targetId)) return;
+  let files = null;
+  try {
+    const r = await fetch(`/api/target/${targetId}`);
+    if (r.ok) {
+      const d = await r.json();
+      files = Array.isArray(d?.master_files) ? d.master_files : [];
+    }
+  } catch (e) {
+    console.warn("master files fetch failed:", e);
+  }
+  // A failure is shown but not cached, so reopening the panel retries.
+  if (files !== null) _masterFilesCache.set(targetId, files);
+  // The user may have moved on while this was in flight.
+  if (panelMode !== "detail" || selectedTargetId !== targetId) return;
+  const box = document.getElementById("masterFilesBox");
+  if (box) box.innerHTML = masterFilesHtml(files);
 }
 
 // Row menus. Each kind of row gets its items from row-menu.mjs; the chosen
