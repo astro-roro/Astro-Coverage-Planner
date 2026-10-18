@@ -1457,6 +1457,7 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
 }
 .acp-modal form { display: flex; flex-direction: column; gap: 10px; }
 .modal-row { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #a2aec2; }
+.modal-note { margin: 0 0 10px; font-size: 12px; color: #e0c36a; }
 .modal-row.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .modal-row.two-col > label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #a2aec2; }
 .modal-row > span,

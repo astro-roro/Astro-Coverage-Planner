@@ -633,6 +633,12 @@ import {
 } from "./filter-defaults.mjs";
 import { footprintSizeDeg, zoomFovFor } from "./map-focus.mjs";
 import { persistUiState } from "./ui-state.mjs";
+import {
+  coordsForForm,
+  markPromptSeen,
+  readPromptSeen,
+  shouldPromptForSite,
+} from "./site-prompt.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
@@ -5442,6 +5448,7 @@ function setupFilterUI() {
     e.preventDefault();
     saveSiteFromForm();
   });
+  document.getElementById("siteFLocate").addEventListener("click", useMyLocation);
   document.getElementById("siteFCancel").addEventListener("click", closeSiteModal);
   document.getElementById("siteFDelete").addEventListener("click", deleteActiveSite);
 }
@@ -5494,9 +5501,11 @@ function applyActiveSite() {
   };
 }
 
-function openSiteModal(siteId) {
+function openSiteModal(siteId, { note = false } = {}) {
   const dlg = document.getElementById("siteModal");
   const editing = sites.find(s => s.id === siteId) || null;
+  document.getElementById("siteModalNote").hidden = !note;
+  document.getElementById("siteFLocate").hidden = !navigator.geolocation;
   document.getElementById("siteModalTitle").textContent = editing ? "Edit site" : "Add site";
   document.getElementById("siteFName").value   = editing?.name ?? "";
   document.getElementById("siteFLat").value    = editing?.lat ?? "";
@@ -5513,6 +5522,33 @@ function openSiteModal(siteId) {
   if (typeof dlg.showModal === "function") dlg.showModal();
   else dlg.setAttribute("open", "");
   document.getElementById("siteFName").focus();
+}
+
+// Fill the site form's latitude and longitude from the browser. Only runs from
+// the button click, so location is never requested unprompted.
+function useMyLocation() {
+  const btn = document.getElementById("siteFLocate");
+  const errEl = document.getElementById("siteFormError");
+  if (!navigator.geolocation) return;
+  btn.disabled = true;
+  errEl.hidden = true;
+  navigator.geolocation.getCurrentPosition(pos => {
+    btn.disabled = false;
+    const c = coordsForForm(pos.coords);
+    if (!c) {
+      errEl.textContent = "The browser did not return a usable location.";
+      errEl.hidden = false;
+      return;
+    }
+    document.getElementById("siteFLat").value = c.lat;
+    document.getElementById("siteFLon").value = c.lon;
+    const nameEl = document.getElementById("siteFName");
+    if (!nameEl.value.trim()) nameEl.value = "My site";
+  }, err => {
+    btn.disabled = false;
+    errEl.textContent = `Could not get your location (${err?.message || "denied"}). Enter it by hand.`;
+    errEl.hidden = false;
+  }, { timeout: 10000 });
 }
 
 function closeSiteModal() {
@@ -5764,6 +5800,13 @@ function setTimeAware(on) {
   timeAware = !!on;
   localStorage.setItem("acp.time_aware", timeAware ? "on" : "off");
   applyTimeAwareState(/*fireImmediate=*/true);
+  // The server falls back to Mauna Kea, so altitudes are wrong until the user
+  // sets a site. Ask once per browser, and leave Time-aware on either way.
+  const activeSite = sites.find(s => s.id === activeSiteId);
+  if (shouldPromptForSite({ turningOn: timeAware, site: activeSite, seen: readPromptSeen(localStorage) })) {
+    markPromptSeen(localStorage);
+    openSiteModal(null, { note: true });
+  }
 }
 
 function applyTimeAwareState(fireImmediate) {
