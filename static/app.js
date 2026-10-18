@@ -625,6 +625,7 @@ import {
   filterHiddenNoteText,
   initialFilterSelection,
 } from "./filter-defaults.mjs";
+import { footprintSizeDeg, zoomFovFor } from "./map-focus.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
@@ -1221,7 +1222,7 @@ function renderTargetList() {
       }
       if (t) {
         // Pan first so even a render throw doesn't swallow the pan.
-        panMapTo(t.center_ra_deg, t.center_dec_deg);
+        panMapTo(t.center_ra_deg, t.center_dec_deg, { target: t });
         renderTargetPanel(t);
       }
     });
@@ -1419,7 +1420,7 @@ function planMenuSpec(pl) {
         const go = () => {
           revealMainSidePanel();
           if (!planningMode) setPlanningMode(true);
-          panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+          panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg, { target: pl.target });
           renderPlanEditor(pl);
         };
         // From the map, another plan may be open with unsaved edits.
@@ -1505,9 +1506,13 @@ function angularSep(ra1, dec1, ra2, dec2) {
 // rail row clicks so opening a detail/editor view also orients the sky map.
 // No-op when current centre is within `threshold_arcmin` of the target so
 // re-clicking the same row doesn't trigger a redundant pan.
-function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
+// Pass `target` (anything with corners_icrs or fov_arcmin) to also zoom when
+// the view is far wider than its footprint; a view already zoomed in is left
+// alone. See zoomFovFor in map-focus.mjs.
+function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1, target = null } = {}) {
   if (!aladin) return;
   if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
+  zoomMapForFootprint(target, duration_s);
   try {
     const cur = aladin.getRaDec();
     if (cur && cur.length === 2 &&
@@ -1520,6 +1525,18 @@ function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
   } else if (typeof aladin.gotoRaDec === "function") {
     aladin.gotoRaDec(ra, dec);
   }
+}
+
+function zoomMapForFootprint(target, duration_s) {
+  if (!target) return;
+  try {
+    const fov = aladin.getFoV?.();
+    const current = Array.isArray(fov) ? Math.max(fov[0], fov[1]) : Number(fov);
+    const next = zoomFovFor(current, footprintSizeDeg(target));
+    if (next == null) return;
+    if (typeof aladin.zoomToFoV === "function") aladin.zoomToFoV(next, duration_s);
+    else if (typeof aladin.setFoV === "function") aladin.setFoV(next);
+  } catch (e) { /* zoom is a nicety, never block the pan */ }
 }
 
 // Unwraps polygon-corner RAs onto a common 360°-shifted frame when the
@@ -6031,7 +6048,7 @@ function activityOpenPlan(planId) {
   const go = () => {
     revealMainSidePanel();
     if (!planningMode) setPlanningMode(true);
-    panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+    panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg, { target: pl.target });
     renderPlanEditor(pl);
   };
   if (panelMode === "plan-edit" && editingPlan?.id !== pl.id) requestNavigateAwayFromPlanEdit(go);
@@ -6920,7 +6937,7 @@ function renderPlanList() {
     const pl = plans.find(p => p.id === row.dataset.planId);
     if (pl) {
       // Pan first so even a render throw doesn't swallow the pan.
-      panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+      panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg, { target: pl.target });
       renderPlanEditor(pl);
     }
   };
