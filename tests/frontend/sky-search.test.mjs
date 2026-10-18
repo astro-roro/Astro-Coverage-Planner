@@ -562,10 +562,10 @@ describe("AstroBin search link", () => {
     assert.equal(readLink(astrobinSearchUrl({ ra: 360, dec: 0 })).model.coords.raCenter, 0);
     assert.equal(readLink(astrobinSearchUrl({ ra: 10, dec: 95 })).model.coords.decCenter, 90);
   });
-  it("searches half to double the rig's field radius", () => {
+  it("searches 75 to 125 percent of the rig's field radius", () => {
     // 120' x 160' frame: half diagonal 100' = 1.667 degrees.
     const { model } = readLink(astrobinSearchUrl({ ra: 10, dec: 10, fovArcminShort: 120, fovArcminLong: 160 }));
-    assert.deepEqual(model.field_radius, { min: 0.8, max: 3.4 });
+    assert.deepEqual(model.field_radius, { min: 1.2, max: 2.1 });
     assert.equal(model.coords.radius, 1); // half the short side
   });
   it("rounds the band outwards and caps it at 180 degrees", () => {

@@ -685,8 +685,8 @@ const round = (v, places) => Number(v.toFixed(places));
 // A search for images centred near the object. fovArcminShort and
 // fovArcminLong are the rig's frame sides; leave them out for "Any size" and
 // only the position is sent.
-// With a rig: the field radius (half the frame diagonal) is searched from half
-// to double its nominal value, and field centres within half the short side of
+// With a rig: the field radius (half the frame diagonal) is searched from 75%
+// to 125% of its nominal value, and field centres within half the short side of
 // the object are accepted. Without one: centres within 0.5 degrees.
 export function astrobinSearchUrl({ ra, dec, fovArcminShort = null, fovArcminLong = null }) {
   const raMinutes = round((((ra % 360) + 360) % 360) * 4, 3);
@@ -699,8 +699,8 @@ export function astrobinSearchUrl({ ra, dec, fovArcminShort = null, fovArcminLon
   if (hasRig) {
     const nominal = Math.hypot(fovArcminShort, fovArcminLong) / 2 / 60;
     model.field_radius = {
-      min: Math.floor(nominal * 0.5 * 10) / 10,
-      max: Math.min(180, Math.ceil(nominal * 2 * 10) / 10),
+      min: Math.floor(nominal * 0.75 * 10) / 10,
+      max: Math.min(180, Math.ceil(nominal * 1.25 * 10) / 10),
     };
   }
   return `${ASTROBIN_SEARCH}?p=${encodeURIComponent(astrobinParam(model))}`;
