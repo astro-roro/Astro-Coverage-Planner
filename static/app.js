@@ -6615,6 +6615,12 @@ function planFovArcmin(plan) {
   return deriveFovArcmin(planTelescope(plan), planCamera(plan));
 }
 
+// Same wording as the readout the editor renders, with a multiplication sign.
+function fovReadoutText(w, h) {
+  const times = String.fromCharCode(0xd7);
+  return `Single-panel FOV: ${w.toFixed(1)}' ${times} ${h.toFixed(1)}'`;
+}
+
 function planMosaic(plan) {
   const m = plan.target?.mosaic || {};
   return {
@@ -7354,7 +7360,7 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Camera</span>
           <select id="f_camera">${camOpts}</select>
         </label>
-        <div style="font-size:11px;color:#78839a">Single-panel FOV: ${fw.toFixed(1)}' × ${fh.toFixed(1)}'</div>
+        <div style="font-size:11px;color:#78839a" id="fovReadout">Single-panel FOV:${fw.toFixed(1)}' × ${fh.toFixed(1)}'</div>
       </fieldset>
 
       <fieldset>
@@ -7459,13 +7465,17 @@ function renderPlanEditor(plan) {
     const v = parseFloat(e.target.value);
     if (isFinite(v)) { editingPlan.target.rotation_deg = v; redrawPlanFootprints(); schedulePlanVisRefresh(); }
   });
+  // Both selects list all gear, so a gear change updates the FOV readout,
+  // mosaic summary, footprints and filter cards in place (see onGearChange
+  // below) instead of re-rendering the editor and losing its scroll position.
+  let onGearChange = () => {};
   panel.querySelector("#f_telescope")?.addEventListener("change", e => {
     editingPlan.telescope_id = e.target.value;
-    renderPlanEditor(editingPlan);
+    onGearChange();
   });
   panel.querySelector("#f_camera")?.addEventListener("change", e => {
     editingPlan.camera_id = e.target.value;
-    renderPlanEditor(editingPlan);
+    onGearChange();
   });
   panel.querySelector("#openGearEditor")?.addEventListener("click", () => renderGearEditor());
 
@@ -7479,6 +7489,16 @@ function renderPlanEditor(plan) {
     if (el) el.textContent = `${m.rows * m.cols} panel${m.rows * m.cols === 1 ? "" : "s"} · total ${totalW.toFixed(1)}' × ${totalH.toFixed(1)}'`;
   };
   updateMosaicSummary();
+
+  onGearChange = () => {
+    const [w, h] = planFovArcmin(editingPlan);
+    const fovEl = document.getElementById("fovReadout");
+    if (fovEl) fovEl.textContent = fovReadoutText(w, h);
+    updateMosaicSummary();
+    redrawFilterRows(panel);
+    redrawPlanFootprints();
+    schedulePlanVisRefresh();
+  };
 
   panel.querySelector("#f_mrows")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
