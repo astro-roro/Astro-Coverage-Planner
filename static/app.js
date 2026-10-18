@@ -580,7 +580,8 @@ function saveUiState() {
       sources: sourcesEnabled,
       extToggles: extToggleState,
     };
-    localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
+    // Carries objectsFilter (written by _saveObjectsFilterState) through.
+    persistUiState(localStorage, UI_STATE_KEY, state);
   } catch { /* localStorage full / disabled, ignore */ }
 }
 
@@ -626,6 +627,7 @@ import {
   initialFilterSelection,
 } from "./filter-defaults.mjs";
 import { footprintSizeDeg, zoomFovFor } from "./map-focus.mjs";
+import { persistUiState } from "./ui-state.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
