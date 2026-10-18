@@ -6658,10 +6658,9 @@ function planFovArcmin(plan) {
   return deriveFovArcmin(planTelescope(plan), planCamera(plan));
 }
 
-// Same wording as the readout the editor renders, with a multiplication sign.
+// Same wording as the readout the editor renders.
 function fovReadoutText(w, h) {
-  const times = String.fromCharCode(0xd7);
-  return `Single-panel FOV: ${w.toFixed(1)}' ${times} ${h.toFixed(1)}'`;
+  return `Single-panel FOV: ${w.toFixed(1)}' × ${h.toFixed(1)}'`;
 }
 
 function planMosaic(plan) {
