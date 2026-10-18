@@ -625,6 +625,7 @@ import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { listModeFor } from "./panel-nav.mjs";
+import { railIconPath, railTabsFrom, fillColorFor, tilePlansHtml } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
@@ -2454,6 +2455,7 @@ async function loadExtensions() {
   }
   if (!Array.isArray(entries)) entries = [];
   extensionsManifest = entries;
+  setupExtensionRailTabs(entries);
 
   try {
     const r = await fetch("/api/sync/config");
@@ -3138,6 +3140,11 @@ async function _afterApplyRefreshRail() {
     }
   } catch (refreshErr) {
     console.warn("plan reload after extension apply failed:", refreshErr);
+  }
+  try {
+    await refreshExtensionTiles();
+  } catch (tileErr) {
+    console.warn("tile reload after extension apply failed:", tileErr);
   }
 }
 
@@ -4483,6 +4490,36 @@ async function ensureTilesLoaded(sourceId) {
   return tileData[sourceId];
 }
 
+// After an extension action's apply step succeeds, its tile sources may have
+// changed server-side. The tile summary doesn't say which extension owns a
+// source, so this refetches every source's summary and the tiles of the
+// enabled ones, redraws, and re-renders an open tile panel from the new data.
+async function refreshExtensionTiles() {
+  if (!tileSources.length) return;
+  try {
+    const r = await fetch("/api/tile-sources");
+    const d = await r.json();
+    if (Array.isArray(d?.sources)) {
+      for (const fresh of d.sources) {
+        const i = tileSources.findIndex(s => s.id === fresh.id);
+        if (i >= 0) tileSources[i] = fresh;
+      }
+    }
+  } catch (e) {
+    console.warn("tile source refresh failed:", e);
+  }
+  for (const s of tileSources) {
+    delete tileData[s.id];
+    if (invState[s.id]?.enabled) await ensureTilesLoaded(s.id);
+  }
+  if (panelMode === "tile-detail" && selectedTileKey) {
+    const [sid, ...rest] = selectedTileKey.split("/");
+    const tid = rest.join("/");
+    const tile = (tileData[sid] || []).find(t => String(t.id) === tid);
+    if (tile) renderTilePanel(tile, sid);
+  }
+}
+
 // --- Horizon overlay (Plan A.6 / step 7) --------------------------------
 // For latitude φ, the maximum altitude declination δ ever reaches at
 // transit is `90 - |φ - δ|`. So:
@@ -4741,6 +4778,7 @@ function renderTileOverlay(sourceId) {
   // tilePlanInfo() is O(plans) per tile; without this, ~40 tiles × ~10 plans
   // recomputed planMosaicBoundsCorners() up to twice per tile per render.
   const planCornersCache = new Map();
+  const fillOpacity = (tileSources.find(x => x.id === sourceId) || {}).fill_opacity;
   for (const tile of tiles) {
     // planInfo is needed for the Hide-planned filter and for downstream
     // click handling, but only ever computed once per tile per render pass
@@ -4756,11 +4794,16 @@ function renderTileOverlay(sourceId) {
     const color = _tileColorFor(tile, st);
     const alphaHex = _tileFillAlphaHex(tile.per_band);
     planInfo = getPlanInfo();
-    const poly = A.polygon(corners, {
+    const polyOpts = {
       color: color,
       lineWidth: 0.5,
       fillColor: color + alphaHex,
-    });
+    };
+    // A source that declares metadata.fill_opacity gets its footprints
+    // filled at that opacity. Without it the polygons stay as they were.
+    const solidFill = fillColorFor(color, fillOpacity);
+    if (solidFill) { polyOpts.fill = true; polyOpts.fillColor = solidFill; }
+    const poly = A.polygon(corners, polyOpts);
     if (poly && tile && (tile.id || tile.score != null)) {
       poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
     }
@@ -4848,6 +4891,11 @@ function renderTilePanel(tile, sourceId) {
        </div>`
     : "";
 
+  // Extension-supplied plan links (tile.metadata.plans). A link shows only
+  // for a plan this ACP has loaded, so a stale id can't open nothing.
+  const findPlan = pid => plans.find(p => p.id === pid || (p.guid && p.guid === pid));
+  const extPlansHtml = tilePlansHtml(tile.metadata?.plans, esc, pid => !!findPlan(pid));
+
   panel.innerHTML = `
     <div>
       <a class="back-link" id="backToList" href="#">← Back to list</a>
@@ -4876,6 +4924,8 @@ function renderTilePanel(tile, sourceId) {
 
       ${planRow}
 
+      ${extPlansHtml ? `<h4>Plans</h4>${extPlansHtml}` : ""}
+
       <div class="tile-actions">
         <div class="tile-suggestion">${suggestion}</div>
         <button id="tileCreatePlan" class="primary">Create new plan from this tile</button>
@@ -4887,6 +4937,11 @@ function renderTilePanel(tile, sourceId) {
     if (listModeFor(planningMode) === "plan-list") renderPlanList();
     else renderTargetList();
   });
+  panel.querySelectorAll(".tile-plan-link").forEach(a => a.addEventListener("click", e => {
+    e.preventDefault();
+    const pl = findPlan(a.dataset.planId);
+    if (pl) activityOpenPlan(pl.id);
+  }));
   document.getElementById("tileCreatePlan")?.addEventListener("click", () => {
     promotePlanFromTile(tile, sourceMeta);
   });
@@ -5800,6 +5855,8 @@ function loadSidePanelState() {
     if (typeof s.open === "boolean") sidePanelState.open = s.open;
     if (SIDE_PANEL_TABS.includes(s.tab) && document.querySelector(`.side-tab[data-tab="${s.tab}"]`)) {
       sidePanelState.tab = s.tab;
+    } else if (typeof s.tab === "string" && s.tab.startsWith("ext-")) {
+      pendingExtTab = s.tab;
     }
     if (Number.isFinite(s.width)) sidePanelState.width = s.width;
     if (Number.isFinite(s.activityWidth)) sidePanelState.activityWidth = s.activityWidth;
@@ -5818,7 +5875,13 @@ function clampSidePanelWidth(w) {
   return Math.round(Math.max(SIDE_PANEL_MIN_W, Math.min(SIDE_PANEL_MAX_W, room, w)));
 }
 
+// Rail tabs declared by extensions (manifest `rail_tabs`), keyed by the
+// data-tab value. setupExtensionRailTabs() fills it once the manifest is in.
+const extRailTabs = new Map();   // key → {key, label, icon, page}
+let pendingExtTab = null;        // saved ext tab, restored once its extension has loaded
+
 function sidePanelTitle(tab) {
+  if (extRailTabs.has(tab)) return extRailTabs.get(tab).label;
   if (tab === "filters") return "Map filters";
   if (tab === "library") return "Library";
   if (tab === "activity") return "Activity";
@@ -5833,6 +5896,7 @@ function applySidePanel() {
   panel.style.setProperty("--side-panel-w", `${clampSidePanelWidth(sidePanelState[widthKey(tab)])}px`);
   panel.classList.toggle("is-activity", tab === "activity");
   for (const sec of panel.querySelectorAll(".side-tab")) sec.hidden = sec.dataset.tab !== tab;
+  if (open && extRailTabs.has(tab)) ensureExtensionFrame(tab);
   for (const btn of document.querySelectorAll("#panelRail .rail-btn")) {
     btn.setAttribute("aria-pressed", String(open && btn.dataset.tab === tab));
   }
@@ -5844,6 +5908,58 @@ function applySidePanel() {
   if (mainTip) mainTip.textContent = planningMode ? "Plans and projects" : "Targets in your archive";
   nudgeMapControls();
   if (activityUi) activityUi.onTabShown(open && tab === "activity");
+}
+
+// The iframe for an extension rail tab is created the first time the tab is
+// shown, so a tab nobody opens costs no request. It is same-origin, so the
+// browser sends the session cookie and the extension's page is gated like
+// any other ACP route. The page was validated when the tab was registered.
+function ensureExtensionFrame(key) {
+  const tab = extRailTabs.get(key);
+  const sec = document.querySelector(`#sidePanel .side-tab[data-tab="${key}"]`);
+  if (!tab || !sec || sec.querySelector("iframe")) return;
+  const frame = document.createElement("iframe");
+  frame.className = "ext-rail-frame";
+  frame.title = tab.label;
+  frame.src = tab.page;
+  sec.appendChild(frame);
+}
+
+// Add a rail button and panel section for each valid rail tab in the
+// extension manifest. Safe to call again: earlier ext tabs are removed first.
+function setupExtensionRailTabs(manifest) {
+  const rail = document.getElementById("panelRail");
+  const panel = document.getElementById("sidePanel");
+  if (!rail || !panel) return;
+  document.querySelectorAll("[data-ext-tab]").forEach(n => n.remove());
+  extRailTabs.clear();
+  for (const t of railTabsFrom(manifest)) {
+    extRailTabs.set(t.key, t);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-btn";
+    btn.dataset.tab = t.key;
+    btn.dataset.extTab = "";
+    btn.setAttribute("aria-pressed", "false");
+    btn.setAttribute("aria-controls", "sidePanel");
+    btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${railIconPath(t.icon)}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>` +
+      `<span class="rail-lbl">${esc(t.label)}</span><span class="rail-tip">${esc(t.label)}</span>`;
+    btn.addEventListener("click", () => openSidePanelTab(t.key));
+    rail.appendChild(btn);
+    const sec = document.createElement("section");
+    sec.className = "side-tab";
+    sec.dataset.tab = t.key;
+    sec.dataset.extTab = "";
+    sec.hidden = true;
+    panel.appendChild(sec);
+  }
+  if (pendingExtTab && extRailTabs.has(pendingExtTab)) {
+    sidePanelState.tab = pendingExtTab;
+    pendingExtTab = null;
+  } else if (!extRailTabs.has(sidePanelState.tab) && !SIDE_PANEL_TABS.includes(sidePanelState.tab)) {
+    sidePanelState.tab = "main";
+  }
+  applySidePanel();
 }
 
 function openSidePanelTab(tab) {

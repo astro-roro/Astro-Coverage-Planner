@@ -127,6 +127,13 @@ def register(app):
 
 `priority_level` is an ordinal — 1 is the most urgent — driving the colour bucket on the map. The Inventory rail accordion only appears when at least one tile source is registered, so a stock checkout shows nothing.
 
+Two optional extras make tiles carry more than coverage:
+
+- `fill_opacity` in the source's `metadata()` (a number from 0 to 1). When set, ACP draws that source's footprints filled at that opacity, in each tile's usual colour. When absent, or not a number in range, footprints stay as they were. The value is reported as `fill_opacity` by `GET /api/tile-sources` (`null` when unset).
+- `plans` in a tile's `metadata`, a list of `{"plan_id": str | null, "name": str, "detail": str}`. The tile panel shows a Plans list. A name is a link when `plan_id` is set and matches a plan ACP has loaded (by plan `id` or `guid`), and clicking it switches to Planning mode and opens that plan. With `plan_id` null, or an id ACP doesn't know, the name is plain text. `detail` appears as muted text under the name. All of it is escaped. Other metadata keys are not displayed, as before.
+
+After any extension action's apply step succeeds, ACP refetches tile sources and redraws the enabled ones, so the map doesn't show layers from before the change. ACP doesn't know which extension owns which source, so it refreshes all of them.
+
 ### `CategorisedCatalogSource` — point catalogues with category chips
 
 For class-tagged point objects (e.g. "PNe", "HII", "SNR") — gives you the same chip-filter UI the built-in Messier/Sharpless/etc. catalogues get.
@@ -256,6 +263,29 @@ manifest.append({
 - `profiles_endpoint` (GET) — list selectable options for the picker. Response shape: `{"profiles": [{"profile_id": "...", "project_count": N, "sample_projects": [...]}]}`.
 
 The frontend handles the picker UI; you just expose the routes.
+
+### Rail tabs
+
+An entry can add its own tab to the right-hand rail, next to Plans, Filters and Library, by declaring `rail_tabs`:
+
+```python
+manifest.append({
+    "extension": "my_workflow",
+    "name": "My Workflow",
+    "rail_tabs": [
+        {"id": "overview", "label": "Overview", "icon": "calendar",
+         "page": "/api/ext/my-workflow/ui"},
+    ],
+    "actions": [...],
+})
+```
+
+- `id` is a short slug (letters, digits, `_`, `-`, up to 40 characters), unique within the extension.
+- `label` is the text under the rail icon and the panel title.
+- `icon` is optional. Known names are `list`, `plans`, `targets`, `filter`, `filters`, `library`, `catalogue`, `catalog`, `layers`, `activity`, `pulse`, `chart` and `calendar`. Anything else gets a generic icon.
+- `page` is the page to show. It must be a relative path that starts with `/api/ext/<prefix>`, where the prefix is the entry's `extension` value, or the same value with underscores written as hyphens (`my_workflow` may use `/api/ext/my_workflow/` or `/api/ext/my-workflow/`). The path must be that prefix or continue after a `/`, and it can carry a query string. Full URLs, `//host/...` paths, `..` segments and encoded slashes or dots are rejected.
+
+ACP shows the page in a same-origin iframe that fills the panel, so the browser's session cookie authenticates it exactly as it does for the rest of ACP. The iframe is created the first time the tab is opened and kept afterwards. A tab that fails validation is dropped and a warning is logged once on the `acp.extensions` logger. The other tabs and the rest of the entry are unaffected.
 
 ### Example: nina_ts_sync
 

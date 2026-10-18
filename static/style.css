@@ -2598,3 +2598,18 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .activity .more { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-block: 4px 8px; }
 .activity .more .count { font-size: 11px; color: #8d99ad; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .activity details.night > summary::before { transition: none; } }
+
+/* Extension rail tabs: the extension's page fills the panel. */
+.side-tab[data-ext-tab] { overflow: hidden; }
+.ext-rail-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #0c1016;
+}
+
+/* Plan links an extension attaches to a tile (metadata.plans). */
+.tile-plans { list-style: none; margin: 4px 0 0; padding: 0; }
+.tile-plans li { margin: 0 0 6px; }
+.tile-plan-detail { color: #78839a; font-size: 11px; margin-top: 1px; }
