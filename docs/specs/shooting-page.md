@@ -4,14 +4,14 @@ Status: draft, 2026-09-02. Part one of the public sharing work. Part two (friend
 
 ## Goal
 
-A page at astrowithroro.com/live that shows which projects Rohan is currently working on, how far along each one is, and when it was last imaged. ACP is the only source. NINA is not involved. Only plans Rohan has explicitly marked public appear.
+A page at astrowithroro.com/live that shows which projects the user is currently working on, how far along each one is, and when it was last imaged. ACP is the only source. NINA is not involved. Only plans the user has explicitly marked public appear.
 
 ## What the reader sees
 
 One page with a short list of project cards, most recent activity first. Each card shows:
 
 - the project name and target name
-- a one or two sentence blurb, written by Rohan, on why he is shooting it
+- a one or two sentence blurb, written by the user, on why they are shooting it
 - a "current" badge on the project he has marked as current
 - per-filter progress, as hours done of hours planned, with a simple bar
 - "last imaged N nights ago" (or "not started yet")
@@ -27,13 +27,13 @@ Three optional fields on a plan, all validated in `_validate_plan_payload` and e
 |---|---|---|---|
 | `visibility` | `"private"` or `"public"` | `"private"` | Only `"public"` plans are published. Any other value is rejected with 400. |
 | `is_current` | bool | `false` | Shows the "current" badge. More than one current plan is allowed. |
-| `public_blurb` | string, max 500 chars | `""` | Rohan's "why I'm shooting this" text. Plain text, no markup. |
+| `public_blurb` | string, max 500 chars | `""` | The user's "why I'm shooting this" text. Plain text, no markup. |
 
 A plan with no `visibility` field is private. The whole section is shown only when the server reports publishing is configured (`GET /api/publish/config`, true when `ACP_PUBLISH_DEST` is set), and within it the blurb and current fields appear only when the plan is public. A stock install looks unchanged, every existing plan stays private, and the wording is generic: the option is just "Public", with no site named.
 
 ## The published JSON
 
-`GET /api/public/shooting` returns the exact document that will be published, so Rohan can preview it in the browser. Shape:
+`GET /api/public/shooting` returns the exact document that will be published, so the user can preview it in the browser. Shape:
 
 ```jsonc
 {

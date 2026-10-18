@@ -8,7 +8,7 @@ This spec changes how a plan's exposure goals are edited in Astro Coverage Plann
 - The filter switch frequency and smart exposure order become editable in ACP.
 - The ACP side of the Astro Auto Calibration (AAC) incremental masters spec: `target_class`, AAC's figures per row, and the accepted write to TS.
 
-Rohan approved the panel design in the mockup at https://claude.ai/artifact/QnU2KhRiAPtQpviLGAbGNS (artboards "Proposed", "New plan" and "Today"). The side panel stays 380 px wide. Section "What TS does with an order" explains, from TS's source, how the order has to be written.
+The user approved the panel design in the mockup at https://claude.ai/artifact/QnU2KhRiAPtQpviLGAbGNS (artboards "Proposed", "New plan" and "Today"). The side panel stays 380 px wide. Section "What TS does with an order" explains, from TS's source, how the order has to be written.
 
 ## Terms
 
@@ -57,7 +57,7 @@ An override order turns off the project's "dither every" setting for that target
 
 TS reuses a stored cadence before anything else. `Planning/FilterCadenceFactory.cs:19-29` restores the cadence rows when any exist. Only when there are none does it build from the override order (lines 31-41) or from the switch frequency (lines 50-59). TS writes the cadence back after every frame (`Planning/Exposures/BaseExposureSelector.cs:53-72`). So a new override order or switch frequency does nothing while old cadence rows remain. TS's own editor deletes them when it saves an override order (`Controls/DatabaseManager/TargetViewVM.cs:641`, through `SchedulerDatabaseContext.cs:847`). It also deletes them when the switch frequency changes (`Database/Schema/Project.cs:257`, `SchedulerDatabaseContext.cs:752-755`), and when a plan is toggled or deleted (lines 973-975, 994-996).
 
-### What that means for Rohan's database today
+### What that means for the user's database today
 
 Three targets have override orders in the scratch copy of IMAGING-PC's database from 12 October 18:46. They are G7.7-3.7, Dolphin Nebula and Helix Nebula. The rows appeared between the 15:01 backups of 11 and 12 October, so they were set in TS on 11 October. Their projects have a switch frequency of 0. TS therefore rotates one frame per filter on those three targets, rather than finishing each filter. Helix's order is OIII, Ha, SII, B, G, R. B, G and R are complete, so Helix now shoots one frame each of OIII, Ha and SII in turn.
 
@@ -79,7 +79,7 @@ At switch frequency 0 the block size follows TS's completion rule in `Planning/E
 | on | `Accepted` reaches `Desired` (lines 20-27) | `desired` |
 | off | `Acquired` reaches `(int)(throttle x Desired)` (lines 29-32) | ceil(throttle / 100 x `desired`) |
 
-The throttle is `profilepreference.exposureThrottle` for the profile, a percentage. The writer reads the real value at push time. TS's default is 125 (`Database/Schema/ProfilePreference.cs:67`), and Rohan set his to 100 on 12 October.
+The throttle is `profilepreference.exposureThrottle` for the profile, a percentage. The writer reads the real value at push time. TS's default is 125 (`Database/Schema/ProfilePreference.cs:67`), and the user set the throttle to 100 on 12 October.
 
 A block sized this way works because TS skips finished plans (`OverrideOrderExposureSelector.cs:33`, and `PlanningTarget.cs:65-71` marks them rejected when the target loads). The filter finishes inside its block and TS moves straight on to the next block.
 
@@ -259,7 +259,7 @@ The push writes -1, meaning "use the template's default", and only in two cases:
 
 Otherwise `exposure` joins `INSERT_ONLY_COLUMNS` for `exposureplan` (`nina_ts_sync/schema.py:312-319`) and `insertOnlyColumns` (`TsSchema.cs:90-99`).
 
-The reason for -1: the sub length now belongs to the TS template. With -1, a change Rohan makes to a template in TS reaches every plan that uses it, and ACP never fights it.
+The reason for -1: the sub length now belongs to the TS template. With -1, a change the user makes to a template in TS reaches every plan that uses it, and ACP never fights it.
 
 The reason for leaving existing plans alone: today both writers put ACP's `sub_exposure_s` into `exposure` on every push (`nina_ts_sync/convert.py:377-391`). Every exposure plan ACP made therefore has an explicit `exposure`, which may differ from its template's default. Writing -1 to those would change what TS shoots. Leaving the column alone keeps TS shooting exactly what it shoots today. The migration sets `template_sub_s` to that same old sub, so ACP shows and computes with the true value.
 
@@ -277,7 +277,7 @@ Both writers look a template up by profile and `name`. A hit is used unchanged, 
 
 ACP no longer updates existing templates. Today the guid update rewrites a template's default exposure, gain, offset and bin from ACP's gear on every push.
 
-The sync never deletes templates. The push result lists every template on the profile whose `filtername` is not a filter on any of the profile's cameras. In the scratch database copy that is three templates, ids 15, 17 and 20, with filter names "B Stars", "G Stars" and "R Stars". The old writer made them by using a goal key as a filter name. Rohan deletes them in TS.
+The sync never deletes templates. The push result lists every template on the profile whose `filtername` is not a filter on any of the profile's cameras. In the scratch database copy that is three templates, ids 15, 17 and 20, with filter names "B Stars", "G Stars" and "R Stars". The old writer made them by using a goal key as a filter name. The user deletes them in TS.
 
 ### Exposure plan identity
 
@@ -438,7 +438,7 @@ An override order with repeats or dithers, made by hand in TS, comes into ACP as
 
 The order is its own field in the import choices, apart from the plan's Keep ACP. Choosing Keep ACP on a plan for its other fields does not stop TS's order being pulled, and does not change how the order base is recorded. Choosing Keep ACP on the order itself is an explicit choice of ACP's order over TS's: the base still records TS's order, so the next push replaces the order set in TS. The import preview says so on that row: "Your next push will replace the order set in Target Scheduler." For a conflict that includes the order, the plan's Keep ACP is that choice. When the order is no part of the conflict, Keep ACP on the plan still pulls TS's order as an auto-pull, unless the order itself is kept, so the base and ACP agree; the conflict card shows the replace note only when the order is in the conflict or was kept.
 
-The migration in section 3 does not count as an ACP change to the order. A base without `exposure_order` means the first push writes no order, and the next upload brings in each target's effective order from TS. Rohan's three hand-made override orders therefore stay in TS until he changes the order in ACP.
+The migration in section 3 does not count as an ACP change to the order. A base without `exposure_order` means the first push writes no order, and the next upload brings in each target's effective order from TS. The user's three hand-made override orders therefore stay in TS until they change the order in ACP.
 
 ## 6. What AAC needs from ACP
 
@@ -654,5 +654,5 @@ I cannot run TS here, so the order needs one check on IMAGING-PC after phase 5 s
 
 ## Open questions
 
-1. Rohan's three hand-made override orders (G7.7-3.7, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what he wanted when he set them on 11 October? If not, he can set each order once in ACP after phase 5, and the sync replaces them. Rohan has been asked and has not answered yet.
+1. The user's three hand-made override orders (G7.7-3.7, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what they wanted when they set them on 11 October? If not, they can set each order once in ACP after phase 5, and the sync replaces them. The user has been asked and has not answered yet.
 2. Does `ACP.NINA.Plugin.Tests` reference TS's assembly in a way that lets test O9 run on Windows? If not, the manual check is the only check against TS itself.

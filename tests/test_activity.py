@@ -338,7 +338,7 @@ class TestReading(ActivityCase):
                         for i in range(start, start + 50)])
         night = self.get("/api/activity?nights=1").get_json()["nights"][0]
         self.assertEqual((len(night["events"]), night["more"]), (200, 50))
-        # Newest first within a night (Rohan, 2026-10-14); older pages follow.
+        # Newest first within a night (the user, 2026-10-14); older pages follow.
         self.assertEqual([e["title"] for e in night["events"]][:2], ["row 249", "row 248"])
         rest = self.get("/api/activity/night/2026-10-13?offset=200").get_json()
         self.assertEqual((len(rest["events"]), rest["more"]), (50, 0))
@@ -696,7 +696,7 @@ class TestStoreRules(ActivityCase):
         self.post(ev(
             title="Authorization: Bearer abc123 token=abc password=hunter2 https://u:p@host/ "
                   "access_token=at1 api_token=at2 ACP_API_TOKEN=at3 db_password=at4",
-            detail="saved to /Users/rohan/Pictures/x.fits",
+            detail="saved to /Users/user/Pictures/x.fits",
             data={"note": "C:\\Users\\Astro\\Pictures\\x.fits", "nested": {"url": "https://u:p@host/"}},
             refs={"plan_id": "p1", "evil": "dropped", "target": "C:\\Users\\Astro\\Pictures\\x.fits"}))
         e = self.all_events()[0]

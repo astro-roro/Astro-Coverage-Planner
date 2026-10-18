@@ -27,7 +27,7 @@ import filter_rows as fr  # noqa: E402
 from app import app  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-P1 = "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7"
+P1 = "00000000-0000-4000-8000-000000000001"
 P2 = "093effd2-29a5-4ce6-ae38-d6eea265a912"
 SLOTS = ["L", "R", "G", "B", "H", "O", "S"]
 CAM = "zwo-asi6200mm-pro"

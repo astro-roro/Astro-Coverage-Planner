@@ -34,9 +34,9 @@ The mockup is three artboards: Main (a camera with its filters and templates), T
 
 All figures are from the scratch copy of IMAGING-PC's database taken on 12 October (`schedulerdb.sqlite`, opened read-only) and `gear.json` beside it. The wheel slots in the NINA profile on IMAGING-PC were confirmed on 13 October as L, R, G, B, H, O, S.
 
-- Profile `9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7` holds 20 templates. Ids 1 to 10 are Rohan's: L, R, G, B at 180 s, R Stars, G Stars, B Stars at 15 s, and H, O, S at 300 s. Ids 11 to 20 are ACP's copies at offset -1: OIII, Ha, SII at 300 s, B, G, L, R at 120 s named "B", "G (ZWO ASI6200MM Pro)", "L", "R (ZWO ASI6200MM Pro)", and three star templates at 15 s.
-- Rohan said his originals use offset 25. Nine of the ten do. Id 3 (G, 180 s) has offset -1.
-- The two sets differ in more than offset. Ids 1 to 4 have moon avoidance on (120 degrees, 14 days), twilight level 0, and dither every 2. Ids 14, 16, 18 and 19 have moon avoidance off, twilight level 1, humidity limit 100 and dither every -1. Ids 5 to 7 (stars) have dither every 0 and the copies 15, 17 and 20 have -1. Tidy has to show these (section 10), because keeping a copy silently drops Rohan's moon avoidance on those filters.
+- Profile `00000000-0000-4000-8000-000000000001` holds 20 templates. Ids 1 to 10 are the user's: L, R, G, B at 180 s, R Stars, G Stars, B Stars at 15 s, and H, O, S at 300 s. Ids 11 to 20 are ACP's copies at offset -1: OIII, Ha, SII at 300 s, B, G, L, R at 120 s named "B", "G (ZWO ASI6200MM Pro)", "L", "R (ZWO ASI6200MM Pro)", and three star templates at 15 s.
+- The user said their originals use offset 25. Nine of the ten do. Id 3 (G, 180 s) has offset -1.
+- The two sets differ in more than offset. Ids 1 to 4 have moon avoidance on (120 degrees, 14 days), twilight level 0, and dither every 2. Ids 14, 16, 18 and 19 have moon avoidance off, twilight level 1, humidity limit 100 and dither every -1. Ids 5 to 7 (stars) have dither every 0 and the copies 15, 17 and 20 have -1. Tidy has to show these (section 10), because keeping a copy silently drops the user's moon avoidance on those filters.
 - Two names repeat: "B" is id 4 and id 14, and "L" is id 1 and id 18. A lookup by name returns the lowest id, so ACP's name-based lookup finds the originals while 26 and 11 plans sit on the copies.
 - Ids 15, 17 and 20 have filtername "B Stars", "G Stars" and "R Stars". Those are not wheel filters. Each has 22 enabled exposure plans.
 - Enabled exposure plans per template: ids 1 to 8 have 1 each, 9 and 10 have 0, then id 11 has 55, 12 has 23, 13 has 3, 14 has 26, 15 has 22, 16 has 26, 17 has 22, 18 has 11, 19 has 26, 20 has 22. The total is 244, which is every row in `exposureplan`.
@@ -305,7 +305,7 @@ A filter can be added to gear at any time. Its templates exist in ACP, plans can
 
 | Id | Repo | Inputs | Expected |
 |---|---|---|---|
-| F1 | ACP | `POST /api/plans/match` with `filters` `["L","R","G","B","H","O","S"]`, `wheel_slots` the same, `profile_id` "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7", camera "ZWO ASI6200MM Pro" | The stored entry has `filters` `["B","G","Ha","L","OIII","R","SII"]`, `wheel_slots` `["L","R","G","B","H","O","S"]` and `profile_id`. The entry key is the profile id. |
+| F1 | ACP | `POST /api/plans/match` with `filters` `["L","R","G","B","H","O","S"]`, `wheel_slots` the same, `profile_id` "00000000-0000-4000-8000-000000000001", camera "ZWO ASI6200MM Pro" | The stored entry has `filters` `["B","G","Ha","L","OIII","R","SII"]`, `wheel_slots` `["L","R","G","B","H","O","S"]` and `profile_id`. The entry key is the profile id. |
 | F2 | ACP | F1, then a report with `wheel_slots` over 64 entries, then one with a 40 character slot | 400 for each. |
 | F3 | ACP | F1, then a report with no `profile_id` and the same `profile_name` | It is stored under its own name key. The id-keyed entry is unchanged. `GET /api/gear` links the camera through the id-keyed entry only. |
 | F4 | ACP | A no-id report stored under "Foo", then a report for "Foo" with a `profile_id` | The name-keyed entry is gone and the id-keyed entry holds the report. |
@@ -592,7 +592,7 @@ Tidy after the first Apply can be run again from the same banner and works the s
 
 | Id | Repo | Inputs | Expected |
 |---|---|---|---|
-| T1 | ACP | `GET /api/gear/tidy?profile_id=9d3a61fd-...` with the 20-template list and slots `["L","R","G","B","H","O","S"]` | Ten groups of two, keyed `L/normal` and so on. Defaults 18, 19, 16, 14, 5, 6, 7, 12, 11, 13. Ids 15, 17, 20 are marked off the wheel. |
+| T1 | ACP | `GET /api/gear/tidy?profile_id=00000000-...` with the 20-template list and slots `["L","R","G","B","H","O","S"]` | Ten groups of two, keyed `L/normal` and so on. Defaults 18, 19, 16, 14, 5, 6, 7, 12, 11, 13. Ids 15, 17, 20 are marked off the wheel. |
 | T2 | ACP | The same, but with ids 5 and 20 both holding 22 plans | The default for `R/short` is still 5, because id 20 is off the wheel. |
 | T3 | ACP | A group of two off-wheel templates only | The group has no default and says the sync will create one. |
 | T4 | ACP | Apply T1's defaults and all star boxes on a plan set where every one of the 244 plans is ACP-linked | N is 80: 71 from dropped templates (1 each on ids 1, 2, 3, 4, 8 and 22 each on 15, 17, 20) and 9 star plans. The unused list is ids 1, 2, 3, 4, 8, 9, 10, 15, 17, 20. |
@@ -643,7 +643,7 @@ For each group of section 10 whose ACP filter is one of the camera's filters:
 4. If not found and D exists: only the primary profile's list may create a gear template. Create one from D, unstarred, in the group's filter, with the other names in `ts_names`. If the filter has no starred template, star it. When the list belongs to a secondary profile, create nothing: the group is left pending, its TS templates show as `waiting` with the note "Bar has templates for R Stars that gear lacks, waiting for Foo (primary) to report", and adoption for that profile runs again after the primary's adoption has created the templates. It then links them with the base equal to the gear values, as above.
 5. If D does not exist (all off the wheel): leave the gear templates alone. They are `new`.
 
-Class matters: "R Stars" (short) is never merged into "R" (normal) because they are different groups. The base is set from D, so the first push after adoption writes nothing to TS. Plans sitting on TS ids that are not D are not moved (S13). They move only if Rohan runs Tidy. Adoption names are in `ts_names`, never in `aliases`, so they never find a TS row (section 8).
+Class matters: "R Stars" (short) is never merged into "R" (normal) because they are different groups. The base is set from D, so the first push after adoption writes nothing to TS. Plans sitting on TS ids that are not D are not moved (S13). They move only if the user runs Tidy. Adoption names are in `ts_names`, never in `aliases`, so they never find a TS row (section 8).
 
 For the live copy, adoption gives the 6200 camera ten templates: L (id 18), "R (ZWO ASI6200MM Pro)" (19) and "R Stars" (5), "G (ZWO ASI6200MM Pro)" (16) and "G Stars" (6), "B" (14) and "B Stars" (7), "Ha" (12), "OIII" (11), "SII" (13). `ts_names`: R: "R"; "R Stars": "R Stars (ZWO ASI6200MM Pro)"; G: "G"; "G Stars": "G Stars (ZWO ASI6200MM Pro)"; "B Stars": "B Stars (ZWO ASI6200MM Pro)"; Ha: "H"; OIII: "O"; SII: "S". L and B have none, since the duplicates share their names. Offsets and subs come from the picked TS template.
 
@@ -665,7 +665,7 @@ Restore `gear.json.bak-*` and `plans.json.bak-*` together. The rows and the gear
 |---|---|---|---|
 | M1 | ACP | The live `gear.json` (version 2) | After load, version 3, `rev` 1, a backup exists, and the 6200 camera has seven templates as above, each starred, none with a `ts` entry. A second load changes nothing. |
 | M2 | ACP | The same with the backup directory not writable | The file is untouched, `GET /api/gear` still answers, with the old keys. |
-| M3 | ACP | M1, then `POST /api/ts-templates` with the 20 templates (with ids) for profile `9d3a61fd-...`, and a fingerprint for that profile naming "ZWO ASI6200MM Pro" with the seven slots | The 6200 camera has ten templates with the TS ids, `ts_names` and subs above. Every `ts[P].base` equals the TS row. Plan rows naming "B Stars (ZWO ASI6200MM Pro)", "R" and "H" now carry `template_id` of "B Stars", "R (ZWO ASI6200MM Pro)" and "Ha", with those names in `template`. |
+| M3 | ACP | M1, then `POST /api/ts-templates` with the 20 templates (with ids) for profile `00000000-...`, and a fingerprint for that profile naming "ZWO ASI6200MM Pro" with the seven slots | The 6200 camera has ten templates with the TS ids, `ts_names` and subs above. Every `ts[P].base` equals the TS row. Plan rows naming "B Stars (ZWO ASI6200MM Pro)", "R" and "H" now carry `template_id` of "B Stars", "R (ZWO ASI6200MM Pro)" and "Ha", with those names in `template`. |
 | M4 | ACP | M3, then compare the order of events: fingerprint first then list, and list first then fingerprint | The same result. |
 | M5 | ACP | M3, then a second `POST /api/ts-templates` with the same list | Gear is unchanged and `rev` does not move. |
 | M6 | ACP | A plan row naming "R Stars (ZWO ASI6200MM Pro)" on filter R, after M3 | `template_id` is the "R Stars" id. `template` is rewritten to "R Stars". |
@@ -722,14 +722,14 @@ After phases 1 to 3 are deployed (the phase 4 plugin is already on IMAGING-PC), 
 
 ## Assumptions made
 
-1. The raw wheel slot names on Rohan's rig are L, R, G, B, H, O and S, in slots 0 to 6. Confirmed on 13 Oct 2026 from NINA's profile `9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7` on IMAGING-PC and the plugin's log line `filters [L, R, G, B, H, O, S]` from the 15:01 runs on 11 and 12 Oct.
+1. The raw wheel slot names on the user's rig are L, R, G, B, H, O and S, in slots 0 to 6. Confirmed on 13 Oct 2026 from NINA's profile `00000000-0000-4000-8000-000000000001` on IMAGING-PC and the plugin's log line `filters [L, R, G, B, H, O, S]` from the 15:01 runs on 11 and 12 Oct.
 2. The conflict rule is hold, not overwrite (section 8). A field changed in both places is left alone and the gear editor offers Keep ACP's and Take TS's.
-3. ACP also pulls a TS-side edit into gear when ACP has not changed that field, for the primary profile only. Rohan's decision names only the push guard. Without a pull, ACP would show and divide by a sub TS no longer uses.
+3. ACP also pulls a TS-side edit into gear when ACP has not changed that field, for the primary profile only. The user's decision names only the push guard. Without a pull, ACP would show and divide by a sub TS no longer uses.
 4. Tidy and adoption group templates by ACP filter and sub class (under 60 s is "short"), not by name, so "R Stars" is never merged into "R". The mockup shows one "Stars" group for R, G and B. This spec shows three groups of two.
 5. Adoption chooses the same default as Tidy, so the gear shows one template per group straight away and Tidy changes the TS side and offers a different pick. The alternative, listing all 20 in gear, breaks the unique name rule ("B" and "L" repeat).
 6. A row's `template_sub_s` is the sub TS shoots, and a template's `sub_s` is a default. A gear sub edit changes only rows that follow the template. Tidy moves a row onto the kept template's sub only when it followed its old template.
 7. A stale gear page's `filters` are ignored, not merged. Merging legacy scalars could undo a newer edit, and the cost of ignoring is that the old page's filter edits do not save, which only matters until the tab reloads (PR 115 makes that the next load).
-8. The fingerprint gains `profile_id` and `wheel_slots`. Rohan's decision 3 says the wheel comes from the fingerprint. The existing fields cannot do it: `filters` is folded and sorted by ACP, and empty when the wheel is disconnected.
+8. The fingerprint gains `profile_id` and `wheel_slots`. The user's decision 3 says the wheel comes from the fingerprint. The existing fields cannot do it: `filters` is folded and sorted by ACP, and empty when the wheel is disconnected.
 9. A template is created in TS when its filter is on the wheel, even with no plan using it, to match the mockup's note "The next sync creates it".
 10. A template cannot move to another filter, and a camera cannot be deleted while a plan uses it. Both are refusals rather than silent cascades.
 11. The migration does not touch `template_sub_s`. A mismatch with the gear template is shown as "differs from template" and reported by the push.
@@ -744,6 +744,6 @@ After phases 1 to 3 are deployed (the phase 4 plugin is already on IMAGING-PC), 
 2. Does TS fail silently or loudly when a template's filtername matches no wheel slot? Ids 15, 17 and 20 have 22 plans each and no frames (`acquiredimage` has none for them), which fits "never runs", but the TS source on that point has not been read. It does not change this design, because the design never writes an off-wheel filtername once the filter has a slot.
 3. Do today's `POST /api/ts-templates`, `POST /api/ext/nina-ts-sync/links` and `POST /api/plans/match` accept bodies with extra keys without a 400? `_validate_ts_templates_payload` and `_validate_fingerprint` read named fields only, which suggests yes, but the links route in the extension was not read. Phase 4 depends on it.
 4. What filtername does TS need for an OSC camera with no wheel (the ASI294MC Pro has a single filter "NoFilter")? Section 2's rule inserts nothing without a known slot, so such a camera's templates would wait forever. The answer is probably to treat an empty slot list on a colour camera as one implicit slot "NoFilter", but I have not seen what TS writes there.
-5. Should the Tidy offset checkbox default to on? Nine of ten originals use offset 25 and Rohan's darks are offset 25, but id 3 (G) is -1, and the checkbox sets 25 on every kept template, including ones whose offset he left at Default for a reason. This spec leaves it off.
+5. Should the Tidy offset checkbox default to on? Nine of ten originals use offset 25 and the user's darks are offset 25, but id 3 (G) is -1, and the checkbox sets 25 on every kept template, including ones whose offset they left at Default for a reason. This spec leaves it off.
 6. Is a cap of 5000 plans per template in the template post enough?
 7. A secondary profile's adoption records the gear values as its base (section 5). A later gear edit then finds TS different from the base and holds it as a conflict for that profile. Is that acceptable, or should the first push to a secondary profile ask once whether to take its values?

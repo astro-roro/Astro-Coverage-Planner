@@ -1,6 +1,6 @@
 # Spec: the Activity tab
 
-This spec adds a fourth side-panel tab to Astro Coverage Planner (ACP) that shows what happened, night by night: plans changed, syncs, imaging, data landing, processing, and masters built. It also flags the few things that need a person to act. Rohan approved the design in the mockup at https://claude.ai/artifact/3hLxXU4WbX5i7VCEAe9nLG (version 2).
+This spec adds a fourth side-panel tab to Astro Coverage Planner (ACP) that shows what happened, night by night: plans changed, syncs, imaging, data landing, processing, and masters built. It also flags the few things that need a person to act. The user approved the design in the mockup at https://claude.ai/artifact/3hLxXU4WbX5i7VCEAe9nLG (version 2).
 
 The work is built in three phases, and each ships on its own. Phase 1 is ACP plus the Target Scheduler sync extension (`acp-nina-ts-sync`), because the TS upload and rig-link routes live in the extension. Phase 2 adds events from the NINA plugin (`ACP.NINA.Plugin`). Phase 3 adds events from Astro Auto Calibration (AAC).
 
@@ -281,7 +281,7 @@ The feature only adds things. `ACP_ACTIVITY=off` makes every activity route answ
 
 ## Out of scope
 
-- Notifications outside ACP. Rohan decided against a morning digest.
+- Notifications outside ACP. The user decided against a morning digest.
 - More than one user, or per-user state.
 - Searching or editing events.
 - Opening Finder or Explorer from the browser.

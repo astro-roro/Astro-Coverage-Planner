@@ -8,7 +8,7 @@ Status: draft, 2026-09-25. Not built. It touches the same three repos as `ts-upl
 
 ## Goal
 
-Rohan wants to pause, resume and prioritise projects from ACP, and have Target Scheduler (TS) follow. A change made in TS at the rig should come back into ACP too.
+The user wants to pause, resume and prioritise projects from ACP, and have Target Scheduler (TS) follow. A change made in TS at the rig should come back into ACP too.
 
 ACP owns three project settings and syncs them both ways:
 
@@ -18,7 +18,7 @@ ACP owns three project settings and syncs them both ways:
 
 Altitude already syncs both ways and stays as it is.
 
-TS owns the rest of the project settings. ACP writes TS's defaults when it creates a project, then never writes them again. Those columns are custom horizon and its offset, dither, filter switch frequency, smart exposure order, the image grader, maximum altitude and flats handling. Meridian window is on the brief's TS list, but ACP already has a field for it. See "Decisions for Rohan".
+TS owns the rest of the project settings. ACP writes TS's defaults when it creates a project, then never writes them again. Those columns are custom horizon and its offset, dither, filter switch frequency, smart exposure order, the image grader, maximum altitude and flats handling. Meridian window is on the brief's TS list, but ACP already has a field for it. See "Decisions for the owner".
 
 A better project-level view in ACP is later work, outside this spec.
 
@@ -26,7 +26,7 @@ A better project-level view in ACP is later work, outside this spec.
 
 These facts shape every rule below.
 
-- A new plan starts as `state: "draft"` (`static/app.js:6012`), and ACP has no control to change it. That is why all 47 of Rohan's plans are drafts.
+- A new plan starts as `state: "draft"` (`static/app.js:6012`), and ACP has no control to change it. That is why all 47 of the user's plans are drafts.
 - ACP's own `/api/sync` skips drafts (`app.py:4409`). The plugin ignores `state` entirely, so it pushes drafts anyway. 46 of the 47 are live in IMAGING-PC's TS as active projects.
 - Both writers hardcode project `state = 1` (`convert.py:180`, `TsEntities.cs`). So every push marks the project active, and undoes a pause made in TS.
 - The plugin's update by guid (`TsUpsert.cs:270`) rewrites every project column except `createdate` and `flatsHandling`. Every push therefore resets dither, custom horizon, the grader and the rest to 0. The update through `ts_refs` writes only `name`, `priority`, `minimumaltitude` and `meridianwindow` (`TsSchema.cs:118`).
@@ -71,7 +71,7 @@ ACP's states mean what TS's mean. ACP adds no meaning of its own.
 
 Draft no longer means "never leaves ACP". It means the same as TS draft: the project exists in TS and TS will not schedule it. Draft and inactive behave the same in TS. The difference is intent: draft is not ready yet, inactive is paused.
 
-A closed plan never creates a new TS project. That stops ACP recreating a project Rohan deleted from TS after finishing it.
+A closed plan never creates a new TS project. That stops ACP recreating a project the user deleted from TS after finishing it.
 
 ### Migration of the 47 drafts
 
@@ -87,7 +87,7 @@ The migration:
 - takes a timestamped backup of `plans.json` first, as `_write_plans_json` does
 - logs "Moved 47 plans from draft to active, because the NINA plugin was already syncing them"
 
-A new plan starts as active. See "Decisions for Rohan".
+A new plan starts as active. See "Decisions for the owner".
 
 ## 2. The UI
 
@@ -120,7 +120,7 @@ The import always writes `state` explicitly, including `"active"`. The loss note
 
 This replaces the extension branch `fm/acp-nina-ts-sync-ship-19ec05`'s mapping of state 2 to `"parked"`. The rest of that branch is kept, including the Cancel button on the review page.
 
-A new plan from a closed TS project is listed on the review page unticked. Rohan ticks it only if he wants the history in ACP.
+A new plan from a closed TS project is listed on the review page unticked. The user ticks it only if they want the history in ACP.
 
 ### Base snapshot
 
@@ -235,7 +235,7 @@ ACP has not changed state, so the push leaves TS paused and the base stays activ
 
 A plan with no base snapshot for this rig never has these three settings written on update. A base from before this change counts as a base, with the missing values read as in section 3.
 
-So the first push after the upgrade changes no state, priority or minimum time in TS, unless Rohan changed one in ACP first. A project paused in TS stays paused. The live run order below still does an upload first, so ACP shows the true state before anything is pushed.
+So the first push after the upgrade changes no state, priority or minimum time in TS, unless the user changed one in ACP first. A project paused in TS stays paused. The live run order below still does an upload first, so ACP shows the true state before anything is pushed.
 
 The same rules apply in the extension's own `/sync` route, which writes TS from a path on the ACP host.
 
@@ -257,7 +257,7 @@ The plugin's Sync for tonight calls this to choose what to load. It needs every 
 
 ### Sync All to TS
 
-It writes every plan by the rules in section 4, except that a closed plan with no TS row is skipped. Old plugins take `GET /api/plans` and push every plan as active. That cannot be fixed from ACP, so the plugin must be installed before Rohan relies on pausing from ACP.
+It writes every plan by the rules in section 4, except that a closed plan with no TS row is skipped. Old plugins take `GET /api/plans` and push every plan as active. That cannot be fixed from ACP, so the plugin must be installed before the user relies on pausing from ACP.
 
 ### ACP `/api/sync`
 
@@ -325,9 +325,9 @@ Nothing in TS is edited from the first step to the last.
 - [ ] Press "Send TS to ACP" again. The preview shows nothing new, nothing updated and no conflicts.
 - [ ] Set one plan inactive in ACP and run Sync for tonight. TS shows that project inactive.
 
-## Decisions for Rohan
+## Decisions for the owner
 
-Approved by Rohan 2026-09-25, all three as recommended.
+Approved by the user 2026-09-25, all three as recommended.
 
 1. Meridian window stays owned by ACP. Recommended: yes. ACP already has the field in the editor, the import and the diff, and the rule from PR #12 says ACP owns what it has a setting for. Making it TS-only means removing the field from the editor.
 2. A new plan starts as active, not draft. Recommended: active. Every plan you have made was left as draft and you expected it to image. Starting as draft makes each new plan sit unscheduled in TS until you change it.

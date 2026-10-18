@@ -48,7 +48,7 @@ const read = rel => readFileSync(new URL(rel, import.meta.url), "utf8");
 const css = read("../../static/style.css");
 const appSrc = read("../../static/app.js");
 const fixture = JSON.parse(read("../fixtures/gear-editor-api.json"));
-const P1 = "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7";
+const P1 = "00000000-0000-4000-8000-000000000001";
 const CAM = "zwo-asi6200mm-pro";
 
 const clone = o => JSON.parse(JSON.stringify(o));

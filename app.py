@@ -848,7 +848,7 @@ def _maybe_migrate_draft_plans_to_active() -> None:
     """One-shot: every plan left as `state: "draft"` under the old meaning
     becomes `"active"`, the first time ACP loads plans.json after this
     version starts. See docs/specs/ts-project-settings.md section 1 for
-    why: the NINA plugin never honoured draft, so 46 of Rohan's 47 draft
+    why: the NINA plugin never honoured draft, so 46 of the user's 47 draft
     plans were already live in TS. Leaving them "draft" under the new
     meaning (TS keeps the project but never schedules it) would pause
     them on the next push. The 9 plans TS itself has inactive are not
@@ -4228,7 +4228,7 @@ def clear_repoint(profile_id: str) -> bool:
     return touched
 
 
-# A colour Rohan picked for a telescope, keyed by the telescope name shown next
+# A colour the user picked for a telescope, keyed by the telescope name shown next
 # to the swatch. Only #rrggbb gets in, because the value is written into a
 # style attribute on the page.
 _TELESCOPE_COLOUR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -6280,7 +6280,7 @@ def api_sync():
 
     Closed plans (plan.state == "closed") never sync: TS imports this zip
     as new projects every time (see section 6 of the spec), so a closed
-    plan re-syncing here would recreate a project Rohan already finished
+    plan re-syncing here would recreate a project the user already finished
     and deleted from TS. Active, inactive and draft plans are all
     included, each with the matching TS State name, because draft and
     inactive projects still have to exist in TS for a later push to find

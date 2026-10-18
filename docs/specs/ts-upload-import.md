@@ -10,13 +10,13 @@ Status: draft, revised 2026-09-24 so an upload merges and never replaces. Not bu
 
 Get plans made or changed in a rig's Target Scheduler (TS) back into ACP on homeserver. The TS readers already exist in the extension, but they read the TS database from a path on the ACP host. The database is on the rig, so ACP cannot see it.
 
-This reverses the direction the plugin already uses. The plugin pulls plans from ACP over HTTP. Now it also sends TS's database file to ACP. ACP compares it with its own plans and shows what would change. Rohan reviews that in ACP and applies it with a separate click.
+This reverses the direction the plugin already uses. The plugin pulls plans from ACP over HTTP. Now it also sends TS's database file to ACP. ACP compares it with its own plans and shows what would change. The user reviews that in ACP and applies it with a separate click.
 
-An upload is a merge. It adds plans that are new to ACP and updates plans it matches. It never deletes anything, and it never touches a plan that belongs to another rig. The use case: Rohan adds a plan to a rig's TS while out at a dark site, presses the button, and that plan appears in ACP with everything else left as it was.
+An upload is a merge. It adds plans that are new to ACP and updates plans it matches. It never deletes anything, and it never touches a plan that belongs to another rig. The use case: the user adds a plan to a rig's TS while out at a dark site, presses the button, and that plan appears in ACP with everything else left as it was.
 
 The first version sends the whole database file. Sending only the rows is a later clean-up, described near the end.
 
-## What Rohan sees
+## What the user sees
 
 1. In NINA's ACP dock, he clicks "Send TS to ACP".
 2. The dock shows progress: copying, uploading with a percentage, then "ACP is reading it".
@@ -307,9 +307,9 @@ These callers exist today:
 
 - The plugin on each rig. That covers its sync and push buttons, the dock's version poll, and hours sent back. All use `AcpApiClient`, so all carry the token once it is stored. A missing or wrong token shows "ACP rejected the token" in the dock.
 - The homeserver User Script `live-publish`, which POSTs `/api/publish/shooting` at 07:15 daily. If it is not changed to send the header, it will get `401` and the live page will stop updating.
-- Rohan's browser, which will get the login form once.
+- The user's browser, which will get the login form once.
 
-Rohan sets the token in this order:
+The user sets the token in this order:
 
 1. Generate a token of at least 32 ASCII characters.
 2. On each rig (IMAGING-PC, and any other NINA machine), paste it into NINA's Options page for the ACP plugin. Press Test; it still passes.
@@ -352,7 +352,7 @@ A TS database holds rows for every NINA profile on that machine that has used TS
 
 ## Later: send rows as JSON instead of the file
 
-This first version sends the whole database because the importer already reads one. Rohan asked for a cleaner version later. It is in `notes/todo.md` under "TS import: send rows instead of the whole database file".
+This first version sends the whole database because the importer already reads one. The user asked for a cleaner version later. It is in `notes/todo.md` under "TS import: send rows instead of the whole database file".
 
 That version would change four things:
 
@@ -437,7 +437,7 @@ Do the steps from the upload to the sync without editing anything in TS in betwe
 
 "Sync All to TS" writes every ACP plan into this rig's TS, including plans meant for other rigs, unless the plugin is set to "Only what fits". That is today's behaviour and outside this spec, but it matters once more than one rig uploads.
 
-## Decisions for Rohan
+## Decisions for the owner
 
 1. Store one link per rig on each plan, and have the plugin send its push state back to ACP after every sync. Recommended: yes. The cost is changes in both the plugin and the extension, and a new field in `plans.json`. Without it, a plan used on two rigs belongs to whichever uploads first, and every plugin push makes the next upload ask about plans that did not really conflict.
 2. When a TS project has no ACP stamp but has the same name as an ACP plan, propose the match and let you tick it. Recommended: yes. The cost is one more kind of row on the review page. Without it, projects you made by hand in TS with an existing ACP name come in as duplicates.
