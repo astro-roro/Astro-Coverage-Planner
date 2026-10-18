@@ -109,7 +109,7 @@ let currentAlts = {};          // {<target_id>: alt_deg} from latest /api/observ
 let sortBy = "hours";          // "number" | "hours" | "name" | "best_month" | "up_tonight" | "best_upcoming"
 let planSortBy = "priority";   // "priority" | "name" | "hours_left" | "panels_up_now" | "peak_panels_month"
 let catalogRegistry = [];      // [{id, data_key, label, color, marker, size, ...}] from /api/catalog-registry
-let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit"
+let panelMode = "list"; // "list" | "detail" | "plan-list" | "plan-edit" | "sky-search"
 let searchTokens = [];  // parsed tokens from the search box
 let selectedTargetId = null; // target_id while in detail view, null otherwise
 let lastPickedTargetId = null; // last target opened, marked in the list on the way back
@@ -137,6 +137,10 @@ let planOverlay = null;        // Aladin overlay for plan footprints (solid, pla
 let planOverlayDashed = null;  // Aladin overlay for plan footprints (dashed, not-started plans)
 let planCenterCat = null;      // Aladin catalog for plan center + rotation handle markers
 let dragState = null;          // { mode: "center"|"rotate", planId, start: {x,y}, origin: {...} }
+let skySearch = null;          // the "What's here?" panel, set up once Aladin is ready
+let skyResultsOverlay = null;  // outlines of every "What's here?" result
+let skyResultsCat = null;      // centre markers for the same results
+let skyPickOverlay = null;     // the one outline picked from the panel
 
 // --- Onboarding banner (shown when the manifest is empty) ---
 // The user has just installed but hasn't pointed ACP at their FITS archive
@@ -719,6 +723,8 @@ import {
   templateStatus,
   STATUS_LABEL,
 } from "./gear-editor.mjs";
+import { setupSkySearch } from "./sky-search-ui.mjs";
+import { outlinePoints } from "./sky-search.mjs";
 
 function deepestFilter(filters, minH = 0) {
   for (const f of FILTER_PRIORITY) {
@@ -967,6 +973,7 @@ const PANEL_PARENTS = {
   "detail":    () => renderTargetList(),
   "plan-edit": () => requestNavigateAwayFromPlanEdit(renderPlanList),
   "gear-edit": () => renderPlanList(),
+  "sky-search": () => { skySearch?.close(); restoreMainPanel(); },
 };
 
 function goUpOneLevel() {
@@ -6011,9 +6018,100 @@ function activityShowOnMap(ra, dec) {
   }
 }
 
+// "What's here?" -------------------------------------------------------
+// The panel and the searching live in sky-search-ui.mjs. This is the part that
+// needs app state: the map, the gear, the panel it replaces, the plan flow.
+
+// Only this many results get an outline on the map; the rest keep their marker.
+const SKY_OUTLINE_LIMIT = 150;
+
+function skySearchView() {
+  if (!aladin) return null;
+  try {
+    const centre = aladin.getRaDec();
+    const fov = aladin.getFoV ? aladin.getFoV() : aladin.getFov();
+    if (!centre || !fov) return null;
+    return { centre: [centre[0], centre[1]], fov: [Number(fov[0]), Number(fov[1] ?? fov[0])] };
+  } catch { return null; }
+}
+
+function skyOutline(o) {
+  return outlinePoints(o.ra, o.dec, o.major, o.minor, o.pa, 40);
+}
+
+const skyOverlayApi = {
+  showAll(items) {
+    if (!skyResultsOverlay || !skyResultsCat) return;
+    skyResultsOverlay.removeAll();
+    skyResultsCat.removeAll();
+    skyResultsCat.addSources(items.map(o => A.source(o.ra, o.dec, { name: o.name, catalog: o.catalogues.join(", ") })));
+    for (const o of items.filter(x => x.major !== null).slice(0, SKY_OUTLINE_LIMIT)) {
+      skyResultsOverlay.add(A.polygon(skyOutline(o)));
+    }
+  },
+  showPick(o) {
+    if (!skyPickOverlay) return;
+    skyPickOverlay.removeAll();
+    skyPickOverlay.add(A.polygon(skyOutline(o)));
+  },
+  clear() {
+    skyResultsOverlay?.removeAll();
+    skyResultsCat?.removeAll();
+    skyPickOverlay?.removeAll();
+  },
+};
+
+// Put back what the panel showed before "What's here?" replaced it.
+function restoreMainPanel() {
+  if (planningMode) { renderPlanList(); return; }
+  const t = selectedTargetId && manifest?.targets.find(x => x.target_id === selectedTargetId);
+  if (t) renderTargetPanel(t); else renderTargetList();
+}
+
+// Same path as promotePlanFromTile: a new plan at the object, opened in the
+// editor. A chosen rig sets the plan's telescope and camera.
+function planFromSkyObject(o, rig) {
+  if (!planningMode) setPlanningMode(true);
+  const p = newEmptyPlan();
+  p.target.center_ra_deg = o.ra;
+  p.target.center_dec_deg = o.dec;
+  p.target.rotation_deg = 0;
+  p.target.name = o.name;
+  if (rig) { p.telescope_id = rig.telescopeId; p.camera_id = rig.cameraId; }
+  plans.push(p);
+  renderPlanEditor(p);
+}
+
+function skySearchDeps() {
+  return {
+    getView: skySearchView,
+    getGear: () => gear,
+    host: () => document.getElementById("panelBody"),
+    onBack: restoreMainPanel,
+    goTo: (ra, dec) => panMapTo(ra, dec),
+    overlay: skyOverlayApi,
+    addPlan: planFromSkyObject,
+  };
+}
+
+function openSkySearch() {
+  if (!skySearch) return;
+  const go = () => {
+    revealMainSidePanel();
+    panelMode = "sky-search";
+    skySearch.open();
+  };
+  if (panelMode === "plan-edit") requestNavigateAwayFromPlanEdit(go); else go();
+}
+
+function setupSkySearchButton() {
+  document.getElementById("skySearchBtn")?.addEventListener("click", openSkySearch);
+}
+
 function init() {
   activityUi = setupActivity({ openPlan: activityOpenPlan, showOnMap: activityShowOnMap });
   setupSidePanel();
+  setupSkySearchButton();
 
   // Independent of everything below: don't let a slow or failed sky map
   // hide a pending TS upload the user needs to go review.
@@ -6104,6 +6202,15 @@ function init() {
     // occlude the hover fill entirely in planning mode.
     hoverOverlay = A.graphicOverlay({ color: "#ffffff", lineWidth: 4, name: "hover_highlight" });
     aladin.addOverlay(hoverOverlay);
+
+    // "What's here?" results. Empty until the panel is open.
+    skyResultsOverlay = A.graphicOverlay({ color: "#f2b84b", lineWidth: 1.5, name: "whats_here" });
+    aladin.addOverlay(skyResultsOverlay);
+    skyResultsCat = A.catalog({ name: "whats_here_markers", sourceSize: 8, shape: "circle", color: "#f2b84b" });
+    aladin.addCatalog(skyResultsCat);
+    skyPickOverlay = A.graphicOverlay({ color: "#ffffff", lineWidth: 3, name: "whats_here_pick" });
+    aladin.addOverlay(skyPickOverlay);
+    skySearch = setupSkySearch(skySearchDeps());
 
     // Aladin marker click, now only fires for catalog overlays (SNRs, HII) and the
     // plan_rotate drag handle. Target + plan selection is handled by the map-click
