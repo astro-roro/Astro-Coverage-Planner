@@ -146,6 +146,13 @@ Elements inside `panel_html` can trigger ACP actions through data attributes. Cl
 
 An action with a missing or invalid `data-ra` or `data-dec` (not a number, or a declination outside -90 to 90) does nothing.
 
+- `status` in the source's `metadata()`. Return `"loading"` while the source is still starting up and ACP lists it as loading and asks again (see below). Any other value is ignored.
+- `extension` in the source's `metadata()`, the id of the extension that owns the source. When absent, ACP takes it from the module the source class was loaded from. It only decides which extension a source is listed under in the Extensions block.
+
+`GET /api/tile-sources` lists every registered source, including ones that fail. Each entry has a `status` of `"ready"`, `"loading"`, `"empty"` (ready with no tiles) or `"error"`, plus `error` (a short message, or `null`) and `extension`. A source whose `id()`, `metadata()` or `tiles()` raises is reported as `"error"` with the exception text instead of being left out.
+
+The Inventory rail has an Extensions block that shows each extension and the state of its tile sources, with a Retry button on errors. When everything has loaded it shrinks to one line, such as "Extensions: 2 loaded". While any source is loading or in error, the page asks for the summary again after 2, 4, 8, 8 and 8 seconds, then stops. A source that becomes ready is drawn if it is switched on.
+
 After any extension action's apply step succeeds, ACP refetches tile sources and redraws the enabled ones, so the map doesn't show layers from before the change. ACP doesn't know which extension owns which source, so it refreshes all of them.
 
 ### `CategorisedCatalogSource` — point catalogues with category chips
@@ -333,3 +340,24 @@ If your extension might be useful to others, consider opening a PR to ship it as
 **Routes outside `/api/`.** An extension can mount a route anywhere, including beside the pages. The loader logs a warning at startup naming any route it added outside `/api/`, because the setting an operator reasons about is called `ACP_API_TOKEN` and it would be easy to read the gate as covering the API alone. It does not: with a token set, every path is behind it. With no token set, every path answers anyone who can reach the port, and a route called `/backdoor` is no different from the coverage page. Keep extension routes under `/api/ext/<name>/` unless you have a reason not to.
 
 **Debugging.** Set `LOG_LEVEL=DEBUG` to see the registration sequence on startup; each Protocol implementation gets a one-line confirmation when it's accepted into the registry.
+
+
+## Rail tab width and the layer bridge
+
+A rail tab can be widened with the arrows button in its panel header. Wide is about three times the normal panel width, held to 70% of the window, and full width on a phone. ACP remembers the choice for each tab in the browser. A tab in `rail_tabs` may set `"width": "wide"` to start wide until the user picks otherwise; `"normal"` is the default and any other value is ignored.
+
+A rail tab page can read and change the map's tile layers and time-aware mode with `window.postMessage`. ACP accepts a message only if its origin is ACP's own and it came from one of ACP's rail iframes. Messages that are malformed are ignored without a reply. Send to `window.parent` with `window.location.origin` as the target origin.
+
+- `{type: "acp:layers:get"}` asks for the current state. ACP replies to that iframe.
+- `{type: "acp:layer:set", id: "<source id>", enabled: true | false}` switches a tile source on or off exactly as its rail checkbox does, including remembering it. Sources that are loading or in error are ignored.
+- `{type: "acp:time-aware:set", enabled: true | false}` switches time-aware mode as the existing control does.
+
+ACP sends `{type: "acp:layers", timeAware: bool, layers: [{id, label, enabled, color, kind, extension}]}` in reply to a get, and to every open rail iframe whenever a layer or time-aware mode changes, whoever changed it. `kind` is always `"tiles"`. Only tile sources are included: the built-in map overlays (catalogues, survey layers and the like) are toggled through a different mechanism and are not part of the bridge.
+
+```js
+window.addEventListener("message", e => {
+  if (e.origin !== location.origin || e.data?.type !== "acp:layers") return;
+  render(e.data.layers, e.data.timeAware);
+});
+window.parent.postMessage({type: "acp:layers:get"}, location.origin);
+```

@@ -60,7 +60,8 @@ export function railTabsFrom(manifest) {
       const key = `ext-${ext.extension}-${t.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ key, label: t.label.trim(), icon: typeof t.icon === "string" ? t.icon : "", page: t.page });
+      out.push({ key, label: t.label.trim(), icon: typeof t.icon === "string" ? t.icon : "", page: t.page,
+        width: t.width === "wide" ? "wide" : "normal" });
     }
   }
   return out;
@@ -197,4 +198,118 @@ export function resolveTileDraw(metadata, baseColor, sourceFillOpacity, defaultL
     fillOpacity: "fill_opacity" in s ? s.fill_opacity : sourceFillOpacity,
     lineWidth: s.line_width ?? defaultLineWidth,
   };
+}
+
+// --- Extension loading status ----------------------------------------------
+
+// Seconds to wait before each retry of the tile-source summary while any
+// source is still loading or has failed. After the last one ACP stops asking.
+export const SOURCE_RETRY_DELAYS_MS = [2000, 4000, 8000, 8000, 8000];
+
+export function retryDelayMs(attempt) {
+  return Number.isInteger(attempt) && attempt >= 0 && attempt < SOURCE_RETRY_DELAYS_MS.length
+    ? SOURCE_RETRY_DELAYS_MS[attempt] : null;
+}
+
+const norm = id => String(id ?? "").replace(/_/g, "-").toLowerCase();
+
+export function sourceState(s) {
+  return s?.status === "error" || s?.status === "loading" || s?.status === "empty" ? s.status : "ready";
+}
+
+// True while some source is loading or errored, which is when retrying helps.
+export function sourcesNeedRetry(sources) {
+  return (Array.isArray(sources) ? sources : []).some(s => {
+    const st = sourceState(s);
+    return st === "loading" || st === "error";
+  });
+}
+
+// Groups tile sources under the extensions in the manifest. A source whose
+// extension isn't in the manifest (or isn't named) gets a group of its own
+// under that id, or "Other sources". An extension's state is error if any
+// source errored, else loading if any is loading, else empty when every
+// source is empty, else ready.
+export function extensionStatusModel(manifest, sources) {
+  const list = Array.isArray(sources) ? sources : [];
+  const groups = [];
+  const byKey = new Map();
+  const group = (id, label) => {
+    const key = norm(id);
+    if (!byKey.has(key)) {
+      const g = { id, label, sources: [], state: "ready" };
+      byKey.set(key, g);
+      groups.push(g);
+    }
+    return byKey.get(key);
+  };
+  for (const e of Array.isArray(manifest) ? manifest : []) {
+    if (e && typeof e.extension === "string" && e.extension) group(e.extension, e.extension);
+  }
+  for (const s of list) {
+    if (!s) continue;
+    const ext = typeof s.extension === "string" ? s.extension : "";
+    const g = ext ? group(ext, ext) : group("", "Other sources");
+    g.sources.push({
+      id: s.id, label: s.label || s.id, state: sourceState(s),
+      reason: s.status === "error" ? (s.error || "failed") : s.status === "loading" ? "loading"
+        : s.status === "empty" ? "no tiles" : "",
+    });
+  }
+  for (const g of groups) {
+    const st = g.sources.map(x => x.state);
+    g.state = st.includes("error") ? "error" : st.includes("loading") ? "loading"
+      : st.length && st.every(x => x === "empty") ? "empty" : "ready";
+  }
+  const loaded = groups.filter(g => g.state === "ready" || g.state === "empty").length;
+  const settled = groups.every(g => g.state === "ready" || g.state === "empty");
+  return { groups, loaded, settled, summary: `Extensions: ${loaded} loaded` };
+}
+
+// --- Rail tab width --------------------------------------------------------
+
+// Width in px for an extension rail tab. Wide is three times the normal width,
+// held to 70% of the window; on a phone the panel is full width either way.
+export function railTabWidthPx(wide, normalPx, viewportPx, phone) {
+  if (phone) return viewportPx;
+  if (!wide) return normalPx;
+  return Math.round(Math.max(normalPx, Math.min(normalPx * 3, viewportPx * 0.7)));
+}
+
+export function railWidthDefault(tab) {
+  return tab?.width === "wide" ? "wide" : "normal";
+}
+
+// --- Layer bridge for rail-tab iframes -----------------------------------------
+
+// The state sent to iframes: every tile source with whether it's on.
+export function layerStateMessage(sources, invState, timeAware) {
+  const layers = (Array.isArray(sources) ? sources : []).map(s => ({
+    id: s.id,
+    label: s.label || s.id,
+    enabled: !!invState?.[s.id]?.enabled,
+    color: s.color || "",
+    kind: "tiles",
+    extension: s.extension || "",
+  }));
+  return { type: "acp:layers", timeAware: !!timeAware, layers };
+}
+
+// A message from an iframe, checked. Returns {kind: "get"} |
+// {kind: "layer-set", id, enabled} | {kind: "time-aware-set", enabled}, or
+// null for anything else. `frames` are the windows of ACP's own rail iframes.
+export function bridgeRequest(event, frames, origin) {
+  if (!event || event.origin !== origin) return null;
+  if (!event.source || !Array.isArray(frames) || !frames.includes(event.source)) return null;
+  const d = event.data;
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  if (d.type === "acp:layers:get") return { kind: "get" };
+  if (d.type === "acp:layer:set") {
+    if (typeof d.id !== "string" || !d.id || d.id.length > 200 || typeof d.enabled !== "boolean") return null;
+    return { kind: "layer-set", id: d.id, enabled: d.enabled };
+  }
+  if (d.type === "acp:time-aware:set") {
+    return typeof d.enabled === "boolean" ? { kind: "time-aware-set", enabled: d.enabled } : null;
+  }
+  return null;
 }

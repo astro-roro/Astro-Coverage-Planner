@@ -20,7 +20,7 @@ os.environ["ACP_EXTENSIONS_DIR"] = str(_TMP_EXT_DIR)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import app  # noqa: E402
+from app import app, _source_extension  # noqa: E402
 from extensions import rail_page_ok, sanitise_rail_tabs  # noqa: E402
 
 
@@ -214,6 +214,95 @@ class TestTilePanel(unittest.TestCase):
     def test_anything_else_is_null(self):
         for bad in ("Replace", "none", "", True, 1, None, ["replace"]):
             self.assertIsNone(self._panel(tile_panel=bad), repr(bad))
+
+
+class _Boom:
+    """A tile source whose chosen method raises."""
+
+    def __init__(self, sid, fail, status=None, tiles=()):
+        self._sid, self._fail, self._status, self._tiles = sid, fail, status, list(tiles)
+
+    def id(self):
+        if self._fail == "id":
+            raise RuntimeError("no id")
+        return self._sid
+
+    def metadata(self):
+        if self._fail == "metadata":
+            raise ValueError("bad meta")
+        meta = {"label": self._sid, "color": "#abc", "kind": "inventory",
+                "attribution": "", "enabled_default": False}
+        if self._status:
+            meta["status"] = self._status
+        return meta
+
+    def tiles(self):
+        if self._fail == "tiles":
+            raise TypeError("'NoneType' object is not subscriptable")
+        return self._tiles
+
+
+class TestSourceStatus(unittest.TestCase):
+    def setUp(self):
+        self._saved = list(getattr(app, "tile_sources", []))
+        app.tile_sources.clear()
+        self.client = app.test_client()
+
+    def tearDown(self):
+        app.tile_sources.clear()
+        app.tile_sources.extend(self._saved)
+
+    def _sources(self, *srcs):
+        app.tile_sources[:] = list(srcs)
+        return {s["id"]: s for s in self.client.get("/api/tile-sources").get_json()["sources"]}
+
+    def test_tiles_raising_still_lists_the_source_with_the_message(self):
+        got = self._sources(_Boom("a", "tiles"))
+        self.assertEqual(got["a"]["status"], "error")
+        self.assertIn("NoneType", got["a"]["error"])
+
+    def test_metadata_raising_still_lists_the_source(self):
+        got = self._sources(_Boom("b", "metadata"))
+        self.assertEqual(got["b"]["status"], "error")
+        self.assertIn("bad meta", got["b"]["error"])
+
+    def test_id_raising_lists_it_under_the_class_name(self):
+        got = self._sources(_Boom("c", "id"))
+        self.assertEqual(got["_Boom"]["status"], "error")
+
+    def test_one_broken_source_does_not_hide_the_others(self):
+        got = self._sources(_Boom("a", "tiles"), _Boom("ok", None, tiles=[{"id": "t"}]))
+        self.assertEqual(got["ok"]["status"], "ready")
+        self.assertIsNone(got["ok"]["error"])
+        self.assertEqual(got["ok"]["n_tiles"], 1)
+
+    def test_empty_and_loading(self):
+        got = self._sources(_Boom("e", None), _Boom("l", None, status="loading", tiles=[{"id": "t"}]))
+        self.assertEqual(got["e"]["status"], "empty")
+        self.assertEqual(got["l"]["status"], "loading")
+        self.assertEqual(got["l"]["n_tiles"], 0)
+
+    def test_only_loading_is_an_accepted_reported_status(self):
+        got = self._sources(_Boom("x", None, status="error", tiles=[{"id": "t"}]))
+        self.assertEqual(got["x"]["status"], "ready")
+
+    def test_extension_is_named_by_metadata_or_module(self):
+        self.assertEqual(_source_extension(_Boom("a", None), {"extension": " nights "}), "nights")
+        self.assertEqual(_source_extension(_Boom("a", None), {}), "")
+        cls = type("S", (), {"__module__": "acp_ext_nights.sources"})
+        self.assertEqual(_source_extension(cls(), {}), "nights")
+
+
+class TestRailTabWidth(unittest.TestCase):
+    def test_width_kept_only_when_valid(self):
+        from extensions import sanitise_rail_tabs
+        base = {"id": "t", "label": "T", "page": "/api/ext/nights/ui"}
+        out = sanitise_rail_tabs({"extension": "nights", "rail_tabs": [
+            {**base, "width": "wide"}, {**base, "id": "u", "width": "huge"},
+            {**base, "id": "v"}]})["rail_tabs"]
+        self.assertEqual(out[0]["width"], "wide")
+        self.assertNotIn("width", out[1])
+        self.assertNotIn("width", out[2])
 
 
 if __name__ == "__main__":

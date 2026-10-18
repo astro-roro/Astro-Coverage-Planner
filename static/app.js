@@ -632,6 +632,8 @@ import {
   railIconPath, railTabsFrom, fillColorFor, tilePlansHtml,
   tilePanelModeOf, tilePanelTitleHtml, tilePanelAction, runTilePanelAction,
   resolveTileDraw,
+  retryDelayMs, sourcesNeedRetry, extensionStatusModel,
+  railTabWidthPx, railWidthDefault, layerStateMessage, bridgeRequest,
 } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
@@ -2465,6 +2467,7 @@ async function loadExtensions() {
   if (!Array.isArray(entries)) entries = [];
   extensionsManifest = entries;
   setupExtensionRailTabs(entries);
+  renderExtensionStatus();
 
   try {
     const r = await fetch("/api/sync/config");
@@ -4251,29 +4254,80 @@ function renderScanHealth(h) {
   if (badge) { badge.textContent = bad ? String(bad) : ""; badge.hidden = !bad; }
 }
 
-async function initInventory() {
-  const accordion = document.getElementById("railInventory");
-  if (!accordion) return;
-  let summary = [];
+let tileSourcesFetchFailed = false;
+let tileSourceRetryTimer = null;
+
+async function fetchTileSourceSummary() {
   try {
     const r = await fetch("/api/tile-sources");
     const d = await r.json();
-    summary = Array.isArray(d?.sources) ? d.sources : [];
+    tileSourcesFetchFailed = false;
+    return Array.isArray(d?.sources) ? d.sources : [];
   } catch (e) {
     console.warn("tile sources unavailable:", e);
+    tileSourcesFetchFailed = true;
+    return null;
   }
-  if (!summary.length) {
+}
+
+async function initInventory() {
+  const accordion = document.getElementById("railInventory");
+  if (!accordion) return;
+  const summary = await fetchTileSourceSummary();
+  if (summary && summary.length) {
+    accordion.hidden = false;
+    await loadSavedSearches();
+    applyTileSources(summary);
+  } else {
     // No registered extension → keep the accordion hidden so a stock
     // checkout shows no Inventory rail at all.
     accordion.hidden = true;
-    return;
   }
-  accordion.hidden = false;
+  scheduleTileSourceRetry(0);
+}
+
+// While a source is loading or has errored (or the summary couldn't be
+// fetched), ask again after 2, 4, 8, 8 and 8 s, then stop. A source that
+// becomes ready is drawn if it's switched on.
+function scheduleTileSourceRetry(attempt) {
+  clearTimeout(tileSourceRetryTimer);
+  if (!tileSourcesFetchFailed && !sourcesNeedRetry(tileSources)) return;
+  const delay = retryDelayMs(attempt);
+  if (delay == null) return;
+  tileSourceRetryTimer = setTimeout(async () => {
+    await reloadTileSources();
+    scheduleTileSourceRetry(attempt + 1);
+  }, delay);
+}
+
+async function reloadTileSources() {
+  const summary = await fetchTileSourceSummary();
+  if (!summary) return;
+  const accordion = document.getElementById("railInventory");
+  if (summary.length && accordion) {
+    if (accordion.hidden) await loadSavedSearches();
+    accordion.hidden = false;
+  }
+  if (summary.length) applyTileSources(summary);
+}
+
+// Retry button in the Extensions block: ask now, then keep backing off.
+function retryTileSourcesNow() {
+  reloadTileSources().then(() => scheduleTileSourceRetry(0));
+}
+
+const sourceStateOf = s => (s.status === "error" || s.status === "loading" || s.status === "empty") ? s.status : "ready";
+const sourceUsable = s => { const st = sourceStateOf(s); return st === "ready" || st === "empty"; };
+
+// Take a fresh summary: set up state for new sources, keep what the user has
+// already chosen for known ones, redraw the rail and load tiles for any
+// enabled source that has just become ready.
+function applyTileSources(summary) {
+  const before = new Map(tileSources.map(s => [s.id, sourceStateOf(s)]));
   tileSources = summary;
-  await loadSavedSearches();
   const saved = _loadInvState();
   for (const s of tileSources) {
-    const prior = saved[s.id] || {};
+    const prior = invState[s.id] || saved[s.id] || {};
     // Default each facet to all-values-selected so a fresh source filters
     // nothing out until the user starts unticking. Reuse persisted Sets
     // when they exist, otherwise build a full-coverage Set from the facet
@@ -4299,10 +4353,38 @@ async function initInventory() {
     };
   }
   renderInventoryRail();
-  // Lazy-load tiles for whichever sources are enabled at startup.
+  renderExtensionStatus();
+  // Lazy-load tiles for whichever sources are enabled and usable.
   for (const s of tileSources) {
-    if (invState[s.id].enabled) ensureTilesLoaded(s.id);
+    if (!invState[s.id].enabled || !sourceUsable(s)) continue;
+    if (before.get(s.id) !== sourceStateOf(s)) delete tileData[s.id];
+    ensureTilesLoaded(s.id);
   }
+  broadcastLayerState();
+}
+
+// The "Extensions" block at the top of the Inventory rail: one line when all
+// extensions are loaded, a list with each source's state while any is not.
+function renderExtensionStatus() {
+  const host = document.getElementById("extensionStatus");
+  if (!host) return;
+  const m = extensionStatusModel(extensionsManifest, tileSources);
+  if (!m.groups.length) { host.innerHTML = ""; return; }
+  const rows = m.groups.map(g => {
+    const srcs = g.sources.length
+      ? g.sources.map(x => `<li class="ext-src" data-state="${esc(x.state)}">
+          <span class="ext-src-name">${esc(x.label)}</span>
+          <span class="ext-src-state">${esc(x.state)}${x.reason && x.state !== "loading" ? `: ${esc(x.reason)}` : ""}</span>
+          ${x.state === "error" ? `<button type="button" class="link-btn" data-ext-retry>Retry</button>` : ""}
+        </li>`).join("")
+      : `<li class="ext-src" data-state="ready"><span class="ext-src-name">no tile sources</span></li>`;
+    return `<li class="ext-group" data-state="${esc(g.state)}"><div class="ext-group-name">${esc(g.label)} <span class="ext-src-state">${esc(g.state)}</span></div><ul>${srcs}</ul></li>`;
+  }).join("");
+  host.innerHTML = `<details class="ext-status" ${m.settled ? "" : "open"}>
+      <summary>${m.settled ? esc(m.summary) : `Extensions: ${m.loaded} of ${m.groups.length} loaded`}</summary>
+      <ul class="ext-groups">${rows}</ul>
+    </details>`;
+  host.querySelectorAll("[data-ext-retry]").forEach(b => b.addEventListener("click", retryTileSourcesNow));
 }
 
 function renderInventoryRail() {
@@ -4316,6 +4398,18 @@ function renderInventoryRail() {
     block.dataset.sourceId = s.id;
     block.dataset.open = st.openRail ? "true" : "false";
     const swatch = s.color || "#7aa2ff";
+    if (s.status === "loading" || s.status === "error") {
+      // Nothing to filter yet: show the source with its state until it loads.
+      block.dataset.open = "false";
+      block.innerHTML = `
+        <div class="inv-source-head">
+          <span class="swatch" style="background:${esc(swatch)}"></span>
+          <span class="label">${esc(s.label)}</span>
+          <span class="count" title="${esc(s.error || "")}">${s.status === "error" ? "error" : "loading…"}</span>
+        </div>`;
+      host.appendChild(block);
+      continue;
+    }
 
     // Build priority chip set (1..max).
     const priChips = [];
@@ -4396,6 +4490,7 @@ function renderInventoryRail() {
       block.querySelector("[data-count]").textContent = st.enabled ? `${s.n_tiles} tiles` : "off";
       if (st.enabled) ensureTilesLoaded(s.id);
       renderTileOverlay(s.id);  // Plan 4c, no-op until that's wired up.
+      broadcastLayerState();
     });
     block.querySelector(".inv-source-head .label").addEventListener("click", () => {
       st.openRail = !st.openRail;
@@ -5850,6 +5945,7 @@ function setTimeAware(on) {
   timeAware = !!on;
   localStorage.setItem("acp.time_aware", timeAware ? "on" : "off");
   applyTimeAwareState(/*fireImmediate=*/true);
+  broadcastLayerState();
 }
 
 function applyTimeAwareState(fireImmediate) {
@@ -5935,6 +6031,26 @@ const SIDE_PANEL_MAX_W = 760;
 const sidePanelState = { open: true, tab: "main", width: SIDE_PANEL_DEFAULT_W, activityWidth: ACTIVITY_PANEL_W };
 let activityUi = null;
 
+// Extension rail tabs can be widened to about three times the normal width.
+// The choice is remembered per tab; a manifest rail tab's "width" is the
+// default until the user picks one.
+const EXT_WIDE_KEY = "acp.extTabWide.v1";
+function loadExtTabWide() {
+  try { return JSON.parse(localStorage.getItem(EXT_WIDE_KEY) || "{}") || {}; }
+  catch { return {}; }
+}
+function isExtTabWide(tab) {
+  const stored = loadExtTabWide()[tab];
+  if (typeof stored === "boolean") return stored;
+  return railWidthDefault(extRailTabs.get(tab)) === "wide";
+}
+function toggleExtTabWide(tab) {
+  const all = loadExtTabWide();
+  all[tab] = !isExtTabWide(tab);
+  try { localStorage.setItem(EXT_WIDE_KEY, JSON.stringify(all)); } catch { /* ignore */ }
+  applySidePanel();
+}
+
 function widthKey(tab) {
   return tab === "activity" ? "activityWidth" : "width";
 }
@@ -5983,7 +6099,20 @@ function applySidePanel() {
   if (!panel) return;
   const { open, tab } = sidePanelState;
   panel.hidden = !open;
-  panel.style.setProperty("--side-panel-w", `${clampSidePanelWidth(sidePanelState[widthKey(tab)])}px`);
+  const isExt = extRailTabs.has(tab);
+  const normalW = clampSidePanelWidth(sidePanelState[widthKey(tab)]);
+  const wide = isExt && isExtTabWide(tab);
+  const phone = !!window.matchMedia?.("(max-width: 640px)").matches;
+  panel.style.setProperty("--side-panel-w",
+    `${wide ? railTabWidthPx(true, normalW, window.innerWidth, phone) : normalW}px`);
+  const wideBtn = document.getElementById("sidePanelWide");
+  if (wideBtn) {
+    wideBtn.hidden = !isExt;
+    wideBtn.setAttribute("aria-pressed", String(wide));
+    wideBtn.title = wide ? "Make this panel narrower" : "Make this panel wider";
+    wideBtn.setAttribute("aria-label", wideBtn.title);
+    wideBtn.textContent = wide ? "\u2192\u2190" : "\u2190\u2192";
+  }
   panel.classList.toggle("is-activity", tab === "activity");
   for (const sec of panel.querySelectorAll(".side-tab")) sec.hidden = sec.dataset.tab !== tab;
   if (open && extRailTabs.has(tab)) ensureExtensionFrame(tab);
@@ -6014,6 +6143,53 @@ function ensureExtensionFrame(key) {
   frame.src = tab.page;
   sec.appendChild(frame);
 }
+
+// --- Layer bridge for rail-tab iframes ------------------------------------
+// Rail tab pages can read and change the tile layers and time-aware mode
+// through window.postMessage. Only messages from ACP's own rail iframes at
+// ACP's own origin are accepted. Documented in docs/extensions.md.
+function railFrameWindows() {
+  return Array.from(document.querySelectorAll("iframe.ext-rail-frame"))
+    .map(f => f.contentWindow).filter(Boolean);
+}
+
+function layerStateNow() {
+  return layerStateMessage(tileSources, invState, timeAware);
+}
+
+function broadcastLayerState() {
+  const msg = layerStateNow();
+  for (const w of railFrameWindows()) {
+    try { w.postMessage(msg, location.origin); } catch { /* frame gone */ }
+  }
+}
+
+function setLayerEnabled(id, enabled) {
+  const src = tileSources.find(x => x.id === id);
+  const st = invState[id];
+  if (!src || !st || !sourceUsable(src)) return;
+  const cb = document.querySelector(`.inv-source[data-source-id="${CSS.escape(id)}"] input[data-enabled]`);
+  if (cb) {
+    // Same path as clicking the rail toggle, so persistence matches.
+    if (cb.checked !== enabled) { cb.checked = enabled; cb.dispatchEvent(new Event("change")); }
+    return;
+  }
+  st.enabled = enabled;
+  _saveInvState();
+  if (enabled) ensureTilesLoaded(id);
+  renderTileOverlay(id);
+  broadcastLayerState();
+}
+
+window.addEventListener("message", e => {
+  const req = bridgeRequest(e, railFrameWindows(), location.origin);
+  if (!req) return;
+  if (req.kind === "layer-set") setLayerEnabled(req.id, req.enabled);
+  else if (req.kind === "time-aware-set") { if (req.enabled !== timeAware) setTimeAware(req.enabled); }
+  else {
+    try { e.source.postMessage(layerStateNow(), location.origin); } catch { /* frame gone */ }
+  }
+});
 
 // Add a rail button and panel section for each valid rail tab in the
 // extension manifest. Safe to call again: earlier ext tabs are removed first.
@@ -6110,6 +6286,13 @@ function nudgeMapControls() {
   }
 }
 
+function setupWideToggle() {
+  document.getElementById("sidePanelWide")?.addEventListener("click", () => {
+    if (extRailTabs.has(sidePanelState.tab)) toggleExtTabWide(sidePanelState.tab);
+  });
+  window.addEventListener("resize", () => { if (extRailTabs.has(sidePanelState.tab)) applySidePanel(); });
+}
+
 function setupSidePanelResize() {
   const handle = document.getElementById("panelResizer");
   const panel = document.getElementById("sidePanel");
@@ -6182,6 +6365,7 @@ function setupSidePanel() {
     applySidePanel();
   });
   setupSidePanelResize();
+  setupWideToggle();
   mirrorScanHealthBadge();
   window.addEventListener("resize", () => applySidePanel());
   // Aladin opens some of its own menus on a click, so re-check the nudge

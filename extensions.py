@@ -123,7 +123,8 @@ def rail_page_ok(extension_id: str, page: object) -> bool:
 def sanitise_rail_tabs(entry: dict) -> dict:
     """Return *entry* with only its valid ``rail_tabs`` kept.
 
-    A rail tab is ``{"id", "label", "icon", "page"}``. ``id`` is a short
+    A rail tab is ``{"id", "label", "icon", "page"}`` plus an optional ``width`` of
+    ``"normal"`` or ``"wide"`` (anything else is dropped). ``id`` is a short
     slug, ``label`` a non-empty string, ``icon`` an optional name, and
     ``page`` a relative path under ``/api/ext/<the extension's prefix>``
     (see ``rail_page_ok``). Bad tabs are dropped with one warning each; the
@@ -159,9 +160,12 @@ def sanitise_rail_tabs(entry: dict) -> dict:
             continue
         seen.add(tid)
         icon = tab.get("icon")
-        kept.append({"id": tid, "label": label.strip(),
-                     "icon": icon if isinstance(icon, str) else "",
-                     "page": page})
+        kept_tab = {"id": tid, "label": label.strip(),
+                    "icon": icon if isinstance(icon, str) else "",
+                    "page": page}
+        if tab.get("width") in ("normal", "wide"):
+            kept_tab["width"] = tab["width"]
+        kept.append(kept_tab)
     out = dict(entry)
     out["rail_tabs"] = kept
     return out

@@ -4,6 +4,8 @@ import {
   railIconPath, railPageOk, railTabsFrom, fillColorFor, tilePlansHtml,
   tilePanelModeOf, tilePanelTitleHtml, tilePanelAction, runTilePanelAction,
   tileStyleFrom, resolveTileDraw,
+  retryDelayMs, sourcesNeedRetry, extensionStatusModel, sourceState,
+  railTabWidthPx, railWidthDefault, layerStateMessage, bridgeRequest,
 } from "../../static/ext-ui.mjs";
 
 const esc = s => String(s).replace(/[&<>"']/g, c => (
@@ -289,5 +291,143 @@ describe("resolveTileDraw", () => {
     assert.deepEqual(
       resolveTileDraw({ style: { color: "blue", fill_opacity: 2, line_width: 9 } }, "#111111", 0.2),
       { color: "#111111", fillOpacity: 0.2, lineWidth: 0.5 });
+  });
+});
+
+describe("retry backoff", () => {
+  it("backs off 2, 4, 8 s and stops after five tries", () => {
+    assert.deepEqual([0, 1, 2, 3, 4].map(retryDelayMs), [2000, 4000, 8000, 8000, 8000]);
+    assert.equal(retryDelayMs(5), null);
+    assert.equal(retryDelayMs(-1), null);
+    assert.equal(retryDelayMs(undefined), null);
+  });
+
+  it("retries only while a source is loading or errored", () => {
+    assert.equal(sourcesNeedRetry([{ status: "ready" }, { status: "empty" }, {}]), false);
+    assert.equal(sourcesNeedRetry([{ status: "ready" }, { status: "loading" }]), true);
+    assert.equal(sourcesNeedRetry([{ status: "error" }]), true);
+    assert.equal(sourcesNeedRetry(undefined), false);
+    assert.equal(sourceState({}), "ready");
+    assert.equal(sourceState({ status: "weird" }), "ready");
+  });
+});
+
+describe("extensionStatusModel", () => {
+  const manifest = [{ extension: "nights" }, { extension: "other_ext" }, null];
+
+  it("groups sources under their extension, matching underscores to hyphens", () => {
+    const m = extensionStatusModel(manifest, [
+      { id: "a", label: "A", status: "ready", extension: "nights" },
+      { id: "b", label: "B", status: "ready", extension: "other-ext" },
+    ]);
+    assert.deepEqual(m.groups.map(g => [g.id, g.sources.length]), [["nights", 1], ["other_ext", 1]]);
+    assert.equal(m.settled, true);
+    assert.equal(m.summary, "Extensions: 2 loaded");
+  });
+
+  it("rolls an extension up to error, then loading, then empty, then ready", () => {
+    const m = extensionStatusModel([{ extension: "n" }], [
+      { id: "a", status: "ready", extension: "n" },
+      { id: "b", status: "error", error: "TypeError: x", extension: "n" },
+      { id: "c", status: "loading", extension: "n" },
+    ]);
+    assert.equal(m.groups[0].state, "error");
+    assert.equal(m.groups[0].sources[1].reason, "TypeError: x");
+    assert.equal(m.settled, false);
+    assert.equal(m.loaded, 0);
+    const l = extensionStatusModel([{ extension: "n" }], [{ id: "c", status: "loading", extension: "n" }]);
+    assert.equal(l.groups[0].state, "loading");
+    const e = extensionStatusModel([{ extension: "n" }], [{ id: "c", status: "empty", extension: "n" }]);
+    assert.equal(e.groups[0].state, "empty");
+    assert.equal(e.settled, true);
+  });
+
+  it("lists an extension with no sources as ready, and unowned sources under Other sources", () => {
+    const m = extensionStatusModel([{ extension: "n" }], [{ id: "x", label: "X", status: "ready" }]);
+    assert.equal(m.groups[0].state, "ready");
+    assert.equal(m.groups[1].label, "Other sources");
+    assert.equal(m.groups[1].sources[0].label, "X");
+  });
+});
+
+describe("railTabWidthPx", () => {
+  it("is normal unless wide", () => {
+    assert.equal(railTabWidthPx(false, 420, 1600, false), 420);
+  });
+  it("is three times normal, held to 70% of the window", () => {
+    assert.equal(railTabWidthPx(true, 400, 2000, false), 1200);
+    assert.equal(railTabWidthPx(true, 400, 1200, false), 840);
+  });
+  it("never goes below normal, and is full width on a phone", () => {
+    assert.equal(railTabWidthPx(true, 400, 400, false), 400);
+    assert.equal(railTabWidthPx(true, 400, 390, true), 390);
+    assert.equal(railTabWidthPx(false, 400, 390, true), 390);
+  });
+  it("reads the manifest default", () => {
+    assert.equal(railWidthDefault({ width: "wide" }), "wide");
+    assert.equal(railWidthDefault({ width: "huge" }), "normal");
+    assert.equal(railWidthDefault(undefined), "normal");
+  });
+  it("railTabsFrom carries a valid width through", () => {
+    const tab = { id: "n", label: "N", page: "/api/ext/nights/ui" };
+    const tabs = railTabsFrom([{ extension: "nights", rail_tabs: [
+      { ...tab, width: "wide" }, { ...tab, id: "m", width: "x" }] }]);
+    assert.deepEqual(tabs.map(t => t.width), ["wide", "normal"]);
+  });
+});
+
+describe("layerStateMessage", () => {
+  it("lists every tile source with its enabled state", () => {
+    const msg = layerStateMessage(
+      [{ id: "a", label: "A", color: "#abc", extension: "nights" }, { id: "b" }],
+      { a: { enabled: true } }, 1);
+    assert.deepEqual(msg, {
+      type: "acp:layers", timeAware: true,
+      layers: [
+        { id: "a", label: "A", enabled: true, color: "#abc", kind: "tiles", extension: "nights" },
+        { id: "b", label: "b", enabled: false, color: "", kind: "tiles", extension: "" },
+      ],
+    });
+  });
+  it("copes with no sources", () => {
+    assert.deepEqual(layerStateMessage(undefined, {}, false),
+      { type: "acp:layers", timeAware: false, layers: [] });
+  });
+});
+
+describe("bridgeRequest", () => {
+  const frame = {};
+  const origin = "https://acp.test";
+  const ev = (data, over = {}) => ({ origin, source: frame, data, ...over });
+
+  it("accepts the three request types from a rail iframe at our origin", () => {
+    assert.deepEqual(bridgeRequest(ev({ type: "acp:layers:get" }), [frame], origin), { kind: "get" });
+    assert.deepEqual(bridgeRequest(ev({ type: "acp:layer:set", id: "a", enabled: false }), [frame], origin),
+      { kind: "layer-set", id: "a", enabled: false });
+    assert.deepEqual(bridgeRequest(ev({ type: "acp:time-aware:set", enabled: true }), [frame], origin),
+      { kind: "time-aware-set", enabled: true });
+  });
+
+  it("rejects another origin, a window that isn't a rail iframe, and no source", () => {
+    const get = { type: "acp:layers:get" };
+    assert.equal(bridgeRequest(ev(get, { origin: "https://evil.test" }), [frame], origin), null);
+    assert.equal(bridgeRequest(ev(get, { source: {} }), [frame], origin), null);
+    assert.equal(bridgeRequest(ev(get, { source: null }), [frame], origin), null);
+    assert.equal(bridgeRequest(ev(get), [], origin), null);
+    assert.equal(bridgeRequest(null, [frame], origin), null);
+  });
+
+  it("rejects malformed payloads", () => {
+    for (const d of [
+      null, "acp:layers:get", [], {}, { type: "other" },
+      { type: "acp:layer:set", id: "a", enabled: "yes" },
+      { type: "acp:layer:set", id: "", enabled: true },
+      { type: "acp:layer:set", id: 3, enabled: true },
+      { type: "acp:layer:set", id: "x".repeat(201), enabled: true },
+      { type: "acp:time-aware:set" },
+      { type: "acp:time-aware:set", enabled: 1 },
+    ]) {
+      assert.equal(bridgeRequest(ev(d), [frame], origin), null, JSON.stringify(d));
+    }
   });
 });
