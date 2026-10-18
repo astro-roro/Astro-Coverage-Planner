@@ -2598,3 +2598,66 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .activity .more { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-block: 4px 8px; }
 .activity .more .count { font-size: 11px; color: #8d99ad; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .activity details.night > summary::before { transition: none; } }
+
+/* Help tab: the tour button, the feature map and the hidden shortcuts. */
+.side-tab[data-tab="help"] { overflow-y: auto; }
+.help-body { padding: 14px 16px 20px; }
+.help-body h3 { margin: 18px 0 6px; }
+.help-body h3:first-of-type { margin-top: 16px; }
+.help-body h4 { margin: 12px 0 4px; font-size: 13px; }
+.help-list { margin: 0; padding-left: 18px; color: #c4ccd8; font-size: 14px; }
+.help-list li { margin: 3px 0; }
+.help-list a { color: #5bb6ff; }
+.help-version { margin-top: 18px; color: #78839a; font-size: 12px; }
+.help-tour-btn,
+.tour-card button.primary {
+  background: #2a4f7a;
+  border-color: #355d8e;
+  color: #f0f5ff;
+}
+.help-tour-btn:hover,
+.tour-card button.primary:hover { background: #345f92; }
+.help-tour-btn { width: 100%; padding: 8px 12px; font-size: 14px; }
+
+/* The tour: a ring round one control and a card beside it. The ring's
+   wide shadow dims everything else; neither catches clicks except the
+   card itself. */
+.tour-ring {
+  position: fixed;
+  z-index: 1000;
+  border: 2px solid #4da6ff;
+  border-radius: 6px;
+  box-shadow: 0 0 0 9999px rgba(5, 8, 12, 0.55);
+  pointer-events: none;
+}
+.tour-shade {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(5, 8, 12, 0.55);
+  pointer-events: none;
+}
+.tour-ring[hidden], .tour-shade[hidden] { display: none; }
+.tour-card {
+  position: fixed;
+  z-index: 1001;
+  max-width: calc(100vw - 16px);
+  padding: 14px 16px 12px;
+  background: #14192a;
+  border: 1px solid #2a3246;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  color: #e0e4ea;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.tour-card h3 { margin: 2px 0 6px; font-size: 16px; color: #e8ecf3; }
+.tour-card p { margin: 0 0 12px; color: #c4ccd8; }
+.tour-count { font-size: 11px; color: #78839a; }
+.tour-actions { display: flex; align-items: center; gap: 8px; }
+.tour-spacer { flex: 1; }
+.tour-actions button[hidden] { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .tour-ring { transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease; }
+  .tour-card { transition: left 0.18s ease, top 0.18s ease; }
+}
