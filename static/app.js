@@ -647,6 +647,7 @@ import { summariseUploads } from "./ts-sync-banner.mjs";
 import { deg2hms, deg2dms, parseRA, parseDec, parseCoordPair } from "./coords.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
+import { createTour } from "./tour.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
 import { listModeFor, createNavStack } from "./panel-nav.mjs";
 import { splitAtViewSeam, crossesViewSeam, projectionHasSeam } from "./seam.mjs";
@@ -6319,7 +6320,7 @@ function positionCatTooltip() {
 // recentres when the panel opens, closes, is resized or changes tab.
 // Open/closed, tab and width are remembered under SIDE_PANEL_KEY.
 const SIDE_PANEL_KEY = "acp.sidePanel.v1";
-const SIDE_PANEL_TABS = ["main", "filters", "library", "activity"];
+const SIDE_PANEL_TABS = ["main", "filters", "library", "activity", "help"];
 const SIDE_PANEL_MIN_W = 300;
 const SIDE_PANEL_MAX_W = 760;
 // Activity keeps its own width: rows carry paths and links, so it opens wider
@@ -6387,6 +6388,7 @@ function sidePanelTitle(tab) {
   if (tab === "filters") return "Map filters";
   if (tab === "library") return "Library";
   if (tab === "activity") return "Activity";
+  if (tab === "help") return "Help";
   return planningMode ? "Plans" : "Targets";
 }
 
@@ -6792,10 +6794,46 @@ function setupSkySearchButton() {
   document.getElementById("skySearchBtn")?.addEventListener("click", openSkySearch);
 }
 
+// The first-run tour lives in tour.mjs. It reads the mode and library from
+// here and, on a phone, closes the sheet so its card never lands on it.
+function localStore() {
+  try { return window.localStorage; } catch { return null; }
+}
+
+const tour = createTour({
+  storage: localStore(),
+  getContext: () => ({
+    emptyLibrary: !(manifest?.targets?.length),
+    planningMode,
+  }),
+  closeSheet: () => {
+    if (!sidePanelState.open) return;
+    sidePanelState.open = false;
+    saveSidePanelState();
+    applySidePanel();
+  },
+});
+
+// The Help tab: "Take the tour", and the ? key from anywhere that isn't
+// a text field.
+function setupHelp() {
+  document.getElementById("helpTourBtn")?.addEventListener("click", () => tour.start());
+  document.addEventListener("keydown", ev => {
+    if (ev.key !== "?" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (tour.isActive() || isModalOpen() || document.querySelector("dialog[open]")) return;
+    const ae = document.activeElement;
+    const tag = ae?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae?.isContentEditable) return;
+    ev.preventDefault();
+    if (!(sidePanelState.open && sidePanelState.tab === "help")) openSidePanelTab("help");
+  });
+}
+
 function init() {
   activityUi = setupActivity({ openPlan: activityOpenPlan, showOnMap: activityShowOnMap });
   setupSidePanel();
   setupSkySearchButton();
+  setupHelp();
 
   // Independent of everything below: don't let a slow or failed sky map
   // hide a pending TS upload the user needs to go review.
@@ -7091,6 +7129,8 @@ function init() {
     // If planning mode was remembered from last session, switch now (after
     // manifest + plans loaded so the right panel renders correctly).
     if (planningMode) setPlanningMode(true);
+
+    tour.maybeAutoStart();
   }).catch(showInitError);
 }
 

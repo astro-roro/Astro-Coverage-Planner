@@ -2112,6 +2112,7 @@ def index():
         total_hours=m.get("total_integration_hours", 0),
         scan_date=(m.get("scan_date") or "")[:10],
         activity_enabled=activity.enabled(),
+        version=VERSION,
     )
 
 

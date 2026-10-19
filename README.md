@@ -113,6 +113,10 @@ ACP itself still runs on Windows, macOS, and Linux — the plugin is the NINA-si
 
 (Future plugins could push to Voyager, SGP, or other planners — the extension hooks are there.)
 
+## Getting started in the app
+
+The first time you open ACP, a short tour points out the map, the side panels, Planning, Time-aware and NINA sync. Skip it whenever you like. The Help button at the bottom of the right-hand rail, or the ? key, opens a list of what ACP can do and where each thing lives, the mouse and keyboard shortcuts that nothing else on screen mentions, and a Take the tour button to run it again.
+
 ## Other things it does
 
 The headline features are above. These are the secondary bits — the stuff that makes day-to-day use comfortable without needing to be the centrepiece.
