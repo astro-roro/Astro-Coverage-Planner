@@ -28,6 +28,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/visibility` | 12-month per-target visibility bins for a site |
 | `GET /api/visibility/point?ra=&dec=` | Same bins for an arbitrary (RA, Dec) point |
 | `POST /api/visibility/panels` | Aggregated visibility bins for a list of mosaic panel centres |
+| `POST /api/visibility/panels/batch` | The same for several plans at once: `{"plans": [{"id", "panels"}]}` in, `{"results": {id: ...}}` out. At most 400 panels in total |
 | `GET /api/sites`, `POST` | CRUD for saved observing sites |
 | `GET /api/gaps` | Multi-source gap-finder JSON response |
 | `GET /api/gaps/moc.fits` | Gap MOC as raw FITS bytes |

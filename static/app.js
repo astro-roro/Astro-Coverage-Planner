@@ -1390,8 +1390,7 @@ function renderTargetPanel(t) {
         <tbody>${filterRows}</tbody>
       </table>
 
-      <h4>Master files (${t.master_files.length})</h4>
-      <div class="pathlist">${t.master_files.slice(0, 12).map(p => esc(p.replace(/\\/g, "/"))).join("<br>")}${t.master_files.length > 12 ? "<br>…" : ""}</div>
+      <div id="masterFilesBox">${masterFilesHtml(_masterFilesCache.get(t.target_id))}</div>
 
       <h4 id="catMatchHdr" style="display:none">Nearby catalog objects</h4>
       <div id="catMatches"></div>
@@ -1406,6 +1405,40 @@ function renderTargetPanel(t) {
 
   // If catalog overlays loaded, show nearby entries
   showCatalogMatchesFor(t);
+
+  loadMasterFiles(t.target_id);
+}
+
+// /api/manifest leaves master_files out to keep the first load small, so the
+// detail panel fetches them from /api/target/<id> when it opens. Cached per
+// target for the page's lifetime.
+const _masterFilesCache = new Map();  // target_id -> string[]
+
+function masterFilesHtml(files) {
+  if (files === null) return `<h4>Master files</h4><div class="pathlist">Unavailable</div>`;
+  if (!Array.isArray(files)) return `<h4>Master files</h4><div class="pathlist">Loading…</div>`;
+  return `<h4>Master files (${files.length})</h4>
+      <div class="pathlist">${files.slice(0, 12).map(p => esc(String(p).replace(/\\/g, "/"))).join("<br>")}${files.length > 12 ? "<br>…" : ""}</div>`;
+}
+
+async function loadMasterFiles(targetId) {
+  if (_masterFilesCache.has(targetId)) return;
+  let files = null;
+  try {
+    const r = await fetch(`/api/target/${targetId}`);
+    if (r.ok) {
+      const d = await r.json();
+      files = Array.isArray(d?.master_files) ? d.master_files : [];
+    }
+  } catch (e) {
+    console.warn("master files fetch failed:", e);
+  }
+  // A failure is shown but not cached, so reopening the panel retries.
+  if (files !== null) _masterFilesCache.set(targetId, files);
+  // The user may have moved on while this was in flight.
+  if (panelMode !== "detail" || selectedTargetId !== targetId) return;
+  const box = document.getElementById("masterFilesBox");
+  if (box) box.innerHTML = masterFilesHtml(files);
 }
 
 // Row menus. Each kind of row gets its items from row-menu.mjs; the chosen
@@ -5398,12 +5431,52 @@ async function loadPlanVisibility(plan) {
 // plans short-circuit instantly and pending ones don't double-fetch.
 async function loadAllPlanVisibility() {
   if (!timeAware || !plans?.length) return;
-  await Promise.all(plans.map(async pl => {
-    const before = _planVisCache.has(planVisCacheKey(pl));
-    await loadPlanVisibility(pl);
-    if (!before) {
-      if (panelMode === "plan-list") updatePlanRowVis(pl);
-      else if (panelMode === "plan-edit" && editingPlan?.id === pl.id) updatePlanEditorVis();
+  // Every uncached plan goes in one request (the server caps a request at 400
+  // panels in total, so a very large library is split into a few). Plans with
+  // no centre, or already being fetched, are skipped as loadPlanVisibility does.
+  const todo = [];
+  for (const pl of plans) {
+    if (pl?.target?.center_ra_deg == null || pl?.target?.center_dec_deg == null) continue;
+    const key = planVisCacheKey(pl);
+    if (_planVisCache.has(key) || _planVisPending.has(key)) continue;
+    const panels = mosaicPanelCenters(pl).map(p => ({ ra_deg: p.ra_deg, dec_deg: p.dec_deg }));
+    if (!panels.length) continue;
+    todo.push({ pl, key, panels });
+  }
+  if (!todo.length) return;
+  const MAX_PANELS = 400;
+  const chunks = [];
+  let cur = [], n = 0;
+  for (const item of todo) {
+    if (cur.length && n + item.panels.length > MAX_PANELS) { chunks.push(cur); cur = []; n = 0; }
+    cur.push(item);
+    n += item.panels.length;
+  }
+  if (cur.length) chunks.push(cur);
+  const qs = activeSiteId
+    ? `?site_id=${encodeURIComponent(activeSiteId)}`
+    : `?lat=${currentSite.lat}&lon=${currentSite.lon}&min_alt_deg=${currentSite.min_alt_deg}`;
+  await Promise.all(chunks.map(async chunk => {
+    for (const { key } of chunk) _planVisPending.add(key);
+    try {
+      const r = await fetch(`/api/visibility/panels/batch${qs}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plans: chunk.map(({ pl, panels }) => ({ id: String(pl.id), panels })) }),
+      });
+      if (!r.ok) return;
+      const results = (await r.json())?.results || {};
+      for (const { pl, key } of chunk) {
+        const d = results[String(pl.id)];
+        if (!d) continue;
+        _planVisCache.set(key, d);
+        if (panelMode === "plan-list") updatePlanRowVis(pl);
+        else if (panelMode === "plan-edit" && editingPlan?.id === pl.id) updatePlanEditorVis();
+      }
+    } catch (e) {
+      console.warn("plan visibility batch fetch failed:", e);
+    } finally {
+      for (const { key } of chunk) _planVisPending.delete(key);
     }
   }));
 }

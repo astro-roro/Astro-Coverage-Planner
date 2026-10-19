@@ -7,9 +7,12 @@ no run said so.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import build_archive_manifest as bam  # noqa: E402
@@ -131,6 +134,52 @@ class TestItChangesWhenItShould(unittest.TestCase):
             self.assertNotEqual(bam.scan_cache_fingerprint(), before)
         finally:
             bam.SCAN_CACHE_SCHEMA = original
+
+
+class TestEditingAHelperMakesTheCacheCold(unittest.TestCase):
+    """Edit the module source the fingerprint reads, then recompute it.
+
+    The structural tests above show a helper is in the hash. These show the
+    hash moves when that helper's code does, which is what a stale cache needs.
+    """
+
+    def setUp(self):
+        self.addCleanup(_reset_memo)
+        _reset_memo()
+        self.real_getsource = inspect.getsource
+
+    def _with_edit(self, func_name):
+        """Fingerprint of the module as if ``func_name`` gained one statement."""
+        tree = ast.parse(self.real_getsource(bam))
+        node = next(n for n in tree.body
+                    if isinstance(n, ast.FunctionDef) and n.name == func_name)
+        node.body.append(ast.Expr(ast.Constant("an edit")))
+        edited = ast.unparse(tree)
+
+        def fake(obj):
+            return edited if obj is bam else self.real_getsource(obj)
+
+        _reset_memo()
+        with mock.patch.object(bam.inspect, "getsource", side_effect=fake):
+            return bam.scan_cache_fingerprint()
+
+    def test_editing_a_helper_a_reader_calls_changes_it(self):
+        before = bam.scan_cache_fingerprint()
+        for name in ("canon_filter", "sanitize_telescope", "sanitize_camera"):
+            with self.subTest(helper=name):
+                self.assertNotEqual(self._with_edit(name), before)
+
+    def test_editing_a_helper_reached_through_another_helper_changes_it(self):
+        before = bam.scan_cache_fingerprint()
+        self.assertNotEqual(self._with_edit("_catalogue_lookup"), before)
+
+    def test_editing_a_reader_changes_it(self):
+        before = bam.scan_cache_fingerprint()
+        self.assertNotEqual(self._with_edit("read_fits_meta"), before)
+
+    def test_editing_unrelated_code_does_not(self):
+        before = bam.scan_cache_fingerprint()
+        self.assertEqual(self._with_edit("fov_corners"), before)
 
 
 if __name__ == "__main__":
