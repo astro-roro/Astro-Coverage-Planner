@@ -4,14 +4,14 @@ Status: draft, 2026-09-02. Part one of the public sharing work. Part two (friend
 
 ## Goal
 
-A page at astrowithroro.com/live that shows which projects Rohan is currently working on, how far along each one is, and when it was last imaged. ACP is the only source. NINA is not involved. Only plans Rohan has explicitly marked public appear.
+A page at astrowithroro.com/live that shows which projects the user is currently working on, how far along each one is, and when it was last imaged. ACP is the only source. NINA is not involved. Only plans the user has explicitly marked public appear.
 
 ## What the reader sees
 
 One page with a short list of project cards, most recent activity first. Each card shows:
 
 - the project name and target name
-- a one or two sentence blurb, written by Rohan, on why he is shooting it
+- a one or two sentence blurb, written by the user, on why they are shooting it
 - a "current" badge on the project he has marked as current
 - per-filter progress, as hours done of hours planned, with a simple bar
 - "last imaged N nights ago" (or "not started yet")
@@ -27,13 +27,13 @@ Three optional fields on a plan, all validated in `_validate_plan_payload` and e
 |---|---|---|---|
 | `visibility` | `"private"` or `"public"` | `"private"` | Only `"public"` plans are published. Any other value is rejected with 400. |
 | `is_current` | bool | `false` | Shows the "current" badge. More than one current plan is allowed. |
-| `public_blurb` | string, max 500 chars | `""` | Rohan's "why I'm shooting this" text. Plain text, no markup. |
+| `public_blurb` | string, max 500 chars | `""` | The user's "why I'm shooting this" text. Plain text, no markup. |
 
 A plan with no `visibility` field is private. The whole section is shown only when the server reports publishing is configured (`GET /api/publish/config`, true when `ACP_PUBLISH_DEST` is set), and within it the blurb and current fields appear only when the plan is public. A stock install looks unchanged, every existing plan stays private, and the wording is generic: the option is just "Public", with no site named.
 
 ## The published JSON
 
-`GET /api/public/shooting` returns the exact document that will be published, so Rohan can preview it in the browser. Shape:
+`GET /api/public/shooting` returns the exact document that will be published, so the user can preview it in the browser. Shape:
 
 ```jsonc
 {
@@ -101,10 +101,10 @@ Configuration, all environment variables, matching the rest of ACP:
 
 | Variable | Meaning |
 |---|---|
-| `ACP_PUBLISH_DEST` | SFTP destination, for example `linuxuser@100.106.46.47:/home/astrowithroro.com/public_html/live/shooting.json`. Publishing refuses to run when unset. |
+| `ACP_PUBLISH_DEST` | SFTP destination, for example `user@your-host:/var/www/site/live/shooting.json`. Publishing refuses to run when unset. |
 | `ACP_PUBLISH_SSH_KEY` | Optional path to the key. Defaults to whatever SSH would use. |
 
-The push is initiated from the ACP machine, never from Canopus, which keeps to the rule that Canopus only ever receives. The web root on Canopus is owned by `astro2735` and the SSH user is `linuxuser`, so a one-off setup step creates `public_html/live/` owned by `linuxuser` with mode 755. After that the upload writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
+The push is initiated from the ACP machine, never from the web host, which keeps to the rule that the web host only ever receives. The web root is owned by a different account from the SSH user, so a one-off setup step creates `live/` owned by the SSH user with mode 755. After that the upload writes the JSON directly with no sudo. That setup step is documented in the site repo's README, not automated. Scheduling is a cron or Task Scheduler entry on the machine that runs ACP, documented in `docs/sharing.md`, not built into the app. Suggested cadence is once each morning after the rig has finished.
 
 There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a rescan and returns the upload result, so a "Publish now" button in the plan rail works without a terminal.
 

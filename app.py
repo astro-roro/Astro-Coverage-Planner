@@ -21,6 +21,7 @@ Endpoints:
 - GET /api/visibility            12-month per-target visibility bins for a site
 - GET /api/visibility/point      same bins for an arbitrary (ra, dec) point
 - POST /api/visibility/panels    aggregated bins for a list of mosaic panels
+- POST /api/visibility/panels/batch  the same for several plans in one request
 - GET /api/sites, POST           CRUD for saved observing sites
 - GET /api/hidden, POST          hide or unhide a plan, project or coverage target
 - GET /api/export/priority       CSV of gap-mode candidates
@@ -43,6 +44,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import gzip
 import hashlib
 import hmac
 import json
@@ -399,6 +401,54 @@ def _api_gate():
         # keeps the URL the user asked for and signing in lands them there.
         return render_template("login.html", next_path=request.full_path), 401
     return jsonify({"error": "unauthorized"}), 401
+
+
+# Bodies below this are left alone: the gzip header and the CPU cost are not
+# worth it, and the manifest is the only response where size matters.
+_GZIP_MIN_BYTES = int(os.environ.get("ACP_GZIP_MIN_BYTES", 2048))
+
+
+@app.after_request
+def _compress_and_tag(resp):
+    """Gzip and ETag JSON and text responses.
+
+    Waitress compresses nothing, and the manifest and visibility JSON shrink
+    about tenfold. GET and HEAD responses also get a strong ETag over the
+    body, and a matching If-None-Match turns into a 304 before any
+    compression happens. The ETag carries a "-gzip" suffix when the body is
+    sent compressed, because the two encodings are different
+    representations. Streamed responses, files (send_file hands back a
+    pass-through response with its own validators), responses already
+    encoded or sent as attachments, and anything but a 200 are untouched.
+    """
+    if resp.status_code != 200 or resp.direct_passthrough or resp.is_streamed:
+        return resp
+    if resp.headers.get("Content-Encoding") or resp.headers.get("Content-Disposition"):
+        return resp
+    mimetype = resp.mimetype or ""
+    if not (mimetype == "application/json" or
+            (mimetype.startswith("text/") and mimetype != "text/event-stream")):
+        return resp
+    body = resp.get_data()
+    if len(body) < _GZIP_MIN_BYTES:
+        return resp
+
+    resp.vary.add("Accept-Encoding")
+    use_gzip = request.accept_encodings["gzip"] > 0
+    if request.method in ("GET", "HEAD") and "ETag" not in resp.headers:
+        tag = hashlib.sha1(body).hexdigest()
+        resp.set_etag(tag + "-gzip" if use_gzip else tag)
+        if mimetype == "application/json" and "Cache-Control" not in resp.headers:
+            # Always revalidate: the manifest changes under a running page
+            # after a scan, and a 304 makes the check cheap.
+            resp.headers["Cache-Control"] = "no-cache"
+        resp.make_conditional(request)
+        if resp.status_code == 304:
+            return resp
+    if use_gzip:
+        resp.set_data(gzip.compress(body, compresslevel=5, mtime=0))
+        resp.headers["Content-Encoding"] = "gzip"
+    return resp
 
 
 def _safe_next_path(candidate: str) -> str:
@@ -848,7 +898,7 @@ def _maybe_migrate_draft_plans_to_active() -> None:
     """One-shot: every plan left as `state: "draft"` under the old meaning
     becomes `"active"`, the first time ACP loads plans.json after this
     version starts. See docs/specs/ts-project-settings.md section 1 for
-    why: the NINA plugin never honoured draft, so 46 of Rohan's 47 draft
+    why: the NINA plugin never honoured draft, so 46 of the user's 47 draft
     plans were already live in TS. Leaving them "draft" under the new
     meaning (TS keeps the project but never schedules it) would pause
     them on the next push. The 9 plans TS itself has inactive are not
@@ -2118,6 +2168,58 @@ def _without_archive_paths(obj, roots: list[str]):
     return obj
 
 
+# Fields the page never reads from /api/manifest. They are most of the bytes:
+# folder_sub_buckets alone is over half. The target detail panel fetches
+# master_files from /api/target/<id> when it opens. app.py and
+# scripts/sanitise_manifest.py read per_master_fov and corners_galactic from
+# the manifest on disk, not from this response.
+_MANIFEST_TARGET_OMIT = ("folder_sub_buckets", "per_master_fov", "corners_galactic", "master_files")
+_MANIFEST_FILTER_OMIT = ("paths", "folder_sub_buckets")
+
+# (manifest object, serialised body). Keyed on the loaded manifest object, which
+# load_manifest replaces whenever the file's mtime changes, so a rescan
+# invalidates it and every other request reuses the bytes. Kept as bytes so a
+# conditional-GET or gzip hook can use them without rebuilding.
+_manifest_body_cache: tuple[dict, bytes] | None = None
+_manifest_body_lock = threading.Lock()
+
+
+def _build_manifest_payload(m: dict) -> dict:
+    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
+    slim_targets = []
+    for t in m["targets"]:
+        ft = {f: {k: v for k, v in d.items() if k not in _MANIFEST_FILTER_OMIT}
+              for f, d in t["filters"].items()}
+        slim = {k: v for k, v in t.items() if k not in _MANIFEST_TARGET_OMIT}
+        slim["filters"] = ft
+        slim_targets.append(slim)
+    return _without_archive_paths({
+        "scan_date": m.get("scan_date"),
+        "total_targets": m.get("total_targets"),
+        "total_integration_hours": m.get("total_integration_hours"),
+        "total_captured_hours": m.get("total_captured_hours", 0),
+        "total_integrated_hours": m.get("total_integrated_hours", 0),
+        "targets": slim_targets,
+        "scan_health": _scan_health(m),
+    }, roots)
+
+
+def manifest_body_bytes(m: dict) -> bytes:
+    """The serialised /api/manifest body for a loaded manifest, built once per
+    load. Same bytes jsonify would send, trailing newline included."""
+    global _manifest_body_cache
+    cached = _manifest_body_cache
+    if cached is not None and cached[0] is m:
+        return cached[1]
+    with _manifest_body_lock:
+        cached = _manifest_body_cache
+        if cached is not None and cached[0] is m:
+            return cached[1]
+        body = app.json.response(_build_manifest_payload(m)).get_data()
+        _manifest_body_cache = (m, body)
+        return body
+
+
 @app.route("/api/manifest")
 def api_manifest():
     m = load_manifest()
@@ -2133,20 +2235,7 @@ def api_manifest():
             "total_integrated_hours": 0,
             "targets": [],
         })
-    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
-    slim_targets = []
-    for t in m["targets"]:
-        ft = {f: {k: v for k, v in d.items() if k != "paths"} for f, d in t["filters"].items()}
-        slim_targets.append({**t, "filters": ft})
-    return jsonify(_without_archive_paths({
-        "scan_date": m.get("scan_date"),
-        "total_targets": m.get("total_targets"),
-        "total_integration_hours": m.get("total_integration_hours"),
-        "total_captured_hours": m.get("total_captured_hours", 0),
-        "total_integrated_hours": m.get("total_integrated_hours", 0),
-        "targets": slim_targets,
-        "scan_health": _scan_health(m),
-    }, roots))
+    return app.response_class(manifest_body_bytes(m), mimetype="application/json")
 
 
 def _scan_health(m: dict) -> dict | None:
@@ -2407,18 +2496,28 @@ def _summarise_tile_source(src) -> dict:
     lists may want to override these via dedicated methods later, but the
     walk is fast (a few thousand tiles ≈ 10 ms).
     """
+    error: str | None = None
     try:
         sid = src.id()
-        meta = src.metadata() or {}
     except Exception as exc:
-        logging.warning("tile source missing id/metadata: %s", exc)
-        return {}
+        logging.warning("tile source id() raised: %s", exc)
+        sid = type(src).__name__
+        error = f"id() raised: {_short_error(exc)}"
+    try:
+        meta = src.metadata() or {}
+        if not isinstance(meta, dict):
+            meta = {}
+    except Exception as exc:
+        logging.warning("tile source %r metadata() raised: %s", sid, exc)
+        meta = {}
+        error = error or f"metadata() raised: {_short_error(exc)}"
+    loading = meta.get("status") == "loading" and error is None
     n = 0
     max_pri = 0
     cats: set[str] = set()
     bands: set[str] = set()
     try:
-        for tile in src.tiles() or []:
+        for tile in ([] if (loading or error) else (src.tiles() or [])):
             n += 1
             if isinstance(tile.get("priority_level"), int) and tile["priority_level"] > max_pri:
                 max_pri = tile["priority_level"]
@@ -2430,8 +2529,13 @@ def _summarise_tile_source(src) -> dict:
                     bands.add(k)
     except Exception as exc:
         logging.warning("tile source %r tiles() raised during summary: %s", sid, exc)
+        error = f"tiles() raised: {_short_error(exc)}"
+    status = "error" if error else "loading" if loading else "empty" if n == 0 else "ready"
     return {
         "id": sid,
+        "status": status,
+        "error": error,
+        "extension": _source_extension(src, meta),
         "label": meta.get("label") or sid,
         "color": meta.get("color") or "",
         "attribution": meta.get("attribution") or "",
@@ -2442,7 +2546,44 @@ def _summarise_tile_source(src) -> dict:
         "bands": sorted(bands),
         "facets": _coerce_facets(meta.get("facets")),
         "color_facet": meta.get("color_facet") or "",
+        "fill_opacity": _coerce_fill_opacity(meta.get("fill_opacity")),
+        "tile_panel": meta.get("tile_panel") if meta.get("tile_panel") in ("replace", "append") else None,
     }
+
+
+def _short_error(exc: Exception) -> str:
+    """One line of an exception for the UI: ``Type: message``, capped."""
+    text = f"{type(exc).__name__}: {exc}".replace(chr(10), " ").strip()
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
+def _source_extension(src, meta: dict) -> str:
+    """Id of the extension a tile source came from, or "".
+
+    A source can name it with ``extension`` in its ``metadata()``. Otherwise
+    it is taken from the module the source class was loaded from, since
+    ``load_extensions`` names those ``acp_ext_<name>``.
+    """
+    named = meta.get("extension")
+    if isinstance(named, str) and named.strip():
+        return named.strip()
+    mod = getattr(type(src), "__module__", "") or ""
+    if mod.startswith("acp_ext_"):
+        return mod[len("acp_ext_"):].split(".", 1)[0]
+    return ""
+
+
+def _coerce_fill_opacity(raw) -> float | None:
+    """A source's optional ``fill_opacity`` as a float in 0..1, else None.
+
+    None means "not set": the frontend keeps its default footprint drawing.
+    Booleans, NaN and out-of-range numbers count as not set, so a typo can't
+    paint a source solid or invisible.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    v = float(raw)
+    return v if 0.0 <= v <= 1.0 else None
 
 
 def _coerce_facets(raw) -> list[dict]:
@@ -2490,7 +2631,17 @@ def api_tile_sources():
     """
     out = []
     for src in (getattr(app, "tile_sources", []) or []):
-        summary = _summarise_tile_source(src)
+        try:
+            summary = _summarise_tile_source(src)
+        except Exception as exc:
+            logging.exception("tile source summary failed")
+            summary = {"id": type(src).__name__, "label": type(src).__name__,
+                       "status": "error", "error": _short_error(exc),
+                       "extension": "", "n_tiles": 0, "max_priority_level": 0,
+                       "categories": [], "bands": [], "facets": [],
+                       "color": "", "color_facet": "", "attribution": "",
+                       "enabled_default": False, "fill_opacity": None,
+                       "tile_panel": None}
         if summary:
             out.append(summary)
     return jsonify({"sources": out})
@@ -2643,8 +2794,15 @@ def api_extensions_manifest():
                       frontend calls this first and shows the response in a
                       modal with [Apply]/[Cancel] before hitting ``endpoint``.
       ``interval_s``  Required on "toggle" actions. Poll interval in seconds.
+
+    An entry may also carry ``rail_tabs``, a list of
+    ``{"id", "label", "icon", "page"}`` dicts that add tabs to the right
+    rail. Those are validated here (invalid tabs are dropped with a logged
+    warning, see ``extensions.sanitise_rail_tabs``); everything else passes
+    through verbatim.
     """
-    return jsonify(list(app.extensions_manifest))
+    from extensions import sanitise_rail_tabs
+    return jsonify([sanitise_rail_tabs(e) for e in app.extensions_manifest])
 
 
 @app.route("/api/sources")
@@ -2984,19 +3142,39 @@ def api_visibility_panels():
     if not (1900 <= year <= 2200):
         return jsonify({"error": "year out of range"}), 400
 
+    parsed, err = _parse_visibility_panels(panels_in)
+    if err is not None:
+        return jsonify({"error": err}), 400
+    bins = _panel_bins(parsed, site, year)
+    return jsonify(_panels_payload(site, year, parsed, bins))
+
+
+def _parse_visibility_panels(panels_in: list, label: str = "panel"):
+    """Validate a list of {ra_deg, dec_deg} panels.
+
+    Returns ``(parsed, None)`` with coordinates rounded to 4 places, or
+    ``(None, message)`` for the first bad panel.
+    """
     parsed: list[tuple[float, float]] = []
     for i, p in enumerate(panels_in):
         if not isinstance(p, dict):
-            return jsonify({"error": f"panel {i}: must be object"}), 400
+            return None, f"{label} {i}: must be object"
         try:
             ra = float(p["ra_deg"])
             dec = float(p["dec_deg"])
         except (KeyError, TypeError, ValueError):
-            return jsonify({"error": f"panel {i}: ra_deg/dec_deg required"}), 400
+            return None, f"{label} {i}: ra_deg/dec_deg required"
         if not (-360.0 <= ra <= 360.0) or not (-90.0 <= dec <= 90.0):
-            return jsonify({"error": f"panel {i}: ra/dec out of range"}), 400
+            return None, f"{label} {i}: ra/dec out of range"
         parsed.append((round(ra, 4), round(dec, 4)))
+    return parsed, None
 
+
+def _panel_bins(parsed: list[tuple[float, float]], site: dict, year: int) -> list[list[dict]]:
+    """Month bins for each (ra, dec), one compute for every cache miss.
+
+    A point repeated within ``parsed`` is computed once.
+    """
     site_key = _site_cache_key(site)
     per_panel_bins: list[list[dict] | None] = [None] * len(parsed)
     misses: list[tuple[int, float, float]] = []
@@ -3008,18 +3186,25 @@ def api_visibility_panels():
             per_panel_bins[idx] = cached.get(0, [])
 
     if misses:
+        unique = list(dict.fromkeys((ra, dec) for _, ra, dec in misses))
         targets = [{"target_id": i, "center_ra_deg": ra, "center_dec_deg": dec}
-                   for i, (_, ra, dec) in enumerate(misses)]
+                   for i, (ra, dec) in enumerate(unique)]
         bins_dict = compute_year_visibility(
             targets,
             lat=site["lat"], lon=site["lon"], elev_m=site["elev_m"],
             min_alt_deg=site["min_alt_deg"], year=year,
         )
-        for i, (idx, ra, dec) in enumerate(misses):
-            single_bins = bins_dict.get(i, [])
+        slot = {pt: i for i, pt in enumerate(unique)}
+        for idx, ra, dec in misses:
+            single_bins = bins_dict.get(slot[(ra, dec)], [])
             _visibility_cache[site_key + (ra, dec, year)] = {0: single_bins}
             per_panel_bins[idx] = single_bins
+    return [b or [] for b in per_panel_bins]
 
+
+def _panels_payload(site: dict, year: int, parsed: list[tuple[float, float]],
+                    per_panel_bins: list[list[dict]]) -> dict:
+    """The response body for one mosaic, shared by the single and batch routes."""
     total = len(parsed)
     months: list[dict] = []
     for m in range(1, 13):
@@ -3030,7 +3215,7 @@ def api_visibility_panels():
                 visible += 1
         months.append({"month": m, "panels_visible": visible, "total_panels": total})
 
-    return jsonify({
+    return {
         "site": site,
         "year": year,
         "labels": list(_VIS_LABELS),
@@ -3041,7 +3226,67 @@ def api_visibility_panels():
              "months": per_panel_bins[i] or []}
             for i in range(total)
         ],
-    })
+    }
+
+
+@app.route("/api/visibility/panels/batch", methods=["POST"])
+def api_visibility_panels_batch():
+    """Aggregated visibility for several plans' panels in one request.
+
+    POST body::
+
+        { "plans": [{"id": "<plan id>", "panels": [{"ra_deg": ..., "dec_deg": ...}, ...]}, ...],
+          "year":    optional int,
+          "site_id": optional str  (else lat/lon/min_alt_deg from query) }
+
+    Returns ``{"site", "year", "results": {"<plan id>": <the body
+    /api/visibility/panels returns for that plan's panels>}}``. The total across
+    all plans is capped at the single route's 400 panels. One astropy pass
+    covers every panel that is not already cached, which is what makes this
+    cheaper than one request per plan.
+    """
+    err = _require_astropy()
+    if err is not None:
+        return err
+    site, err = _resolve_site_from_request()
+    if err is not None:
+        return err
+    body = request.get_json(silent=True) or {}
+    plans_in = body.get("plans") if isinstance(body, dict) else None
+    if not isinstance(plans_in, list) or not plans_in:
+        return jsonify({"error": "plans: non-empty list required"}), 400
+    try:
+        year = int(body.get("year") or datetime.now(timezone.utc).year)
+    except (TypeError, ValueError):
+        return jsonify({"error": "year must be an integer"}), 400
+    if not (1900 <= year <= 2200):
+        return jsonify({"error": "year out of range"}), 400
+
+    parsed_by_plan: list[tuple[str, list[tuple[float, float]]]] = []
+    total = 0
+    for i, pl in enumerate(plans_in):
+        if not isinstance(pl, dict) or pl.get("id") in (None, ""):
+            return jsonify({"error": f"plan {i}: object with id required"}), 400
+        panels_in = pl.get("panels")
+        if not isinstance(panels_in, list) or not panels_in:
+            return jsonify({"error": f"plan {i}: panels: non-empty list required"}), 400
+        total += len(panels_in)
+        if total > 400:
+            return jsonify({"error": "panels: max 400 per request"}), 400
+        parsed, err_msg = _parse_visibility_panels(panels_in, label=f"plan {i} panel")
+        if err_msg is not None:
+            return jsonify({"error": err_msg}), 400
+        parsed_by_plan.append((str(pl["id"]), parsed))
+
+    flat = [pt for _, parsed in parsed_by_plan for pt in parsed]
+    flat_bins = _panel_bins(flat, site, year)
+    results: dict[str, dict] = {}
+    pos = 0
+    for plan_id, parsed in parsed_by_plan:
+        n = len(parsed)
+        results[plan_id] = _panels_payload(site, year, parsed, flat_bins[pos:pos + n])
+        pos += n
+    return jsonify({"site": site, "year": year, "results": results})
 
 
 @app.route("/api/visibility")
@@ -4228,7 +4473,7 @@ def clear_repoint(profile_id: str) -> bool:
     return touched
 
 
-# A colour Rohan picked for a telescope, keyed by the telescope name shown next
+# A colour the user picked for a telescope, keyed by the telescope name shown next
 # to the swatch. Only #rrggbb gets in, because the value is written into a
 # style attribute on the page.
 _TELESCOPE_COLOUR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -5796,7 +6041,7 @@ def _load_ts_templates_store() -> dict:
 def _plugin_templates_response(path: Path, error: str):
     """Answer from the lists the plugin posted, or None when there are none.
 
-    The server case: ACP on Brutix has no TS database file, so the plugin
+    The server case: ACP on homeserver has no TS database file, so the plugin
     sends the list instead (docs/specs/goal-panel-and-ts-order.md section 2).
     """
     profiles = _load_ts_templates_store()
@@ -6280,7 +6525,7 @@ def api_sync():
 
     Closed plans (plan.state == "closed") never sync: TS imports this zip
     as new projects every time (see section 6 of the spec), so a closed
-    plan re-syncing here would recreate a project Rohan already finished
+    plan re-syncing here would recreate a project the user already finished
     and deleted from TS. Active, inactive and draft plans are all
     included, each with the matching TS State name, because draft and
     inactive projects still have to exist in TS for a later push to find

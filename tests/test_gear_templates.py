@@ -27,7 +27,7 @@ import filter_rows as fr  # noqa: E402
 from app import app  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-P1 = "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7"
+P1 = "00000000-0000-4000-8000-000000000001"
 P2 = "093effd2-29a5-4ce6-ae38-d6eea265a912"
 SLOTS = ["L", "R", "G", "B", "H", "O", "S"]
 CAM = "zwo-asi6200mm-pro"
@@ -112,7 +112,7 @@ def plan(plan_id: str, rows: list, camera_id: str = CAM, **kw) -> dict:
 
 
 def fingerprint(camera: str = "ZWO ASI6200MM Pro", profile_id: str | None = P1,
-                profile_name: str = "Voyager", slots=SLOTS, filters=None) -> dict:
+                profile_name: str = "IMAGING-PC", slots=SLOTS, filters=None) -> dict:
     fp = {
         "profile_name": profile_name,
         "mode": "fit",
@@ -767,7 +767,7 @@ class TestFingerprintFields(Base):
         self.assertEqual(fp["wheel_slots"], SLOTS)
         self.assertEqual(fp["profile_id"], P1)
         self.assertEqual(profiles[P1]["profile_id"], P1)
-        self.assertEqual(profiles[P1]["profile_name"], "Voyager")
+        self.assertEqual(profiles[P1]["profile_name"], "IMAGING-PC")
 
     def test_f2_bad_wheel_slots_and_profile_ids_are_refused(self):
         self.seed_v3()
@@ -784,7 +784,7 @@ class TestFingerprintFields(Base):
         before = self.client.get("/api/fingerprints").get_json()["profiles"][P1]
         self.match(fingerprint(profile_id=None, slots=["Z"]))
         profiles = self.client.get("/api/fingerprints").get_json()["profiles"]
-        self.assertEqual(set(profiles), {P1, "Voyager"})
+        self.assertEqual(set(profiles), {P1, "IMAGING-PC"})
         self.assertEqual(profiles[P1], before)
         wheel = camera(self.get_gear())["wheel"]
         self.assertEqual([p["profile_id"] for p in wheel["profiles"]], [P1])
@@ -793,7 +793,7 @@ class TestFingerprintFields(Base):
     def test_f4_an_id_replaces_the_entry_an_older_plugin_left_under_the_name(self):
         self.seed_v3()
         self.match(fingerprint(profile_id=None, slots=[]))
-        self.assertEqual(set(self.client.get("/api/fingerprints").get_json()["profiles"]), {"Voyager"})
+        self.assertEqual(set(self.client.get("/api/fingerprints").get_json()["profiles"]), {"IMAGING-PC"})
         self.match(fingerprint())
         profiles = self.client.get("/api/fingerprints").get_json()["profiles"]
         self.assertEqual(set(profiles), {P1})
