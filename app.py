@@ -21,6 +21,7 @@ Endpoints:
 - GET /api/visibility            12-month per-target visibility bins for a site
 - GET /api/visibility/point      same bins for an arbitrary (ra, dec) point
 - POST /api/visibility/panels    aggregated bins for a list of mosaic panels
+- POST /api/visibility/panels/batch  the same for several plans in one request
 - GET /api/sites, POST           CRUD for saved observing sites
 - GET /api/hidden, POST          hide or unhide a plan, project or coverage target
 - GET /api/export/priority       CSV of gap-mode candidates
@@ -2167,6 +2168,58 @@ def _without_archive_paths(obj, roots: list[str]):
     return obj
 
 
+# Fields the page never reads from /api/manifest. They are most of the bytes:
+# folder_sub_buckets alone is over half. The target detail panel fetches
+# master_files from /api/target/<id> when it opens. app.py and
+# scripts/sanitise_manifest.py read per_master_fov and corners_galactic from
+# the manifest on disk, not from this response.
+_MANIFEST_TARGET_OMIT = ("folder_sub_buckets", "per_master_fov", "corners_galactic", "master_files")
+_MANIFEST_FILTER_OMIT = ("paths", "folder_sub_buckets")
+
+# (manifest object, serialised body). Keyed on the loaded manifest object, which
+# load_manifest replaces whenever the file's mtime changes, so a rescan
+# invalidates it and every other request reuses the bytes. Kept as bytes so a
+# conditional-GET or gzip hook can use them without rebuilding.
+_manifest_body_cache: tuple[dict, bytes] | None = None
+_manifest_body_lock = threading.Lock()
+
+
+def _build_manifest_payload(m: dict) -> dict:
+    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
+    slim_targets = []
+    for t in m["targets"]:
+        ft = {f: {k: v for k, v in d.items() if k not in _MANIFEST_FILTER_OMIT}
+              for f, d in t["filters"].items()}
+        slim = {k: v for k, v in t.items() if k not in _MANIFEST_TARGET_OMIT}
+        slim["filters"] = ft
+        slim_targets.append(slim)
+    return _without_archive_paths({
+        "scan_date": m.get("scan_date"),
+        "total_targets": m.get("total_targets"),
+        "total_integration_hours": m.get("total_integration_hours"),
+        "total_captured_hours": m.get("total_captured_hours", 0),
+        "total_integrated_hours": m.get("total_integrated_hours", 0),
+        "targets": slim_targets,
+        "scan_health": _scan_health(m),
+    }, roots)
+
+
+def manifest_body_bytes(m: dict) -> bytes:
+    """The serialised /api/manifest body for a loaded manifest, built once per
+    load. Same bytes jsonify would send, trailing newline included."""
+    global _manifest_body_cache
+    cached = _manifest_body_cache
+    if cached is not None and cached[0] is m:
+        return cached[1]
+    with _manifest_body_lock:
+        cached = _manifest_body_cache
+        if cached is not None and cached[0] is m:
+            return cached[1]
+        body = app.json.response(_build_manifest_payload(m)).get_data()
+        _manifest_body_cache = (m, body)
+        return body
+
+
 @app.route("/api/manifest")
 def api_manifest():
     m = load_manifest()
@@ -2182,20 +2235,7 @@ def api_manifest():
             "total_integrated_hours": 0,
             "targets": [],
         })
-    roots = [str(r) for r in (m.get("scan_roots") or []) if r]
-    slim_targets = []
-    for t in m["targets"]:
-        ft = {f: {k: v for k, v in d.items() if k != "paths"} for f, d in t["filters"].items()}
-        slim_targets.append({**t, "filters": ft})
-    return jsonify(_without_archive_paths({
-        "scan_date": m.get("scan_date"),
-        "total_targets": m.get("total_targets"),
-        "total_integration_hours": m.get("total_integration_hours"),
-        "total_captured_hours": m.get("total_captured_hours", 0),
-        "total_integrated_hours": m.get("total_integrated_hours", 0),
-        "targets": slim_targets,
-        "scan_health": _scan_health(m),
-    }, roots))
+    return app.response_class(manifest_body_bytes(m), mimetype="application/json")
 
 
 def _scan_health(m: dict) -> dict | None:
@@ -3102,19 +3142,39 @@ def api_visibility_panels():
     if not (1900 <= year <= 2200):
         return jsonify({"error": "year out of range"}), 400
 
+    parsed, err = _parse_visibility_panels(panels_in)
+    if err is not None:
+        return jsonify({"error": err}), 400
+    bins = _panel_bins(parsed, site, year)
+    return jsonify(_panels_payload(site, year, parsed, bins))
+
+
+def _parse_visibility_panels(panels_in: list, label: str = "panel"):
+    """Validate a list of {ra_deg, dec_deg} panels.
+
+    Returns ``(parsed, None)`` with coordinates rounded to 4 places, or
+    ``(None, message)`` for the first bad panel.
+    """
     parsed: list[tuple[float, float]] = []
     for i, p in enumerate(panels_in):
         if not isinstance(p, dict):
-            return jsonify({"error": f"panel {i}: must be object"}), 400
+            return None, f"{label} {i}: must be object"
         try:
             ra = float(p["ra_deg"])
             dec = float(p["dec_deg"])
         except (KeyError, TypeError, ValueError):
-            return jsonify({"error": f"panel {i}: ra_deg/dec_deg required"}), 400
+            return None, f"{label} {i}: ra_deg/dec_deg required"
         if not (-360.0 <= ra <= 360.0) or not (-90.0 <= dec <= 90.0):
-            return jsonify({"error": f"panel {i}: ra/dec out of range"}), 400
+            return None, f"{label} {i}: ra/dec out of range"
         parsed.append((round(ra, 4), round(dec, 4)))
+    return parsed, None
 
+
+def _panel_bins(parsed: list[tuple[float, float]], site: dict, year: int) -> list[list[dict]]:
+    """Month bins for each (ra, dec), one compute for every cache miss.
+
+    A point repeated within ``parsed`` is computed once.
+    """
     site_key = _site_cache_key(site)
     per_panel_bins: list[list[dict] | None] = [None] * len(parsed)
     misses: list[tuple[int, float, float]] = []
@@ -3126,18 +3186,25 @@ def api_visibility_panels():
             per_panel_bins[idx] = cached.get(0, [])
 
     if misses:
+        unique = list(dict.fromkeys((ra, dec) for _, ra, dec in misses))
         targets = [{"target_id": i, "center_ra_deg": ra, "center_dec_deg": dec}
-                   for i, (_, ra, dec) in enumerate(misses)]
+                   for i, (ra, dec) in enumerate(unique)]
         bins_dict = compute_year_visibility(
             targets,
             lat=site["lat"], lon=site["lon"], elev_m=site["elev_m"],
             min_alt_deg=site["min_alt_deg"], year=year,
         )
-        for i, (idx, ra, dec) in enumerate(misses):
-            single_bins = bins_dict.get(i, [])
+        slot = {pt: i for i, pt in enumerate(unique)}
+        for idx, ra, dec in misses:
+            single_bins = bins_dict.get(slot[(ra, dec)], [])
             _visibility_cache[site_key + (ra, dec, year)] = {0: single_bins}
             per_panel_bins[idx] = single_bins
+    return [b or [] for b in per_panel_bins]
 
+
+def _panels_payload(site: dict, year: int, parsed: list[tuple[float, float]],
+                    per_panel_bins: list[list[dict]]) -> dict:
+    """The response body for one mosaic, shared by the single and batch routes."""
     total = len(parsed)
     months: list[dict] = []
     for m in range(1, 13):
@@ -3148,7 +3215,7 @@ def api_visibility_panels():
                 visible += 1
         months.append({"month": m, "panels_visible": visible, "total_panels": total})
 
-    return jsonify({
+    return {
         "site": site,
         "year": year,
         "labels": list(_VIS_LABELS),
@@ -3159,7 +3226,67 @@ def api_visibility_panels():
              "months": per_panel_bins[i] or []}
             for i in range(total)
         ],
-    })
+    }
+
+
+@app.route("/api/visibility/panels/batch", methods=["POST"])
+def api_visibility_panels_batch():
+    """Aggregated visibility for several plans' panels in one request.
+
+    POST body::
+
+        { "plans": [{"id": "<plan id>", "panels": [{"ra_deg": ..., "dec_deg": ...}, ...]}, ...],
+          "year":    optional int,
+          "site_id": optional str  (else lat/lon/min_alt_deg from query) }
+
+    Returns ``{"site", "year", "results": {"<plan id>": <the body
+    /api/visibility/panels returns for that plan's panels>}}``. The total across
+    all plans is capped at the single route's 400 panels. One astropy pass
+    covers every panel that is not already cached, which is what makes this
+    cheaper than one request per plan.
+    """
+    err = _require_astropy()
+    if err is not None:
+        return err
+    site, err = _resolve_site_from_request()
+    if err is not None:
+        return err
+    body = request.get_json(silent=True) or {}
+    plans_in = body.get("plans") if isinstance(body, dict) else None
+    if not isinstance(plans_in, list) or not plans_in:
+        return jsonify({"error": "plans: non-empty list required"}), 400
+    try:
+        year = int(body.get("year") or datetime.now(timezone.utc).year)
+    except (TypeError, ValueError):
+        return jsonify({"error": "year must be an integer"}), 400
+    if not (1900 <= year <= 2200):
+        return jsonify({"error": "year out of range"}), 400
+
+    parsed_by_plan: list[tuple[str, list[tuple[float, float]]]] = []
+    total = 0
+    for i, pl in enumerate(plans_in):
+        if not isinstance(pl, dict) or pl.get("id") in (None, ""):
+            return jsonify({"error": f"plan {i}: object with id required"}), 400
+        panels_in = pl.get("panels")
+        if not isinstance(panels_in, list) or not panels_in:
+            return jsonify({"error": f"plan {i}: panels: non-empty list required"}), 400
+        total += len(panels_in)
+        if total > 400:
+            return jsonify({"error": "panels: max 400 per request"}), 400
+        parsed, err_msg = _parse_visibility_panels(panels_in, label=f"plan {i} panel")
+        if err_msg is not None:
+            return jsonify({"error": err_msg}), 400
+        parsed_by_plan.append((str(pl["id"]), parsed))
+
+    flat = [pt for _, parsed in parsed_by_plan for pt in parsed]
+    flat_bins = _panel_bins(flat, site, year)
+    results: dict[str, dict] = {}
+    pos = 0
+    for plan_id, parsed in parsed_by_plan:
+        n = len(parsed)
+        results[plan_id] = _panels_payload(site, year, parsed, flat_bins[pos:pos + n])
+        pos += n
+    return jsonify({"site": site, "year": year, "results": results})
 
 
 @app.route("/api/visibility")
