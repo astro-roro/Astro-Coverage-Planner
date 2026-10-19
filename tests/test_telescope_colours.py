@@ -1,4 +1,4 @@
-"""Telescope colours Rohan picks are saved in gear.json and survive gear edits.
+"""Telescope colours the user picks are saved in gear.json and survive gear edits.
 
 The legend used to colour telescopes by their place in a sorted list, so a new
 telescope reshuffled every colour and there was no way to choose one. Picks now

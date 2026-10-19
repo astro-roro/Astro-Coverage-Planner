@@ -1,6 +1,6 @@
 // Telescope colours for coverage footprints, legend swatches and plan outlines.
 //
-// A colour Rohan picks is saved in gear.json under telescope_colours and always
+// A colour the user picks is saved in gear.json under telescope_colours and always
 // wins. Every other telescope gets an automatic colour from a hash of its name,
 // so adding a telescope no longer reshuffles the rest the way sorting by name
 // did. When two names hash to the same slot, the later one alphabetically moves

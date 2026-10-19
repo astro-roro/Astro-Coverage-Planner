@@ -92,8 +92,8 @@ class TestDestinationsTsDbAvailable(unittest.TestCase):
 
     def test_shared_file_destination_has_no_ts_db_available_field(self):
         payload = {"destinations": [{
-            "id": "victoria",
-            "label": "Remote Victoria Observatory",
+            "id": "remote",
+            "label": "Remote Observatory",
             "kind": "shared_file",
             "export_path": str(self.td / "pending.json"),
         }]}

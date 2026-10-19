@@ -87,7 +87,7 @@ def _plan(plan_id, **kwargs):
 class TestSyncClosedExclusion(unittest.TestCase):
     """Only closed plans never sync: TS imports this zip as new projects
     every time, so a closed plan re-syncing would recreate a project
-    Rohan already finished and deleted from TS
+    the user already finished and deleted from TS
     (docs/specs/ts-project-settings.md section 6). Draft and inactive
     plans DO sync now (unlike the old draft-only-work-in-progress
     meaning): TS needs the project row to exist so a later push can pause

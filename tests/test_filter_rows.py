@@ -54,7 +54,7 @@ def _m1_plan() -> dict:
         },
         "ts_links": {
             "profile-1": {
-                "machine": "VOYAGER",
+                "machine": "IMAGING-PC",
                 "refs": {
                     "profile_id": "profile-1", "project_id": 5,
                     "target_ids_by_panel": {"1,1": 77},

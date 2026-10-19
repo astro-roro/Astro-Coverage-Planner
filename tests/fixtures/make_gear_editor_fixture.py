@@ -1,7 +1,7 @@
 """Writes tests/fixtures/gear-editor-api.json, the fixture tests/frontend/gear-editor.test.mjs reads.
 
 It is what the gear editor receives: `GET /api/gear` for the gear after
-migration (gear-templates-v3.json) with the Voyager profile's fingerprint
+migration (gear-templates-v3.json) with the IMAGING-PC profile's fingerprint
 (wheel slots L R G B H O S) and a plan set that uses the templates as often as
 the live data does (docs/specs/gear-templates.md section 6). Re-run it after
 the gear API changes shape:

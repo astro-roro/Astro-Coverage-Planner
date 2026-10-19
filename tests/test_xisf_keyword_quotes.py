@@ -39,11 +39,11 @@ class TestXisfDoubledApostrophe(unittest.TestCase):
 
     def test_telescope_and_camera_apostrophes_are_single(self):
         meta = _read_with_keywords({
-            "TELESCOP": "Rohan''s RedCat",
-            "INSTRUME": "Rohan''s Camera",
+            "TELESCOP": "Dave''s RedCat",
+            "INSTRUME": "Dave''s Camera",
         })
-        self.assertEqual(meta["telescope"], "Rohan's RedCat")
-        self.assertEqual(meta["camera"], "Rohan's Camera")
+        self.assertEqual(meta["telescope"], "Dave's RedCat")
+        self.assertEqual(meta["camera"], "Dave's Camera")
 
     def test_numeric_values_are_untouched(self):
         meta = _read_with_keywords({"EXPTIME": 300.0, "OBJECT": "M 42"})

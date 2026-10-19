@@ -42,11 +42,11 @@ class TestDestinationsEndpoint(unittest.TestCase):
 
     def test_post_then_get_round_trips_shared_file(self):
         payload = {"destinations": [{
-            "id": "victoria",
-            "label": "Remote Victoria Observatory",
+            "id": "remote",
+            "label": "Remote Observatory",
             "kind": "shared_file",
-            "export_path": "/mnt/nas/acp-sync/victoria/pending.json",
-            "acquired_path": "/mnt/nas/acp-sync/victoria/acquired.json",
+            "export_path": "/mnt/nas/acp-sync/remote/pending.json",
+            "acquired_path": "/mnt/nas/acp-sync/remote/acquired.json",
             "notes": "test rig",
         }]}
         r = self.client.post("/api/destinations", json=payload)
@@ -55,10 +55,10 @@ class TestDestinationsEndpoint(unittest.TestCase):
         body = r.get_json()
         self.assertEqual(len(body["destinations"]), 1)
         d = body["destinations"][0]
-        self.assertEqual(d["id"], "victoria")
+        self.assertEqual(d["id"], "remote")
         self.assertEqual(d["kind"], "shared_file")
-        self.assertEqual(d["export_path"], "/mnt/nas/acp-sync/victoria/pending.json")
-        self.assertEqual(d["acquired_path"], "/mnt/nas/acp-sync/victoria/acquired.json")
+        self.assertEqual(d["export_path"], "/mnt/nas/acp-sync/remote/pending.json")
+        self.assertEqual(d["acquired_path"], "/mnt/nas/acp-sync/remote/acquired.json")
         self.assertEqual(d["notes"], "test rig")
 
     def test_post_local_db_destination(self):
@@ -142,20 +142,20 @@ class TestPlanBackfillMigration(unittest.TestCase):
             {"id": "p2", "guid": "g2", "destination_id": "manual"},
         ])
         self._write_dests([
-            {"id": "victoria", "label": "V", "kind": "shared_file", "export_path": "/x"},
+            {"id": "remote", "label": "V", "kind": "shared_file", "export_path": "/x"},
             {"id": "traveling", "label": "T", "kind": "shared_file", "export_path": "/y"},
         ])
         # Trigger load — migration runs lazily on first load_plans call.
         body = self.client.get("/api/plans").get_json()
         plans_by_id = {p["id"]: p for p in body["plans"]}
-        self.assertEqual(plans_by_id["p1"]["destination_id"], "victoria")
+        self.assertEqual(plans_by_id["p1"]["destination_id"], "remote")
         # Explicit destination_id must NOT be overridden.
         self.assertEqual(plans_by_id["p2"]["destination_id"], "manual")
 
     def test_backfill_runs_only_once(self):
         self._write_plans([{"id": "p1"}])
         self._write_dests([
-            {"id": "victoria", "label": "V", "kind": "shared_file", "export_path": "/x"},
+            {"id": "remote", "label": "V", "kind": "shared_file", "export_path": "/x"},
         ])
         # First load: migrates.
         self.client.get("/api/plans")
@@ -176,7 +176,7 @@ class TestPlanBackfillMigration(unittest.TestCase):
     def test_backfill_sets_backfilled_at_flag_on_destinations(self):
         self._write_plans([{"id": "p1"}])
         self._write_dests([
-            {"id": "victoria", "label": "V", "kind": "shared_file", "export_path": "/x"},
+            {"id": "remote", "label": "V", "kind": "shared_file", "export_path": "/x"},
         ])
         self.client.get("/api/plans")
         dests = app_module.load_destinations()

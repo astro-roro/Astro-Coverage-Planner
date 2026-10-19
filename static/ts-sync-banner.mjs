@@ -17,10 +17,10 @@ function startOfDay(d) {
 }
 
 // Pinned rather than left to the browser/runner's default locale, so the
-// wording is the same on Rohan's machine and on a CI runner regardless of
+// wording is the same on the user's machine and on a CI runner regardless of
 // what locale each defaults to. See PR #100 CI failure: the GitHub
 // runner's default locale (en-US) formatted the date as "Sep 30" where
-// this repo's tests, and Rohan, expect "30 Sept".
+// this repo's tests, and the user, expect "30 Sept".
 const LOCALE = "en-AU";
 
 // "3:40 pm today" / "3:40 pm tomorrow" / "3:40 pm on Mon 12 Oct", or null
