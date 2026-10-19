@@ -706,6 +706,7 @@ import {
   parseHidden,
   parseSavedStates,
   planHoursLeft,
+  planPanelLeft,
   planProject,
   projectRollups,
   sortPlans,
@@ -718,6 +719,7 @@ import {
   NEW_TEMPLATE_VALUE,
   filterListHtml,
   hoursByFilter,
+  mosaicDims,
   newFilterRow,
   orderExplanation,
   moveRow,
@@ -4087,6 +4089,8 @@ function updatePlanEditorActuals() {
     const row = (editingPlan.filter_rows || []).find(r => r.id === freshRow.id);
     if (!row) continue;
     if (typeof freshRow.actual_hours === "number") row.actual_hours = freshRow.actual_hours;
+    if (freshRow.panels) row.panels = freshRow.panels;
+    else delete row.panels;
     if (freshRow.aac) row.aac = freshRow.aac;
     else delete row.aac;
     const card = document.querySelector(
@@ -4822,7 +4826,7 @@ function _planAllGoalsMet(plan) {
   for (const [, g] of entries) {
     const target = Number(g?.target_hours) || 0;
     if (target <= 0) continue;
-    if ((Number(g?.actual_hours) || 0) < target) return false;
+    if ((Number(g?.credited_hours ?? g?.actual_hours) || 0) < target) return false;
   }
   return true;
 }
@@ -7525,11 +7529,19 @@ function planRowHtml(pl, { withProject = true } = {}) {
       return `<span class="plan-goal-dot todo" style="background:${color}" title="${f}: no goal"></span>`;
     }
     const th = g.target_hours;
-    const ah = g.actual_hours || 0;
+    const ah = g.credited_hours ?? g.actual_hours ?? 0;
     const cls = ah >= th ? "done" : (ah > 0 ? "partial" : "todo");
     return `<span class="plan-goal-dot ${cls}" style="background:${color}" title="${f}: ${ah.toFixed(1)}/${th}h"></span>`;
   }).join("");
   const remaining = planHoursLeft(pl);
+  const panelLeft = planPanelLeft(pl);
+  const panelLine = panelLeft
+    ? `<div class="plan-panel-left">${panelLeft.map(p => {
+        const detail = Object.entries(p.byFilter).filter(([, h]) => h > 0)
+          .map(([f, h]) => `${f} ${h.toFixed(1)}h`).join(", ") || "done";
+        return `<span class="plan-panel-chip${p.left > 0 ? "" : " done"}" title="Panel ${esc(p.key)}: ${esc(detail)}">${esc(p.key)} ${p.left > 0 ? _fmtHours(p.left) : "done"}</span>`;
+      }).join("")}</div>`
+    : "";
   const visCell = timeAware ? `<span class="plan-vis">${planVisCellHtml(pl, { compact: true })}</span>` : "";
   const priLabel = pri.charAt(0).toUpperCase() + pri.slice(1);
   // Active (or no state at all, pre-existing plans) shows no badge so the
@@ -7554,6 +7566,7 @@ function planRowHtml(pl, { withProject = true } = {}) {
         <span class="plan-goals">${dots}</span>
         <span class="plan-remaining">${remaining.toFixed(1)}h left</span>
       </div>
+      ${panelLine}
       ${menuButtonHtml(`${name} actions`, `data-menu-plan="${esc(pl.id)}"`)}
     </li>`;
 }
@@ -7815,6 +7828,7 @@ function filterRowsContext() {
     colors: FILTER_COLORS,
     rotateN: editingRotateN,
     projectNote: orderProjectNote(editingPlan),
+    panels: editingPlan ? mosaicDims(editingPlan) : 1,
   };
 }
 
@@ -8286,11 +8300,13 @@ function renderPlanEditor(plan) {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
     editingPlan.target.mosaic.rows = Math.max(1, parseInt(e.target.value) || 1);
     updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
+    redrawFilterRows(panel);
   });
   panel.querySelector("#f_mcols")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
     editingPlan.target.mosaic.cols = Math.max(1, parseInt(e.target.value) || 1);
     updateMosaicSummary(); redrawPlanFootprints(); schedulePlanVisRefresh();
+    redrawFilterRows(panel);
   });
   panel.querySelector("#f_moverlap")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };

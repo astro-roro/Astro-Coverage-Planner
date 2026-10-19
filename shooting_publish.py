@@ -146,10 +146,11 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
     filters: dict[str, dict] = {}
     for fname, goal in fr.hours_by_filter(plan).items():
         key = canon_filter(fname) or fname
-        # actual_hours comes from the Target Scheduler extension when it is
+        # credited_hours comes from the Target Scheduler extension when it is
         # installed and is usually fresher than the last archive scan. A
-        # filter with two rows (R and R Stars) shows their sum.
-        done = max(logged.get(key, 0.0), goal["actual_hours"])
+        # filter with two rows (R and R Stars) shows their sum. For a mosaic
+        # each panel counts up to its own goal only, as the planner shows it.
+        done = max(logged.get(key, 0.0), goal["credited_hours"])
         filters[key] = {
             "target_hours": round(goal["target_hours"], 1),
             "done_hours": round(done, 1),

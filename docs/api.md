@@ -272,6 +272,20 @@ Records what a session actually acquired against a plan's per-filter goals:
 
 Each entry updates `filter_goals.<f>.actual_hours`. Hours only ever go up: NINA's own acquired count drops legitimately when frames are culled or a project is reset, and silently rewinding a plan the user has watched fill up is worse than being one session stale. Pass `"force": true` to overwrite downward on purpose. Filter names are canonicalised, so a plugin reporting "Antlia Ha" updates the plan's `Ha` goal.
 
+A mosaic's goals are per panel, so the plan's total goal for a filter is the row goal times rows x cols, and the planner works out hours left against that total.
+
+A mosaic can also report per panel. Add `panels` to an entry, a map from panel key to the hours acquired on that panel. The key is `"row,col"` counted from 1, the same key `ts_links.refs.target_ids_by_panel` uses (`"1,1"`, `"2,1"`):
+
+```json
+{"entries": [{"filter": "L", "template": "L", "acquired_hours": 3.5, "panels": {"1,1": 2.0, "2,1": 1.5}}]}
+```
+
+The map is stored on the row as `panels`, and the row's `actual_hours` becomes the sum of the map, whatever `acquired_hours` said. Reported panels merge into the stored map and each panel only goes up unless `force` is set, which replaces the whole map. A panel that would have gone down is named in `not_lowered` as `"<template>#<key>"`. Keys must look like `"1,1"` and values must be numbers from 0 up to the same cap as `acquired_hours`, or the whole request is a 400. Keys outside the mosaic's grid are kept but ignored when totalling.
+
+An empty `panels` map is treated as no `panels` at all. A report without `panels` (every existing caller) behaves as before on a row with no map. On a row that already has a map it cannot say which panel the figure belongs to, so it is ignored and the row is listed in `panel_rows_kept`; with `force` it overwrites `actual_hours` and drops the map.
+
+On `/api/sync`, a mosaic row with a `panels` map gives each exported panel target its own `Acquired` and `Accepted` (a panel missing from the map gets 0). Without a map every panel gets the plan's `actual_hours` as before, and a single target never reads the map. A mosaic row with no map is in a transitional state: its single figure came from a caller that read one panel, the planner counts it against the plan total, and the next `/sync-acquired` from the NINA Target Scheduler extension replaces it with a per-panel map.
+
 `acquired_count` is validated but not stored: the plan schema carries hours, and `/api/sync` derives the acquired sub count from hours and sub exposure. Filters the plan has no goal for are ignored rather than invented.
 
 ```json
