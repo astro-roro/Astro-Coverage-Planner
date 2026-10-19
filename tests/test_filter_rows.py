@@ -290,7 +290,8 @@ class TestFilterGoalsView(unittest.TestCase):
             {"id": "b", "filter": "R", "template": "R", "template_sub_s": 180, "unit": "h",
              "target_hours": 3.0, "actual_hours": 1.0},
         ]}
-        self.assertEqual(fr.hours_by_filter(plan), {"R": {"target_hours": 4.0, "actual_hours": 1.5}})
+        self.assertEqual(fr.hours_by_filter(plan),
+                         {"R": {"target_hours": 4.0, "actual_hours": 1.5, "credited_hours": 1.5}})
 
 
 if __name__ == "__main__":

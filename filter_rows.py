@@ -234,8 +234,10 @@ def mosaic_dims(plan: dict | None) -> tuple[int, int]:
 
 def panel_count(plan: dict | None) -> int:
     """How many panels the plan's mosaic has: rows x cols, 1 for a plan that
-    is not a mosaic or whose mosaic block is junk. The same clamp the TS
-    export uses (`_build_ts_export`), so goals and exported targets agree."""
+    is not a mosaic or whose mosaic block is junk. Note that the TS export
+    (`_build_ts_export`) collapses a mosaic to one target when the plan has
+    no usable FOV, so a plan with no telescope set is counted here as rows x
+    cols panels but reaches Target Scheduler as a single target."""
     rows, cols = mosaic_dims(plan)
     return rows * cols
 
@@ -273,22 +275,34 @@ def credited_hours(row: dict, plan: dict | None = None) -> float:
     return sum(min(v, goal) for v in panels.values())
 
 
+def shot_hours(row: dict, plan: dict | None = None) -> float:
+    """Hours shot on a row: the sum of its `panels` map (keys inside the
+    plan's grid only, when the plan is given), else its `actual_hours`."""
+    panels = row_panels(row, plan)
+    if panels is None:
+        return _num(row.get("actual_hours")) or 0.0
+    return sum(panels.values())
+
+
 def sync_actuals(plan: dict | None) -> None:
     """Make `actual_hours` the sum of the row's panel hours wherever the row
-    has a `panels` map. Rows without one are left alone."""
+    has a `panels` map. Keys outside the mosaic's grid do not count. Rows
+    without a map are left alone."""
     for row in rows_of(plan):
-        panels = row_panels(row)
-        if panels is not None:
-            row["actual_hours"] = round(sum(panels.values()), 4)
+        if row_panels(row) is not None:
+            row["actual_hours"] = round(shot_hours(row, plan), 4)
 
 
 def hours_by_filter(plan: dict | None) -> dict[str, dict]:
-    """Goal and actual hours per filter, summed over the filter's rows.
+    """Goal, actual and credited hours per filter, summed over the filter's rows.
 
     A row's goal is per panel (the TS export gives every panel the full row
     goal), so for a mosaic `target_hours` here is the row goal times the panel
     count: a 2 x 1 mosaic with an 8 h L goal wants 16 h of L. `actual_hours`
-    is the plan's single stored figure and is not scaled.
+    is what was shot (the sum of the panels when a row has a map, else the
+    stored figure). `credited_hours` is what counts toward the goal: the same,
+    except that each panel counts up to its own goal and no more. Mirrors
+    hoursByFilter in static/filter-rows.mjs.
 
     The one place readers that want a total per filter (coverage, the live
     page, plan matching) get it from.
@@ -298,9 +312,10 @@ def hours_by_filter(plan: dict | None) -> dict[str, dict]:
         name = str(row.get("filter") or "").strip()
         if not name:
             continue
-        entry = out.setdefault(name, {"target_hours": 0.0, "actual_hours": 0.0})
+        entry = out.setdefault(name, {"target_hours": 0.0, "actual_hours": 0.0, "credited_hours": 0.0})
         entry["target_hours"] += goal_hours(row)
-        entry["actual_hours"] += _num(row.get("actual_hours")) or 0.0
+        entry["actual_hours"] += shot_hours(row, plan)
+        entry["credited_hours"] += credited_hours(row, plan)
     panels = panel_count(plan)
     if panels > 1:
         for entry in out.values():

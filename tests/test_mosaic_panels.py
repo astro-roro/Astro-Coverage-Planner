@@ -116,6 +116,28 @@ class TestSumAndCredit(unittest.TestCase):
         self.assertEqual(fr.row_panels(row, p), {"1,1": 1.0, "2,1": 2.0})
         self.assertEqual(fr.row_panels(row), {"1,1": 1.0, "2,1": 2.0, "3,1": 9.0, "1,2": 9.0})
 
+    def test_sync_actuals_leaves_out_keys_outside_the_grid(self):
+        p = _plan()
+        row = _row(p, "r-l")
+        row["panels"] = {"1,1": 1.0, "2,1": 2.0, "3,1": 9.0}
+        fr.sync_actuals(p)
+        self.assertEqual(row["actual_hours"], 3.0)
+
+    def test_hours_by_filter_reports_shot_and_credited(self):
+        p = _plan()
+        row = _row(p, "r-l")
+        row["panels"] = {"1,1": 16.0, "2,1": 0.0, "9,9": 5.0}
+        totals = fr.hours_by_filter(p)["L"]
+        # Goal 8 h x 2 panels; 16 h shot on panel 1 but only 8 h of it credited.
+        self.assertEqual(totals["target_hours"], 16.0)
+        self.assertEqual(totals["actual_hours"], 16.0)
+        self.assertEqual(totals["credited_hours"], 8.0)
+
+    def test_hours_by_filter_without_a_map_credits_actual_hours(self):
+        totals = fr.hours_by_filter(_plan())["L"]
+        self.assertEqual(totals["actual_hours"], 3.0)
+        self.assertEqual(totals["credited_hours"], 3.0)
+
     def test_a_panel_counts_up_to_its_own_goal(self):
         p = _plan()
         row = _row(p, "r-l")
@@ -161,6 +183,13 @@ class TestProgressEndpoint(unittest.TestCase):
         self.assertEqual(row["panels"], {"1,1": 2.0, "2,1": 1.5})
         self.assertEqual(row["actual_hours"], 3.5)
         self.assertEqual(r.get_json()["updated"], {"L": 3.5})
+
+    def test_a_key_outside_the_grid_is_kept_but_not_totalled(self):
+        r = self._post(self._entry({"1,1": 2.0, "2,1": 1.5, "3,1": 9.0}))
+        self.assertEqual(r.status_code, 200, r.get_json())
+        row = _row(self._stored(), "r-l")
+        self.assertEqual(row["panels"], {"1,1": 2.0, "2,1": 1.5, "3,1": 9.0})
+        self.assertEqual(row["actual_hours"], 3.5)
 
     def test_a_later_report_merges_and_panels_only_go_up(self):
         self._post(self._entry({"1,1": 2.0, "2,1": 1.5}))

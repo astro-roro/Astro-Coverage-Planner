@@ -5609,7 +5609,7 @@ def api_plan_progress(plan_id: str):
                 merged[pkey] = hours
             if merged != stored or "panels" not in row:
                 row["panels"] = {k: round(v, 4) for k, v in sorted(merged.items())}
-                fr.sync_actuals({"filter_rows": [row]})
+                fr.sync_actuals({"filter_rows": [row], "target": plan.get("target")})
                 updated[key] = row["actual_hours"]
             continue
         new_hours = _num(cfg.get("acquired_hours"))

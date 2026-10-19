@@ -65,9 +65,11 @@ class TestMosaicHoursByFilter(unittest.TestCase):
     def test_non_mosaic_plan_is_unchanged(self):
         p = _plan()
         p["target"]["mosaic"] = {"rows": 1, "cols": 1, "overlap_pct": 15}
-        self.assertEqual(fr.hours_by_filter(p)["L"], {"target_hours": 8.0, "actual_hours": 3.0})
+        self.assertEqual(fr.hours_by_filter(p)["L"],
+                         {"target_hours": 8.0, "actual_hours": 3.0, "credited_hours": 3.0})
         del p["target"]["mosaic"]
-        self.assertEqual(fr.hours_by_filter(p)["L"], {"target_hours": 8.0, "actual_hours": 3.0})
+        self.assertEqual(fr.hours_by_filter(p)["L"],
+                         {"target_hours": 8.0, "actual_hours": 3.0, "credited_hours": 3.0})
 
     def test_a_row_goal_is_still_per_panel(self):
         row = _plan()["filter_rows"][0]

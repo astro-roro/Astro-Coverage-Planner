@@ -94,6 +94,16 @@ class BuildDocument(unittest.TestCase):
                     "master_files", "/Users/", "\"id\"", "RedCat", "ASI2600", "2023-", "T06:10"):
             self.assertNotIn(bad, text, bad)
 
+    def test_a_mosaic_credits_each_panel_up_to_its_own_goal(self):
+        plan = _plan(target={**_plan()["target"], "mosaic": {"rows": 2, "cols": 1, "overlap_pct": 15}})
+        plan["filter_rows"][0]["panels"] = {"1,1": 20.0, "2,1": 0.0}
+        plan["filter_rows"][0]["actual_hours"] = 20.0
+        doc = build_shooting_document([plan], _manifest(), GEAR, now=NOW)
+        ha = doc["projects"][0]["filters"]["Ha"]
+        # Goal 10 h x 2 panels; panel 1's 20 h pays for itself only, as the planner shows it.
+        self.assertEqual(ha["target_hours"], 20.0)
+        self.assertEqual(ha["done_hours"], 10.0)
+
     def test_matching_target_contributes_hours_and_date(self):
         doc = build_shooting_document([_plan()], _manifest(_target(128.6, -45.1)), GEAR, now=NOW)
         pr = doc["projects"][0]
