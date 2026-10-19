@@ -91,6 +91,7 @@
         <div class="sheet-grab" aria-hidden="true"></div>
         <div class="side-panel-head">
           <h2 id="sidePanelTitle">Plans</h2>
+          <button type="button" id="sidePanelWide" class="icon-btn" aria-pressed="false" hidden>&#x2190;&#x2192;</button>
           <button type="button" id="sidePanelHide" class="icon-btn" aria-label="Hide panel" title="Hide panel">&#x203A;&#x203A;</button>
         </div>
 
@@ -163,6 +164,7 @@
           <details id="railInventory" class="rail-accordion inventory" hidden>
             <summary>Inventory</summary>
             <div class="accordion-body">
+              <div id="extensionStatus"></div>
               <div id="inventoryList"></div>
             </div>
           </details>

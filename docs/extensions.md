@@ -127,6 +127,36 @@ def register(app):
 
 `priority_level` is an ordinal — 1 is the most urgent — driving the colour bucket on the map. The Inventory rail accordion only appears when at least one tile source is registered, so a stock checkout shows nothing.
 
+Two optional extras make tiles carry more than coverage:
+
+- `fill_opacity` in the source's `metadata()` (a number from 0 to 1). When set, ACP draws that source's footprints filled at that opacity, in each tile's usual colour. When absent, or not a number in range, footprints stay as they were. The value is reported as `fill_opacity` by `GET /api/tile-sources` (`null` when unset).
+- `plans` in a tile's `metadata`, a list of `{"plan_id": str | null, "name": str, "detail": str}`. The tile panel shows a Plans list. A name is a link when `plan_id` is set and matches a plan ACP has loaded (by plan `id` or `guid`), and clicking it switches to Planning mode and opens that plan. With `plan_id` null, or an id ACP doesn't know, the name is plain text. `detail` appears as muted text under the name. All of it is escaped. Other metadata keys are not displayed, as before.
+
+- `style` in a tile's `metadata`, an object that overrides how that one tile is drawn. `color` is a hex colour (`#rgb` or `#rrggbb`) used in place of the colour ACP picks from the facet or priority. `fill_opacity` is a number from 0 to 1 that replaces the source's `fill_opacity` for this tile, and `null` draws the tile as an outline even when the source fills its tiles. `line_width` is a number from 0.5 to 6 (the default is 0.5). Each key is checked on its own, and one that is missing or invalid is ignored.
+- A footprint can be a line: list the vertices out along the path and back the same way (three or more vertices). ACP does not check polygon area or winding, so it draws the polygon as given. On the all-sky projections (Aitoff and Mollweide) ACP cuts any footprint that crosses the map's seam (the line where the map's left and right edges meet, which turns as the view is moved and rolled) into one part per side, so footprints near it are not drawn across the whole map; lines, and tiles drawn as outlines only, are cut into separate open lines. Clicks and hover still belong to the original tile. A zero-area footprint can't be clicked on the map, because the click test needs an inside, but its hover text still shows.
+- `panel_html` in a tile's `metadata` (a string). ACP puts it in the tile panel inside a container with the class `ext-tile-panel`, under the title. It is inserted as written, because extensions are trusted server-side code, so escape any user-supplied text yourself. ACP styles links inside that container with its own link colour. Prefix your own CSS classes (for example `nights-`) so they do not clash with ACP's.
+- `tile_panel` in the source's `metadata()`, either `"replace"` or `"append"`. With `"replace"`, tiles of that source show only the Back link, the title and `panel_html`: ACP leaves out the Position table, facet chips, per-band coverage, the Plans list, the bands note and the "Create new plan from this tile" button. With `"append"`, or when unset, `panel_html` follows the standard sections. Any other value counts as unset. `GET /api/tile-sources` reports it as `tile_panel` (`null` when unset).
+- The tile panel title is the tile `id`, with the source label as a small muted line above it.
+
+Elements inside `panel_html` can trigger ACP actions through data attributes. Clicking the element (or anything inside it) runs the action.
+
+- `data-acp-plan-id="<id>"` opens the loaded plan whose `id` or `guid` matches, as the Plans list links do: it switches to Planning, pans the map and opens the editor. If no loaded plan matches, a short note appears at the top of the panel and nothing else happens.
+- `data-acp-new-plan` with `data-ra` and `data-dec` in degrees, and an optional `data-name`, opens the same new-plan editor that "Create new plan from this tile" uses, centred on that position and named from `data-name`.
+- `data-acp-goto` with `data-ra` and `data-dec` in degrees, and an optional `data-fov` in degrees, pans the sky map there and sets the field of view when `data-fov` is given.
+
+- `data-acp-post="<path>"` with an optional `data-acp-body='<json>'` POSTs that JSON body (`{}` when absent) to the path as `application/json`. The path must be a same-origin relative path under `/api/ext/`, with no host, `..` or `.` segments, backslashes or encoded dots and slashes. On a 2xx reply ACP refreshes tile sources and tiles as it does after an extension Apply, redraws the map, re-renders the open tile panel and sends `acp:layers` to the rail iframes. On any other status a short note with the status appears at the top of the panel. A bad path or a body that is not valid JSON sends nothing and shows a note.
+
+An action with a missing or invalid `data-ra` or `data-dec` (not a number, or a declination outside -90 to 90) does nothing.
+
+- `status` in the source's `metadata()`. Return `"loading"` while the source is still starting up and ACP lists it as loading and asks again (see below). Any other value is ignored.
+- `extension` in the source's `metadata()`, the id of the extension that owns the source. When absent, ACP takes it from the module the source class was loaded from. It only decides which extension a source is listed under in the Extensions block.
+
+`GET /api/tile-sources` lists every registered source, including ones that fail. Each entry has a `status` of `"ready"`, `"loading"`, `"empty"` (ready with no tiles) or `"error"`, plus `error` (a short message, or `null`) and `extension`. A source whose `id()`, `metadata()` or `tiles()` raises is reported as `"error"` with the exception text instead of being left out.
+
+The Inventory rail has an Extensions block that shows each extension and the state of its tile sources, with a Retry button on errors. When everything has loaded it shrinks to one line, such as "Extensions: 2 loaded". While any source is loading or in error, the page asks for the summary again after 2, 4, 8, 8 and 8 seconds, then stops. A source that becomes ready is drawn if it is switched on.
+
+After any extension action's apply step succeeds, ACP refetches tile sources and redraws the enabled ones, so the map doesn't show layers from before the change. ACP doesn't know which extension owns which source, so it refreshes all of them.
+
 ### `CategorisedCatalogSource` — point catalogues with category chips
 
 For class-tagged point objects (e.g. "PNe", "HII", "SNR") — gives you the same chip-filter UI the built-in Messier/Sharpless/etc. catalogues get.
@@ -257,6 +287,29 @@ manifest.append({
 
 The frontend handles the picker UI; you just expose the routes.
 
+### Rail tabs
+
+An entry can add its own tab to the right-hand rail, next to Plans, Filters and Library, by declaring `rail_tabs`:
+
+```python
+manifest.append({
+    "extension": "my_workflow",
+    "name": "My Workflow",
+    "rail_tabs": [
+        {"id": "overview", "label": "Overview", "icon": "calendar",
+         "page": "/api/ext/my-workflow/ui"},
+    ],
+    "actions": [...],
+})
+```
+
+- `id` is a short slug (letters, digits, `_`, `-`, up to 40 characters), unique within the extension.
+- `label` is the text under the rail icon and the panel title.
+- `icon` is optional. Known names are `list`, `plans`, `targets`, `filter`, `filters`, `library`, `catalogue`, `catalog`, `layers`, `activity`, `pulse`, `chart` and `calendar`. Anything else gets a generic icon.
+- `page` is the page to show. It must be a relative path that starts with `/api/ext/<prefix>`, where the prefix is the entry's `extension` value, or the same value with underscores written as hyphens (`my_workflow` may use `/api/ext/my_workflow/` or `/api/ext/my-workflow/`). The path must be that prefix or continue after a `/`, and it can carry a query string. Full URLs, `//host/...` paths, `..` segments and encoded slashes or dots are rejected.
+
+ACP shows the page in a same-origin iframe that fills the panel, so the browser's session cookie authenticates it exactly as it does for the rest of ACP. The iframe is created the first time the tab is opened and kept afterwards. A tab that fails validation is dropped and a warning is logged once on the `acp.extensions` logger. The other tabs and the rest of the entry are unaffected.
+
 ### Example: nina_ts_sync
 
 The `acp-nina-ts-sync` extension uses all of the above:
@@ -289,3 +342,26 @@ If your extension might be useful to others, consider opening a PR to ship it as
 **Routes outside `/api/`.** An extension can mount a route anywhere, including beside the pages. The loader logs a warning at startup naming any route it added outside `/api/`, because the setting an operator reasons about is called `ACP_API_TOKEN` and it would be easy to read the gate as covering the API alone. It does not: with a token set, every path is behind it. With no token set, every path answers anyone who can reach the port, and a route called `/backdoor` is no different from the coverage page. Keep extension routes under `/api/ext/<name>/` unless you have a reason not to.
 
 **Debugging.** Set `LOG_LEVEL=DEBUG` to see the registration sequence on startup; each Protocol implementation gets a one-line confirmation when it's accepted into the registry.
+
+
+## Rail tab width and the layer bridge
+
+A rail tab can be widened with the arrows button in its panel header. Wide is about three times the normal panel width, held to 70% of the window, and full width on a phone. ACP remembers the choice for each tab in the browser. A tab in `rail_tabs` may set `"width": "wide"` to start wide until the user picks otherwise; `"normal"` is the default and any other value is ignored.
+
+A rail tab page can read and change the map's tile layers and time-aware mode with `window.postMessage`. ACP accepts a message only if its origin is ACP's own and it came from one of ACP's rail iframes. Messages that are malformed are ignored without a reply. Send to `window.parent` with `window.location.origin` as the target origin.
+
+- `{type: "acp:layers:get"}` asks for the current state. ACP replies to that iframe.
+- `{type: "acp:layer:set", id: "<source id>", enabled: true | false}` switches a tile source on or off exactly as its rail checkbox does, including remembering it. Sources that are loading or in error are ignored.
+- `{type: "acp:time-aware:set", enabled: true | false}` switches time-aware mode as the existing control does.
+
+- `{type: "acp:tiles:refresh"}` makes ACP refresh tile sources and tiles, as after an Apply. Use it when the page has changed something server-side by its own means.
+
+ACP sends `{type: "acp:layers", timeAware: bool, layers: [{id, label, enabled, color, kind, extension}]}` in reply to a get, and to every open rail iframe whenever a layer or time-aware mode changes, whoever changed it. `kind` is always `"tiles"`. Only tile sources are included: the built-in map overlays (catalogues, survey layers and the like) are toggled through a different mechanism and are not part of the bridge.
+
+```js
+window.addEventListener("message", e => {
+  if (e.origin !== location.origin || e.data?.type !== "acp:layers") return;
+  render(e.data.layers, e.data.timeAware);
+});
+window.parent.postMessage({type: "acp:layers:get"}, location.origin);
+```

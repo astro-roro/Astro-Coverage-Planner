@@ -624,6 +624,19 @@ import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
+import { listModeFor, createNavStack } from "./panel-nav.mjs";
+import { splitAtViewSeam, crossesViewSeam, projectionHasSeam } from "./seam.mjs";
+
+// Back targets for screens opened from a tile panel (see panel-nav.mjs).
+const navStack = createNavStack();
+import {
+  railIconPath, railTabsFrom, fillColorFor, tilePlansHtml,
+  tilePanelModeOf, tilePanelTitleHtml, tilePanelAction, runTilePanelAction,
+  resolveTileDraw,
+  retryDelayMs, sourcesNeedRetry, extensionStatusModel,
+  railTabWidthPx, railWidthDefault, layerStateMessage, bridgeRequest,
+  extPostPathOk, parsePostBody,
+} from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
@@ -1107,6 +1120,7 @@ function _upcomingCompare(a, b) {
 }
 
 function renderTargetList() {
+  navStack.clear();
   panelMode = "list";
   updateSearchVisibility();
   selectedTargetId = null;
@@ -1219,6 +1233,7 @@ function renderTargetList() {
 }
 
 function renderTargetPanel(t) {
+  navStack.clear();
   panelMode = "detail";
   updateSearchVisibility();
   selectedTargetId = t.target_id;
@@ -2453,6 +2468,8 @@ async function loadExtensions() {
   }
   if (!Array.isArray(entries)) entries = [];
   extensionsManifest = entries;
+  setupExtensionRailTabs(entries);
+  renderExtensionStatus();
 
   try {
     const r = await fetch("/api/sync/config");
@@ -3137,6 +3154,11 @@ async function _afterApplyRefreshRail() {
     }
   } catch (refreshErr) {
     console.warn("plan reload after extension apply failed:", refreshErr);
+  }
+  try {
+    await refreshExtensionTiles();
+  } catch (tileErr) {
+    console.warn("tile reload after extension apply failed:", tileErr);
   }
 }
 
@@ -4234,29 +4256,80 @@ function renderScanHealth(h) {
   if (badge) { badge.textContent = bad ? String(bad) : ""; badge.hidden = !bad; }
 }
 
-async function initInventory() {
-  const accordion = document.getElementById("railInventory");
-  if (!accordion) return;
-  let summary = [];
+let tileSourcesFetchFailed = false;
+let tileSourceRetryTimer = null;
+
+async function fetchTileSourceSummary() {
   try {
     const r = await fetch("/api/tile-sources");
     const d = await r.json();
-    summary = Array.isArray(d?.sources) ? d.sources : [];
+    tileSourcesFetchFailed = false;
+    return Array.isArray(d?.sources) ? d.sources : [];
   } catch (e) {
     console.warn("tile sources unavailable:", e);
+    tileSourcesFetchFailed = true;
+    return null;
   }
-  if (!summary.length) {
+}
+
+async function initInventory() {
+  const accordion = document.getElementById("railInventory");
+  if (!accordion) return;
+  const summary = await fetchTileSourceSummary();
+  if (summary && summary.length) {
+    accordion.hidden = false;
+    await loadSavedSearches();
+    applyTileSources(summary);
+  } else {
     // No registered extension → keep the accordion hidden so a stock
     // checkout shows no Inventory rail at all.
     accordion.hidden = true;
-    return;
   }
-  accordion.hidden = false;
+  scheduleTileSourceRetry(0);
+}
+
+// While a source is loading or has errored (or the summary couldn't be
+// fetched), ask again after 2, 4, 8, 8 and 8 s, then stop. A source that
+// becomes ready is drawn if it's switched on.
+function scheduleTileSourceRetry(attempt) {
+  clearTimeout(tileSourceRetryTimer);
+  if (!tileSourcesFetchFailed && !sourcesNeedRetry(tileSources)) return;
+  const delay = retryDelayMs(attempt);
+  if (delay == null) return;
+  tileSourceRetryTimer = setTimeout(async () => {
+    await reloadTileSources();
+    scheduleTileSourceRetry(attempt + 1);
+  }, delay);
+}
+
+async function reloadTileSources() {
+  const summary = await fetchTileSourceSummary();
+  if (!summary) return;
+  const accordion = document.getElementById("railInventory");
+  if (summary.length && accordion) {
+    if (accordion.hidden) await loadSavedSearches();
+    accordion.hidden = false;
+  }
+  if (summary.length) applyTileSources(summary);
+}
+
+// Retry button in the Extensions block: ask now, then keep backing off.
+function retryTileSourcesNow() {
+  reloadTileSources().then(() => scheduleTileSourceRetry(0));
+}
+
+const sourceStateOf = s => (s.status === "error" || s.status === "loading" || s.status === "empty") ? s.status : "ready";
+const sourceUsable = s => { const st = sourceStateOf(s); return st === "ready" || st === "empty"; };
+
+// Take a fresh summary: set up state for new sources, keep what the user has
+// already chosen for known ones, redraw the rail and load tiles for any
+// enabled source that has just become ready.
+function applyTileSources(summary, { loadTiles = true } = {}) {
+  const before = new Map(tileSources.map(s => [s.id, sourceStateOf(s)]));
   tileSources = summary;
-  await loadSavedSearches();
   const saved = _loadInvState();
   for (const s of tileSources) {
-    const prior = saved[s.id] || {};
+    const prior = invState[s.id] || saved[s.id] || {};
     // Default each facet to all-values-selected so a fresh source filters
     // nothing out until the user starts unticking. Reuse persisted Sets
     // when they exist, otherwise build a full-coverage Set from the facet
@@ -4282,10 +4355,40 @@ async function initInventory() {
     };
   }
   renderInventoryRail();
-  // Lazy-load tiles for whichever sources are enabled at startup.
-  for (const s of tileSources) {
-    if (invState[s.id].enabled) ensureTilesLoaded(s.id);
+  renderExtensionStatus();
+  // Lazy-load tiles for whichever sources are enabled and usable.
+  if (loadTiles) {
+    for (const s of tileSources) {
+      if (!invState[s.id].enabled || !sourceUsable(s)) continue;
+      if (before.get(s.id) !== sourceStateOf(s)) delete tileData[s.id];
+      ensureTilesLoaded(s.id);
+    }
   }
+  broadcastLayerState();
+}
+
+// The "Extensions" block at the top of the Inventory rail: one line when all
+// extensions are loaded, a list with each source's state while any is not.
+function renderExtensionStatus() {
+  const host = document.getElementById("extensionStatus");
+  if (!host) return;
+  const m = extensionStatusModel(extensionsManifest, tileSources);
+  if (!m.groups.length) { host.innerHTML = ""; return; }
+  const rows = m.groups.map(g => {
+    const srcs = g.sources.length
+      ? g.sources.map(x => `<li class="ext-src" data-state="${esc(x.state)}">
+          <span class="ext-src-name">${esc(x.label)}</span>
+          <span class="ext-src-state">${esc(x.state)}${x.reason && x.state !== "loading" ? `: ${esc(x.reason)}` : ""}</span>
+          ${x.state === "error" ? `<button type="button" class="link-btn" data-ext-retry>Retry</button>` : ""}
+        </li>`).join("")
+      : `<li class="ext-src" data-state="ready"><span class="ext-src-name">no tile sources</span></li>`;
+    return `<li class="ext-group" data-state="${esc(g.state)}"><div class="ext-group-name">${esc(g.label)} <span class="ext-src-state">${esc(g.state)}</span></div><ul>${srcs}</ul></li>`;
+  }).join("");
+  host.innerHTML = `<details class="ext-status" ${m.settled ? "" : "open"}>
+      <summary>${m.settled ? esc(m.summary) : `Extensions: ${m.loaded} of ${m.groups.length} loaded`}</summary>
+      <ul class="ext-groups">${rows}</ul>
+    </details>`;
+  host.querySelectorAll("[data-ext-retry]").forEach(b => b.addEventListener("click", retryTileSourcesNow));
 }
 
 function renderInventoryRail() {
@@ -4299,6 +4402,18 @@ function renderInventoryRail() {
     block.dataset.sourceId = s.id;
     block.dataset.open = st.openRail ? "true" : "false";
     const swatch = s.color || "#7aa2ff";
+    if (s.status === "loading" || s.status === "error") {
+      // Nothing to filter yet: show the source with its state until it loads.
+      block.dataset.open = "false";
+      block.innerHTML = `
+        <div class="inv-source-head">
+          <span class="swatch" style="background:${esc(swatch)}"></span>
+          <span class="label">${esc(s.label)}</span>
+          <span class="count" title="${esc(s.error || "")}">${s.status === "error" ? "error" : "loading…"}</span>
+        </div>`;
+      host.appendChild(block);
+      continue;
+    }
 
     // Build priority chip set (1..max).
     const priChips = [];
@@ -4379,6 +4494,7 @@ function renderInventoryRail() {
       block.querySelector("[data-count]").textContent = st.enabled ? `${s.n_tiles} tiles` : "off";
       if (st.enabled) ensureTilesLoaded(s.id);
       renderTileOverlay(s.id);  // Plan 4c, no-op until that's wired up.
+      broadcastLayerState();
     });
     block.querySelector(".inv-source-head .label").addEventListener("click", () => {
       st.openRail = !st.openRail;
@@ -4480,6 +4596,31 @@ async function ensureTilesLoaded(sourceId) {
   }
   renderTileOverlay(sourceId);
   return tileData[sourceId];
+}
+
+// After an extension action's apply step succeeds, its tile sources may have
+// changed server-side. The tile summary doesn't say which extension owns a
+// source, so this refetches every source's summary and the tiles of the
+// enabled ones, redraws, and re-renders an open tile panel from the new data.
+async function refreshExtensionTiles() {
+  const summary = await fetchTileSourceSummary();
+  if (summary && summary.length) {
+    const accordion = document.getElementById("railInventory");
+    if (accordion) accordion.hidden = false;
+    applyTileSources(summary, { loadTiles: false });
+  }
+  for (const s of tileSources) {
+    delete tileData[s.id];
+    if (invState[s.id]?.enabled && sourceUsable(s)) await ensureTilesLoaded(s.id);
+  }
+  if (panelMode === "tile-detail" && selectedTileKey) {
+    const [sid, ...rest] = selectedTileKey.split("/");
+    const tid = rest.join("/");
+    const tile = (tileData[sid] || []).find(t => String(t.id) === tid);
+    if (tile) renderTilePanel(tile, sid);
+  }
+  broadcastLayerState();
+  scheduleTileSourceRetry(0);
 }
 
 // --- Horizon overlay (Plan A.6 / step 7) --------------------------------
@@ -4712,6 +4853,68 @@ function _tileTooltip(tile) {
   return parts.filter(Boolean).join(" · ");
 }
 
+// The view centre {ra, dec} when the map is in an all-sky projection with a
+// seam to cross (Aitoff, Mollweide), or null (orthographic, gnomonic, or not
+// an equatorial frame). Aladin puts the view centre in the middle of the map
+// with north up, so unless the centre is on the equator the seam is not a
+// meridian of constant RA but a great circle 180 degrees of longitude from the
+// centre in the rotated frame, and dragging rolls that frame. seam.mjs works in
+// that frame.
+function currentSeamView() {
+  if (!aladin) return null;
+  if (!projectionHasSeam(document.getElementById("projSel")?.value)) return null;
+  const frame = document.getElementById("frameSel")?.value;
+  if (frame && frame !== "equatorial") return null;
+  try {
+    const c = aladin.getRaDec();
+    if (c && c.length === 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])) {
+      // Dragging the sky rolls the view about its centre, which turns the seam.
+      const roll = typeof aladin.getRotation === "function" ? Number(aladin.getRotation()) : 0;
+      return { ra: c[0], dec: c[1], roll: Number.isFinite(roll) ? roll : 0 };
+    }
+  } catch { /* view not ready */ }
+  return null;
+}
+
+// What each tile overlay was last drawn against: the view centre used (or
+// null) and whether any tile had to be split. A pan only redraws a source when
+// a split tile exists before or after it.
+const _tileSeamState = {};
+let _tileSeamTimer = null;
+
+function scheduleTileSeamUpdate(delayMs = 150) {
+  clearTimeout(_tileSeamTimer);
+  _tileSeamTimer = setTimeout(updateTileSeams, delayMs);
+}
+
+// True when the view moved far enough to need the cuts redone.
+function seamViewMoved(prev, next) {
+  if (!prev || !next) return (prev == null) !== (next == null);
+  const dRa = Math.abs(((next.ra - prev.ra + 540) % 360) - 180);
+  const dRoll = Math.abs(((next.roll - prev.roll + 540) % 360) - 180);
+  return dRa > 0.02 || Math.abs(next.dec - prev.dec) > 0.02 || dRoll > 0.02;
+}
+
+function updateTileSeams() {
+  const view = currentSeamView();
+  for (const sourceId of Object.keys(_tileSeamState)) {
+    const st = invState[sourceId];
+    const tiles = tileData[sourceId];
+    const prev = _tileSeamState[sourceId];
+    if (!st?.enabled || !tiles) continue;
+    if (!seamViewMoved(prev.view, view)) continue;
+    let needs = prev.crossing;
+    if (!needs && view) {
+      needs = tiles.some(t => {
+        const corners = _tileFootprint(t);
+        return corners && crossesViewSeam(corners, view);
+      });
+    }
+    if (needs) renderTileOverlay(sourceId);
+    else prev.view = view;
+  }
+}
+
 function renderTileOverlay(sourceId) {
   if (!aladin) return;
   const st = invState[sourceId];
@@ -4735,11 +4938,14 @@ function renderTileOverlay(sourceId) {
   }
   ovr.removeAll();
   let drawn = 0;
+  const seamView = currentSeamView();
+  let anySplit = false;
   // Memoise plan mosaic-bounds corners for this render pass only (plans can
   // be edited in place between renders, so the cache must not persist).
   // tilePlanInfo() is O(plans) per tile; without this, ~40 tiles × ~10 plans
   // recomputed planMosaicBoundsCorners() up to twice per tile per render.
   const planCornersCache = new Map();
+  const fillOpacity = (tileSources.find(x => x.id === sourceId) || {}).fill_opacity;
   for (const tile of tiles) {
     // planInfo is needed for the Hide-planned filter and for downstream
     // click handling, but only ever computed once per tile per render pass
@@ -4752,21 +4958,42 @@ function renderTileOverlay(sourceId) {
     if (!_tilePassesFilters(tile, st, getPlanInfo)) continue;
     const corners = _tileFootprint(tile);
     if (!corners) continue;
-    const color = _tileColorFor(tile, st);
+    // A tile's metadata.style can override colour, fill and line width.
+    const draw = resolveTileDraw(tile.metadata, _tileColorFor(tile, st), fillOpacity);
+    const color = draw.color;
     const alphaHex = _tileFillAlphaHex(tile.per_band);
     planInfo = getPlanInfo();
-    const poly = A.polygon(corners, {
+    const polyOpts = {
       color: color,
-      lineWidth: 0.5,
+      lineWidth: draw.lineWidth,
       fillColor: color + alphaHex,
-    });
-    if (poly && tile && (tile.id || tile.score != null)) {
-      poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
+    };
+    // A source that declares metadata.fill_opacity gets its footprints
+    // filled at that opacity. Without it the polygons stay as they were.
+    const solidFill = fillColorFor(color, draw.fillOpacity);
+    if (solidFill) { polyOpts.fill = true; polyOpts.fillColor = solidFill; }
+    // Over the projection's seam a polygon would be drawn the long way round,
+    // so it is cut into one part per side. Clicks still hit-test the original
+    // corners, so every part belongs to the same tile.
+    let shapes = [{ points: corners, closed: true }];
+    if (seamView && crossesViewSeam(corners, seamView)) {
+      const hint = [Number(tile.ra_deg), Number(tile.dec_deg)];
+      // Outline-only tiles are cut into open lines, so no edge is added along the seam.
+      shapes = splitAtViewSeam(corners, seamView, { hint, fill: !!polyOpts.fill });
+      anySplit = true;
     }
-    ovr.add(poly);
-    tileHitList.push({ poly, tile, source_id: sourceId, corners, plan_state: planInfo.state, plan: planInfo.plan });
+    const polys = shapes.map(({ points, closed }) => {
+      const poly = closed ? A.polygon(points, polyOpts) : A.polyline(points, polyOpts);
+      if (poly && tile && (tile.id || tile.score != null)) {
+        poly.actionOnHover = _tileTooltip(tile);  // hover string surface for debug
+      }
+      ovr.add(poly);
+      return poly;
+    });
+    tileHitList.push({ poly: polys[0], polys, tile, source_id: sourceId, corners, plan_state: planInfo.state, plan: planInfo.plan });
     drawn++;
   }
+  _tileSeamState[sourceId] = { view: seamView, crossing: anySplit };
   // Update the counter pill in the rail to reflect the filtered subset.
   const block = document.querySelector(`.inv-source[data-source-id="${sourceId}"]`);
   const total = (tileSources.find(x => x.id === sourceId) || {}).n_tiles || tiles.length;
@@ -4778,6 +5005,7 @@ function renderTileOverlay(sourceId) {
 
 // --- Tile detail panel (Plan 2a) -----------------------------------------
 function renderTilePanel(tile, sourceId) {
+  navStack.clear();
   panelMode = "tile-detail";
   updateSearchVisibility();
   selectedTileKey = `${sourceId}/${tile.id}`;
@@ -4847,11 +5075,21 @@ function renderTilePanel(tile, sourceId) {
        </div>`
     : "";
 
-  panel.innerHTML = `
-    <div>
-      <a class="back-link" id="backToList" href="#">← Back to list</a>
-      <h3>${esc(sourceLabel)} · <span style="color:#a2aec2">${esc(tile.id || "")}</span></h3>
+  // Extension-supplied plan links (tile.metadata.plans). A link shows only
+  // for a plan this ACP has loaded, so a stale id can't open nothing.
+  const findPlan = pid => plans.find(p => p.id === pid || (p.guid && p.guid === pid));
+  const extPlansHtml = tilePlansHtml(tile.metadata?.plans, esc, pid => !!findPlan(pid));
 
+  // Extension-supplied panel HTML (tile.metadata.panel_html), trusted like the
+  // rest of the extension but scoped under .ext-tile-panel so its classes
+  // stay out of ACP's styles. A source with tile_panel "replace" shows only
+  // this and the title.
+  const replaceMode = tilePanelModeOf(sourceMeta) === "replace";
+  const rawPanelHtml = tile.metadata?.panel_html;
+  const extPanelHtml = typeof rawPanelHtml === "string" && rawPanelHtml
+    ? `<div class="ext-tile-panel">${rawPanelHtml}</div>` : "";
+
+  const standardHtml = replaceMode ? "" : `
       ${visPlaceholder}
 
       <h4>Position</h4>
@@ -4875,25 +5113,114 @@ function renderTilePanel(tile, sourceId) {
 
       ${planRow}
 
+      ${extPlansHtml ? `<h4>Plans</h4>${extPlansHtml}` : ""}
+
       <div class="tile-actions">
         <div class="tile-suggestion">${suggestion}</div>
         <button id="tileCreatePlan" class="primary">Create new plan from this tile</button>
-      </div>
+      </div>`;
+
+  panel.innerHTML = `
+    <div>
+      <a class="back-link" id="backToList" href="#">← Back to list</a>
+      ${tilePanelTitleHtml(sourceLabel, tile.id, esc)}
+      ${replaceMode ? extPanelHtml : standardHtml + extPanelHtml}
     </div>`;
 
   document.getElementById("backToList")?.addEventListener("click", e => {
-    e.preventDefault(); renderTargetList();
+    e.preventDefault();
+    if (listModeFor(planningMode) === "plan-list") renderPlanList();
+    else renderTargetList();
   });
+  panel.querySelectorAll(".tile-plan-link").forEach(a => a.addEventListener("click", e => {
+    e.preventDefault();
+    const pl = findPlan(a.dataset.planId);
+    if (pl) activityOpenPlan(pl.id, tileNavEntry());
+  }));
   document.getElementById("tileCreatePlan")?.addEventListener("click", () => {
-    promotePlanFromTile(tile, sourceMeta);
+    promotePlanFromTile(tile, sourceMeta, tileNavEntry());
   });
   document.getElementById("tileOpenPlan")?.addEventListener("click", () => {
     if (planInfo.plan) {
       if (!planningMode) setPlanningMode(true);
+      navStack.push({ ...tileNavEntry(), dest: `plan:${planInfo.plan.id}` });
       renderPlanEditor(planInfo.plan);
     }
   });
-  loadTileVisibility(tile);
+  // What a screen opened from this panel needs in order to come back here.
+  const tileNavEntry = () => ({
+    kind: "tile", sourceId, tileId: tile.id,
+    title: tile.id ? String(tile.id) : sourceLabel,
+    scrollTop: document.getElementById("panelBody")?.scrollTop || 0,
+  });
+
+  const extPanel = panel.querySelector(".ext-tile-panel");
+  if (extPanel) wireExtTilePanel(extPanel, findPlan, tileNavEntry);
+  if (!replaceMode) loadTileVisibility(tile);
+}
+
+// Click handling for the data-acp-* hooks in an extension's panel_html.
+// One delegated listener on the container, so HTML added later still works.
+function wireExtTilePanel(container, findPlan, tileNavEntry) {
+  container.addEventListener("click", e => {
+    const action = tilePanelAction(e.target, container);
+    if (!action) return;
+    e.preventDefault();
+    runTilePanelAction(action, {
+      openPlan: pid => {
+        const pl = findPlan(pid);
+        if (pl) activityOpenPlan(pl.id, tileNavEntry());
+        else showTilePanelNotice(container, "That plan is not loaded in ACP.");
+      },
+      newPlan: a => promotePlanAt({ ra: a.ra, dec: a.dec, name: a.name, fromTile: tileNavEntry() }),
+      post: a => postFromTilePanel(container, a),
+      goto: a => {
+        activityShowOnMap(a.ra, a.dec);
+        if (a.fov != null && typeof aladin?.setFoV === "function") aladin.setFoV(a.fov);
+      },
+    });
+  });
+}
+
+// data-acp-post: POST a JSON body to an extension route, then refresh the
+// tile sources the way an Apply does. A bad path or body sends nothing.
+async function postFromTilePanel(container, a) {
+  if (!extPostPathOk(a.path)) {
+    showTilePanelNotice(container, "That action's path is not allowed.");
+    return;
+  }
+  const parsed = parsePostBody(a.rawBody);
+  if (!parsed.ok) {
+    showTilePanelNotice(container, "That action's body is not valid JSON.");
+    return;
+  }
+  let resp;
+  try {
+    resp = await fetch(a.path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed.body),
+    });
+  } catch (e) {
+    showTilePanelNotice(container, `Request failed: ${e}`);
+    return;
+  }
+  if (!resp.ok) {
+    showTilePanelNotice(container, `Request failed (${resp.status}).`);
+    return;
+  }
+  await refreshExtensionTiles();
+}
+
+// ACP has no toast, so a short-lived note sits at the top of the container.
+function showTilePanelNotice(container, text) {
+  container.querySelector(".ext-tile-notice")?.remove();
+  const n = document.createElement("div");
+  n.className = "ext-tile-notice";
+  n.setAttribute("role", "status");
+  n.textContent = text;
+  container.prepend(n);
+  setTimeout(() => n.remove(), 4000);
 }
 
 // Build sparkline + Now/Trend chips against an arbitrary {ra, dec} point by
@@ -5172,24 +5499,48 @@ function planPeakPanelsMonth(plan) {
 // derived from the source label + tile id, and opens the editor. FOV is
 // owned by the gear preset (per design decision 2d), left to the user
 // to pick when they choose telescope/camera in the editor.
-function promotePlanFromTile(tile, sourceMeta) {
-  if (!planningMode) setPlanningMode(true);
-  const p = newEmptyPlan();
-  // newEmptyPlan reads the current Aladin centre, overwrite with the tile's
-  // own centre so the editor opens framed on the right spot regardless of
-  // where the user happened to be panned.
-  p.target.center_ra_deg = Number(tile.ra_deg);
-  p.target.center_dec_deg = Number(tile.dec_deg);
-  p.target.rotation_deg = 0;
+function promotePlanFromTile(tile, sourceMeta, fromTile = null) {
   const sourceLabel = sourceMeta?.label || "";
   const tileId = tile.id || "";
-  p.target.name = [sourceLabel, tileId].filter(Boolean).join(" · ") || "From tile";
+  promotePlanAt({
+    ra: Number(tile.ra_deg),
+    dec: Number(tile.dec_deg),
+    name: [sourceLabel, tileId].filter(Boolean).join(" · ") || "From tile",
+    projectName: sourceLabel,
+    fromTile,
+  });
+}
+
+// Opens the plan editor on a new plan centred on (ra, dec). Shared by the
+// tile panel's own button and the data-acp-new-plan hook in extension HTML.
+function promotePlanAt({ ra, dec, name, projectName, fromTile = null }) {
+  if (!planningMode) setPlanningMode(true);
+  const p = newEmptyPlan();
+  // newEmptyPlan reads the current Aladin centre, overwrite with the given
+  // position so the editor opens framed on the right spot regardless of
+  // where the user happened to be panned.
+  p.target.center_ra_deg = ra;
+  p.target.center_dec_deg = dec;
+  p.target.rotation_deg = 0;
+  p.target.name = name || "New plan";
   // Pre-fill project_name from the source label so the TS sync groups
   // tile-derived plans under a meaningful project node instead of
   // "Unassigned". User can override before saving.
-  if (sourceLabel && !p.project_name) p.project_name = sourceLabel;
+  if (projectName && !p.project_name) p.project_name = projectName;
   plans.push(p);
+  if (fromTile) navStack.push({ ...fromTile, dest: `plan:${p.id}` });
   renderPlanEditor(p);
+}
+
+// Back control on a screen opened from a tile panel: pops the entry and
+// shows that tile panel again, scrolled to where it was.
+function reopenTileFromNav() {
+  const entry = navStack.pop();
+  const tile = entry && (tileData[entry.sourceId] || []).find(t => String(t.id) === String(entry.tileId));
+  if (!tile) { renderPlanList(); return; }
+  renderTilePanel(tile, entry.sourceId);
+  const body = document.getElementById("panelBody");
+  if (body) body.scrollTop = entry.scrollTop || 0;
 }
 
 async function loadCatalogs() {
@@ -5341,10 +5692,12 @@ function setupFilterUI() {
   document.getElementById("projSel").addEventListener("change", e => {
     aladin.setProjection(e.target.value);
     saveUiState();
+    scheduleTileSeamUpdate(0);
   });
   document.getElementById("frameSel").addEventListener("change", e => {
     aladin.setFrame(e.target.value);
     saveUiState();
+    scheduleTileSeamUpdate(0);
   });
   document.getElementById("skyMore")?.addEventListener("click", () => { openAladinSurveyBrowser(); });
   document.getElementById("skySel").addEventListener("change", e => {
@@ -5702,6 +6055,7 @@ function setTimeAware(on) {
   timeAware = !!on;
   localStorage.setItem("acp.time_aware", timeAware ? "on" : "off");
   applyTimeAwareState(/*fireImmediate=*/true);
+  broadcastLayerState();
 }
 
 function applyTimeAwareState(fireImmediate) {
@@ -5787,6 +6141,26 @@ const SIDE_PANEL_MAX_W = 760;
 const sidePanelState = { open: true, tab: "main", width: SIDE_PANEL_DEFAULT_W, activityWidth: ACTIVITY_PANEL_W };
 let activityUi = null;
 
+// Extension rail tabs can be widened to about three times the normal width.
+// The choice is remembered per tab; a manifest rail tab's "width" is the
+// default until the user picks one.
+const EXT_WIDE_KEY = "acp.extTabWide.v1";
+function loadExtTabWide() {
+  try { return JSON.parse(localStorage.getItem(EXT_WIDE_KEY) || "{}") || {}; }
+  catch { return {}; }
+}
+function isExtTabWide(tab) {
+  const stored = loadExtTabWide()[tab];
+  if (typeof stored === "boolean") return stored;
+  return railWidthDefault(extRailTabs.get(tab)) === "wide";
+}
+function toggleExtTabWide(tab) {
+  const all = loadExtTabWide();
+  all[tab] = !isExtTabWide(tab);
+  try { localStorage.setItem(EXT_WIDE_KEY, JSON.stringify(all)); } catch { /* ignore */ }
+  applySidePanel();
+}
+
 function widthKey(tab) {
   return tab === "activity" ? "activityWidth" : "width";
 }
@@ -5797,6 +6171,8 @@ function loadSidePanelState() {
     if (typeof s.open === "boolean") sidePanelState.open = s.open;
     if (SIDE_PANEL_TABS.includes(s.tab) && document.querySelector(`.side-tab[data-tab="${s.tab}"]`)) {
       sidePanelState.tab = s.tab;
+    } else if (typeof s.tab === "string" && s.tab.startsWith("ext-")) {
+      pendingExtTab = s.tab;
     }
     if (Number.isFinite(s.width)) sidePanelState.width = s.width;
     if (Number.isFinite(s.activityWidth)) sidePanelState.activityWidth = s.activityWidth;
@@ -5815,7 +6191,13 @@ function clampSidePanelWidth(w) {
   return Math.round(Math.max(SIDE_PANEL_MIN_W, Math.min(SIDE_PANEL_MAX_W, room, w)));
 }
 
+// Rail tabs declared by extensions (manifest `rail_tabs`), keyed by the
+// data-tab value. setupExtensionRailTabs() fills it once the manifest is in.
+const extRailTabs = new Map();   // key → {key, label, icon, page}
+let pendingExtTab = null;        // saved ext tab, restored once its extension has loaded
+
 function sidePanelTitle(tab) {
+  if (extRailTabs.has(tab)) return extRailTabs.get(tab).label;
   if (tab === "filters") return "Map filters";
   if (tab === "library") return "Library";
   if (tab === "activity") return "Activity";
@@ -5827,9 +6209,23 @@ function applySidePanel() {
   if (!panel) return;
   const { open, tab } = sidePanelState;
   panel.hidden = !open;
-  panel.style.setProperty("--side-panel-w", `${clampSidePanelWidth(sidePanelState[widthKey(tab)])}px`);
+  const isExt = extRailTabs.has(tab);
+  const normalW = clampSidePanelWidth(sidePanelState[widthKey(tab)]);
+  const wide = isExt && isExtTabWide(tab);
+  const phone = !!window.matchMedia?.("(max-width: 640px)").matches;
+  panel.style.setProperty("--side-panel-w",
+    `${wide ? railTabWidthPx(true, normalW, window.innerWidth, phone) : normalW}px`);
+  const wideBtn = document.getElementById("sidePanelWide");
+  if (wideBtn) {
+    wideBtn.hidden = !isExt;
+    wideBtn.setAttribute("aria-pressed", String(wide));
+    wideBtn.title = wide ? "Make this panel narrower" : "Make this panel wider";
+    wideBtn.setAttribute("aria-label", wideBtn.title);
+    wideBtn.textContent = wide ? "\u2192\u2190" : "\u2190\u2192";
+  }
   panel.classList.toggle("is-activity", tab === "activity");
   for (const sec of panel.querySelectorAll(".side-tab")) sec.hidden = sec.dataset.tab !== tab;
+  if (open && extRailTabs.has(tab)) ensureExtensionFrame(tab);
   for (const btn of document.querySelectorAll("#panelRail .rail-btn")) {
     btn.setAttribute("aria-pressed", String(open && btn.dataset.tab === tab));
   }
@@ -5841,6 +6237,106 @@ function applySidePanel() {
   if (mainTip) mainTip.textContent = planningMode ? "Plans and projects" : "Targets in your archive";
   nudgeMapControls();
   if (activityUi) activityUi.onTabShown(open && tab === "activity");
+}
+
+// The iframe for an extension rail tab is created the first time the tab is
+// shown, so a tab nobody opens costs no request. It is same-origin, so the
+// browser sends the session cookie and the extension's page is gated like
+// any other ACP route. The page was validated when the tab was registered.
+function ensureExtensionFrame(key) {
+  const tab = extRailTabs.get(key);
+  const sec = document.querySelector(`#sidePanel .side-tab[data-tab="${key}"]`);
+  if (!tab || !sec || sec.querySelector("iframe")) return;
+  const frame = document.createElement("iframe");
+  frame.className = "ext-rail-frame";
+  frame.title = tab.label;
+  frame.src = tab.page;
+  sec.appendChild(frame);
+}
+
+// --- Layer bridge for rail-tab iframes ------------------------------------
+// Rail tab pages can read and change the tile layers and time-aware mode
+// through window.postMessage. Only messages from ACP's own rail iframes at
+// ACP's own origin are accepted. Documented in docs/extensions.md.
+function railFrameWindows() {
+  return Array.from(document.querySelectorAll("iframe.ext-rail-frame"))
+    .map(f => f.contentWindow).filter(Boolean);
+}
+
+function layerStateNow() {
+  return layerStateMessage(tileSources, invState, timeAware);
+}
+
+function broadcastLayerState() {
+  const msg = layerStateNow();
+  for (const w of railFrameWindows()) {
+    try { w.postMessage(msg, location.origin); } catch { /* frame gone */ }
+  }
+}
+
+function setLayerEnabled(id, enabled) {
+  const src = tileSources.find(x => x.id === id);
+  const st = invState[id];
+  if (!src || !st || !sourceUsable(src)) return;
+  const cb = document.querySelector(`.inv-source[data-source-id="${CSS.escape(id)}"] input[data-enabled]`);
+  if (cb) {
+    // Same path as clicking the rail toggle, so persistence matches.
+    if (cb.checked !== enabled) { cb.checked = enabled; cb.dispatchEvent(new Event("change")); }
+    return;
+  }
+  st.enabled = enabled;
+  _saveInvState();
+  if (enabled) ensureTilesLoaded(id);
+  renderTileOverlay(id);
+  broadcastLayerState();
+}
+
+window.addEventListener("message", e => {
+  const req = bridgeRequest(e, railFrameWindows(), location.origin);
+  if (!req) return;
+  if (req.kind === "layer-set") setLayerEnabled(req.id, req.enabled);
+  else if (req.kind === "time-aware-set") { if (req.enabled !== timeAware) setTimeAware(req.enabled); }
+  else if (req.kind === "tiles-refresh") refreshExtensionTiles();
+  else {
+    try { e.source.postMessage(layerStateNow(), location.origin); } catch { /* frame gone */ }
+  }
+});
+
+// Add a rail button and panel section for each valid rail tab in the
+// extension manifest. Safe to call again: earlier ext tabs are removed first.
+function setupExtensionRailTabs(manifest) {
+  const rail = document.getElementById("panelRail");
+  const panel = document.getElementById("sidePanel");
+  if (!rail || !panel) return;
+  document.querySelectorAll("[data-ext-tab]").forEach(n => n.remove());
+  extRailTabs.clear();
+  for (const t of railTabsFrom(manifest)) {
+    extRailTabs.set(t.key, t);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-btn";
+    btn.dataset.tab = t.key;
+    btn.dataset.extTab = "";
+    btn.setAttribute("aria-pressed", "false");
+    btn.setAttribute("aria-controls", "sidePanel");
+    btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${railIconPath(t.icon)}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>` +
+      `<span class="rail-lbl">${esc(t.label)}</span><span class="rail-tip">${esc(t.label)}</span>`;
+    btn.addEventListener("click", () => openSidePanelTab(t.key));
+    rail.appendChild(btn);
+    const sec = document.createElement("section");
+    sec.className = "side-tab";
+    sec.dataset.tab = t.key;
+    sec.dataset.extTab = "";
+    sec.hidden = true;
+    panel.appendChild(sec);
+  }
+  if (pendingExtTab && extRailTabs.has(pendingExtTab)) {
+    sidePanelState.tab = pendingExtTab;
+    pendingExtTab = null;
+  } else if (!extRailTabs.has(sidePanelState.tab) && !SIDE_PANEL_TABS.includes(sidePanelState.tab)) {
+    sidePanelState.tab = "main";
+  }
+  applySidePanel();
 }
 
 function openSidePanelTab(tab) {
@@ -5899,6 +6395,13 @@ function nudgeMapControls() {
     el.style.translate = `${-shift}px 0`;
     el.dataset.acpNudged = "";
   }
+}
+
+function setupWideToggle() {
+  document.getElementById("sidePanelWide")?.addEventListener("click", () => {
+    if (extRailTabs.has(sidePanelState.tab)) toggleExtTabWide(sidePanelState.tab);
+  });
+  window.addEventListener("resize", () => { if (extRailTabs.has(sidePanelState.tab)) applySidePanel(); });
 }
 
 function setupSidePanelResize() {
@@ -5973,6 +6476,7 @@ function setupSidePanel() {
     applySidePanel();
   });
   setupSidePanelResize();
+  setupWideToggle();
   mirrorScanHealthBadge();
   window.addEventListener("resize", () => applySidePanel());
   // Aladin opens some of its own menus on a click, so re-check the nudge
@@ -5987,12 +6491,13 @@ function setupSidePanel() {
 
 // Open a plan in the editor from an Activity row, the way the map's own
 // "Open" menu item does.
-function activityOpenPlan(planId) {
+function activityOpenPlan(planId, fromTile = null) {
   const pl = plans.find(p => p.id === planId);
   if (!pl) return;
   const go = () => {
     revealMainSidePanel();
     if (!planningMode) setPlanningMode(true);
+    if (fromTile) navStack.push({ ...fromTile, dest: `plan:${pl.id}` });
     panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
     renderPlanEditor(pl);
   };
@@ -6151,8 +6656,8 @@ function init() {
     });
 
     // Reset cycle state on any camera movement, previous stack indices stop making sense.
-    aladin.on("zoomChanged", () => { lastClickStack = null; });
-    aladin.on("positionChanged", () => { lastClickStack = null; });
+    aladin.on("zoomChanged", () => { lastClickStack = null; scheduleTileSeamUpdate(); });
+    aladin.on("positionChanged", () => { lastClickStack = null; scheduleTileSeamUpdate(); });
 
     // Persist the chosen HiPS survey across reloads. Aladin v3 may or may not emit
     // "layerChanged" depending on build; a 3s poll is a cheap backstop.
@@ -6776,6 +7281,7 @@ function projectRowHtml(r) {
 }
 
 function renderPlanList() {
+  navStack.clear();
   panelMode = "plan-list";
   updateSearchVisibility();
   editingPlan = null;
@@ -7214,6 +7720,7 @@ async function createGearTemplate(camera, filter, name, sub_s) {
 }
 
 function renderPlanEditor(plan) {
+  const tileBack = navStack.bind(`plan:${plan.id}`);
   panelMode = "plan-edit";
   updateSearchVisibility();
   selectedPlanId = plan.id;
@@ -7248,7 +7755,9 @@ function renderPlanEditor(plan) {
   const tg = editingPlan.target;
 
   panel.innerHTML = `
-    <a class="back-link" id="backToPlans" href="#">← Back to plans</a>
+    ${tileBack
+      ? `<a class="back-link" id="backToTile" href="#">← Back to ${esc(tileBack.title)}</a>`
+      : `<a class="back-link" id="backToPlans" href="#">← Back to plans</a>`}
     <h3>Plan: ${esc(tg.name || "(unnamed)")}</h3>
     <form class="plan-form" id="planForm" onsubmit="return false">
       <fieldset>
@@ -7469,6 +7978,10 @@ function renderPlanEditor(plan) {
     } catch (e) { alert("Lookup failed: " + e); }
   });
 
+  panel.querySelector("#backToTile")?.addEventListener("click", e => {
+    e.preventDefault();
+    requestNavigateAwayFromPlanEdit(reopenTileFromNav);
+  });
   panel.querySelector("#backToPlans")?.addEventListener("click", e => {
     e.preventDefault();
     // Discard scratch (unsaved) plan
