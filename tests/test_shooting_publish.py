@@ -61,7 +61,7 @@ def _target(ra, dec, hours_ha=2.0, last="2026-09-01", fov=(190.0, 127.0)):
         # "HA" canonicalises to "Ha", so both keys must sum into one bar.
         "filters": {"Ha": {"total_hours": hours_ha, "files": 3},
                     "HA": {"total_hours": 0.5, "files": 1}},
-        "master_files": ["/Users/rohan/astro/vela_Ha.fit"],
+        "master_files": ["/Users/user/astro/vela_Ha.fit"],
     }
 
 
@@ -151,7 +151,7 @@ class BuildDocument(unittest.TestCase):
 
     def test_path_anywhere_in_free_text_raises(self):
         cases = [
-            _plan(public_blurb="the raw data is in /Users/rohan/astro/vela, huge"),
+            _plan(public_blurb="the raw data is in /Users/user/astro/vela, huge"),
             _plan(public_blurb="master is vela_Ha.fit and it is big"),
             _plan(project_name="Vela (D:\\astro\\vela)"),
             _plan(target={"name": "see \\\\nas\\astro", "center_ra_deg": 1.0, "center_dec_deg": 1.0}),

@@ -5,23 +5,23 @@ import { describeUpload, summariseUploads, formatExpiry } from "../../static/ts-
 describe("describeUpload", () => {
   it("names new and conflicting counts for a ready upload", () => {
     const text = describeUpload({
-      machine: "VOYAGER", state: "ready",
+      machine: "IMAGING-PC", state: "ready",
       counts: { new: 32, updated: 0, conflicts: 46 },
     });
-    assert.equal(text, "VOYAGER sent TS changes to review: 32 new, 46 need a choice.");
+    assert.equal(text, "IMAGING-PC sent TS changes to review: 32 new, 46 need a choice.");
   });
 
   it("includes updated counts when present", () => {
     const text = describeUpload({
-      machine: "HAYABUSA", state: "ready",
+      machine: "IMAGING-PC-2", state: "ready",
       counts: { new: 1, updated: 3, conflicts: 0 },
     });
-    assert.equal(text, "HAYABUSA sent TS changes to review: 1 new, 3 updated.");
+    assert.equal(text, "IMAGING-PC-2 sent TS changes to review: 1 new, 3 updated.");
   });
 
   it("says still reading for a checking upload, no counts", () => {
-    const text = describeUpload({ machine: "VOYAGER", state: "checking" });
-    assert.equal(text, "VOYAGER sent TS changes. ACP is still reading them.");
+    const text = describeUpload({ machine: "IMAGING-PC", state: "checking" });
+    assert.equal(text, "IMAGING-PC sent TS changes. ACP is still reading them.");
   });
 
   it("falls back to a generic name when the upload has none", () => {

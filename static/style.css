@@ -2601,3 +2601,55 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .activity .more { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-block: 4px 8px; }
 .activity .more .count { font-size: 11px; color: #8d99ad; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .activity details.night > summary::before { transition: none; } }
+
+/* Extension rail tabs: the extension's page fills the panel. */
+.side-tab[data-ext-tab] { overflow: hidden; }
+.ext-rail-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #0c1016;
+}
+
+/* Plan links an extension attaches to a tile (metadata.plans). */
+.tile-plans { list-style: none; margin: 4px 0 0; padding: 0; }
+.tile-plans li { margin: 0 0 6px; }
+.tile-plan-detail { color: #78839a; font-size: 11px; margin-top: 1px; }
+
+/* Tile panel: source label above the tile id, and extension-supplied HTML. */
+.tile-source-label { color: #78839a; font-size: 11px; margin-top: 8px; }
+.ext-tile-panel a,
+.ext-tile-panel [data-acp-plan-id],
+.ext-tile-panel [data-acp-new-plan],
+.ext-tile-panel [data-acp-goto],
+.tile-plans a.tile-plan-link {
+  color: #7fb2ff;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ext-tile-panel a:hover,
+.ext-tile-panel [data-acp-plan-id]:hover,
+.ext-tile-panel [data-acp-new-plan]:hover,
+.ext-tile-panel [data-acp-goto]:hover,
+.tile-plans a.tile-plan-link:hover { color: #a9cbff; }
+.ext-tile-notice {
+  background: #2a3346;
+  border-radius: 4px;
+  color: #e0e4ea;
+  font-size: 12px;
+  margin: 6px 0;
+  padding: 6px 8px;
+}
+
+/* Extensions block in the Inventory rail. */
+.ext-status { margin: 0 0 8px; font-size: 12px; color: #b6bdcd; }
+.ext-status summary { cursor: pointer; }
+.ext-groups, .ext-groups ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.ext-groups ul { padding-left: 12px; }
+.ext-src { display: flex; gap: 8px; align-items: baseline; margin: 2px 0; }
+.ext-src-state { color: #78839a; }
+[data-state="error"] > .ext-src-state, .ext-src[data-state="error"] .ext-src-state { color: #e0816b; }
+[data-state="loading"] > .ext-src-state, .ext-src[data-state="loading"] .ext-src-state { color: #d6a04a; }
+#sidePanelWide[hidden] { display: none; }
+@media (max-width: 640px) { #sidePanelWide { display: none; } }

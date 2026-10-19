@@ -75,7 +75,7 @@ class TestTheReadersActuallySanitise(unittest.TestCase):
 
 class TestRigKeyIsSafeToPutInAManifest(unittest.TestCase):
     def test_a_path_in_a_header_never_survives_into_the_key(self):
-        k = bam.rig_key("C:/Users/rohan/profiles/rig.json", "ASI2600MM")
+        k = bam.rig_key("C:/Users/user/profiles/rig.json", "ASI2600MM")
         for ch in ("/", "\\", ":"):
             self.assertNotIn(ch, k)
 

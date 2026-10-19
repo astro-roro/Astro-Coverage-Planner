@@ -848,7 +848,7 @@ def _maybe_migrate_draft_plans_to_active() -> None:
     """One-shot: every plan left as `state: "draft"` under the old meaning
     becomes `"active"`, the first time ACP loads plans.json after this
     version starts. See docs/specs/ts-project-settings.md section 1 for
-    why: the NINA plugin never honoured draft, so 46 of Rohan's 47 draft
+    why: the NINA plugin never honoured draft, so 46 of the user's 47 draft
     plans were already live in TS. Leaving them "draft" under the new
     meaning (TS keeps the project but never schedules it) would pause
     them on the next push. The 9 plans TS itself has inactive are not
@@ -2407,18 +2407,28 @@ def _summarise_tile_source(src) -> dict:
     lists may want to override these via dedicated methods later, but the
     walk is fast (a few thousand tiles ≈ 10 ms).
     """
+    error: str | None = None
     try:
         sid = src.id()
-        meta = src.metadata() or {}
     except Exception as exc:
-        logging.warning("tile source missing id/metadata: %s", exc)
-        return {}
+        logging.warning("tile source id() raised: %s", exc)
+        sid = type(src).__name__
+        error = f"id() raised: {_short_error(exc)}"
+    try:
+        meta = src.metadata() or {}
+        if not isinstance(meta, dict):
+            meta = {}
+    except Exception as exc:
+        logging.warning("tile source %r metadata() raised: %s", sid, exc)
+        meta = {}
+        error = error or f"metadata() raised: {_short_error(exc)}"
+    loading = meta.get("status") == "loading" and error is None
     n = 0
     max_pri = 0
     cats: set[str] = set()
     bands: set[str] = set()
     try:
-        for tile in src.tiles() or []:
+        for tile in ([] if (loading or error) else (src.tiles() or [])):
             n += 1
             if isinstance(tile.get("priority_level"), int) and tile["priority_level"] > max_pri:
                 max_pri = tile["priority_level"]
@@ -2430,8 +2440,13 @@ def _summarise_tile_source(src) -> dict:
                     bands.add(k)
     except Exception as exc:
         logging.warning("tile source %r tiles() raised during summary: %s", sid, exc)
+        error = f"tiles() raised: {_short_error(exc)}"
+    status = "error" if error else "loading" if loading else "empty" if n == 0 else "ready"
     return {
         "id": sid,
+        "status": status,
+        "error": error,
+        "extension": _source_extension(src, meta),
         "label": meta.get("label") or sid,
         "color": meta.get("color") or "",
         "attribution": meta.get("attribution") or "",
@@ -2442,7 +2457,44 @@ def _summarise_tile_source(src) -> dict:
         "bands": sorted(bands),
         "facets": _coerce_facets(meta.get("facets")),
         "color_facet": meta.get("color_facet") or "",
+        "fill_opacity": _coerce_fill_opacity(meta.get("fill_opacity")),
+        "tile_panel": meta.get("tile_panel") if meta.get("tile_panel") in ("replace", "append") else None,
     }
+
+
+def _short_error(exc: Exception) -> str:
+    """One line of an exception for the UI: ``Type: message``, capped."""
+    text = f"{type(exc).__name__}: {exc}".replace(chr(10), " ").strip()
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
+def _source_extension(src, meta: dict) -> str:
+    """Id of the extension a tile source came from, or "".
+
+    A source can name it with ``extension`` in its ``metadata()``. Otherwise
+    it is taken from the module the source class was loaded from, since
+    ``load_extensions`` names those ``acp_ext_<name>``.
+    """
+    named = meta.get("extension")
+    if isinstance(named, str) and named.strip():
+        return named.strip()
+    mod = getattr(type(src), "__module__", "") or ""
+    if mod.startswith("acp_ext_"):
+        return mod[len("acp_ext_"):].split(".", 1)[0]
+    return ""
+
+
+def _coerce_fill_opacity(raw) -> float | None:
+    """A source's optional ``fill_opacity`` as a float in 0..1, else None.
+
+    None means "not set": the frontend keeps its default footprint drawing.
+    Booleans, NaN and out-of-range numbers count as not set, so a typo can't
+    paint a source solid or invisible.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    v = float(raw)
+    return v if 0.0 <= v <= 1.0 else None
 
 
 def _coerce_facets(raw) -> list[dict]:
@@ -2490,7 +2542,17 @@ def api_tile_sources():
     """
     out = []
     for src in (getattr(app, "tile_sources", []) or []):
-        summary = _summarise_tile_source(src)
+        try:
+            summary = _summarise_tile_source(src)
+        except Exception as exc:
+            logging.exception("tile source summary failed")
+            summary = {"id": type(src).__name__, "label": type(src).__name__,
+                       "status": "error", "error": _short_error(exc),
+                       "extension": "", "n_tiles": 0, "max_priority_level": 0,
+                       "categories": [], "bands": [], "facets": [],
+                       "color": "", "color_facet": "", "attribution": "",
+                       "enabled_default": False, "fill_opacity": None,
+                       "tile_panel": None}
         if summary:
             out.append(summary)
     return jsonify({"sources": out})
@@ -2643,8 +2705,15 @@ def api_extensions_manifest():
                       frontend calls this first and shows the response in a
                       modal with [Apply]/[Cancel] before hitting ``endpoint``.
       ``interval_s``  Required on "toggle" actions. Poll interval in seconds.
+
+    An entry may also carry ``rail_tabs``, a list of
+    ``{"id", "label", "icon", "page"}`` dicts that add tabs to the right
+    rail. Those are validated here (invalid tabs are dropped with a logged
+    warning, see ``extensions.sanitise_rail_tabs``); everything else passes
+    through verbatim.
     """
-    return jsonify(list(app.extensions_manifest))
+    from extensions import sanitise_rail_tabs
+    return jsonify([sanitise_rail_tabs(e) for e in app.extensions_manifest])
 
 
 @app.route("/api/sources")
@@ -4228,7 +4297,7 @@ def clear_repoint(profile_id: str) -> bool:
     return touched
 
 
-# A colour Rohan picked for a telescope, keyed by the telescope name shown next
+# A colour the user picked for a telescope, keyed by the telescope name shown next
 # to the swatch. Only #rrggbb gets in, because the value is written into a
 # style attribute on the page.
 _TELESCOPE_COLOUR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -5796,7 +5865,7 @@ def _load_ts_templates_store() -> dict:
 def _plugin_templates_response(path: Path, error: str):
     """Answer from the lists the plugin posted, or None when there are none.
 
-    The server case: ACP on Brutix has no TS database file, so the plugin
+    The server case: ACP on homeserver has no TS database file, so the plugin
     sends the list instead (docs/specs/goal-panel-and-ts-order.md section 2).
     """
     profiles = _load_ts_templates_store()
@@ -6280,7 +6349,7 @@ def api_sync():
 
     Closed plans (plan.state == "closed") never sync: TS imports this zip
     as new projects every time (see section 6 of the spec), so a closed
-    plan re-syncing here would recreate a project Rohan already finished
+    plan re-syncing here would recreate a project the user already finished
     and deleted from TS. Active, inactive and draft plans are all
     included, each with the matching TS State name, because draft and
     inactive projects still have to exist in TS for a later push to find

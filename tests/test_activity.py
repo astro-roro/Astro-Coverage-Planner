@@ -24,11 +24,11 @@ from app import app  # noqa: E402
 TOKEN = "activity-test-token-0123456789"
 HA_ID = "6f1c2a9e-4b7d-4e21-9a35-0c8d1e2f3a4b"
 OIII_ID = "7a2d3b0f-5c8e-4f32-8b46-1d9e2f3a4b5c"
-DOLPHIN_HA = ("/mnt/remotes/SINGULARITY.ERKO_Singularity/Astro With RoRo/Library/"
-              "Sh2_308_Dolphin/110GTX_ASI6200MM/masters/full_master_Ha.fit")
-PATH_MAP = json.dumps([{"from": "/mnt/remotes/SINGULARITY.ERKO_Singularity",
-                        "mac": "/Volumes/Singularity",
-                        "windows": "\\\\Singularity\\Singularity"}])
+DOLPHIN_HA = ("/mnt/remotes/NAS/Astro/Library/"
+              "Example_Target/RIG_CAMERA/masters/full_master_Ha.fit")
+PATH_MAP = json.dumps([{"from": "/mnt/remotes/NAS",
+                        "mac": "/Volumes/NAS",
+                        "windows": "\\\\NAS\\share"}])
 
 
 def iso_ago(**delta) -> str:
@@ -338,7 +338,7 @@ class TestReading(ActivityCase):
                         for i in range(start, start + 50)])
         night = self.get("/api/activity?nights=1").get_json()["nights"][0]
         self.assertEqual((len(night["events"]), night["more"]), (200, 50))
-        # Newest first within a night (Rohan, 2026-10-14); older pages follow.
+        # Newest first within a night (the user, 2026-10-14); older pages follow.
         self.assertEqual([e["title"] for e in night["events"]][:2], ["row 249", "row 248"])
         rest = self.get("/api/activity/night/2026-10-13?offset=200").get_json()
         self.assertEqual((len(rest["events"]), rest["more"]), (50, 0))
@@ -662,11 +662,11 @@ class TestStoreRules(ActivityCase):
     def test_32_the_path_map(self):
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
         got = activity.map_master_path(DOLPHIN_HA)
-        self.assertEqual(got["mac_folder"], "/Volumes/Singularity/Astro With RoRo/Library/"
-                                            "Sh2_308_Dolphin/110GTX_ASI6200MM/masters/")
+        self.assertEqual(got["mac_folder"], "/Volumes/NAS/Astro/Library/"
+                                            "Example_Target/RIG_CAMERA/masters/")
         self.assertEqual(got["windows_folder"],
-                         "\\\\Singularity\\Singularity\\Astro With RoRo\\Library\\"
-                         "Sh2_308_Dolphin\\110GTX_ASI6200MM\\masters\\")
+                         "\\\\NAS\\share\\Astro\\Library\\"
+                         "Example_Target\\RIG_CAMERA\\masters\\")
         self.assertEqual(got["file_name"], "full_master_Ha.fit")
         os.environ.pop("ACP_ACTIVITY_PATH_MAP")
         self.assertEqual(activity.map_master_path(DOLPHIN_HA), {
@@ -681,7 +681,7 @@ class TestStoreRules(ActivityCase):
         self.assertTrue(activity.map_master_path("/mnt/ab/x.fit")["mac_folder"].startswith("(unmapped)"))
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
         self.assertTrue(activity.map_master_path(
-            "/mnt/remotes/SINGULARITY.ERKO_Singularity2/x.fit")["mac_folder"].startswith("(unmapped)"))
+            "/mnt/remotes/NAS2/x.fit")["mac_folder"].startswith("(unmapped)"))
 
     def test_32_a_posted_master_gets_its_folders(self):
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
@@ -690,13 +690,13 @@ class TestStoreRules(ActivityCase):
         master = self.all_events()[0]["refs"]["master"]
         self.assertEqual(master["file_name"], "full_master_Ha.fit")
         self.assertEqual(master["frames"], 45)
-        self.assertTrue(master["mac_folder"].startswith("/Volumes/Singularity/"))
+        self.assertTrue(master["mac_folder"].startswith("/Volumes/NAS/"))
 
     def test_33_secrets_and_home_folders_are_scrubbed(self):
         self.post(ev(
             title="Authorization: Bearer abc123 token=abc password=hunter2 https://u:p@host/ "
                   "access_token=at1 api_token=at2 ACP_API_TOKEN=at3 db_password=at4",
-            detail="saved to /Users/rohan/Pictures/x.fits",
+            detail="saved to /Users/user/Pictures/x.fits",
             data={"note": "C:\\Users\\Astro\\Pictures\\x.fits", "nested": {"url": "https://u:p@host/"}},
             refs={"plan_id": "p1", "evil": "dropped", "target": "C:\\Users\\Astro\\Pictures\\x.fits"}))
         e = self.all_events()[0]
