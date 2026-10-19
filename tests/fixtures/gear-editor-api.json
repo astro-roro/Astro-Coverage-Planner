@@ -21,7 +21,7 @@
         "status": "in_ts",
         "sub_s": 120.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 120.0,
@@ -51,7 +51,7 @@
         "status": "in_ts",
         "sub_s": 15.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 15.0,
@@ -93,7 +93,7 @@
         "status": "in_ts",
         "sub_s": 120.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 120.0,
@@ -125,7 +125,7 @@
         "status": "in_ts",
         "sub_s": 15.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 15.0,
@@ -167,7 +167,7 @@
         "status": "in_ts",
         "sub_s": 300.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 300.0,
@@ -209,7 +209,7 @@
         "status": "in_ts",
         "sub_s": 120.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 120.0,
@@ -249,7 +249,7 @@
         "status": "in_ts",
         "sub_s": 300.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 300.0,
@@ -291,7 +291,7 @@
         "status": "in_ts",
         "sub_s": 120.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 120.0,
@@ -323,7 +323,7 @@
         "status": "in_ts",
         "sub_s": 15.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 15.0,
@@ -365,7 +365,7 @@
         "status": "in_ts",
         "sub_s": 300.0,
         "ts": {
-         "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+         "00000000-0000-4000-8000-000000000001": {
           "base": {
            "bin": 1,
            "defaultexposure": 300.0,
@@ -404,43 +404,43 @@
      "filters": {
       "B": {
        "slots": {
-        "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": "B"
+        "00000000-0000-4000-8000-000000000001": "B"
        },
        "state": "on_wheel"
       },
       "G": {
        "slots": {
-        "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": "G"
+        "00000000-0000-4000-8000-000000000001": "G"
        },
        "state": "on_wheel"
       },
       "Ha": {
        "slots": {
-        "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": "H"
+        "00000000-0000-4000-8000-000000000001": "H"
        },
        "state": "on_wheel"
       },
       "L": {
        "slots": {
-        "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": "L"
+        "00000000-0000-4000-8000-000000000001": "L"
        },
        "state": "on_wheel"
       },
       "OIII": {
        "slots": {
-        "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": "O"
+        "00000000-0000-4000-8000-000000000001": "O"
        },
        "state": "on_wheel"
       },
       "R": {
        "slots": {
-        "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": "R"
+        "00000000-0000-4000-8000-000000000001": "R"
        },
        "state": "on_wheel"
       },
       "SII": {
        "slots": {
-        "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": "S"
+        "00000000-0000-4000-8000-000000000001": "S"
        },
        "state": "on_wheel"
       }
@@ -448,8 +448,8 @@
      "profiles": [
       {
        "primary": true,
-       "profile_id": "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7",
-       "profile_name": "Voyager",
+       "profile_id": "00000000-0000-4000-8000-000000000001",
+       "profile_name": "IMAGING-PC",
        "seen_at": "2026-10-13T08:37:03.347221+00:00",
        "slots": [
         "L",
@@ -1180,7 +1180,7 @@
   "conflict_count": 0,
   "gear_schema": 3,
   "links_capable": {
-   "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+   "00000000-0000-4000-8000-000000000001": {
     "at": "2026-10-13T00:00:00Z",
     "repoint": true,
     "templates": true
