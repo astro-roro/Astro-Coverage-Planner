@@ -723,7 +723,7 @@ _PLAN_IGNORED = frozenset({
     # Link bookkeeping the sync writes, and the derived views.
     "ts_links", "ts_refs", "ts_base_snapshot", "grader", "filter_goals",
 })
-_ROW_IGNORED = frozenset({"grader"})
+_ROW_IGNORED = frozenset({"grader", "panels"})
 
 _LABELS = {
     "min_altitude_deg": "min altitude",

@@ -868,6 +868,18 @@ body.panel-resizing { cursor: col-resize; user-select: none; }
   color: #78839a;
 }
 .plan-row-line2 .plan-remaining { margin-left: auto; }
+/* Hours left per panel, on a third line, for a mosaic that tracks panels. */
+.plan-panel-left {
+  grid-row: 3;
+  grid-column: 2 / -2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 10px;
+  color: #78839a;
+}
+.plan-panel-chip { padding: 0 5px; border-radius: 8px; background: #1a2030; white-space: nowrap; }
+.plan-panel-chip.done { color: #6fbf8a; }
 body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .plan-row:hover { background: #1a2030; }
 
@@ -1059,6 +1071,9 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .fr-pending-bar { display: block; height: 100%;
   background: repeating-linear-gradient(135deg, #c9a86a 0 3px, rgba(201, 168, 106, 0.25) 3px 6px); }
 .fr-pending { font-size: 10px; color: #c9a86a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fr-panel-list { display: flex; flex-wrap: wrap; gap: 3px 8px; font-size: 10px; color: #78839a; }
+.fr-panel-done { color: #6fbf8a; }
+.fr-panels { font-size: 10px; color: #78839a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr-prog-text { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; color: #a2aec2; white-space: nowrap; overflow: hidden; }
 .fr-add { align-self: flex-start; font-size: 11px; }
 
