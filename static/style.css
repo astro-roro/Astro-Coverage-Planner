@@ -2653,3 +2653,5 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 [data-state="loading"] > .ext-src-state, .ext-src[data-state="loading"] .ext-src-state { color: #d6a04a; }
 #sidePanelWide[hidden] { display: none; }
 @media (max-width: 640px) { #sidePanelWide { display: none; } }
+
+.plan-form input.invalid { outline: 1px solid #c25b5b; border-color: #c25b5b; }
