@@ -8,19 +8,19 @@ Status: draft, revised 2026-09-24 so an upload merges and never replaces. Not bu
 
 ## Goal
 
-Get plans made or changed in a rig's Target Scheduler (TS) back into ACP on Brutix. The TS readers already exist in the extension, but they read the TS database from a path on the ACP host. The database is on the rig, so ACP cannot see it.
+Get plans made or changed in a rig's Target Scheduler (TS) back into ACP on homeserver. The TS readers already exist in the extension, but they read the TS database from a path on the ACP host. The database is on the rig, so ACP cannot see it.
 
-This reverses the direction the plugin already uses. The plugin pulls plans from ACP over HTTP. Now it also sends TS's database file to ACP. ACP compares it with its own plans and shows what would change. Rohan reviews that in ACP and applies it with a separate click.
+This reverses the direction the plugin already uses. The plugin pulls plans from ACP over HTTP. Now it also sends TS's database file to ACP. ACP compares it with its own plans and shows what would change. The user reviews that in ACP and applies it with a separate click.
 
-An upload is a merge. It adds plans that are new to ACP and updates plans it matches. It never deletes anything, and it never touches a plan that belongs to another rig. The use case: Rohan adds a plan to a rig's TS while out at a dark site, presses the button, and that plan appears in ACP with everything else left as it was.
+An upload is a merge. It adds plans that are new to ACP and updates plans it matches. It never deletes anything, and it never touches a plan that belongs to another rig. The use case: the user adds a plan to a rig's TS while out at a dark site, presses the button, and that plan appears in ACP with everything else left as it was.
 
 The first version sends the whole database file. Sending only the rows is a later clean-up, described near the end.
 
-## What Rohan sees
+## What the user sees
 
 1. In NINA's ACP dock, he clicks "Send TS to ACP".
 2. The dock shows progress: copying, uploading with a percentage, then "ACP is reading it".
-3. The dock shows a one-line result and an "Open in ACP" button. The result reads like "Voyager main: 2 new, 5 updated, 1 needs a choice".
+3. The dock shows a one-line result and an "Open in ACP" button. The result reads like "IMAGING-PC main: 2 new, 5 updated, 1 needs a choice".
 4. The button opens the review page in his browser. It lists new plans, updated plans, conflicts, and loss notes.
 5. He picks an answer for each conflict and clicks Apply. Nothing changes in ACP before that click, and nothing ever changes in TS.
 
@@ -32,7 +32,7 @@ The first version sends the whole database file. Sending only the rows is a late
 | Push state sent back to ACP after a sync | Plugin | Only the plugin knows which rows it just wrote. See "Per-rig links". |
 | Upload endpoint, worker, temp storage, merge, review page | Extension | The reader, the version check, the importer, the three-way diff and its loss notes all live there. ACP core knows nothing about TS by design. |
 | Per-request body limit, 413 message | ACP core | Core sets a 1 MB limit on every request (`MAX_BODY_BYTES`, `app.py:159`). Only core can let one route go higher. |
-| Token on the daily publish job, `ACP_API_TOKEN` on Brutix | `homelab-stacks` and Brutix | Deployment settings, not code in either app. |
+| Token on the daily publish job, `ACP_API_TOKEN` on homeserver | the deployment repo and homeserver | Deployment settings, not code in either app. |
 
 ACP core's access gate (`_api_gate`, `app.py:265`) already covers every path, including the extension's `/api/ext/...` routes. The extension needs no auth code of its own beyond the check in "Auth" below.
 
@@ -72,13 +72,13 @@ The existing `TargetSchedulerDb.BackupTo` uses a raw `FileStream` copy, with the
 {
   "profile_id": "3f2c...",          // ActiveProfile.Id, which TS uses as profileId
   "profiles": [                     // every NINA profile on this machine, so ACP can name them
-    {"id": "3f2c...", "name": "Voyager main"},
+    {"id": "3f2c...", "name": "IMAGING-PC main"},
     {"id": "9a01...", "name": "Travel rig"}
   ],
   "sha256": "e3b0...",
   "user_version": 28,
   "plugin_version": "3.3.0.0",
-  "machine": "VOYAGER"               // Environment.MachineName
+  "machine": "IMAGING-PC"               // Environment.MachineName
 }
 ```
 
@@ -151,7 +151,7 @@ One background thread, started when the extension registers, takes upload ids fr
 3. Runs `PRAGMA quick_check`. A damaged file fails here.
 4. Checks that `project`, `target`, `exposureplan` and `exposuretemplate` exist in `sqlite_schema` with type `table`, not `view`. If not, it fails with "a SQLite file, but not a Target Scheduler database".
 5. Runs `assert_supported_version` (`db.py`), which accepts `user_version` 23 to 28.
-6. Lists the profiles in the file, the same way `GET /profiles` does, from `project.profileId` and `profilepreference.profileId`. Names come from `meta.profiles`, because Brutix has no NINA profile files to read.
+6. Lists the profiles in the file, the same way `GET /profiles` does, from `project.profileId` and `profilepreference.profileId`. Names come from `meta.profiles`, because the ACP server has no NINA profile files to read.
 7. Runs the merge preview for `meta.profile_id` (below), and saves the result.
 
 The file is only ever read by SQLite. It is never executed, imported, unpacked, or passed to a shell.
@@ -167,7 +167,7 @@ The state is one of `checking`, `ready`, `failed`, `superseded`, `applied`.
 
 An upload lives 24 hours (`ACP_TS_UPLOAD_TTL_HOURS`). Expired files are swept when the extension registers and on every new upload. A successful apply deletes both files straight away.
 
-In the Brutix container the temp directory is inside the container, not on the archive share. A Watchtower redeploy wipes it. The review page then says the upload has expired and to send it again from NINA. Nothing is lost except the upload itself.
+In the server container the temp directory is inside the container, not on the archive share. A Watchtower redeploy wipes it. The review page then says the upload has expired and to send it again from NINA. Nothing is lost except the upload itself.
 
 ## The merge
 
@@ -182,7 +182,7 @@ An ACP plan belongs to a profile when it has a link for that profile (next secti
 
 A plan linked only to another profile is out of scope. It is not read, not diffed, not restamped, and not listed. This is what stops one rig's upload from changing another rig's plans. It also covers two rigs with a project of the same name, which today's name matching would cross.
 
-The link also records the machine name. If P's link was made from a different machine than the upload's, the link's row ids are not trusted, because they belong to a different database file. The plan falls back to the guid match, and the preview says "Profile Voyager main was last linked from HAYABUSA; matched by name stamp instead".
+The link also records the machine name. If P's link was made from a different machine than the upload's, the link's row ids are not trusted, because they belong to a different database file. The plan falls back to the guid match, and the preview says "Profile IMAGING-PC main was last linked from IMAGING-PC-2; matched by name stamp instead".
 
 ### Per-rig links
 
@@ -193,7 +193,7 @@ The merge needs one link per profile. Each plan gains:
 ```jsonc
 "ts_links": {
   "<profile_id>": {
-    "machine": "VOYAGER",
+    "machine": "IMAGING-PC",
     "refs": { /* the same shape as ts_refs today */ },
     "base_snapshot": { /* the same shape as ts_base_snapshot today */ },
     "updated_iso": "2026-09-24T10:31:00Z"
@@ -306,24 +306,24 @@ When `ACP_API_TOKEN` is unset, ACP ignores any bearer header. So a plugin with a
 These callers exist today:
 
 - The plugin on each rig. That covers its sync and push buttons, the dock's version poll, and hours sent back. All use `AcpApiClient`, so all carry the token once it is stored. A missing or wrong token shows "ACP rejected the token" in the dock.
-- The Brutix User Script `acp-live-publish`, which POSTs `/api/publish/shooting` at 07:15 daily. It sends no token today. It will get `401` and the live page will stop updating until it sends the header.
-- Rohan's browser, which will get the login form once.
+- The homeserver User Script `live-publish`, which POSTs `/api/publish/shooting` at 07:15 daily. If it is not changed to send the header, it will get `401` and the live page will stop updating.
+- The user's browser, which will get the login form once.
 
-Rohan sets the token in this order:
+The user sets the token in this order:
 
 1. Generate a token of at least 32 ASCII characters.
-2. On each rig (Voyager, and any other NINA machine), paste it into NINA's Options page for the ACP plugin. Press Test; it still passes.
-3. On Brutix, add `-H "Authorization: Bearer <token>"` to the `acp-live-publish` script, reading the token from a file rather than the script text.
-4. On Brutix, put `ACP_API_TOKEN` in the ACP stack's `.env`. Reference it from `docker-compose.yml` as `ACP_API_TOKEN: ${ACP_API_TOKEN}`. Recreate the container.
+2. On each rig (IMAGING-PC, and any other NINA machine), paste it into NINA's Options page for the ACP plugin. Press Test; it still passes.
+3. On homeserver, add `-H "Authorization: Bearer <token>"` to the `live-publish` script, reading the token from a file rather than the script text.
+4. On homeserver, put `ACP_API_TOKEN` in the ACP stack's `.env`. Reference it from `docker-compose.yml` as `ACP_API_TOKEN: ${ACP_API_TOKEN}`. Recreate the container.
 5. Check the container log says "API auth: ON". Sign in once in the browser. Press Test on each rig again.
 
-The compose file in `homelab-stacks` gets the `${ACP_API_TOKEN}` reference. The token itself is never committed.
+The compose file in the deployment repo gets the `${ACP_API_TOKEN}` reference. The token itself is never committed.
 
 ## Profiles in one file
 
 A TS database holds rows for every NINA profile on that machine that has used TS. One machine can run several rigs as separate profiles.
 
-- By default the upload previews the profile NINA has active when the button is pressed. The dock names it: "Sending profile Voyager main".
+- By default the upload previews the profile NINA has active when the button is pressed. The dock names it: "Sending profile IMAGING-PC main".
 - The review page lists every profile found in the file, named from the plugin's list, with a project count each. A profile in the file but not on this machine shows its GUID.
 - Picking another profile re-runs the preview for it, with that profile's scope. Apply uses whichever profile the page shows.
 - A profile with no projects gives an empty preview and disables Apply.
@@ -340,7 +340,7 @@ A TS database holds rows for every NINA profile on that machine that has used TS
 | Wrong or missing token | `401`. The dock shows "ACP rejected the token", as today. |
 | Not a SQLite file | `415`. |
 | SQLite, but not TS, or damaged | The worker marks it `failed` with the reason. The dock and page show it. |
-| TS schema version ACP does not know | The worker marks it `failed` with the extension's version message. This happens when the plugin supports a newer TS than the extension on Brutix. The message names both. |
+| TS schema version ACP does not know | The worker marks it `failed` with the extension's version message. This happens when the plugin supports a newer TS than the extension on homeserver. The message names both. |
 | A second upload for the same profile while one is pending | The new upload replaces the old. The old one is marked `superseded` and its file deleted. Its review page says a newer upload replaced it and links to the new one. |
 | A second upload for a different profile | Both stay pending. Each has its own review page and its own scope. Applying one does not affect the other, because their scopes do not overlap. |
 | ACP plans edited between preview and apply | `409`, "ACP changed since this preview". The page offers to re-run the preview on the same upload. |
@@ -352,7 +352,7 @@ A TS database holds rows for every NINA profile on that machine that has used TS
 
 ## Later: send rows as JSON instead of the file
 
-This first version sends the whole database because the importer already reads one. Rohan asked for a cleaner version later. It is in `notes/todo.md` under "TS import: send rows instead of the whole database file".
+This first version sends the whole database because the importer already reads one. The user asked for a cleaner version later. It is in `notes/todo.md` under "TS import: send rows instead of the whole database file".
 
 That version would change four things:
 
@@ -414,7 +414,7 @@ Each test starts from a `plans.json` and a TS file built for it. "Unchanged" mea
 - `RefsFor` returns `ts_links[profile].refs` when present, then `ts_refs` when its profile matches, else nothing.
 - After a successful push, one `POST /links` is sent with a state per pushed plan. When it fails, the sync still reports success, with the warning line.
 
-### By hand on Voyager
+### By hand on IMAGING-PC
 
 1. Add a new project in TS by hand. Press "Send TS to ACP" while NINA is running. The dock shows progress, then "1 new" and the button.
 2. The review page lists that project as new, and plans for other rigs appear nowhere on it.
@@ -422,11 +422,11 @@ Each test starts from a `plans.json` and a TS file built for it. "Unchanged" mea
 
 ## Live run order
 
-- [ ] Merge and deploy the ACP core change (a push to main redeploys Brutix).
-- [ ] Copy the updated extension into `/mnt/user/appdata/acp/extensions` on Brutix and recreate the `acp` container.
-- [ ] Build and install the plugin on Voyager, and restart NINA.
+- [ ] Merge and deploy the ACP core change (a push to main redeploys homeserver).
+- [ ] Copy the updated extension into `/path/to/acp/extensions` on homeserver and recreate the `acp` container.
+- [ ] Build and install the plugin on IMAGING-PC, and restart NINA.
 - [ ] Set the token in the order under "Auth".
-- [ ] Back up TS on Voyager: with NINA closed, copy `schedulerdb.sqlite` somewhere outside `SchedulerPlugin`. Then open NINA.
+- [ ] Back up TS on IMAGING-PC: with NINA closed, copy `schedulerdb.sqlite` somewhere outside `SchedulerPlugin`. Then open NINA.
 - [ ] In NINA, press "Send TS to ACP" and wait for the button.
 - [ ] Review in ACP. Check the profile, the new plans, the gear for them, every conflict, and every loss note. Check no plan from another rig is listed.
 - [ ] Press Apply. Note the `plans.json` backup path it shows.
@@ -437,7 +437,7 @@ Do the steps from the upload to the sync without editing anything in TS in betwe
 
 "Sync All to TS" writes every ACP plan into this rig's TS, including plans meant for other rigs, unless the plugin is set to "Only what fits". That is today's behaviour and outside this spec, but it matters once more than one rig uploads.
 
-## Decisions for Rohan
+## Decisions for the owner
 
 1. Store one link per rig on each plan, and have the plugin send its push state back to ACP after every sync. Recommended: yes. The cost is changes in both the plugin and the extension, and a new field in `plans.json`. Without it, a plan used on two rigs belongs to whichever uploads first, and every plugin push makes the next upload ask about plans that did not really conflict.
 2. When a TS project has no ACP stamp but has the same name as an ACP plan, propose the match and let you tick it. Recommended: yes. The cost is one more kind of row on the review page. Without it, projects you made by hand in TS with an existing ACP name come in as duplicates.

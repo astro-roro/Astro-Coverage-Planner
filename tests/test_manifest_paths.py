@@ -97,10 +97,14 @@ class TestNoAbsolutePathsOnTheWire(PathLeakCase):
 
 
 class TestTheFilenameSurvives(PathLeakCase):
-    """Shortening is not deletion: the UI's master file panel still works."""
+    """Shortening is not deletion: the UI's master file panel still works.
+
+    /api/manifest no longer carries master_files, per_master_fov or
+    folder_sub_buckets. The detail panel reads them from /api/target/<id>.
+    """
 
     def test_master_files_keep_a_readable_relative_path(self):
-        t = self.client.get("/api/manifest").get_json()["targets"][0]
+        t = self.client.get("/api/target/1").get_json()
         self.assertEqual(t["master_files"], ["M42/Ha/master_Ha.fit"])
         self.assertEqual(t["per_master_fov"][0]["path"], "M42/Ha/master_Ha.fit")
         # Everything alongside the path is untouched.
@@ -108,8 +112,8 @@ class TestTheFilenameSurvives(PathLeakCase):
         self.assertEqual(t["per_master_fov"][0]["fov_arcmin"], [10.0, 8.0])
 
     def test_bucket_fields_keep_their_counts(self):
-        b = self.client.get("/api/manifest").get_json()[
-            "targets"][0]["filters"]["Ha"]["folder_sub_buckets"][0]
+        b = self.client.get("/api/target/1").get_json()[
+            "filters"]["Ha"]["folder_sub_buckets"][0]
         self.assertEqual(b["bucket"], "M42/Ha")
         self.assertEqual((b["files"], b["hours"]), (30, 2.5))
 
@@ -131,9 +135,9 @@ class TestPathsOutsideAnyScanRoot(PathLeakCase):
         app_module._manifest_cache_mtime = None
 
     def test_unmatched_path_is_reduced_to_its_tail(self):
-        body = self.body("/api/manifest")
+        body = self.body("/api/target/1")
         self.assertNotIn(SENTINEL, body)
-        t = json.loads(body)["targets"][0]
+        t = json.loads(body)
         self.assertEqual(t["master_files"], ["Ha/master_Ha.fit"])
 
 

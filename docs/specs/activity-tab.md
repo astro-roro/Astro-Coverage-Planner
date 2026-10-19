@@ -1,6 +1,6 @@
 # Spec: the Activity tab
 
-This spec adds a fourth side-panel tab to Astro Coverage Planner (ACP) that shows what happened, night by night: plans changed, syncs, imaging, data landing, processing, and masters built. It also flags the few things that need a person to act. Rohan approved the design in the mockup at https://claude.ai/artifact/3hLxXU4WbX5i7VCEAe9nLG (version 2).
+This spec adds a fourth side-panel tab to Astro Coverage Planner (ACP) that shows what happened, night by night: plans changed, syncs, imaging, data landing, processing, and masters built. It also flags the few things that need a person to act. The user approved the design in the mockup at https://claude.ai/artifact/3hLxXU4WbX5i7VCEAe9nLG (version 2).
 
 The work is built in three phases, and each ships on its own. Phase 1 is ACP plus the Target Scheduler sync extension (`acp-nina-ts-sync`), because the TS upload and rig-link routes live in the extension. Phase 2 adds events from the NINA plugin (`ACP.NINA.Plugin`). Phase 3 adds events from Astro Auto Calibration (AAC).
 
@@ -97,13 +97,13 @@ History is kept forever by default, at well under 1 KB an event. `ACP_ACTIVITY_K
 
 A browser cannot open Finder or Explorer, so master rows show copyable text. AAC reports the path it sees in its container. `ACP_ACTIVITY_PATH_MAP` is a JSON list of `{ "from", "mac", "windows" }` entries, and the first entry whose `from` matches wins. A match must end on a path segment boundary, so `/mnt/a` matches `/mnt/a/x.fit` but not `/mnt/ab/x.fit`.
 
-For `/mnt/remotes/SINGULARITY.ERKO_Singularity/Astro With RoRo/Library/Sh2_308_Dolphin/110GTX_ASI6200MM/masters/full_master_Ha.fit` with the map `/mnt/remotes/SINGULARITY.ERKO_Singularity` to `/Volumes/Singularity` and `\\Singularity\Singularity`, ACP produces:
+For `/mnt/remotes/NAS/Astro/Library/Example_Target/RIG_CAMERA/masters/full_master_Ha.fit` with the map `/mnt/remotes/NAS` to `/Volumes/NAS` and `\\NAS\share`, ACP produces:
 
-- `mac_folder`: `/Volumes/Singularity/Astro With RoRo/Library/Sh2_308_Dolphin/110GTX_ASI6200MM/masters/`
-- `windows_folder`: `\\Singularity\Singularity\Astro With RoRo\Library\Sh2_308_Dolphin\110GTX_ASI6200MM\masters\`
+- `mac_folder`: `/Volumes/NAS/Astro/Library/Example_Target/RIG_CAMERA/masters/`
+- `windows_folder`: `\\NAS\share\Astro\Library\Example_Target\RIG_CAMERA\masters\`
 - `file_name`: `full_master_Ha.fit`
 
-A path matching no entry is shown as `(unmapped) <basename>` in both folder fields, with `file_name` set to the basename. The Windows share name is an assumption to confirm in Explorer on Voyager before phase 3 ships.
+A path matching no entry is shown as `(unmapped) <basename>` in both folder fields, with `file_name` set to the basename. The Windows share name is an assumption to confirm in Explorer on IMAGING-PC before phase 3 ships.
 
 ## Redaction
 
@@ -121,7 +121,7 @@ All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or th
 - `POST /api/activity/events/<id>/dismiss` and `/restore`.
 - `GET /api/activity/prefs` and `PUT /api/activity/prefs` with `{ "chips": { "<chip id>": bool } }`. Unknown chip ids are dropped and missing ones take their defaults.
 
-`has_new` and row highlighting both use `max(received_at, updated_at)` against `last_seen`. `last_seen` is shared across browsers on purpose, so opening the tab on the Mac clears the dot on Voyager too.
+`has_new` and row highlighting both use `max(received_at, updated_at)` against `last_seen`. `last_seen` is shared across browsers on purpose, so opening the tab on the Mac clears the dot on IMAGING-PC too.
 
 ## Phase 1: ACP and the sync extension
 
@@ -154,7 +154,7 @@ The plugin posts with `source: "plugin"`, an explicit `night`, and a `seq` that 
 
 AAC gets a client, `auto_pix/acp_activity.py`, that posts with `source: "aac"`, explicit `night`, and `seq`. A failed post is logged and dropped after three tries. After the first 404 or 403 the client disables itself for the process with one log line.
 
-`target` is the AAC Library target folder name (`Sh2_308_Dolphin`) and `bucket` is the Library bucket folder name (`110GTX_ASI6200MM`), both sent as-is. ACP maps them to a plan with the matching it already uses for AAC's accepted reports.
+`target` is the AAC Library target folder name (`Example_Target`) and `bucket` is the Library bucket folder name (`RIG_CAMERA`), both sent as-is. ACP maps them to a plan with the matching it already uses for AAC's accepted reports.
 
 - `transfer_landed`: night id, file count, bytes, start and finish from `ingest_result.json`.
 - `ingest`: lights, flats and darks promoted.
@@ -235,7 +235,7 @@ Phase 1, ACP (pytest, in `tests/test_activity.py` unless named):
 29. Two successful scans each adding 0.25 h of Ha to a target, with `_run_scan_subprocess` and `run_scan_now` monkeypatched as in `tests/test_scan_schedule.py`, leave one `coverage_changed` keyed `coverage:<target id>:Ha:<night>` reading "+0.50 h".
 30. A failed scan records `scan_error` keyed `scan_error:<night>`, distinct from `scan_finished`, and the next successful scan resolves it.
 31. If the activity database cannot be opened, plan saves still return 200 and the failure is logged.
-32. Path map: the Dolphin `full_master_Ha.fit` path gives the three exact strings in "Master paths". An unmapped path gives `(unmapped) full_master_Ha.fit` in both folders. With two matching entries, the first wins. `/mnt/remotes/SINGULARITY.ERKO_Singularity2/x.fit` does not match the map.
+32. Path map: the Dolphin `full_master_Ha.fit` path gives the three exact strings in "Master paths". An unmapped path gives `(unmapped) full_master_Ha.fit` in both folders. With two matching entries, the first wins. `/mnt/remotes/NAS2/x.fit` does not match the map.
 33. Redaction: `Authorization: Bearer abc123`, `token=abc`, `password=hunter2` and `https://u:p@host/` in a title or `data` string are stored with `[redacted]`. `C:\Users\Astro\Pictures\x.fits` is stored as `~\Pictures\x.fits`. A `refs` key outside the allowlist is dropped.
 34. A deleted night's keys go to `tombstones`, and replaying one of those events is reported as `stale` and not stored.
 35. With `ACP_ACTIVITY=off`: every activity route answers 404, a plan PUT stores no event, and the page shell has no Activity rail button, in the style of `tests/test_ts_sync_banner.py`.
@@ -277,11 +277,11 @@ The feature only adds things. `ACP_ACTIVITY=off` makes every activity route answ
 
 - **Master previews.** Default: none in any phase of this spec. AAC writing a small stretched JPEG for ACP to serve would be a separate spec.
 - **Where failures appear.** Default: inline in the timeline as error rows that ignore the chips, and in the Needs you box until resolved, dismissed or expired. No separate failures panel.
-- **Windows share name.** Default: `\\Singularity\Singularity\`, to confirm in Explorer on Voyager before phase 3.
+- **Windows share name.** Default: `\\NAS\share\`, to confirm in Explorer on IMAGING-PC before phase 3.
 
 ## Out of scope
 
-- Notifications outside ACP. Rohan decided against a morning digest.
+- Notifications outside ACP. The user decided against a morning digest.
 - More than one user, or per-user state.
 - Searching or editing events.
 - Opening Finder or Explorer from the browser.

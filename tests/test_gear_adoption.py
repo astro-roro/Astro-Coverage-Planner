@@ -1,6 +1,6 @@
 """Adoption of the TS template list and the pull, in ACP's POST
 /api/ts-templates (docs/specs/gear-templates.md sections 8 and 11): S28 and
-M3 to M5, M10 to M12. The 20 templates are Voyager's, as the plugin's
+M3 to M5, M10 to M12. The 20 templates are IMAGING-PC's, as the plugin's
 ts-templates-20.sql builds them."""
 from __future__ import annotations
 
