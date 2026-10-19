@@ -22,6 +22,9 @@ data/scan_cache.json
 # Target number ledger, also written by the scanner from the user's archive.
 data/target_ids.json
 data/*.local.json
+# Local databases and gear backups: user data, never commit.
+data/*.sqlite
+data/gear*.json
 # Backup snapshots written by the nina_ts_sync extension before any write.
 # Useful locally for rollback, but never belong in version control.
 data/plans-acpsync-*-backup.json

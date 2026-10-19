@@ -3,7 +3,7 @@
 docs/specs/ts-project-settings.md section 1: every plan left as `state:
 "draft"` under the old meaning becomes `"active"` the first time ACP
 loads plans.json after this version starts, because the NINA plugin
-never honoured draft and 46 of Rohan's 47 draft plans were already live
+never honoured draft and 46 of the user's 47 draft plans were already live
 in TS. Guarded by `settings_migrated: 1` on the plans.json document so a
 second load changes nothing, and backed up first because it's the one
 step here that's hard to undo by hand.

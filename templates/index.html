@@ -41,6 +41,10 @@
         <button type="button" id="siteEditBtn" class="icon-btn" title="Edit active site">✎</button>
         <button type="button" id="siteAddBtn"  class="icon-btn" title="Add new site">+</button>
       </label>
+      <button type="button" id="skySearchBtn" class="toggle-btn"
+              title="List the nebulae, remnants and galaxies in the part of the sky the map is showing, optionally only those your rig resolves.">
+        <span class="toggle-icon">&#128269;</span><span class="toggle-lbl">What's here?</span>
+      </button>
       <button type="button" id="timeAwareToggle" class="toggle-btn" aria-pressed="false"
               title="Toggle site-aware time/visibility features (year curves, what's up tonight, horizon shading).">
         <span class="toggle-icon">🕐</span><span class="toggle-lbl">Time-aware</span>
@@ -91,6 +95,7 @@
         <div class="sheet-grab" aria-hidden="true"></div>
         <div class="side-panel-head">
           <h2 id="sidePanelTitle">Plans</h2>
+          <button type="button" id="sidePanelWide" class="icon-btn" aria-pressed="false" hidden>&#x2190;&#x2192;</button>
           <button type="button" id="sidePanelHide" class="icon-btn" aria-label="Hide panel" title="Hide panel">&#x203A;&#x203A;</button>
         </div>
 
@@ -163,6 +168,7 @@
           <details id="railInventory" class="rail-accordion inventory" hidden>
             <summary>Inventory</summary>
             <div class="accordion-body">
+              <div id="extensionStatus"></div>
               <div id="inventoryList"></div>
             </div>
           </details>
@@ -345,6 +351,7 @@
   <dialog id="siteModal" class="acp-modal">
     <form id="siteForm" method="dialog">
       <h3 id="siteModalTitle">Add site</h3>
+      <p id="siteModalNote" class="modal-note" hidden>Set your site first so altitudes are right</p>
       <label class="modal-row">
         <span>Name</span>
         <input type="text" id="siteFName" required maxlength="60" autocomplete="off" />
@@ -356,6 +363,9 @@
         <label><span>Longitude (°)</span>
           <input type="number" id="siteFLon" step="0.0001" min="-180" max="180" required />
         </label>
+      </div>
+      <div class="modal-row">
+        <button type="button" id="siteFLocate" hidden>Use my location</button>
       </div>
       <div class="modal-row two-col">
         <label><span>Elevation (m)</span>
@@ -427,7 +437,7 @@
     <span id="obsNow"></span>
   </footer>
 
-  <script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js"></script>
+  <script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.2/aladin.js"></script>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

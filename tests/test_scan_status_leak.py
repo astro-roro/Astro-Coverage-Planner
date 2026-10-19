@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import app as app_module  # noqa: E402
 from app import app  # noqa: E402
 
-SECRET_PATH = "/Volumes/PhotoNAS/rohan-private/Astro"
+SECRET_PATH = "/Volumes/PhotoNAS/user-private/Astro"
 
 
 class ScanFailureCase(unittest.TestCase):

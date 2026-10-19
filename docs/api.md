@@ -28,6 +28,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/visibility` | 12-month per-target visibility bins for a site |
 | `GET /api/visibility/point?ra=&dec=` | Same bins for an arbitrary (RA, Dec) point |
 | `POST /api/visibility/panels` | Aggregated visibility bins for a list of mosaic panel centres |
+| `POST /api/visibility/panels/batch` | The same for several plans at once: `{"plans": [{"id", "panels"}]}` in, `{"results": {id: ...}}` out. At most 400 panels in total |
 | `GET /api/sites`, `POST` | CRUD for saved observing sites |
 | `GET /api/gaps` | Multi-source gap-finder JSON response |
 | `GET /api/gaps/moc.fits` | Gap MOC as raw FITS bytes |
@@ -310,8 +311,8 @@ Each destination is:
 
 ```json
 {
-  "id": "victoria",
-  "label": "Remote Victoria Observatory",
+  "id": "remote",
+  "label": "Remote Observatory",
   "kind": "local_db",
   "ts_db_path": "C:/Users/me/AppData/Local/NINA/SchedulerPlugin/schedulerdb.sqlite"
 }
@@ -341,11 +342,11 @@ Builds a Target Scheduler import zip (`metadata.json`, `exposureTemplates.json`,
 }
 ```
 
-Only closed plans (`state: "closed"`) are excluded; `skipped_closed_count` reports how many so the UI can surface it. TS imports this zip as new projects every time, so a closed plan re-syncing here would recreate a project Rohan already finished and deleted from TS. Active, inactive and draft plans are all included, each project's `State` set from the plans sharing its `project_name`: the most-running value wins in the order active, inactive, draft (a project with plans in more than one state gets a warning, same as a priority or minimum-time disagreement). Plans are grouped into TS Projects by `project_name` (or, when blank, one Project per plan named after its target); a mosaic plan's `rows`/`cols` expand into per-panel Targets and the Project's `IsMosaic` flag is set accordingly. `MinimumTime` is the group's largest `minimum_time_min`, the same strictest-wins rule as `MinimumAltitude`. RA is normalised with `% 360` on export as a defence for any plan written before RA-range validation existed.
+Only closed plans (`state: "closed"`) are excluded; `skipped_closed_count` reports how many so the UI can surface it. TS imports this zip as new projects every time, so a closed plan re-syncing here would recreate a project the user already finished and deleted from TS. Active, inactive and draft plans are all included, each project's `State` set from the plans sharing its `project_name`: the most-running value wins in the order active, inactive, draft (a project with plans in more than one state gets a warning, same as a priority or minimum-time disagreement). Plans are grouped into TS Projects by `project_name` (or, when blank, one Project per plan named after its target); a mosaic plan's `rows`/`cols` expand into per-panel Targets and the Project's `IsMosaic` flag is set accordingly. `MinimumTime` is the group's largest `minimum_time_min`, the same strictest-wins rule as `MinimumAltitude`. RA is normalised with `% 360` on export as a defence for any plan written before RA-range validation existed.
 
 By default (no `destination_id`) every non-closed plan is bundled and the zip is written under `ZIP_OUTPUT_DIR`, downloadable via `download_url`. This is the pre-multi-rig behaviour and is what the existing NINA plugin integration expects.
 
-Pass an optional `destination_id` (JSON body `{"destination_id": "victoria"}` or query param `?destination_id=victoria`) to scope the sync to one rig: only plans whose `destination_id` matches are bundled, and that destination's own configured path is used instead of the global one. That's `ts_db_path` for the `PRAGMA user_version` probe on a `local_db` destination, or `export_path` as the zip's own output path (no `download_url`, no `zip_path` under `ZIP_OUTPUT_DIR`) on a `shared_file` destination. An unknown `destination_id` returns 400; a destination with no matching plans (after closed exclusion) returns the same "no plans to sync" 400 as an empty sync. `destinations.json` isn't validated on load (only `POST /api/destinations` validates), so a hand-edited entry with a `kind` other than `local_db`/`shared_file` also returns 400 naming the bad kind, rather than silently falling back to the global paths.
+Pass an optional `destination_id` (JSON body `{"destination_id": "remote"}` or query param `?destination_id=remote`) to scope the sync to one rig: only plans whose `destination_id` matches are bundled, and that destination's own configured path is used instead of the global one. That's `ts_db_path` for the `PRAGMA user_version` probe on a `local_db` destination, or `export_path` as the zip's own output path (no `download_url`, no `zip_path` under `ZIP_OUTPUT_DIR`) on a `shared_file` destination. An unknown `destination_id` returns 400; a destination with no matching plans (after closed exclusion) returns the same "no plans to sync" 400 as an empty sync. `destinations.json` isn't validated on load (only `POST /api/destinations` validates), so a hand-edited entry with a `kind` other than `local_db`/`shared_file` also returns 400 naming the bad kind, rather than silently falling back to the global paths.
 
 ### Download: `GET /api/sync/download/<filename>`
 
