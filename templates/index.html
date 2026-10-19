@@ -41,6 +41,10 @@
         <button type="button" id="siteEditBtn" class="icon-btn" title="Edit active site">✎</button>
         <button type="button" id="siteAddBtn"  class="icon-btn" title="Add new site">+</button>
       </label>
+      <button type="button" id="skySearchBtn" class="toggle-btn"
+              title="List the nebulae, remnants and galaxies in the part of the sky the map is showing, optionally only those your rig resolves.">
+        <span class="toggle-icon">&#128269;</span><span class="toggle-lbl">What's here?</span>
+      </button>
       <button type="button" id="timeAwareToggle" class="toggle-btn" aria-pressed="false"
               title="Toggle site-aware time/visibility features (year curves, what's up tonight, horizon shading).">
         <span class="toggle-icon">🕐</span><span class="toggle-lbl">Time-aware</span>
@@ -91,6 +95,7 @@
         <div class="sheet-grab" aria-hidden="true"></div>
         <div class="side-panel-head">
           <h2 id="sidePanelTitle">Plans</h2>
+          <button type="button" id="sidePanelWide" class="icon-btn" aria-pressed="false" hidden>&#x2190;&#x2192;</button>
           <button type="button" id="sidePanelHide" class="icon-btn" aria-label="Hide panel" title="Hide panel">&#x203A;&#x203A;</button>
         </div>
 
@@ -163,6 +168,7 @@
           <details id="railInventory" class="rail-accordion inventory" hidden>
             <summary>Inventory</summary>
             <div class="accordion-body">
+              <div id="extensionStatus"></div>
               <div id="inventoryList"></div>
             </div>
           </details>
@@ -243,6 +249,68 @@
           </div>
         </section>
         {% endif %}
+
+        <!-- Help: the tour, a map of where everything lives, and the
+             shortcuts nothing else on screen mentions. Opened from the rail
+             or the ? key. -->
+        <section class="side-tab" data-tab="help" hidden>
+          <div class="help-body">
+            <button type="button" id="helpTourBtn" class="primary help-tour-btn">Take the tour</button>
+
+            <h3>What can ACP do?</h3>
+            <h4>See your library</h4>
+            <ul class="help-list">
+              <li>The sky map draws every field you have imaged, and clicking one opens its detail.</li>
+              <li>Targets on the rail lists your library with hours per filter, and its search box takes names or key:value terms.</li>
+            </ul>
+            <h4>Narrow the view</h4>
+            <ul class="help-list">
+              <li>Filters on the rail chooses filters, telescopes, minimum hours and finished or unfinished targets.</li>
+            </ul>
+            <h4>Find new targets</h4>
+            <ul class="help-list">
+              <li>The Sky menu in the top bar swaps the background survey, and More surveys searches every survey Aladin offers.</li>
+              <li>Library on the rail holds catalogue overlays, public survey footprints and the gap finder.</li>
+            </ul>
+            <h4>Plan</h4>
+            <ul class="help-list">
+              <li>The Planning switch in the top bar opens your plans, where you frame a target, set mosaics and set filter goals.</li>
+              <li>Edit gear in the plan list holds your telescopes, cameras, filters and exposure templates.</li>
+            </ul>
+            <h4>Time and site</h4>
+            <ul class="help-list">
+              <li>The Site menu in the top bar sets where you observe from.</li>
+              <li>Time-aware in the top bar adds visibility curves, a best tonight sort and horizon lines for that site.</li>
+            </ul>
+            <h4>Send to NINA</h4>
+            <ul class="help-list">
+              <li>Sync to NINA in the plan list exports your plans for NINA Target Scheduler.</li>
+              <li>Live progress from NINA is a toggle under Library, then Extensions, when the sync extension is installed.</li>
+            </ul>
+            <h4>Follow up</h4>
+            <ul class="help-list">
+              {% if activity_enabled %}<li>Activity on the rail shows what happened each night and what needs you.</li>{% endif %}
+              <li>Scan health under Library lists problems the last library scan found.</li>
+            </ul>
+            <h4>Set up outside the app</h4>
+            <ul class="help-list">
+              <li>Library scans, and scans on a schedule, run from the command line. See <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">setting up your archive</a>.</li>
+              <li>A friend's coverage loads as a layer through a setting. See <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/sharing.md#how-to-consume-one" target="_blank" rel="noopener">sharing coverage</a>.</li>
+              <li>The public page of what you are shooting is published by a script. See <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/sharing.md#publishing-a-live-page" target="_blank" rel="noopener">publishing a live page</a>.</li>
+            </ul>
+
+            <h3>Keyboard and mouse</h3>
+            <ul class="help-list">
+              <li>Right-click a field on the map, or a row in the list, for its menu.</li>
+              <li>Click the same spot again to step through fields that overlap.</li>
+              <li>Esc, or a click on empty sky, goes back one level in the panel.</li>
+              <li>With a plan open, drag its centre marker to move it or its corner handle to rotate it.</li>
+              <li>Press ? to open this panel.</li>
+            </ul>
+
+            <p class="help-version">ACP version {{ version }}</p>
+          </div>
+        </section>
       </aside>
     </div>
 
@@ -272,12 +340,18 @@
         <span class="rail-tip">What happened, night by night</span>
       </button>
       {% endif %}
+      <button type="button" class="rail-btn" data-tab="help" aria-pressed="false" aria-controls="sidePanel" aria-keyshortcuts="?">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.6v.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.2" fill="currentColor"/></svg>
+        <span class="rail-lbl">Help</span>
+        <span class="rail-tip">Help and tour (?)</span>
+      </button>
     </nav>
   </main>
 
   <dialog id="siteModal" class="acp-modal">
     <form id="siteForm" method="dialog">
       <h3 id="siteModalTitle">Add site</h3>
+      <p id="siteModalNote" class="modal-note" hidden>Set your site first so altitudes are right</p>
       <label class="modal-row">
         <span>Name</span>
         <input type="text" id="siteFName" required maxlength="60" autocomplete="off" />
@@ -289,6 +363,9 @@
         <label><span>Longitude (°)</span>
           <input type="number" id="siteFLon" step="0.0001" min="-180" max="180" required />
         </label>
+      </div>
+      <div class="modal-row">
+        <button type="button" id="siteFLocate" hidden>Use my location</button>
       </div>
       <div class="modal-row two-col">
         <label><span>Elevation (m)</span>
@@ -360,7 +437,7 @@
     <span id="obsNow"></span>
   </footer>
 
-  <script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js"></script>
+  <script src="https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.2/aladin.js"></script>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>

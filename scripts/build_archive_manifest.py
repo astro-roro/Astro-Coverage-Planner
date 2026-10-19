@@ -2052,8 +2052,8 @@ def scrub_paths_from_error(message: str, roots=()) -> str:
 
     Any known scan root is replaced with "<archive>", which is what removes the
     username and the mount point, and works whatever the root contains. Spaces
-    are common in a real root: the maintainer's is "/Volumes/Singularity/Astro
-    With RoRo". A path under no known root is cut back to its last segment
+    are common in a real root: for example "/Volumes/NAS/Astro
+    Pictures". A path under no known root is cut back to its last segment
     instead, and since that pattern allows spaces, a few trailing words of the
     message can come out attached to the file name. That reads fine and it never
     leaves half a path behind, which is what a whitespace-bounded pattern did.

@@ -1472,6 +1472,7 @@ body:not([data-time-aware="on"]) option[data-time-aware] { display: none; }
 }
 .acp-modal form { display: flex; flex-direction: column; gap: 10px; }
 .modal-row { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #a2aec2; }
+.modal-note { margin: 0 0 10px; font-size: 12px; color: #e0c36a; }
 .modal-row.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .modal-row.two-col > label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #a2aec2; }
 .modal-row > span,
@@ -2286,6 +2287,8 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .row-menu-item[aria-disabled="true"] { color: #78839a; cursor: default; background: none; font-style: italic; }
 .hidden-via { margin-left: 6px; font-size: 10px; color: #78839a; }
 .hidden-toggle-row { margin: 2px 0 6px; }
+.filter-hide-note { margin: 2px 0 6px; font-size: 12px; color: #a2aec2; }
+.filter-hide-note .link-btn { border: 0; color: #7fb3ff; text-decoration: underline; }
 .hidden-toggle[hidden] { display: none; }
 .hidden-toggle[aria-pressed="true"] { color: #e0e4ea; border-color: #4da6ff; }
 .hidden-note { font-size: 12px; color: #78839a; margin: 4px 0 8px; }
@@ -2613,3 +2616,161 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .activity .more { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-block: 4px 8px; }
 .activity .more .count { font-size: 11px; color: #8d99ad; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .activity details.night > summary::before { transition: none; } }
+
+/* Extension rail tabs: the extension's page fills the panel. */
+.side-tab[data-ext-tab] { overflow: hidden; }
+.ext-rail-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #0c1016;
+}
+
+/* Plan links an extension attaches to a tile (metadata.plans). */
+.tile-plans { list-style: none; margin: 4px 0 0; padding: 0; }
+.tile-plans li { margin: 0 0 6px; }
+.tile-plan-detail { color: #78839a; font-size: 11px; margin-top: 1px; }
+
+/* Tile panel: source label above the tile id, and extension-supplied HTML. */
+.tile-source-label { color: #78839a; font-size: 11px; margin-top: 8px; }
+.ext-tile-panel a,
+.ext-tile-panel [data-acp-plan-id],
+.ext-tile-panel [data-acp-new-plan],
+.ext-tile-panel [data-acp-goto],
+.tile-plans a.tile-plan-link {
+  color: #7fb2ff;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ext-tile-panel a:hover,
+.ext-tile-panel [data-acp-plan-id]:hover,
+.ext-tile-panel [data-acp-new-plan]:hover,
+.ext-tile-panel [data-acp-goto]:hover,
+.tile-plans a.tile-plan-link:hover { color: #a9cbff; }
+.ext-tile-notice {
+  background: #2a3346;
+  border-radius: 4px;
+  color: #e0e4ea;
+  font-size: 12px;
+  margin: 6px 0;
+  padding: 6px 8px;
+}
+
+/* Extensions block in the Inventory rail. */
+.ext-status { margin: 0 0 8px; font-size: 12px; color: #b6bdcd; }
+.ext-status summary { cursor: pointer; }
+.ext-groups, .ext-groups ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.ext-groups ul { padding-left: 12px; }
+.ext-src { display: flex; gap: 8px; align-items: baseline; margin: 2px 0; }
+.ext-src-state { color: #78839a; }
+[data-state="error"] > .ext-src-state, .ext-src[data-state="error"] .ext-src-state { color: #e0816b; }
+[data-state="loading"] > .ext-src-state, .ext-src[data-state="loading"] .ext-src-state { color: #d6a04a; }
+#sidePanelWide[hidden] { display: none; }
+@media (max-width: 640px) { #sidePanelWide { display: none; } }
+
+.plan-form input.invalid { outline: 1px solid #c25b5b; border-color: #c25b5b; }
+
+/* "What's here?" panel. Controls reuse the plan form's label and input rules. */
+.ss-view, .ss-rig-info, .ss-count { font-size: 12px; color: #78839a; margin: 2px 0 6px; }
+.ss-controls { margin: 8px 0; }
+.ss-controls .primary {
+  background: #2a4f7a;
+  border: 1px solid #355d8e;
+  color: #f0f5ff;
+  border-radius: 4px;
+  padding: 6px 12px;
+  width: 100%;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ss-controls .primary:hover { background: #345f92; }
+.ss-status { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.ss-chip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: #1a2030;
+  border: 1px solid #2a3246;
+  color: #a2aec2;
+}
+.ss-chip.bad { border-color: #7a3a3a; color: #e3a0a0; }
+.ss-group { margin: 12px 0 2px; }
+.ss-row { padding: 6px 2px; border-bottom: 1px solid #1f2937; }
+.ss-main { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.ss-name { color: #e0e4ea; font-weight: 600; }
+.ss-size { color: #a2aec2; font-size: 12px; white-space: nowrap; }
+.ss-size.unknown { color: #78839a; font-style: italic; }
+.ss-meta, .ss-alias { font-size: 12px; color: #78839a; }
+.ss-actions { display: flex; gap: 12px; margin-top: 2px; }
+.ss-chiprow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+.ss-chiprow .lab { font-size: 12px; color: #78839a; min-width: 62px; }
+.ss-chip.tog { cursor: pointer; opacity: 0.55; }
+.ss-chip.tog.on { opacity: 1; background: #2a4f7a; border-color: #4a7ec0; color: #f0f5ff; }
+.ss-fill-custom { font-size: 12px; color: #a2aec2; margin-bottom: 6px; }
+.ss-fill-custom input { width: 60px; }
+.ss-filters { margin: 6px 0; }
+.ss-actions a.link-btn { text-decoration: none; }
+
+/* Help tab: the tour button, the feature map and the hidden shortcuts. */
+.side-tab[data-tab="help"] { overflow-y: auto; }
+.help-body { padding: 14px 16px 20px; }
+.help-body h3 { margin: 18px 0 6px; }
+.help-body h3:first-of-type { margin-top: 16px; }
+.help-body h4 { margin: 12px 0 4px; font-size: 13px; }
+.help-list { margin: 0; padding-left: 18px; color: #c4ccd8; font-size: 14px; }
+.help-list li { margin: 3px 0; }
+.help-list a { color: #5bb6ff; }
+.help-version { margin-top: 18px; color: #78839a; font-size: 12px; }
+.help-tour-btn,
+.tour-card button.primary {
+  background: #2a4f7a;
+  border-color: #355d8e;
+  color: #f0f5ff;
+}
+.help-tour-btn:hover,
+.tour-card button.primary:hover { background: #345f92; }
+.help-tour-btn { width: 100%; padding: 8px 12px; font-size: 14px; }
+
+/* The tour: a ring round one control and a card beside it. The ring's
+   wide shadow dims everything else; neither catches clicks except the
+   card itself. */
+.tour-ring {
+  position: fixed;
+  z-index: 1000;
+  border: 2px solid #4da6ff;
+  border-radius: 6px;
+  box-shadow: 0 0 0 9999px rgba(5, 8, 12, 0.55);
+  pointer-events: none;
+}
+.tour-shade {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(5, 8, 12, 0.55);
+  pointer-events: none;
+}
+.tour-ring[hidden], .tour-shade[hidden] { display: none; }
+.tour-card {
+  position: fixed;
+  z-index: 1001;
+  max-width: calc(100vw - 16px);
+  padding: 14px 16px 12px;
+  background: #14192a;
+  border: 1px solid #2a3246;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  color: #e0e4ea;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.tour-card h3 { margin: 2px 0 6px; font-size: 16px; color: #e8ecf3; }
+.tour-card p { margin: 0 0 12px; color: #c4ccd8; }
+.tour-count { font-size: 11px; color: #78839a; }
+.tour-actions { display: flex; align-items: center; gap: 8px; }
+.tour-spacer { flex: 1; }
+.tour-actions button[hidden] { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .tour-ring { transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease; }
+  .tour-card { transition: left 0.18s ease, top 0.18s ease; }
+}
