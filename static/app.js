@@ -331,6 +331,11 @@ function applyUiStatePreManifest() {
 
   if (s.planningMode === true) {
     planningMode = true;
+    // setPlanningMode(true) reopens this plan's editor once plans are loaded,
+    // and falls back to the plan list if the plan no longer exists.
+    if (typeof s.selectedPlanId === "string" || typeof s.selectedPlanId === "number") {
+      selectedPlanId = s.selectedPlanId;
+    }
   }
 }
 
@@ -580,7 +585,8 @@ function saveUiState() {
       sources: sourcesEnabled,
       extToggles: extToggleState,
     };
-    localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
+    // Carries objectsFilter (written by _saveObjectsFilterState) through.
+    persistUiState(localStorage, UI_STATE_KEY, state);
   } catch { /* localStorage full / disabled, ignore */ }
 }
 
@@ -620,6 +626,19 @@ import {
   webgl2Available,
   withTimeout,
 } from "./init-error.mjs";
+import {
+  filterHiddenCount,
+  filterHiddenNoteText,
+  initialFilterSelection,
+} from "./filter-defaults.mjs";
+import { footprintSizeDeg, zoomFovFor } from "./map-focus.mjs";
+import { persistUiState } from "./ui-state.mjs";
+import {
+  coordsForForm,
+  markPromptSeen,
+  readPromptSeen,
+  shouldPromptForSite,
+} from "./site-prompt.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
@@ -1187,14 +1206,25 @@ function renderTargetList() {
          aria-pressed="${showHiddenTargets}">Show hidden (${nHidden})</button></div>`
     : "";
 
+  // Targets the filter chips alone hide: they would show with every available
+  // filter ticked and the logic back on "any".
+  const nFilterHidden = filterHiddenCount(
+    manifest.targets, targetMatches, t => withAllFilters(() => targetMatches(t)));
+  const filterNoteText = filterHiddenNoteText(nFilterHidden);
+  const filterNote = filterNoteText
+    ? `<div class="filter-hide-note">${esc(filterNoteText)} <button type="button" id="filterShowAll" class="link-btn">show all</button></div>`
+    : "";
+
   panel.innerHTML = `
     <div class="panel-list">
       <h3>Targets <span class="tr-count">${matches.length} of ${nListable}</span>${sortCtl}</h3>
+      ${filterNote}
       ${hiddenToggle}
       <ul class="target-list">${rows || empty}</ul>
     </div>`;
   panel.querySelector(".target-row.is-picked")?.scrollIntoView?.({ block: "nearest" });
 
+  panel.querySelector("#filterShowAll")?.addEventListener("click", resetFilterSelection);
   panel.querySelector("#targetHiddenToggle")?.addEventListener("click", () => {
     showHiddenTargets = !showHiddenTargets;
     try { localStorage.setItem("acp.show_hidden_targets", showHiddenTargets ? "on" : "off"); }
@@ -1219,7 +1249,7 @@ function renderTargetList() {
       }
       if (t) {
         // Pan first so even a render throw doesn't swallow the pan.
-        panMapTo(t.center_ra_deg, t.center_dec_deg);
+        panMapTo(t.center_ra_deg, t.center_dec_deg, { target: t });
         renderTargetPanel(t);
       }
     });
@@ -1418,7 +1448,7 @@ function planMenuSpec(pl) {
         const go = () => {
           revealMainSidePanel();
           if (!planningMode) setPlanningMode(true);
-          panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+          panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg, { target: pl.target });
           renderPlanEditor(pl);
         };
         // From the map, another plan may be open with unsaved edits.
@@ -1504,9 +1534,13 @@ function angularSep(ra1, dec1, ra2, dec2) {
 // rail row clicks so opening a detail/editor view also orients the sky map.
 // No-op when current centre is within `threshold_arcmin` of the target so
 // re-clicking the same row doesn't trigger a redundant pan.
-function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
+// Pass `target` (anything with corners_icrs or fov_arcmin) to also zoom when
+// the view is far wider than its footprint; a view already zoomed in is left
+// alone. See zoomFovFor in map-focus.mjs.
+function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1, target = null } = {}) {
   if (!aladin) return;
   if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
+  zoomMapForFootprint(target, duration_s);
   try {
     const cur = aladin.getRaDec();
     if (cur && cur.length === 2 &&
@@ -1519,6 +1553,18 @@ function panMapTo(ra, dec, { duration_s = 1.0, threshold_arcmin = 1 } = {}) {
   } else if (typeof aladin.gotoRaDec === "function") {
     aladin.gotoRaDec(ra, dec);
   }
+}
+
+function zoomMapForFootprint(target, duration_s) {
+  if (!target) return;
+  try {
+    const fov = aladin.getFoV?.();
+    const current = Array.isArray(fov) ? Math.max(fov[0], fov[1]) : Number(fov);
+    const next = zoomFovFor(current, footprintSizeDeg(target));
+    if (next == null) return;
+    if (typeof aladin.zoomToFoV === "function") aladin.zoomToFoV(next, duration_s);
+    else if (typeof aladin.setFoV === "function") aladin.setFoV(next);
+  } catch (e) { /* zoom is a nicety, never block the pan */ }
 }
 
 // Unwraps polygon-corner RAs onto a common 360°-shifted frame when the
@@ -5603,6 +5649,28 @@ function _availableFilters() {
   return [...canon, ...(anyOsc ? [RGB_CHIP] : []), ...extras];
 }
 
+// Run fn with every available filter ticked and the logic on "any", then put
+// the real selection back.
+function withAllFilters(fn) {
+  const prevFilters = selectedFilters;
+  const prevLogic = filterLogic;
+  selectedFilters = new Set(_availableFilters());
+  filterLogic = "any";
+  try { return fn(); }
+  finally { selectedFilters = prevFilters; filterLogic = prevLogic; }
+}
+
+// The "show all" link in the target list note: tick every filter again.
+function resetFilterSelection() {
+  selectedFilters = new Set(_availableFilters());
+  filterLogic = "any";
+  const sel = document.getElementById("filterLogic");
+  if (sel) sel.value = "any";
+  renderFilterChips();
+  saveUiState();
+  redrawFootprints();
+}
+
 function renderFilterChips() {
   const host = document.getElementById("filterChips");
   if (!host) return;
@@ -5733,6 +5801,7 @@ function setupFilterUI() {
     e.preventDefault();
     saveSiteFromForm();
   });
+  document.getElementById("siteFLocate").addEventListener("click", useMyLocation);
   document.getElementById("siteFCancel").addEventListener("click", closeSiteModal);
   document.getElementById("siteFDelete").addEventListener("click", deleteActiveSite);
 }
@@ -5785,9 +5854,11 @@ function applyActiveSite() {
   };
 }
 
-function openSiteModal(siteId) {
+function openSiteModal(siteId, { note = false } = {}) {
   const dlg = document.getElementById("siteModal");
   const editing = sites.find(s => s.id === siteId) || null;
+  document.getElementById("siteModalNote").hidden = !note;
+  document.getElementById("siteFLocate").hidden = !navigator.geolocation;
   document.getElementById("siteModalTitle").textContent = editing ? "Edit site" : "Add site";
   document.getElementById("siteFName").value   = editing?.name ?? "";
   document.getElementById("siteFLat").value    = editing?.lat ?? "";
@@ -5804,6 +5875,33 @@ function openSiteModal(siteId) {
   if (typeof dlg.showModal === "function") dlg.showModal();
   else dlg.setAttribute("open", "");
   document.getElementById("siteFName").focus();
+}
+
+// Fill the site form's latitude and longitude from the browser. Only runs from
+// the button click, so location is never requested unprompted.
+function useMyLocation() {
+  const btn = document.getElementById("siteFLocate");
+  const errEl = document.getElementById("siteFormError");
+  if (!navigator.geolocation) return;
+  btn.disabled = true;
+  errEl.hidden = true;
+  navigator.geolocation.getCurrentPosition(pos => {
+    btn.disabled = false;
+    const c = coordsForForm(pos.coords);
+    if (!c) {
+      errEl.textContent = "The browser did not return a usable location.";
+      errEl.hidden = false;
+      return;
+    }
+    document.getElementById("siteFLat").value = c.lat;
+    document.getElementById("siteFLon").value = c.lon;
+    const nameEl = document.getElementById("siteFName");
+    if (!nameEl.value.trim()) nameEl.value = "My site";
+  }, err => {
+    btn.disabled = false;
+    errEl.textContent = `Could not get your location (${err?.message || "denied"}). Enter it by hand.`;
+    errEl.hidden = false;
+  }, { timeout: 10000 });
 }
 
 function closeSiteModal() {
@@ -6056,6 +6154,13 @@ function setTimeAware(on) {
   localStorage.setItem("acp.time_aware", timeAware ? "on" : "off");
   applyTimeAwareState(/*fireImmediate=*/true);
   broadcastLayerState();
+  // The server falls back to Mauna Kea, so altitudes are wrong until the user
+  // sets a site. Ask once per browser, and leave Time-aware on either way.
+  const activeSite = sites.find(s => s.id === activeSiteId);
+  if (shouldPromptForSite({ turningOn: timeAware, site: activeSite, seen: readPromptSeen(localStorage) })) {
+    markPromptSeen(localStorage);
+    openSiteModal(null, { note: true });
+  }
 }
 
 function applyTimeAwareState(fireImmediate) {
@@ -6498,7 +6603,7 @@ function activityOpenPlan(planId, fromTile = null) {
     revealMainSidePanel();
     if (!planningMode) setPlanningMode(true);
     if (fromTile) navStack.push({ ...fromTile, dest: `plan:${pl.id}` });
-    panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+    panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg, { target: pl.target });
     renderPlanEditor(pl);
   };
   if (panelMode === "plan-edit" && editingPlan?.id !== pl.id) requestNavigateAwayFromPlanEdit(go);
@@ -6758,6 +6863,9 @@ function init() {
     selectedTelescopes = new Set(sorted); // all enabled by default
     renderTelescopeLegend(sorted);
 
+    // With no saved selection, start with every filter the archive has data
+    // for ticked, so broadband-only and OSC targets show on first open.
+    selectedFilters = initialFilterSelection(loadUiState().filters, _availableFilters());
     setupFilterUI();
     // Kick off the catalogue chip render in parallel with the rest; we
     // await the resulting promise alongside everything else below so
@@ -7053,6 +7161,11 @@ function deriveFovArcmin(telescope, camera) {
 
 function planFovArcmin(plan) {
   return deriveFovArcmin(planTelescope(plan), planCamera(plan));
+}
+
+// Same wording as the readout the editor renders.
+function fovReadoutText(w, h) {
+  return `Single-panel FOV: ${w.toFixed(1)}' × ${h.toFixed(1)}'`;
 }
 
 function planMosaic(plan) {
@@ -7385,7 +7498,7 @@ function renderPlanList() {
     const pl = plans.find(p => p.id === row.dataset.planId);
     if (pl) {
       // Pan first so even a render throw doesn't swallow the pan.
-      panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg);
+      panMapTo(pl.target?.center_ra_deg, pl.target?.center_dec_deg, { target: pl.target });
       renderPlanEditor(pl);
     }
   };
@@ -7798,7 +7911,7 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Camera</span>
           <select id="f_camera">${camOpts}</select>
         </label>
-        <div style="font-size:11px;color:#78839a">Single-panel FOV: ${fw.toFixed(1)}' × ${fh.toFixed(1)}'</div>
+        <div style="font-size:11px;color:#78839a" id="fovReadout">Single-panel FOV:${fw.toFixed(1)}' × ${fh.toFixed(1)}'</div>
       </fieldset>
 
       <fieldset>
@@ -7903,13 +8016,17 @@ function renderPlanEditor(plan) {
     const v = parseFloat(e.target.value);
     if (isFinite(v)) { editingPlan.target.rotation_deg = v; redrawPlanFootprints(); schedulePlanVisRefresh(); }
   });
+  // Both selects list all gear, so a gear change updates the FOV readout,
+  // mosaic summary, footprints and filter cards in place (see onGearChange
+  // below) instead of re-rendering the editor and losing its scroll position.
+  let onGearChange = () => {};
   panel.querySelector("#f_telescope")?.addEventListener("change", e => {
     editingPlan.telescope_id = e.target.value;
-    renderPlanEditor(editingPlan);
+    onGearChange();
   });
   panel.querySelector("#f_camera")?.addEventListener("change", e => {
     editingPlan.camera_id = e.target.value;
-    renderPlanEditor(editingPlan);
+    onGearChange();
   });
   panel.querySelector("#openGearEditor")?.addEventListener("click", () => renderGearEditor());
 
@@ -7923,6 +8040,16 @@ function renderPlanEditor(plan) {
     if (el) el.textContent = `${m.rows * m.cols} panel${m.rows * m.cols === 1 ? "" : "s"} · total ${totalW.toFixed(1)}' × ${totalH.toFixed(1)}'`;
   };
   updateMosaicSummary();
+
+  onGearChange = () => {
+    const [w, h] = planFovArcmin(editingPlan);
+    const fovEl = document.getElementById("fovReadout");
+    if (fovEl) fovEl.textContent = fovReadoutText(w, h);
+    updateMosaicSummary();
+    redrawFilterRows(panel);
+    redrawPlanFootprints();
+    schedulePlanVisRefresh();
+  };
 
   panel.querySelector("#f_mrows")?.addEventListener("input", e => {
     editingPlan.target.mosaic = editingPlan.target.mosaic || { rows: 1, cols: 1, overlap_pct: 15 };
