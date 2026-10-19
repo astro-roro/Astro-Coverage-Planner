@@ -7,7 +7,7 @@
 
 // Where templates/index.html loads Aladin Lite from. Named in the error so a
 // user behind an ad blocker or firewall knows exactly which address to allow.
-export const ALADIN_URL = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js";
+export const ALADIN_URL = "https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.2/aladin.js";
 
 // How long init() waits for Aladin Lite's own `A.init` promise before giving
 // up. The library fetches a WebAssembly bundle on first use, so allow for a

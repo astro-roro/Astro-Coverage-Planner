@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import gzip
 import hashlib
 import hmac
 import json
@@ -399,6 +400,54 @@ def _api_gate():
         # keeps the URL the user asked for and signing in lands them there.
         return render_template("login.html", next_path=request.full_path), 401
     return jsonify({"error": "unauthorized"}), 401
+
+
+# Bodies below this are left alone: the gzip header and the CPU cost are not
+# worth it, and the manifest is the only response where size matters.
+_GZIP_MIN_BYTES = int(os.environ.get("ACP_GZIP_MIN_BYTES", 2048))
+
+
+@app.after_request
+def _compress_and_tag(resp):
+    """Gzip and ETag JSON and text responses.
+
+    Waitress compresses nothing, and the manifest and visibility JSON shrink
+    about tenfold. GET and HEAD responses also get a strong ETag over the
+    body, and a matching If-None-Match turns into a 304 before any
+    compression happens. The ETag carries a "-gzip" suffix when the body is
+    sent compressed, because the two encodings are different
+    representations. Streamed responses, files (send_file hands back a
+    pass-through response with its own validators), responses already
+    encoded or sent as attachments, and anything but a 200 are untouched.
+    """
+    if resp.status_code != 200 or resp.direct_passthrough or resp.is_streamed:
+        return resp
+    if resp.headers.get("Content-Encoding") or resp.headers.get("Content-Disposition"):
+        return resp
+    mimetype = resp.mimetype or ""
+    if not (mimetype == "application/json" or
+            (mimetype.startswith("text/") and mimetype != "text/event-stream")):
+        return resp
+    body = resp.get_data()
+    if len(body) < _GZIP_MIN_BYTES:
+        return resp
+
+    resp.vary.add("Accept-Encoding")
+    use_gzip = request.accept_encodings["gzip"] > 0
+    if request.method in ("GET", "HEAD") and "ETag" not in resp.headers:
+        tag = hashlib.sha1(body).hexdigest()
+        resp.set_etag(tag + "-gzip" if use_gzip else tag)
+        if mimetype == "application/json" and "Cache-Control" not in resp.headers:
+            # Always revalidate: the manifest changes under a running page
+            # after a scan, and a 304 makes the check cheap.
+            resp.headers["Cache-Control"] = "no-cache"
+        resp.make_conditional(request)
+        if resp.status_code == 304:
+            return resp
+    if use_gzip:
+        resp.set_data(gzip.compress(body, compresslevel=5, mtime=0))
+        resp.headers["Content-Encoding"] = "gzip"
+    return resp
 
 
 def _safe_next_path(candidate: str) -> str:
