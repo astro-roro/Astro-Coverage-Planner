@@ -20,4 +20,4 @@ croniter>=6.2.4
 # to upload shooting.json over SFTP. See docs/sharing.md.
 paramiko>=5.0.0
 # Time zone data for the Activity tab's night rule (ACP_ACTIVITY_TZ); Windows has none of its own.
-tzdata>=2025.2; sys_platform == "win32"
+tzdata>=2026.5; sys_platform == "win32"
