@@ -104,7 +104,7 @@ The official **[ACP NINA plugin](https://github.com/astro-roro/ACP.NINA.Plugin)*
 
 For users who do use Target Scheduler, the plugin writes your plans into the TS database for the active NINA profile with **Sync All to TS**, or **Sync for tonight** for just the plans your connected rig can shoot. No zip imports, no faff. While you image, the plugin reports the frames it captured back to ACP, so your hours and goals update without any extra setup.
 
-**Installing:** plugin 3.2 is on NINA's Stable plugin channel. In NINA, open Options → Plugins → Available, find **ACP** and install it, then point it at your ACP address (and the API token, if you have turned one on).
+**Installing:** plugin 3.3 is on NINA's Stable plugin channel. In NINA, open Options → Plugins → Available, find **ACP** and install it, then point it at your ACP address (and the API token, if you have turned one on).
 
 ACP itself still runs on Windows, macOS, and Linux — the plugin is the NINA-side layer (and NINA is Windows-only). If you image from Mac or Linux but have a Windows box driving NINA, that works too: run ACP wherever you like, install the plugin on the Windows side.
 
