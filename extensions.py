@@ -10,6 +10,11 @@ Configuration:
     ACP_EXTENSIONS_DIR  Directory to scan. Defaults to
                         ``%APPDATA%\\acp\\extensions`` on Windows or
                         ``~/.config/acp/extensions`` elsewhere.
+    ACP_DISABLE_BUNDLED_EXTENSIONS
+                        Set to ``1`` to skip the extensions that ship inside
+                        ACP (``bundled_extensions/``, currently the Target
+                        Scheduler sync). They load by default, after the
+                        user's directory, and a same-named entry there wins.
 
 Extensions are independent — a failure in one does not stop the others, and
 nothing happens at all when the directory is absent (vanilla setup).
@@ -28,9 +33,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from flask import Flask
 
-__all__ = ["load_extensions", "default_extensions_dir", "sanitise_rail_tabs"]
+__all__ = ["load_extensions", "load_bundled_extensions", "default_extensions_dir",
+           "sanitise_rail_tabs"]
 
 logger = logging.getLogger("acp.extensions")
+
+#: Extensions that ship inside ACP and load by default.
+BUNDLED_EXTENSIONS_DIR = Path(__file__).resolve().parent / "bundled_extensions"
+BUNDLED_DISABLE_ENV = "ACP_DISABLE_BUNDLED_EXTENSIONS"
 
 
 def default_extensions_dir() -> Path:
@@ -171,19 +181,64 @@ def sanitise_rail_tabs(entry: dict) -> dict:
     return out
 
 
+def _user_extensions_dir() -> Path:
+    raw = os.environ.get("ACP_EXTENSIONS_DIR", "").strip()
+    return Path(raw).expanduser() if raw else default_extensions_dir()
+
+
 def load_extensions(app: "Flask") -> list[str]:
-    """Discover and register extensions on *app*.
+    """Discover and register the user's extensions on *app*.
 
     Returns the names (directory entry name) of extensions that registered
-    successfully. Names starting with ``.`` or ``_`` are skipped — this also
-    skips ``__pycache__`` and any package an author intentionally hides.
+    successfully. Nothing happens when the directory is absent.
     """
-    raw = os.environ.get("ACP_EXTENSIONS_DIR", "").strip()
-    ext_dir = Path(raw).expanduser() if raw else default_extensions_dir()
-
+    ext_dir = _user_extensions_dir()
     if not ext_dir.is_dir():
         return []
+    return _load_dir(app, ext_dir)
 
+
+def bundled_extensions_disabled() -> bool:
+    """True when ``ACP_DISABLE_BUNDLED_EXTENSIONS`` switches the bundled set off."""
+    return (os.environ.get(BUNDLED_DISABLE_ENV) or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def load_bundled_extensions(app: "Flask") -> list[str]:
+    """Register the extensions that ship inside ACP (``bundled_extensions/``).
+
+    They load the same way as user extensions and stay separate packages that
+    core never imports. Call this after ``load_extensions``: when the user's
+    extensions directory already holds an entry with the same name (a newer
+    standalone copy, say), that copy is the one that runs and the bundled one
+    is skipped, so the same routes are never registered twice.
+    ``ACP_DISABLE_BUNDLED_EXTENSIONS=1`` skips the whole folder.
+    """
+    if bundled_extensions_disabled():
+        logger.info("Bundled extensions disabled by %s", BUNDLED_DISABLE_ENV)
+        return []
+    if not BUNDLED_EXTENSIONS_DIR.is_dir():
+        return []
+    user_dir = _user_extensions_dir()
+    shadowed: set[str] = set()
+    if user_dir.is_dir():
+        shadowed = {(p.stem if p.is_file() else p.name) for p in user_dir.iterdir()}
+    for path in sorted(BUNDLED_EXTENSIONS_DIR.iterdir()):
+        stem = path.stem if path.is_file() else path.name
+        if stem in shadowed and not stem.startswith((".", "_")):
+            logger.info("Bundled extension %s skipped: %s has a copy of its own",
+                        stem, user_dir)
+    return _load_dir(app, BUNDLED_EXTENSIONS_DIR, frozenset(shadowed))
+
+
+def _load_dir(app: "Flask", ext_dir: Path,
+              skip_stems: frozenset[str] = frozenset()) -> list[str]:
+    """Load every extension found directly under *ext_dir*.
+
+    Entries whose stem is in *skip_stems* are passed over. Names starting with
+    ``.`` or ``_`` are skipped too, which also skips ``__pycache__`` and any
+    package an author intentionally hides.
+    """
     loaded: list[str] = []
     seen_names: set[str] = set()
     for path in sorted(ext_dir.iterdir()):
@@ -192,6 +247,8 @@ def load_extensions(app: "Flask") -> list[str]:
         # Stem (without .py for files) determines the synthetic module name;
         # collisions between e.g. `foo.py` and `foo/` would silently shadow.
         stem = path.stem if path.is_file() else path.name
+        if stem in skip_stems:
+            continue
         module_name = f"acp_ext_{stem}"
         if module_name in seen_names:
             logger.warning(
