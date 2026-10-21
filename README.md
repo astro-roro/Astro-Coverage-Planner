@@ -110,25 +110,16 @@ ACP itself still runs on Windows, macOS, and Linux — the plugin is the NINA-si
 
 (Future plugins could push to Voyager, SGP, or other planners — the extension hooks are there.)
 
-### Optional: the Target Scheduler sync extension
+### Built in: sending your Target Scheduler setup to ACP
 
-The plugin's **Send TS to ACP** button sends a copy of your Target Scheduler database to ACP, which shows what would change on a review page before anything is applied. Nothing changes in Target Scheduler, and nothing changes in ACP until you click Apply. That page is served by an extension, **[acp-nina-ts-sync](https://github.com/astro-roro/acp-nina-ts-sync)**, so install it on the machine that runs ACP:
+The plugin's **Send TS to ACP** button sends a copy of your Target Scheduler database to ACP, which shows what would change on a review page before anything is applied. Nothing changes in Target Scheduler, and nothing changes in ACP until you click Apply. ACP serves that page itself, from an extension that ships inside it (`bundled_extensions/nina_ts_sync`) and is switched on by default, so there is nothing to install. The Docker image includes it too.
 
-1. Download the repository and copy its `nina_ts_sync` folder into ACP's extensions folder: `%APPDATA%\acp\extensions` on Windows, `~/.config/acp/extensions` on macOS and Linux. Or set `ACP_EXTENSIONS_DIR` to any folder you like and copy it there.
-2. Set `ACP_API_TOKEN` to a long random string before starting ACP. The extension refuses uploads until a token is set. Enter the same token in the plugin's settings.
-3. Restart ACP. It loads extensions at startup.
+Two things to set up:
 
-With Docker, mount a folder holding `nina_ts_sync` and point ACP at it:
+1. Set `ACP_API_TOKEN` to a long random string before starting ACP. The extension refuses uploads until a token is set.
+2. Enter the same token in the plugin's settings.
 
-    docker run -p 127.0.0.1:5555:5555 \
-      -v /path/to/your/fits:/fits:ro \
-      -v acp-data:/app/data \
-      -v /path/to/extensions:/extensions:ro \
-      -e ACP_EXTENSIONS_DIR=/extensions \
-      -e ACP_API_TOKEN=change-me-to-a-long-random-string \
-      ghcr.io/astro-roro/astro-coverage-planner:latest
-
-Without the extension, ACP and the plugin still work as described above. You only lose the Target Scheduler to ACP direction. More on how extensions load is in [the extensions guide](docs/extensions.md#where-extensions-go).
+To turn it off, set `ACP_DISABLE_BUNDLED_EXTENSIONS=1` and restart ACP. ACP and the plugin keep working as described above, and you lose only the Target Scheduler to ACP direction. If you already have your own copy of `nina_ts_sync` in your extensions folder, that copy runs and the built-in one steps aside. More on how extensions load is in [the extensions guide](docs/extensions.md#where-extensions-go).
 
 ## Getting started in the app
 
@@ -210,4 +201,4 @@ Hygiene for the supply chain is automated end-to-end:
 
 ## License
 
-MIT — see `LICENSE`.
+MIT, see `LICENSE`. The bundled Target Scheduler sync extension (`bundled_extensions/nina_ts_sync`) is by the same owner under the same licence.
