@@ -110,6 +110,26 @@ ACP itself still runs on Windows, macOS, and Linux — the plugin is the NINA-si
 
 (Future plugins could push to Voyager, SGP, or other planners — the extension hooks are there.)
 
+### Optional: the Target Scheduler sync extension
+
+The plugin's **Send TS to ACP** button sends a copy of your Target Scheduler database to ACP, which shows what would change on a review page before anything is applied. Nothing changes in Target Scheduler, and nothing changes in ACP until you click Apply. That page is served by an extension, **[acp-nina-ts-sync](https://github.com/astro-roro/acp-nina-ts-sync)**, so install it on the machine that runs ACP:
+
+1. Download the repository and copy its `nina_ts_sync` folder into ACP's extensions folder: `%APPDATA%\acp\extensions` on Windows, `~/.config/acp/extensions` on macOS and Linux. Or set `ACP_EXTENSIONS_DIR` to any folder you like and copy it there.
+2. Set `ACP_API_TOKEN` to a long random string before starting ACP. The extension refuses uploads until a token is set. Enter the same token in the plugin's settings.
+3. Restart ACP. It loads extensions at startup.
+
+With Docker, mount a folder holding `nina_ts_sync` and point ACP at it:
+
+    docker run -p 127.0.0.1:5555:5555 \
+      -v /path/to/your/fits:/fits:ro \
+      -v acp-data:/app/data \
+      -v /path/to/extensions:/extensions:ro \
+      -e ACP_EXTENSIONS_DIR=/extensions \
+      -e ACP_API_TOKEN=change-me-to-a-long-random-string \
+      ghcr.io/astro-roro/astro-coverage-planner:latest
+
+Without the extension, ACP and the plugin still work as described above. You only lose the Target Scheduler to ACP direction. More on how extensions load is in [the extensions guide](docs/extensions.md#where-extensions-go).
+
 ## Getting started in the app
 
 The first time you open ACP, a short tour points out the map, the side panels, Planning, Time-aware and NINA sync. Skip it whenever you like. The Help button at the bottom of the right-hand rail, or the ? key, opens a list of what ACP can do and where each thing lives, the mouse and keyboard shortcuts that nothing else on screen mentions, and a Take the tour button to run it again.
