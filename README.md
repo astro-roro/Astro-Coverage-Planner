@@ -62,7 +62,7 @@ Toggle the Green 2019 SNR catalogue, SMGPS SNR candidates, WISE HII regions, the
 
 ![Planning mode](docs/images/planning-mode.gif)
 
-Switch to **Planning mode** in the topbar. Click the sky to drop a target centre, pick telescope + camera (FOV box auto-derives from your gear), set per-filter target hours and sub-exposure. Doing a mosaic? Set rows × columns × overlap %, drag the rotation handle to align the panel grid. Solid borders mean data already logged; dashed borders mean not yet started. When the plan's ready, ACP can also sync it to NINA Target Scheduler so you're not re-typing targets.
+Switch to **Planning mode** in the topbar. Click the sky to drop a target centre, pick telescope + camera (FOV box auto-derives from your gear), then build the goals as an ordered list of filter rows: each row is a filter, an exposure template (which sets the sub length) and an hours goal. Drag rows to reorder them and set how often the filter switches. Doing a mosaic? Set rows × columns × overlap %, drag the rotation handle to align the panel grid. Solid borders mean data already logged; dashed borders mean not yet started. When the plan's ready, the NINA plugin (below) can send it to NINA Target Scheduler so you're not re-typing targets.
 
 ## Get it running
 
@@ -98,16 +98,13 @@ Bind the port mapping to `127.0.0.1` like the example above unless you actually 
 
 The container runs as an unprivileged user (uid 10001) rather than root. A named volume like the example above just works. If you bind-mount a host directory at `/app/data` instead, that directory has to be writable by uid 10001, so on Linux you may need `chown -R 10001 /your/data/dir` once.
 
-### Companion NINA plugin (beta)
+### Companion NINA plugin
 
-There's now an official **[ACP NINA plugin](https://github.com/astro-roro/ACP.NINA.Plugin)** that brings the planner directly into NINA. It adds a dock panel in the Imaging tab that lists every plan from your running ACP instance, with a one-click **Push to Framing** button that loads the target into NINA's Framing Wizard — coordinates, rotation, mosaic geometry, camera dimensions, focal length all set automatically. From there you save the framing as a sequencer target and image it however you like (Simple Sequencer, Advanced Sequencer, manual capture). **No Target Scheduler required.**
+The official **[ACP NINA plugin](https://github.com/astro-roro/ACP.NINA.Plugin)** brings the planner directly into NINA. It adds a dock panel in the Imaging tab that lists every plan from your running ACP instance, with a one-click **Push to Framing** button that loads the target into NINA's Framing Wizard: coordinates, rotation, mosaic geometry, camera dimensions and focal length all set automatically. From there you save the framing as a sequencer target and image it however you like (Simple Sequencer, Advanced Sequencer, manual capture). **No Target Scheduler required.**
 
-For users who do use Target Scheduler, the plugin also has a one-click **Sync All to TS** button that pushes every plan into the TS database for the active NINA profile — no zip imports, no faff.
+For users who do use Target Scheduler, the plugin writes your plans into the TS database for the active NINA profile with **Sync All to TS**, or **Sync for tonight** for just the plans your connected rig can shoot. No zip imports, no faff. While you image, the plugin reports the frames it captured back to ACP, so your hours and goals update without any extra setup.
 
-**Status:** v1.0 is in beta on NINA's plugin marketplace. Two ways to install:
-
-- **Manual install:** download the latest zip from the [plugin's releases page](https://github.com/astro-roro/ACP.NINA.Plugin/releases/latest) and extract to `%localappdata%\NINA\Plugins\3.0.0\ACP.NINA.Plugin\`.
-- **Beta channel:** in NINA, go to Options → General → Plugin Repositories and add `https://nighttime-imaging.eu/wp-json/nina/v1/beta`. The plugin then shows up under Options → Plugins → Available.
+**Installing:** plugin 3.2 is on NINA's Stable plugin channel. In NINA, open Options → Plugins → Available, find **ACP** and install it, then point it at your ACP address (and the API token, if you have turned one on).
 
 ACP itself still runs on Windows, macOS, and Linux — the plugin is the NINA-side layer (and NINA is Windows-only). If you image from Mac or Linux but have a Windows box driving NINA, that works too: run ACP wherever you like, install the plugin on the Windows side.
 
@@ -140,11 +137,11 @@ The headline features are above. These are the secondary bits — the stuff that
 - **Time-aware mode** — toggle on to see what's observable across the night, not just right now. Adds:
   - **12-month visibility sparklines** on every target row (great / good / fair / partial / not visible per month).
   - **Now / Trend chips** — "Now: Good · ↑ Improving" or "Peaks in 4 months" when current conditions are bad.
-  - **Sort options**: hours, best month, up tonight.
+  - **Sort options**: number, hours, name, best this month, best tonight, best upcoming.
 
 ### Planning depth
 - **Gear auto-seed** — first time you open Planning mode, ACP scans your manifest and imports every telescope and camera it found, including focal length, aperture, pixel size, sensor size, and the filters each rig has used. Tweak in the gear editor; re-run "Scan coverage" after rebuilding the manifest.
-- **NINA Target Scheduler template mapping** — if NINA is installed locally, the planner reads its scheduler DB and offers your existing exposure templates in a dropdown, so plans use *your* templates rather than auto-generated ones.
+- **Exposure templates** — the gear editor holds several templates per camera filter, with one starred as the default for new plan rows. The filter wheel comes from your NINA profile, as the plugin reports it. Each plan row picks a template, and ACP pushes the templates to Target Scheduler through the plugin, so plans use *your* templates rather than auto-generated ones.
 - **Mosaic geometry** — rows × columns × overlap %, with a draggable rotation handle. Default 15% overlap is the sweet spot for gradient blending. Panels labelled by row/column (e.g. `Panel 3 (R1C2)`).
 
 ### Sharing and external data
