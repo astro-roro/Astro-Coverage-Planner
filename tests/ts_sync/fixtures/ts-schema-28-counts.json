@@ -1,0 +1,16 @@
+{
+  "user_version": 28,
+  "row_counts": {
+    "project": 4,
+    "target": 179,
+    "exposureplan": 400,
+    "exposuretemplate": 7,
+    "ruleweight": 52,
+    "acquiredimage": 0,
+    "imagedata": 0,
+    "profilepreference": 0,
+    "flathistory": 0,
+    "overrideexposureorderitem": 0,
+    "filtercadenceitem": 0
+  }
+}

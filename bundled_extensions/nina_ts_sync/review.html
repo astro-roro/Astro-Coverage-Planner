@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review TS upload</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #5f6b7a; --line: #d9dee5;
+    --card: #f6f8fa; --accent: #2f6fdb; --warn: #b35c00; --bad: #b3261e; --good: #1e7a3c;
+    --sky-acp: #2f6fdb; --sky-ts: #c2410c; --grid: #c3cad4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161c; --fg: #e4e8ee; --muted: #9aa5b3; --line: #2c333d;
+      --card: #1a2028; --accent: #6ea0ff; --warn: #f0a24b; --bad: #ff7b72; --good: #5fcf80;
+      --sky-acp: #6ea0ff; --sky-ts: #fb923c; --grid: #3a434f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 28px 0 8px; }
+  .muted { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .count { display: inline-block; min-width: 1.6em; padding: 0 6px; border-radius: 10px; background: var(--line); text-align: center; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 6px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  label { cursor: pointer; }
+  .choice { display: inline-flex; gap: 4px; align-items: center; margin-right: 12px; }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .good { color: var(--good); }
+  button, a.btn { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+  a.btn { display: inline-block; text-decoration: none; }
+  button.secondary, a.btn.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  select { font: inherit; padding: 4px; max-width: 100%; }
+  .bar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 12px 0; margin-top: 24px; }
+  details > summary { cursor: pointer; }
+  code { font-size: 13px; word-break: break-all; }
+  button.link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; text-align: left; }
+  .sky { margin-top: 8px; }
+  .sky svg { display: block; width: 100%; max-width: 420px; height: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .sky .legend { margin-top: 6px; font-size: 14px; }
+  .sky .legend div { display: flex; gap: 8px; align-items: baseline; margin: 2px 0; }
+  .swatch { flex: none; width: 12px; height: 12px; border-radius: 2px; border: 2px solid; position: relative; top: 1px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="heading">Review TS upload</h1>
+  <div id="meta" class="muted">Loading...</div>
+  <div id="body"></div>
+</main>
+<script>
+(() => {
+  "use strict";
+  const UPLOAD_ID = "__UPLOAD_ID__";
+  const API = "__API_PREFIX__";
+  const statusUrl = `${API}/import/uploads/${UPLOAD_ID}`;
+  const $meta = document.getElementById("meta");
+  const $body = document.getElementById("body");
+
+  let status = null;
+  const decisions = {};      // plan_id -> take_ts | keep_acp | leave
+  const addKeys = new Set();  // TS keys to add as new plans
+  const linkKeys = new Set(); // proposal keys to link
+  const dupChoice = {};       // duplicate key -> skip | add | link
+  const skyOpen = new Set();  // duplicate keys whose sky view is showing
+  let gearChoice = null;
+  let gearTouched = false;    // only a choice made on the page is sent and saved
+  let initialised = false;
+
+  const esc = (v) => String(v === null || v === undefined ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const fmt = (v) => {
+    if (v === null || v === undefined) return "none";
+    if (typeof v === "number") return String(Math.round(v * 10000) / 10000);
+    return String(v);
+  };
+  const STATE_LABELS = {active: "Active", inactive: "Inactive", draft: "Draft", closed: "Closed"};
+  const fmtField = (path, v) => {
+    if (path === "state") return STATE_LABELS[v] || fmt(v);
+    return fmt(v);
+  };
+  const fieldLabel = (path) => path
+    .replace(/^filter_goals\./, "")
+    .replace(/\.target_hours$/, ": target hours")
+    .replace(/\.sub_exposure_s$/, ": sub length (s)")
+    .replace(/^target\./, "target ")
+    .replace(/_/g, " ");
+
+  function fieldsTable(fields, cols) {
+    if (!fields || !fields.length) return "";
+    const head = cols.map(c => `<th>${esc(c[1])}</th>`).join("");
+    const rows = fields.map(f => `<tr><td>${esc(fieldLabel(f.path))}</td>${
+      cols.map(c => `<td>${esc(fmtField(f.path, f[c[0]]))}</td>`).join("")}</tr>`).join("");
+    return `<div class="scroll"><table><tr><th>Field</th>${head}</tr>${rows}</table></div>`;
+  }
+
+  function backToAcp() {
+    return `<div class="bar row"><a class="btn secondary" href="/">Back to ACP</a></div>`;
+  }
+
+  function fmtExpiry(createdIso, expiresIso) {
+    const created = new Date(createdIso);
+    const expires = new Date(expiresIso);
+    const now = new Date();
+    const hours = Math.max(1, Math.round((expires - created) / 3600000));
+    const hoursText = `${hours} hour${hours === 1 ? "" : "s"}`;
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    let dayWord;
+    if (sameDay(expires, now)) dayWord = "today";
+    else if (sameDay(expires, tomorrow)) dayWord = "tomorrow";
+    else dayWord = `on ${expires.toLocaleDateString(undefined, {month: "short", day: "numeric"})}`;
+    const time = expires.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"})
+      .replace("AM", "am").replace("PM", "pm");
+    return `Expires at ${time} ${dayWord}, ${hoursText} after it was sent. After that, send it again from NINA.`;
+  }
+
+  async function getJson(url, opts) {
+    const r = await fetch(url, Object.assign({credentials: "same-origin", headers: {"Accept": "application/json"}}, opts || {}));
+    let data = null;
+    try { data = await r.json(); } catch (e) { data = null; }
+    return {status: r.status, data};
+  }
+
+  async function load() {
+    if (!UPLOAD_ID) { showGone(); return; }
+    const {status: code, data} = await getJson(statusUrl);
+    if (code === 404) { showGone(); return; }
+    if (code === 401) { $meta.textContent = "Sign in to ACP, then reload this page."; return; }
+    if (code !== 200 || !data) { $meta.textContent = "ACP did not answer. Reload to try again."; return; }
+    status = data;
+    render();
+    if (data.state === "checking") setTimeout(load, 2000);
+  }
+
+  function showGone() {
+    $meta.textContent = "";
+    $body.innerHTML = `<div class="card">This upload has expired or was already applied. Send it again from NINA with "Send TS to ACP".</div>${backToAcp()}`;
+  }
+
+  function profileName(pid) {
+    const p = (status.profiles || []).find(x => x.profile_id === pid);
+    return (p && p.name) || pid;
+  }
+
+  function renderMeta() {
+    const s = status;
+    // The heading names the rig and profile so it is clear at a glance
+    // which machine this review page is for, even from a browser tab or a
+    // link opened without the meta line in view.
+    const who = [s.machine, s.profile_id ? profileName(s.profile_id) : null].filter(Boolean);
+    const $heading = document.getElementById("heading");
+    if ($heading) {
+      $heading.textContent = who.length ? `Review TS upload from ${who.join(", ")}` : "Review TS upload";
+    }
+    document.title = who.length ? `Review upload: ${who.join(", ")}` : "Review TS upload";
+
+    const parts = [];
+    if (s.machine) parts.push(`From <b>${esc(s.machine)}</b>`);
+    if (s.profile_id) parts.push(`profile <b>${esc(profileName(s.profile_id))}</b>`);
+    if (s.created_iso) parts.push(`sent ${esc(new Date(s.created_iso).toLocaleString())}`);
+    $meta.innerHTML = parts.join(", ");
+    if ((s.state === "checking" || s.state === "ready") && s.created_iso && s.expires_iso) {
+      $meta.innerHTML += `<div class="muted" style="margin-top:4px">${esc(fmtExpiry(s.created_iso, s.expires_iso))}</div>`;
+    }
+  }
+
+  function render() {
+    renderMeta();
+    const s = status;
+    if (s.state === "checking") {
+      $body.innerHTML = `<div class="card">ACP is reading the upload. This page updates by itself.</div>`;
+      return;
+    }
+    if (s.state === "failed") {
+      $body.innerHTML = `<div class="card bad">&#x2717; ${esc(s.error || "ACP could not read this upload.")}</div>${backToAcp()}`;
+      return;
+    }
+    if (s.state === "superseded") {
+      const link = s.superseded_review_url ? ` <a href="${esc(s.superseded_review_url)}">Open the newer upload</a>.` : "";
+      $body.innerHTML = `<div class="card">A newer upload from this profile replaced this one.${link}</div>${backToAcp()}`;
+      return;
+    }
+    if (s.state !== "ready" || !s.preview) { $body.innerHTML = ""; return; }
+    if (!initialised) {
+      // New plans start ticked, the default the spec sets, except a plan
+      // from a closed TS project: the user ticks that one only if they want
+      // the history in ACP.
+      for (const n of s.preview.new || []) if (n.state !== "closed") addKeys.add(n.key);
+      // A possible duplicate starts on the default the server set: skip
+      // when the footprints overlap by more than 70%, add otherwise. One
+      // from a closed TS project starts on skip, like a new plan above.
+      for (const d of s.preview.duplicates || []) {
+        dupChoice[d.key] = d.default === "skip" || d.state === "closed" ? "skip" : "add";
+      }
+      initialised = true;
+    }
+    renderPreview(s.preview);
+  }
+
+  function renderPreview(p) {
+    const html = [];
+    const c = p.counts || {};
+    html.push(`<div class="card"><b>${esc(p.summary || "")}</b></div>`);
+
+    if ((status.profiles || []).length > 1) {
+      const opts = status.profiles.map(pr =>
+        `<option value="${esc(pr.profile_id)}" ${pr.profile_id === p.profile_id ? "selected" : ""}>${
+          esc(pr.name || pr.profile_id)} (${esc(pr.project_count)} projects)</option>`).join("");
+      html.push(`<div class="card row"><label for="profile">This file holds more than one profile. Show:</label>
+        <select id="profile">${opts}</select></div>`);
+    }
+    for (const note of p.link_notes || []) html.push(`<div class="card warn">${esc(note)}</div>`);
+    if (p.empty) html.push(`<div class="card">This profile has no projects in the upload, so there is nothing to apply.</div>`);
+
+    if ((p.conflicts || []).length) {
+      html.push(`<h2>Needs a choice <span class="count">${p.conflicts.length}</span></h2>`);
+      for (const k of p.conflicts) {
+        const name = `c-${k.plan_id}`;
+        const radio = (v, label) => `<label class="choice"><input type="radio" name="${esc(name)}" data-plan="${esc(k.plan_id)}" value="${v}" ${decisions[k.plan_id] === v ? "checked" : ""}> ${label}</label>`;
+        const orderBlock = (k) => {
+          const f = (k.fields || []).find(x => x.path === "exposure_order");
+          if (!f) return "";
+          if (f.in_conflict) return `<div class="warn">Keep ACP on the order: ${esc(f.keep_acp_note || "")}</div>`;
+          const ok = `${k.plan_id}#exposure_order`;
+          const kept = decisions[ok] === "keep_acp";
+          return `<label class="choice"><input type="checkbox" data-keep-order="${esc(ok)}" ${kept ? "checked" : ""}> Keep ACP's order instead</label>
+            <div class="warn" data-order-note="${esc(ok)}" ${kept ? "" : "hidden"}>${esc(f.keep_acp_note || "")}</div>`;
+        };
+        html.push(`<div class="card"><div><b>${esc(k.project_name)}</b> / ${esc(k.target_name)} <span class="muted">(${esc(k.message)}, matched by ${esc(k.matched_by)})</span></div>
+          ${fieldsTable(k.fields, [["base", "Last sync"], ["acp", "ACP"], ["ts", "TS"]])}
+          ${orderBlock(k)}
+          <div style="margin-top:6px">${radio("take_ts", "Take TS")}${radio("keep_acp", "Keep ACP")}${radio("leave", "Leave for now")}</div></div>`);
+      }
+    }
+
+    const dups = p.duplicates || [];
+    const singles = (p.new || []).some(n => n.gear === "new_plan_gear") || dups.some(d => d.gear === "new_plan_gear");
+    if ((p.new || []).length) {
+      html.push(`<h2>New in TS <span class="count">${p.new.length}</span></h2>`);
+      if (singles) html.push(gearPicker(p.gear));
+      for (const n of p.new) {
+        const mos = n.mosaic && (n.mosaic.rows > 1 || n.mosaic.cols > 1) ? `, mosaic ${n.mosaic.rows}x${n.mosaic.cols}` : "";
+        html.push(`<div class="card"><label><input type="checkbox" data-add="${esc(n.key)}" ${addKeys.has(n.key) ? "checked" : ""}>
+          <b>${esc(n.project_name)}</b> / ${esc(n.target_name)}</label> <span class="muted">${esc((n.filters || []).join(", "))}${esc(mos)}</span></div>`);
+      }
+    }
+
+    if (dups.length) {
+      html.push(`<h2>Possible duplicates <span class="count">${dups.length}</span></h2>
+        <div class="muted">These TS plans are new to this rig, but they cover the same patch of sky as a plan ACP already has, going by position and field of view, not by name. Ones that overlap by more than 70% start on Skip. The rest start on Add anyway. Tap the line to see both on the sky. A new single target is measured with the gear ACP preselects for new plans on this rig.</div>`);
+      if (singles && !(p.new || []).length) html.push(gearPicker(p.gear));
+      for (const d of dups) html.push(dupCard(d, p.profile_id));
+    }
+
+    if ((p.proposals || []).length) {
+      html.push(`<h2>Same name as an ACP plan <span class="count">${p.proposals.length}</span></h2>
+        <div class="muted">These TS plans carry no ACP stamp. Nothing happens to them unless you tick one.</div>`);
+      for (const pr of p.proposals) {
+        html.push(`<div class="card"><div>Looks like ACP's <b>${esc(pr.acp.project_name)}</b> / ${esc(pr.acp.target_name)}. Link them?</div>
+          <label class="choice"><input type="checkbox" data-link="${esc(pr.key)}" ${linkKeys.has(pr.key) ? "checked" : ""}> Link to the ACP plan (ACP's values stay)</label>
+          <label class="choice"><input type="checkbox" data-add="${esc(pr.key)}" ${addKeys.has(pr.key) ? "checked" : ""}> Add as new</label></div>`);
+      }
+    }
+
+    if ((p.updated || []).length) {
+      html.push(`<h2>Updated in TS <span class="count">${p.updated.length}</span></h2>`);
+      for (const u of p.updated) {
+        const keep = decisions[u.plan_id] === "keep_acp";
+        const orderField = (u.fields || []).find(f => f.path === "exposure_order");
+        const orderKey = `${u.plan_id}#exposure_order`;
+        const keepOrder = decisions[orderKey] === "keep_acp";
+        const orderChoice = orderField
+          ? `<label class="choice"><input type="checkbox" data-keep-order="${esc(orderKey)}" ${keepOrder ? "checked" : ""}> Keep ACP's order instead</label>
+             <div class="warn" data-order-note="${esc(orderKey)}" ${keepOrder ? "" : "hidden"}>${esc(orderField.keep_acp_note || "")}</div>`
+          : "";
+        html.push(`<div class="card"><div><b>${esc(u.project_name)}</b> / ${esc(u.target_name)} <span class="muted">(matched by ${esc(u.matched_by)})</span></div>
+          ${fieldsTable(u.fields, [["acp", "ACP now"], ["ts", "From TS"]])}
+          <label class="choice"><input type="checkbox" data-keep="${esc(u.plan_id)}" ${keep ? "checked" : ""}> Keep ACP instead</label>${orderChoice}</div>`);
+      }
+    }
+
+    const nu = p.not_in_upload || [];
+    if (nu.length) {
+      html.push(`<h2>Not in this upload <span class="count">${nu.length}</span></h2>
+        <details class="card"><summary>ACP plans linked to this rig that the upload does not have. They are left as they are.</summary>
+        <ul>${nu.map(x => `<li>${esc(x.project_name)} / ${esc(x.target_name)}</li>`).join("")}</ul></details>`);
+    }
+    if (c.unchanged) html.push(`<div class="muted" style="margin-top:12px">${esc(c.unchanged)} matched plans need no change in ACP.</div>`);
+
+    const groups = p.notes || [];
+    if (groups.length) {
+      html.push(`<h2>What the import cannot carry exactly</h2>`);
+      for (const g of groups) {
+        const items = g.notes.map(n => `<li class="${n.level === "loss" ? "warn" : ""}">${esc(n.message)}</li>`).join("");
+        html.push(`<details class="card" ${g.losses ? "open" : ""}><summary><b>${esc(g.project || "General")}</b> ${
+          g.losses ? `<span class="warn">${esc(g.losses)} lost</span>` : ""}</summary><ul>${items}</ul></details>`);
+      }
+    }
+
+    html.push(`<div class="bar row"><button id="apply">Apply</button><button class="secondary" id="cancel">Cancel this import</button><span id="why" class="muted"></span></div><div id="result"></div>`);
+    $body.innerHTML = html.join("");
+    wire(p);
+    updateApply(p);
+  }
+
+  function dupLine(d) {
+    const what = `${d.acp.project_name} / ${d.acp.target_name}`;
+    if (d.overlap_pct === null || d.overlap_pct === undefined) {
+      return `Possible duplicate of ${what}, centres ${fmt(d.separation_arcmin)}′ apart`;
+    }
+    return `Possible duplicate of ${what}, ${d.overlap_pct}% overlap`;
+  }
+
+  function dupCard(d, profileId) {
+    const mos = d.mosaic && (d.mosaic.rows > 1 || d.mosaic.cols > 1) ? `, mosaic ${d.mosaic.rows}x${d.mosaic.cols}` : "";
+    const name = `d-${d.key}`;
+    const radio = (v, label, disabled) => `<label class="choice"><input type="radio" name="${esc(name)}" data-dup="${esc(d.key)}" value="${v}" ${
+      dupChoice[d.key] === v ? "checked" : ""} ${disabled ? "disabled" : ""}> ${label}</label>`;
+    const others = (d.acp.profiles || []).filter(x => x !== profileId);
+    const rigNote = (d.acp.profiles || []).length && !(d.acp.profiles || []).includes(profileId)
+      ? `<div class="muted">ACP's plan is linked to ${others.length === 1 ? "another rig" : `${others.length} other rigs`}. Linking adds this rig too.</div>` : "";
+    const busy = d.linkable ? "" : `<div class="muted">ACP's plan already matches another TS plan in this upload, so it cannot be linked to this one as well.</div>`;
+    return `<div class="card" data-dup-card="${esc(d.key)}">
+      <div><b>${esc(d.project_name)}</b> / ${esc(d.target_name)} <span class="muted">${esc((d.filters || []).join(", "))}${esc(mos)}</span></div>
+      <div><button type="button" class="link" data-sky="${esc(d.key)}" aria-expanded="${skyOpen.has(d.key)}">${esc(dupLine(d))}</button></div>
+      <div class="sky" data-sky-panel="${esc(d.key)}" ${skyOpen.has(d.key) ? "" : "hidden"}>${skyOpen.has(d.key) ? skyView(d) : ""}</div>
+      ${rigNote}${busy}
+      <div style="margin-top:6px">${radio("skip", "Skip it")}${radio("add", "Add anyway")}${
+        radio("link", "Link to the ACP plan (ACP's values stay)", !d.linkable)}</div></div>`;
+  }
+
+  function legendRow(colour, who, l) {
+    const rig = [l.telescope, l.camera].filter(Boolean).join(" + ") || "gear unknown";
+    const size = l.size_arcmin && l.size_arcmin[0] > 0 ? `, ${fmt(l.size_arcmin[0])}′ x ${fmt(l.size_arcmin[1])}′` : "";
+    const filters = (l.filters || []).length ? l.filters.join(", ") : "no filters";
+    return `<div><span class="swatch" style="border-color:${colour};background:color-mix(in srgb, ${colour} 25%, transparent)"></span>
+      <span><b>${esc(who)}:</b> ${esc(l.project_name)} / ${esc(l.target_name)}. ${esc(rig)}${esc(size)}. ${esc(filters)}, ${esc(fmt(l.hours))} h.</span></div>`;
+  }
+
+  function skyView(d) {
+    const s = d.sky;
+    const legend = `<div class="legend">${legendRow("var(--sky-acp)", "ACP", d.legend.acp)}${legendRow("var(--sky-ts)", "TS", d.legend.ts)}</div>`;
+    if (!s) return `<div class="muted">No field of view for either plan, so there is nothing to draw.</div>${legend}`;
+    const [x0, y0, x1, y1] = s.box;
+    const w = x1 - x0, h = y1 - y0;
+    const fs = w / 26;
+    const clip = `sky-clip-${String(d.key).replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    // The server gives y growing north; SVG's y grows down.
+    const pt = (q) => `${q[0]},${-q[1]}`;
+    const path = (pts) => pts.map((q, i) => `${i ? "L" : "M"}${pt(q)}`).join(" ");
+    // Colours go in style, not attributes: var() is CSS, and a presentation
+    // attribute is not guaranteed to read it.
+    const grid = (s.grid || []).map(g => `<path d="${path(g.points)}" style="fill:none;stroke:var(--grid)" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join("");
+    const labels = (s.grid || []).map(g => {
+      const [ax, ay] = g.anchor;
+      const x = g.kind === "dec" ? x0 + fs * 0.3 : ax;
+      const y = g.kind === "dec" ? -ay - fs * 0.3 : -y0 - fs * 0.4;
+      const anchor = g.kind === "dec" ? "start" : "middle";
+      return `<text x="${x}" y="${y}" font-size="${fs}" style="fill:var(--muted)" text-anchor="${anchor}">${esc(g.label)}</text>`;
+    }).join("");
+    const shape = (f, colour) => {
+      if (!f || !f.polygon) return f && f.centre ? mark(f.centre, colour) : "";
+      return `<path d="${path(f.polygon)} Z" style="fill:${colour};stroke:${colour}" fill-opacity="0.18" stroke-width="2" vector-effect="non-scaling-stroke"/>${f.centre ? mark(f.centre, colour) : ""}`;
+    };
+    const mark = (c, colour) => {
+      const r = fs * 0.5;
+      return `<path d="M${c[0] - r},${-c[1]} L${c[0] + r},${-c[1]} M${c[0]},${-c[1] - r} L${c[0]},${-c[1] + r}" style="stroke:${colour}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+    };
+    const title = `Sky view: ACP's ${d.legend.acp.target_name} and the TS plan ${d.legend.ts.target_name}`;
+    return `<svg viewBox="${x0} ${-y1} ${w} ${h}" role="img" aria-label="${esc(title)}" preserveAspectRatio="xMidYMid meet">
+      <defs><clipPath id="${clip}"><rect x="${x0}" y="${-y1}" width="${w}" height="${h}"/></clipPath></defs>
+      <g clip-path="url(#${clip})">${grid}${shape(s.acp, "var(--sky-acp)")}${shape(s.ts, "var(--sky-ts)")}</g>
+      ${labels}
+      <text x="${x1 - fs * 0.3}" y="${-y1 + fs * 1.2}" font-size="${fs}" style="fill:var(--muted)" text-anchor="end">N up, E left</text>
+    </svg>${legend}`;
+  }
+
+  function gearPicker(g) {
+    if (!gearChoice && g && g.default) gearChoice = {telescope_id: g.default.telescope_id, camera_id: g.default.camera_id};
+    const opt = (list, sel) => (list || []).map(x => `<option value="${esc(x.id)}" ${x.id === sel ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+    return `<div class="card row"><span>Gear for new plans on this rig:</span>
+      <select id="gear-tel" aria-label="Telescope">${opt(g.telescopes, gearChoice && gearChoice.telescope_id)}</select>
+      <select id="gear-cam" aria-label="Camera">${opt(g.cameras, gearChoice && gearChoice.camera_id)}</select>
+      <span class="muted">Used for new single targets. Mosaics keep the gear that rebuilds their panels.</span></div>`;
+  }
+
+  function wire(p) {
+    const prof = document.getElementById("profile");
+    if (prof) prof.addEventListener("change", () => rePreview(prof.value));
+    for (const r of $body.querySelectorAll("input[type=radio][data-plan]")) {
+      r.addEventListener("change", () => { decisions[r.dataset.plan] = r.value; updateApply(p); });
+    }
+    for (const cb of $body.querySelectorAll("input[data-add]")) {
+      cb.addEventListener("change", () => {
+        if (cb.checked) { addKeys.add(cb.dataset.add); linkKeys.delete(cb.dataset.add); } else addKeys.delete(cb.dataset.add);
+        syncProposalBoxes(cb.dataset.add);
+      });
+    }
+    for (const cb of $body.querySelectorAll("input[data-link]")) {
+      cb.addEventListener("change", () => {
+        if (cb.checked) { linkKeys.add(cb.dataset.link); addKeys.delete(cb.dataset.link); } else linkKeys.delete(cb.dataset.link);
+        syncProposalBoxes(cb.dataset.link);
+      });
+    }
+    for (const r of $body.querySelectorAll("input[type=radio][data-dup]")) {
+      r.addEventListener("change", () => {
+        const key = r.dataset.dup;
+        dupChoice[key] = r.value;
+        if (r.value !== "link") return;
+        // Only one TS plan can link to a given ACP plan: move any other
+        // that was set to link it back to Skip.
+        const me = (p.duplicates || []).find(d => d.key === key);
+        for (const d of p.duplicates || []) {
+          if (d.key === key || dupChoice[d.key] !== "link" || d.acp.plan_id !== me.acp.plan_id) continue;
+          dupChoice[d.key] = "skip";
+          for (const o of $body.querySelectorAll("input[type=radio][data-dup]")) {
+            if (o.dataset.dup === d.key) o.checked = o.value === "skip";
+          }
+        }
+      });
+    }
+    for (const b of $body.querySelectorAll("button[data-sky]")) {
+      b.addEventListener("click", () => {
+        const key = b.dataset.sky;
+        const d = (p.duplicates || []).find(x => x.key === key);
+        const panel = [...$body.querySelectorAll("[data-sky-panel]")].find(x => x.dataset.skyPanel === key);
+        if (!d || !panel) return;
+        if (skyOpen.has(key)) {
+          skyOpen.delete(key);
+          panel.hidden = true;
+        } else {
+          skyOpen.add(key);
+          panel.innerHTML = skyView(d);
+          panel.hidden = false;
+        }
+        b.setAttribute("aria-expanded", String(skyOpen.has(key)));
+      });
+    }
+    for (const cb of $body.querySelectorAll("input[data-keep-order]")) {
+      cb.addEventListener("change", () => {
+        const key = cb.dataset.keepOrder;
+        if (cb.checked) decisions[key] = "keep_acp"; else delete decisions[key];
+        const note = [...$body.querySelectorAll("[data-order-note]")].find(x => x.dataset.orderNote === key);
+        if (note) note.hidden = !cb.checked;
+      });
+    }
+    for (const cb of $body.querySelectorAll("input[data-keep]")) {
+      cb.addEventListener("change", () => {
+        if (cb.checked) decisions[cb.dataset.keep] = "keep_acp"; else delete decisions[cb.dataset.keep];
+      });
+    }
+    const tel = document.getElementById("gear-tel"), cam = document.getElementById("gear-cam");
+    const onGear = () => { gearChoice = {telescope_id: tel.value, camera_id: cam.value}; gearTouched = true; };
+    if (tel) tel.addEventListener("change", onGear);
+    if (cam) cam.addEventListener("change", onGear);
+    document.getElementById("apply").addEventListener("click", () => apply(p));
+    document.getElementById("cancel").addEventListener("click", () => cancelImport());
+  }
+
+  async function cancelImport() {
+    if (!confirm("Nothing in ACP changes. Send again from NINA when TS is ready.")) return;
+    const btn = document.getElementById("cancel");
+    if (btn) btn.disabled = true;
+    const {status: code} = await getJson(statusUrl, {method: "DELETE"});
+    if (code === 200 || code === 404) {
+      $meta.textContent = "";
+      $body.innerHTML = `<div class="card">Import cancelled. Nothing in ACP changed. Send again from NINA when TS is ready.</div>${backToAcp()}`;
+      return;
+    }
+    if (btn) btn.disabled = false;
+    alert("ACP could not cancel this import. Reload the page and try again.");
+  }
+
+  function syncProposalBoxes(key) {
+    for (const cb of $body.querySelectorAll("input[data-add]")) if (cb.dataset.add === key) cb.checked = addKeys.has(key);
+    for (const cb of $body.querySelectorAll("input[data-link]")) if (cb.dataset.link === key) cb.checked = linkKeys.has(key);
+  }
+
+  function missingChoices(p) {
+    return (p.conflicts || []).filter(k => !["take_ts", "keep_acp", "leave"].includes(decisions[k.plan_id])).length;
+  }
+
+  function updateApply(p) {
+    const btn = document.getElementById("apply"), why = document.getElementById("why");
+    const missing = missingChoices(p);
+    btn.disabled = !!p.empty || missing > 0;
+    why.textContent = p.empty ? "Nothing to apply for this profile."
+      : missing ? `${missing} conflict${missing === 1 ? "" : "s"} still need a choice.`
+      : "Nothing changes in ACP until you click Apply. Nothing ever changes in TS.";
+  }
+
+  async function rePreview(profileId) {
+    await getJson(`${statusUrl}/preview`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Accept": "application/json"},
+      body: JSON.stringify({profile_id: profileId}),
+    });
+    for (const k of Object.keys(decisions)) delete decisions[k];
+    for (const k of Object.keys(dupChoice)) delete dupChoice[k];
+    addKeys.clear(); linkKeys.clear(); skyOpen.clear(); gearChoice = null; gearTouched = false; initialised = false;
+    load();
+  }
+
+  async function apply(p) {
+    const btn = document.getElementById("apply"), out = document.getElementById("result");
+    btn.disabled = true;
+    const linkDecisions = {};
+    for (const k of linkKeys) linkDecisions[k] = "link";
+    const add = new Set(addKeys);
+    // A possible duplicate is linked, added, or (neither) skipped.
+    for (const d of p.duplicates || []) {
+      if (dupChoice[d.key] === "link" && d.linkable) linkDecisions[d.key] = "link";
+      else if (dupChoice[d.key] === "add") add.add(d.key);
+    }
+    const body = {
+      profile_id: p.profile_id,
+      sha256: status.sha256,
+      preview_hash: p.preview_hash,
+      decisions: Object.assign({}, decisions, linkDecisions),
+      add: Array.from(add),
+      // Untouched, the server applies the same default without saving it,
+      // so the rig's default keeps following the gear its plans use.
+      new_plan_gear: gearTouched ? gearChoice : null,
+    };
+    const {status: code, data} = await getJson(`${statusUrl}/apply`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Accept": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (code === 200 && data) {
+      const a = data.applied || {};
+      $body.innerHTML = `<div class="card good">&#x2713; Applied. ${esc((a.added || []).length)} added, ${
+        esc((a.auto_pull || []).length + (a.take_ts || []).length)} updated from TS, ${esc((a.linked || []).length)} linked${
+        (a.skipped || []).length ? `, ${esc(a.skipped.length)} possible duplicate${a.skipped.length === 1 ? "" : "s"} skipped` : ""}.</div>
+        <div class="card">plans.json was backed up to <code>${esc(data.plans_backup_path || "(no earlier file)")}</code></div>${backToAcp()}`;
+      $meta.textContent = "";
+      return;
+    }
+    const msg = (data && data.error) || `ACP answered ${code}.`;
+    if (code === 409 && data && data.reason === "stale_preview") {
+      out.innerHTML = `<div class="card bad">${esc(msg)} <button class="secondary" id="rerun">Run the preview again</button></div>`;
+      document.getElementById("rerun").addEventListener("click", () => rePreview(p.profile_id));
+    } else if (code === 404) {
+      showGone();
+    } else {
+      out.innerHTML = `<div class="card bad">${esc(msg)} Reload the page to see the current state.</div>`;
+      btn.disabled = false;
+    }
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

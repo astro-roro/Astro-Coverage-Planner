@@ -1,0 +1,416 @@
+{
+  "telescopes": [
+    {
+      "id": "110gtx",
+      "name": "110GTX",
+      "focal_length_mm": 547.921702230836,
+      "aperture_mm": 0,
+      "observed_pix_arcsec": 1.415,
+      "observed_fov_arcmin": 225.89
+    },
+    {
+      "id": "190mn",
+      "name": "190MN",
+      "focal_length_mm": 998.12928198446,
+      "aperture_mm": 0,
+      "observed_pix_arcsec": 0.777,
+      "observed_fov_arcmin": 80.92
+    },
+    {
+      "id": "hyperstar",
+      "name": "HyperStar",
+      "focal_length_mm": 513.915485533681,
+      "aperture_mm": 0,
+      "observed_pix_arcsec": 1.509,
+      "observed_fov_arcmin": 149.46
+    },
+    {
+      "id": "redcat-51",
+      "name": "RedCat 51",
+      "focal_length_mm": 248.347987640437,
+      "aperture_mm": 0,
+      "observed_pix_arcsec": 1.924,
+      "observed_fov_arcmin": 322.78
+    },
+    {
+      "id": "c9-25-edgehd-0-7x-re",
+      "name": "C9.25 EdgeHD 0.7x Re",
+      "focal_length_mm": 0,
+      "aperture_mm": 0
+    },
+    {
+      "id": "fsq-106edx4",
+      "name": "FSQ-106EDX4",
+      "focal_length_mm": 0,
+      "aperture_mm": 0
+    }
+  ],
+  "cameras": [
+    {
+      "id": "zwo-asi2600mm-duo",
+      "name": "ZWO ASI2600MM Duo",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        7242,
+        5220
+      ],
+      "filters": {
+        "B": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "G": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "Ha": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "L": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "OIII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "R": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "SII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        }
+      },
+      "sensor_width_px": 7242,
+      "sensor_height_px": 5220
+    },
+    {
+      "id": "zwo-asi2600mm-pro",
+      "name": "ZWO ASI2600MM Pro",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        6294,
+        4243
+      ],
+      "filters": {
+        "B": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "G": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "Ha": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "IR": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "L": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "OIII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "R": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "SII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        }
+      },
+      "sensor_width_px": 6294,
+      "sensor_height_px": 4243
+    },
+    {
+      "id": "qhy268m",
+      "name": "QHY268M",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        7544,
+        5220
+      ],
+      "filters": {
+        "B": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "G": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "Ha": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "L": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "OIII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "R": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "unknown": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        }
+      },
+      "sensor_width_px": 7544,
+      "sensor_height_px": 5220
+    },
+    {
+      "id": "zwo-asi294mc-pro",
+      "name": "ZWO ASI294MC Pro",
+      "pixel_size_um": 4.63,
+      "sensor_px": [
+        4144,
+        2822
+      ],
+      "filters": {
+        "Ha": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "NoFilter": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        }
+      },
+      "sensor_width_px": 4144,
+      "sensor_height_px": 2822
+    },
+    {
+      "id": "zwo-asi294mm-pro",
+      "name": "ZWO ASI294MM Pro",
+      "pixel_size_um": 2.315,
+      "sensor_px": [
+        4144,
+        2822
+      ],
+      "filters": {
+        "Antlia Ha": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "B": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "G": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "Ha": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "IDAS + RED": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "IDAS LPS": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "OIII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "R": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 120,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "SII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        }
+      },
+      "sensor_width_px": 4144,
+      "sensor_height_px": 2822
+    },
+    {
+      "id": "zwo-asi6200mm-pro",
+      "name": "ZWO ASI6200MM Pro",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        11970,
+        7986
+      ],
+      "filters": {
+        "Ha": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "OIII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        },
+        "SII": {
+          "ts_template_id": null,
+          "ts_template_name": null,
+          "default_sub_s": 300,
+          "gain": -1,
+          "offset": -1,
+          "bin": 1
+        }
+      },
+      "sensor_width_px": 11970,
+      "sensor_height_px": 7986
+    }
+  ]
+}
