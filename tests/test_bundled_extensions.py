@@ -32,7 +32,7 @@ from flask import Flask  # noqa: E402
 
 ROUTE = """
 def register(app):
-    @app.route({path!r})
+    @app.route({path!r}, endpoint={path!r})
     def _view():
         return "ok"
 """
