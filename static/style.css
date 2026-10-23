@@ -1012,6 +1012,15 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
   color: #78839a;
   font-family: "SF Mono", Monaco, Consolas, monospace;
   font-size: 11px;
+  white-space: nowrap;
+}
+/* When the readout no longer fits beside the input, it drops to its own
+   line under the input instead of wrapping. 350px is the form width below
+   which a full negative Dec readout (about 110px) no longer fits beside the
+   input; the rail is 368px wide at its default size. */
+.plan-form { container-type: inline-size; }
+@container (max-width: 350px) {
+  .plan-form .coord-row:not(.mosaic-row) > .hms { grid-column: 2 / -1; }
 }
 .plan-form textarea {
   width: 100%;
