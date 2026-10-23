@@ -359,6 +359,57 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(Sim().run("2026-11-10", keep_nights=None)["warnings"], [])
 
 
+class Review1(unittest.TestCase):
+    """Follow-up 1: findings 1, 4 and 6 at the decision level."""
+
+    @staticmethod
+    def _unnamed(pid, target, role, priority):
+        return {"id": pid, "state": "active", "priority": priority, "balance_role": role,
+                "target": {"name": target}}
+
+    def test_project_key_follows_the_ts_export_rule(self):
+        self.assertEqual(balancer.project_key({"id": "a", "project_name": " M31 ", "target": {"name": "x"}}), "M31")
+        self.assertEqual(balancer.project_key({"id": "a", "target": {"name": " Vela "}}), "Vela")
+        self.assertEqual(balancer.project_key({"id": "a", "project_name": "", "target": {}}), "a")
+
+    def test_01_unnamed_plans_are_separate_projects(self):
+        plans = [self._unnamed("u1", "Vela", "survey", "normal"),
+                 self._unnamed("u2", "Carina", "survey", "normal"),
+                 self._unnamed("u3", "Orion", "science", "high")]
+        plans.append({"id": "n", "project_name": "NGC 300", "state": "active", "priority": "low",
+                      "balance_role": "pretty", "commitments": [
+                          {"kind": "vote", "month": "2026-11", "goals": {"Ha": 3.0}, "baseline": {"Ha": 0.0}}]})
+        res = balancer.decide(plans, {"Vela": 1, "Carina": 1, "Orion": 1}, {"n": {"Ha": 0.0}},
+                              balancer.DEFAULT_SETTINGS, {}, "2026-11-01")
+        self.assertEqual({c["project"] for c in res["changes"]}, {"Vela", "Carina", "Orion", "NGC 300"})
+        self.assertEqual(res["warnings"], [])
+
+    def test_04_late_run_says_changes_reach_ts_next_night(self):
+        late = Sim().run("2026-11-10", hours(6, 8, 1.5), done(1.5, 0), late=True)
+        self.assertIn("This run was after 15:00, so its changes reach TS at the next night's sync.",
+                      late["detail"].splitlines())
+        early = Sim().run("2026-11-10", hours(6, 8, 1.5), done(1.5, 0))
+        self.assertNotIn("after 15:00", early["detail"])
+        quiet = Sim()
+        quiet.run("2026-11-10", hours(6, 8, 1.5), done(1.5, 0))
+        self.assertNotIn("after 15:00", quiet.run("2026-11-10", hours(6, 8, 1.5), done(1.5, 0), late=True)["detail"])
+
+    def test_06_a_commitment_with_a_bad_month_is_skipped_with_a_note(self):
+        for bad in (None, 202611, "Nov", "2026-13"):
+            s = Sim()
+            s.plans[4]["commitments"] = [{"kind": "vote", "month": bad, "goals": {"Ha": 1.0}}]
+            res = s.run("2026-11-10", hours(6, 8, 1.5), done(1.5, 0))
+            self.assertTrue(any("M42" in w and "no usable month" in w for w in res["warnings"]), bad)
+            self.assertEqual(s.changed()["NGC 300"], ("low", "high"))
+
+    def test_06_malformed_commitment_containers_do_not_fail_the_run(self):
+        s = Sim()
+        s.plans[4]["commitments"] = "oops"
+        s.plans[3]["commitments"][0]["goals"] = ["Ha"]
+        res = s.run("2026-11-10", hours(6, 8, 1.5), done(1.5, 0))
+        self.assertTrue(res["title"].startswith("Balancer"))
+
+
 class Settings(unittest.TestCase):
     def test_validate(self):
         base = balancer.DEFAULT_SETTINGS
