@@ -304,7 +304,7 @@ def current_done_hours(plan: dict, manifest: dict | None, gear: dict) -> dict[st
 
 
 def _goal_filters(goals_in: dict | None, baseline_in: dict | None,
-                  done: dict[str, dict]) -> dict[str, dict]:
+                  done: dict[str, dict], ndigits: int | None = 1) -> dict[str, dict]:
     """Filters for a vote project or a vote winner: only the goal filters.
     The goal is the vote goal, and done is what was added since the baseline."""
     baseline = {
@@ -318,10 +318,9 @@ def _goal_filters(goals_in: dict | None, baseline_in: dict | None,
     out: dict[str, dict] = {}
     for key, goal in goals.items():
         now = done.get(key, {}).get("done_hours", 0.0)
-        out[key] = {
-            "target_hours": round(goal, 1),
-            "done_hours": round(max(0.0, now - baseline.get(key, 0.0)), 1),
-        }
+        progress = max(0.0, now - baseline.get(key, 0.0))
+        out[key] = ({"target_hours": goal, "done_hours": progress} if ndigits is None else
+                    {"target_hours": round(goal, ndigits), "done_hours": round(progress, ndigits)})
     return out
 
 
@@ -351,13 +350,17 @@ def _vote_winner(plan: dict, done: dict[str, dict], today: date):
                      if isinstance(c, dict) and c.get("kind", "vote") == "vote"
                      and isinstance(c.get("month"), str) and c["month"] <= month),
                     key=lambda c: c["month"]):
-        filters = {k: v for k, v in _goal_filters(c.get("goals"), c.get("baseline"), done).items()
-                   if k in done}
-        if not filters:
+        raw = {k: v for k, v in _goal_filters(c.get("goals"), c.get("baseline"), done, None).items()
+               if k in done}
+        if not raw:
             continue
         in_play = True
-        met = bool(c.get("met_at")) or all(f["done_hours"] >= f["target_hours"] for f in filters.values())
+        # Met is judged on unrounded hours, as the balancer does; rounding is
+        # for display only.
+        met = bool(c.get("met_at")) or all(f["done_hours"] >= f["target_hours"] - 1e-9 for f in raw.values())
         if not met:
+            filters = {k: v for k, v in _goal_filters(c.get("goals"), c.get("baseline"), done).items()
+                       if k in done}
             return (c, filters), True
     return None, in_play
 

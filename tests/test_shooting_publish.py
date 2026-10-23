@@ -789,6 +789,14 @@ class VoteWinner(unittest.TestCase):
         met = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 3.0}, "baseline": {"Ha": 0.0}}
         self.assertIsNone(self._publish(self._winner(commitments=[met]), last=_ago(40)))
 
+    def test_met_is_judged_on_unrounded_hours(self):
+        rows = [{"id": "r-ha", "filter": "Ha", "template": "Ha", "template_sub_s": 300,
+                 "unit": "h", "target_hours": 10.0, "actual_hours": 2.96}]
+        c = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 3.0}, "baseline": {"Ha": 0.0}}
+        pr = self._publish(self._winner(commitments=[c], filter_rows=rows), last=_ago(40))
+        self.assertEqual(pr["status"], "vote_winner")
+        self.assertEqual(pr["filters"]["Ha"], {"target_hours": 3.0, "done_hours": 3.0})
+
     def test_met_at_counts_as_met(self):
         c = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 40.0}, "baseline": {"Ha": 0.0},
              "met_at": "2026-09-02"}
