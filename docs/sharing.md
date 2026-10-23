@@ -61,15 +61,65 @@ These exist mostly to bound memory usage if a malformed manifest somehow slips t
 
 ## Publishing a live page
 
-Separate from friend manifests: this pushes a small public summary of your own current projects to a web page you host, so people can see what you are shooting. Spec and data contract: [specs/shooting-page.md](specs/shooting-page.md). Only plans you mark public are ever included, and the output goes through the same path tripwire as the friend sanitiser.
+Separate from friend manifests: this pushes a small public summary of your own projects to a web page you host, so people can see what you are shooting, what is up for the vote and what you have finished. Spec and data contract: [specs/shooting-page.md](specs/shooting-page.md). The output goes through the same path tripwire as the friend sanitiser, and free text you type is scanned for file paths too.
 
-### Marking a plan public
+### Which plans appear
 
-Once `ACP_PUBLISH_DEST` is set (below) and ACP restarted, the plan editor gains a "Public page" section with three fields. Without it, nothing in the UI changes and nothing is ever published.
+A plan is only a candidate if it is public. Private plans are never published, and they never reach the file at all.
 
-- **Visibility**: private (default) or public. Nothing leaves your machine unless this is public.
-- **Current project**: shows a "current" badge on the page. More than one is fine.
+- **Visibility** in the plan editor is private or public. If you set nothing, a plan with target class "pretty" is public and every other class is private. Choosing either value overrides that default.
+- A public plan then needs a status (below). With no status it is left out, so a public plan you have not shot for a while quietly drops off the page.
+- Projects are listed with the most recently imaged first.
+
+### Status chips
+
+Each published project gets one chip. ACP checks them in this order and stops at the first match.
+
+| Chip | When |
+|---|---|
+| Vote winner | The plan has a vote commitment for this month or an earlier one that is not yet met. The chip reads "October vote winner" (the commitment's month). |
+| Vote | The plan's section is "Up for the vote" and it has no such commitment. |
+| Finished | You set a Finished date, and it is within the last 30 days. |
+| Imaging now | The last imaged night is within 3 nights. |
+| Recent | The last imaged night is within 14 days. |
+
+Some details that decide edge cases:
+
+- A plan with an unmet commitment never shows in the vote section, even if its section still says vote.
+- A commitment is met when you mark it met, or when every filter in it has reached its goal. A met commitment stops being the winner, and the plan falls back to the other chips.
+- A finished plan is judged by its Finished date alone. After 30 days it drops off, even if frames were added later.
+- The last imaged night comes from the archive scan. It is the latest end date of the logged targets that sit on the plan's field.
+- The windows (3 nights, 14 days, 30 days) are in `LIVE_STATUS_WINDOWS` at the top of `shooting_publish.py`. Boundaries are inclusive.
+
+### What each project shows
+
+- Project name and target name, with a trailing site tag such as "(Dark Skies)" removed.
+- Your blurb, the field position and size (including a mosaic's rows and columns), and the telescope as an aperture class such as "110mm refractor".
+- Hours done and hours wanted per filter, and an overall total. Done is capped at the goal for each filter.
+- The last imaged date.
+- Finished projects also show the finish date and the AstroBin link, if it is a valid https link on astrobin.com.
+
+The hours depend on the chip.
+
+- Imaging now, recent and finished: every filter on the plan, with its full goal and the hours logged so far.
+- Vote: only the filters you gave hours for, and "done" counts only frames added since the plan entered the vote. ACP records that starting point itself when you move the plan into the vote section.
+- Vote winner: the filters and goals of the commitment, with done counted since the commitment's starting point.
+
+Hours count only frames from the plan's own telescope and camera. The archive scan records the telescope and camera names from the FITS headers, and ACP compares them with the plan's gear by name. A frame from a different scope or camera on the same sky position is left out. If the scan or the plan does not name a side, that side never excludes anything. Hours with no rig record, such as an older manifest, still count. If the Target Scheduler extension reports more hours than the scan for a filter, ACP uses the higher number.
+
+### Fields in the plan editor
+
+Once `ACP_PUBLISH_DEST` is set (below) and ACP is restarted, the plan editor gains a "Public page" section. Without it, nothing in the UI changes and nothing is ever published. The fields below the visibility choice show only when the plan is public.
+
+- **Visibility**: private or public. A pretty plan with no choice made reads "Public (default for pretty plans)".
+- **Finished**: the date you finished the project, with a Today button. Setting it gives the Finished chip for 30 days.
+- **AstroBin link**: shown on the Finished card. Must be https on astrobin.com, at most 300 characters.
+- **Current project**: a checkbox. It no longer changes the chip, because the chip comes from imaging activity. The flag is still written to the file for one release so the old page renders.
+- **Section**: "Currently imaging" or "Up for the vote".
+- **Vote hours**: appears when the section is "Up for the vote". One box per filter, blank meaning the filter is not part of the vote option. The editor warns above 7 hours in total, since an option is meant to be about 6.
+- **Won the vote for**: appears on a saved plan in the vote section. Pick a month and press the button. It adds a vote commitment from the vote hours, sets the project's balancer role to pretty, and offers to move every other vote plan back to the current section, which ends the round.
 - **Why I'm shooting this**: a short blurb, up to 500 characters, shown on the card.
+- **Publish now (saved plans)**: builds and uploads the page straight away. It publishes saved plans, so save first.
 
 `GET /api/public/shooting` returns exactly what would be published, so you can check it in a browser first.
 
@@ -95,7 +145,12 @@ Host keys are kept in `known_hosts` next to the JSON in the output folder. The f
 
 The key file must be readable by the container user and no one else, or ssh refuses it.
 
-### Running it
+### When it publishes
+
+Nothing publishes by itself inside ACP. There are two ways to trigger it.
+
+- A scheduled run on the machine that runs ACP, normally once a morning.
+- The **Publish now** button in the plan editor, or `POST /api/publish/shooting`. Neither rescans the archive.
 
 ```bash
 python scripts/publish_shooting.py --rescan    # rebuild the manifest, then publish
@@ -103,13 +158,13 @@ python scripts/publish_shooting.py             # publish from the current manife
 python scripts/publish_shooting.py --dry-run   # write data/live/shooting.json and stop
 ```
 
-The page can only be as current as your last archive scan, so run it after the rig has finished for the night. A cron entry on the machine that runs ACP:
+The page can only be as current as your last archive scan, so schedule the run after the rig has finished for the night. A cron entry:
 
 ```
 15 7 * * * cd /path/to/acp && .venv/bin/python scripts/publish_shooting.py --rescan >> data/live/publish.log 2>&1
 ```
 
-On Windows, the same command in Task Scheduler. `POST /api/publish/shooting` does the same thing without a rescan, for a "publish now" from anything that can reach the API.
+On Windows, the same command in Task Scheduler. The button publishes whatever the last scan found, so a frame logged after the scan does not appear until the next scan.
 
 ### The page itself
 
