@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import time
 
 import pytest
@@ -219,6 +220,7 @@ def test_missing_parts_or_bad_meta_are_400(host, tmp_path):
     assert _files(host) == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix permission bits do not apply on Windows")
 def test_the_upload_directory_is_private(host, tmp_path):
     host.upload_ready(_two_profile_db(tmp_path))
     assert (host.upload_dir.stat().st_mode & 0o777) == 0o700
