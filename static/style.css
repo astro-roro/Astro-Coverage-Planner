@@ -977,7 +977,24 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
   width: 110px;
 }
 .plan-form input[type="text"].wide { width: 100%; }
-.plan-form .coord-row {
+/* Label | input | readout in fixed columns, so a wide readout such as a
+   negative Dec in full sexagesimal wraps inside its own column instead of
+   squeezing the label and pushing the input onto a second line. The label
+   uses display: contents so its caption and input become grid cells. */
+.plan-form .coord-row:not(.mosaic-row) {
+  display: grid;
+  grid-template-columns: 90px 110px minmax(0, 1fr);
+  column-gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.plan-form .coord-row:not(.mosaic-row) > label {
+  display: contents;
+}
+.plan-form .coord-row:not(.mosaic-row) > label > span.lab {
+  min-width: 0;
+}
+.plan-form .mosaic-row {
   display: flex;
   gap: 6px;
   align-items: center;
