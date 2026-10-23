@@ -31,6 +31,20 @@ Three optional fields on a plan, all validated in `_validate_plan_payload` and e
 
 A plan with no `visibility` field is private. The whole section is shown only when the server reports publishing is configured (`GET /api/publish/config`, true when `ACP_PUBLISH_DEST` is set), and within it the blurb and current fields appear only when the plan is public. A stock install looks unchanged, every existing plan stays private, and the wording is generic: the option is just "Public", with no site named.
 
+### Vote section fields
+
+Added 2026-10-23 for the monthly vote. All optional and absent on old plans, validated in `_validate_plan_payload`.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `public_section` | `"current"` or `"vote"` | `"current"` | Which section of the live page the plan appears in. Anything else is rejected with 400. |
+| `vote_goals` | object, filter name to hours | none | The hours each filter has in the vote option. Hours must be positive numbers. Only used when `public_section` is `"vote"`. A filter left out is not part of the option. |
+| `vote_baseline` | object, filter name to hours | none | Set by the server, never by the UI. The hours the plan already had per filter when it entered the vote, counted the same way the page counts a current project (the larger of the archive hours and the plan's credited hours). Cleared when the plan goes back to `"current"`. A client can send it but the server overwrites it. |
+
+The server sets the baseline when `public_section` changes to `"vote"` (a fresh snapshot each time the plan enters the vote), and tops it up for any goal filter that has no baseline entry yet. Saving a plan that is already in the vote leaves the baseline alone. This is what stops a plan with earlier data, such as 2023 RGB on NGC 300, looking nearly done: the page shows only hours added after the plan entered the vote.
+
+In the plan editor, the Public page section has a Section choice. "Up for the vote" shows a table of the plan's filters with an hours box each (blank means not in the vote), a running total, and a warning above 7 hours, since each option is meant to be about 6. A "Publish now" button in the same section calls `POST /api/publish/shooting` and shows the project count or the error.
+
 ## The published JSON
 
 `GET /api/public/shooting` returns the exact document that will be published, so the user can preview it in the browser. Shape:
@@ -46,6 +60,7 @@ A plan with no `visibility` field is private. The whole section is shown only wh
       "target_name": "Vela Supernova Remnant",
       "blurb": "Huge, faint, and I have never had enough OIII on it.",
       "is_current": true,
+      "section": "current",               // "current" or "vote", see below
       "center_ra_deg": 128.5, "center_dec_deg": -45.0,
       "fov_arcmin": [220.0, 165.0],       // whole mosaic extent, not one panel
       "mosaic": {"rows": 2, "cols": 2},   // omitted for single frames
@@ -67,6 +82,10 @@ Rules:
 - Coordinates are rounded to 0.01 degrees. Hours are rounded to 0.1. Dates are dates, never datetimes.
 - No plan id, guid, gear ids, camera model, sub-exposure, site, or timestamps other than the ones above.
 - The document is run through `validate_no_paths` from `scripts/sanitise_manifest.py` before it is written, and the three free-text fields (project name, target name, blurb) get a stricter unanchored scan for drive letters, system directories, UNC paths and image file extensions anywhere in the string. A hit raises and nothing is published.
+- A trailing site tag on the project name or target name is dropped from the published text: a final parenthetical ending in "Skies", case-insensitive, such as " (Dark Skies)" or " (Any Skies)". The plan and ACP's own views keep the tag, since it tells the user where a target can be imaged from.
+- `section` is `"current"` or `"vote"`. The `version` stays 1 because the field is additive: a page that ignores it still renders every project.
+- For a `"vote"` project, `filters` lists only the filters in `vote_goals`. `target_hours` is the vote goal. `done_hours` is the hours now (counted as for a current project) minus `vote_baseline`, floored at 0. A missing baseline counts as 0. `last_imaged` and `last_imaged_nights_ago` are unchanged, so a vote card can still say when the target was last imaged. A vote project can have `is_current` set, but the page should group by `section`. `vote_goals` and `vote_baseline` are never in the document.
+- Current projects are published exactly as before.
 - Sorted by `last_imaged` descending, nulls last, then by `project_name`.
 
 ## Matching a plan to logged data
@@ -125,6 +144,9 @@ There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a re
 
 - `visibility` accepts only `"private"` and `"public"`; a plan without it is treated as private; the blurb is capped at 500 characters.
 - A private plan with `is_current` set is not in the output. A public plan is.
+- Site tags are stripped from published names and left on the plan.
+- `section` defaults to `"current"`. A vote project lists only its goal filters, with `done_hours` since the baseline, floored at 0, and an old plan publishes as before.
+- The server sets the baseline on entering the vote, keeps it on later saves, ignores a client-sent value, and clears it on leaving. A bad `public_section` or a non-positive goal is a 400.
 - The output passes `validate_no_paths` and contains none of the forbidden keys listed above.
 - A manifest target inside the plan's extent contributes its hours and date; one outside does not.
 - `done_hours` takes the larger of manifest hours and `actual_hours`.
