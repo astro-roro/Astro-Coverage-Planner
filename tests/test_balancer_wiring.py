@@ -224,6 +224,98 @@ class RunAgainstFiles(WiringCase):
         self.assertEqual(self.client.get("/api/activity/summary").get_json()["needs_you"], 0)
 
 
+class FollowUp1(WiringCase):
+    def test_01_commitment_on_an_unnamed_plan_touches_only_that_plan(self):
+        def unnamed(pid, target):
+            p = _plan(pid, "", None, "low", public_section="vote",
+                      vote_goals={"Ha": 3.0}, vote_baseline={"Ha": 0.0}, filter_rows=_rows(1.0, 0))
+            del p["project_name"]
+            p["target"] = {**p["target"], "name": target}
+            return p
+        self.save([unnamed("a", "Vela"), unnamed("b", "Carina"), _plan("c", "M42", None, "low")])
+        self.assertEqual(self.client.post("/api/plans/a/commitments", json={"month": "2026-11"}).status_code, 201)
+        stored = self.stored()
+        self.assertEqual(stored["a"]["balance_role"], "pretty")
+        self.assertIsNone(stored["b"].get("balance_role"))
+        self.assertIsNone(stored["c"].get("balance_role"))
+
+    def test_01_a_live_run_changes_unnamed_plans_one_at_a_time(self):
+        def unnamed(pid, target, role, priority):
+            p = _plan(pid, "", role, priority)
+            del p["project_name"]
+            p["target"] = {**p["target"], "name": target}
+            return p
+        self.save([unnamed("a", "Vela", "survey", "normal"), unnamed("b", "Carina", "science", "high")])
+        self.report("a", "2026-11-09", 5.0)
+        self.report("b", "2026-11-09", 1.0)
+        self.set_mode("live")
+        app_module.run_balancer("manual", NOV10)
+        stored = self.stored()
+        self.assertEqual((stored["a"]["priority"], stored["b"]["priority"]), ("low", "high"))
+        self.assertIn("balancer_note", stored["a"])
+        self.assertNotIn("balancer_note", stored["b"])
+
+    def test_03_plan_list_carries_server_progress_with_canonical_names(self):
+        plan = _plan("n", "NGC 300", "pretty", "low", filter_rows=[
+            {"id": "r", "filter": "HA", "template": "Ha", "template_sub_s": 300, "unit": "h",
+             "target_hours": 10.0, "actual_hours": 3.0}], commitments=[
+            {"kind": "vote", "month": "2026-11", "goals": {"Ha": 3.0}, "baseline": {"Ha": 0.0}}])
+        self.save([plan])
+        got = self.client.get("/api/plans/n").get_json()
+        prog = got["commitment_progress"]
+        self.assertEqual([(p["month"], p["met"], p["goal_h"]) for p in prog], [("2026-11", True, 3.0)])
+        listed = self.client.get("/api/plans").get_json()["plans"][0]
+        self.assertTrue(listed["commitment_progress"][0]["met"])
+        body = {k: v for k, v in got.items() if k != "filter_goals"}
+        self.assertEqual(self.client.put("/api/plans/n", json=body).status_code, 200)
+        self.assertNotIn("commitment_progress", self.stored()["n"])
+
+    def test_04_run_after_1500_notes_the_next_night_sync(self):
+        self.save(fixture_plans())
+        self.november_hours()
+        self.set_mode("live")
+        app_module.run_balancer("manual", datetime(2026, 11, 10, 16, 0, tzinfo=SYD))
+        detail = self.events("balancer_run")[0]["detail"]
+        self.assertIn("after 15:00", detail)
+
+    def test_05_manual_run_never_blocks_the_scheduled_run(self):
+        self.save(fixture_plans())
+        self.set_mode("dry_run")
+        app_module.run_balancer("manual", datetime(2026, 11, 10, 13, 0, tzinfo=SYD))
+        state = balancer.load_state(self.balancer_path)
+        self.assertIsNone(state["memory"]["last_run_night"])
+        self.assertIsNone(state["memory"]["last_attempt_night"])
+        self.assertTrue(app_module.balancer_tick(datetime(2026, 11, 10, 14, 0, tzinfo=SYD)))
+
+    def test_05_a_failed_manual_run_does_not_count_as_skipped(self):
+        self.save(fixture_plans())
+        self.set_mode("live")
+        with mock.patch.object(balancer, "decide", side_effect=RuntimeError("boom")):
+            out = app_module.run_balancer("manual", NOV10)
+        self.assertEqual(out["reason"], "error")
+        mem = balancer.load_state(self.balancer_path)["memory"]
+        self.assertEqual((mem["skipped_runs"], mem["last_attempt_night"]), (0, None))
+        self.assertTrue(app_module.balancer_tick(NOV10))
+
+    def test_06_a_save_failure_does_not_500_or_retry_every_poll(self):
+        self.save(fixture_plans())
+        self.set_mode("dry_run")
+        with mock.patch.object(balancer, "save_state", side_effect=OSError("disk full")):
+            self.assertTrue(app_module.balancer_tick(NOV10))
+            self.assertFalse(app_module.balancer_tick(NOV10))
+            out = self.client.post("/api/balancer/run")
+        self.assertEqual(out.status_code, 200)
+        self.assertTrue(any("balancer.json" in w for w in out.get_json()["warnings"]))
+
+    def test_06_an_activity_failure_does_not_fail_the_run(self):
+        self.save(fixture_plans())
+        self.set_mode("dry_run")
+        with mock.patch.object(activity, "record", side_effect=RuntimeError("db locked")):
+            out = app_module.run_balancer("manual", NOV10)
+        self.assertTrue(out["ran"])
+        self.assertTrue(any("Activity" in w for w in out["warnings"]))
+
+
 class Routes(WiringCase):
     def test_22_project_settings_takes_role_and_hold(self):
         self.save(fixture_plans() + [_plan("pna2", "PN-A", None, "normal")])

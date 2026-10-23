@@ -66,6 +66,17 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
+def project_key(plan: dict) -> str:
+    """The TS project a plan belongs to. The same rule as `_build_ts_export`:
+    its project name, else its target's name (each unnamed plan is its own
+    project), else its id."""
+    explicit = str(plan.get("project_name") or "").strip()
+    if explicit:
+        return explicit
+    target = plan.get("target") if isinstance(plan.get("target"), dict) else {}
+    return str(target.get("name") or "").strip() or str(plan.get("id") or "") or "Untitled"
+
+
 def project_priority(plans: list[dict]) -> str:
     """What the writers will read: the highest priority in the group."""
     best = "low"
@@ -137,7 +148,7 @@ def is_due(local_now: datetime, night: str, settings: dict, memory: dict) -> boo
 
 def _canon_map(mapping, canon) -> dict[str, float]:
     out: dict[str, float] = {}
-    for k, v in (mapping or {}).items():
+    for k, v in (mapping.items() if isinstance(mapping, dict) else ()):
         if _number(v):
             key = canon(k) or k
             out[key] = out.get(key, 0.0) + float(v)
@@ -191,11 +202,12 @@ def _band_for(role: str, share: float, target: float, tol: float, prev: str | No
 
 def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dict,
            memory: dict, night: str, *, newest_report_night: str | None = None,
-           keep_nights: int | None = None, canon=None) -> dict:
+           keep_nights: int | None = None, canon=None, late: bool = False) -> dict:
     """The whole decision for one run. `month_hours` is hours this month per
     project name, `done_hours` is current hours per canonical filter for each
-    plan id (only plans with commitments need one). Returns a dict, see the
-    keys built at the bottom."""
+    plan id (only plans with commitments need one). `late` says the run is
+    after the nightly launcher (15:00), so its changes reach TS a night
+    later. Returns a dict, see the keys built at the bottom."""
     canon = canon or (lambda s: s)
     settings = {**DEFAULT_SETTINGS, **settings}
     memory = {**copy.deepcopy(DEFAULT_MEMORY), **(memory or {})}
@@ -210,7 +222,7 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
     groups: dict[str, list[dict]] = {}
     for p in plans:
         if isinstance(p, dict):
-            groups.setdefault(str(p.get("project_name") or ""), []).append(p)
+            groups.setdefault(project_key(p), []).append(p)
 
     info: dict[str, dict] = {}
     for name, group in groups.items():
@@ -229,8 +241,13 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
     commitments: list[dict] = []
     for name in sorted(info):
         for p in info[name]["plans"]:
-            for c in p.get("commitments") or []:
+            listed = p.get("commitments")
+            for c in listed if isinstance(listed, list) else []:
                 if not isinstance(c, dict) or c.get("kind", "vote") != "vote":
+                    continue
+                if not (isinstance(c.get("month"), str) and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", c["month"])):
+                    warnings.append(
+                        f"{name}: a vote commitment has no usable month, so the balancer skipped it.")
                     continue
                 j = _judge(p, c, done_hours.get(p.get("id")) or {}, canon, cur_month,
                            elapsed, finish_by, memory["met_seen"])
@@ -407,6 +424,8 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
     if guard:
         lines.append(f"Under {_goal_h(settings['min_month_hours'])} h this month, so no share is judged yet.")
     lines.extend(warnings)
+    if late and not dry and changes:
+        lines.append("This run was after 15:00, so its changes reach TS at the next night's sync.")
 
     data = {
         "mode": mode, "urgent": urgent, "elapsed": round(elapsed, 4),
