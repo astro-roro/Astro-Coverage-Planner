@@ -473,10 +473,15 @@ class Holes(unittest.TestCase):
                                100 - sh["science"]["share"] - sh["survey"]["share"], places=1)
         self.assertEqual(sh["pretty"]["band"], "in")
 
-    def test_weather_is_not_a_hole(self):
+    def test_nothing_up_anywhere_changes_no_priorities(self):
         res = self.run_it(self.OCT, {})
+        self.assertTrue(res["data"]["nothing_up"])
         self.assertEqual(res["data"]["holes"], [])
+        self.assertEqual(res["changes"], [])
         self.assertEqual(res["shares"]["science"]["target"], 35.0)
+        self.assertIn("Nothing up in any role", res["detail"])
+        self.assertEqual(res["title"], "Balancer: no changes")
+        self.assertFalse(self.run_it(self.OCT, {"PN-A": 1.0})["data"]["nothing_up"])
 
     def test_without_recent_hours_nothing_changes(self):
         self.assertEqual(self.run_it(self.OCT, None)["data"]["holes"], [])
