@@ -16,6 +16,7 @@ import {
   renderRowHtml,
   visibleRows,
 } from "./activity.mjs";
+import { openBalancerDialog } from "./balancer-ui.mjs";
 
 const POLL_MS = 60000;
 const FIRST_PAGE = 5;
@@ -105,7 +106,7 @@ export function setupActivity({ openPlan, showOnMap }) {
     const page = pageState({ shown: st.nights.length, total: st.total });
     const nights = st.nights.map(nightHtml).join("");
     body.innerHTML =
-      `<div class="act-scroll">${lastNightHtml(s.last_night)}${needsYouHtml(s.open || [], s.open_total || 0)}` +
+      `<div class="act-scroll"><div class="act-head"><button type="button" class="btn" data-act="balancer">Balancer</button></div>${lastNightHtml(s.last_night)}${needsYouHtml(s.open || [], s.open_total || 0)}` +
       `${chipsHtml()}${nights || (st.loaded ? '<div class="empty-note">No activity yet. Events appear here as plans change, syncs run and nights are imaged.</div>' : "")}` +
       `<div class="more"><span class="count">${esc(page.text)}</span>` +
       (page.showLoadOlder ? '<button type="button" class="btn" data-act="older">Load older nights</button>' : "") +
@@ -263,6 +264,7 @@ export function setupActivity({ openPlan, showOnMap }) {
     if (act === "plan") openPlan(el.dataset.planId);
     else if (act === "map") showOnMap(Number(el.dataset.ra), Number(el.dataset.dec));
     else if (act === "copy") copyText(el);
+    else if (act === "balancer") openBalancerDialog();
     else if (act === "older") loadOlder();
     else if (act === "night-more") nightMore(el.dataset.night);
     else if (act === "chip") {

@@ -7495,6 +7495,17 @@ try {
   showHiddenPlans = s.showHidden === true;
 } catch { /* localStorage disabled or bad JSON, keep defaults */ }
 
+// This month and the next two, for the "Won the vote for" button. The first
+// is selected, which is the current month.
+function wonMonthOptions() {
+  const now = new Date();
+  return [0, 1, 2].map(i => {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const v = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return `<option value="${v}">${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}</option>`;
+  }).join("");
+}
+
 function savePlanListState() {
   try {
     localStorage.setItem(PLAN_LIST_KEY, JSON.stringify({
@@ -7853,7 +7864,67 @@ function originalSettingsOf(plan) {
     minimum_time_min: plan.minimum_time_min ?? 0,
     filter_switch_frequency: plan.filter_switch_frequency,
     smart_exposure_order: plan.smart_exposure_order,
+    balance_role: plan.balance_role || null,
+    balance_hold: plan.balance_hold === true,
   };
+}
+
+// The balancer's part of the plan editor (docs/specs/imaging-balancer.md
+// section 1, UI): role and hold apply to the whole TS project like priority,
+// and a plan that won a vote lists its commitments with a Remove button.
+const BALANCER_FINISH_BY = 0.75;   // the balancer's default; the run report is authoritative
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"];
+
+function commitmentLine(plan, c) {
+  const name = MONTH_NAMES[Number(String(c.month).slice(5, 7)) - 1] || c.month;
+  if (c.met_at) {
+    const d = new Date(`${c.met_at}T00:00:00`);
+    return `Vote winner for ${name}: met ${d.getDate()} ${MONTH_NAMES[d.getMonth()].slice(0, 3)}`;
+  }
+  const have = hoursByFilter(plan);
+  const lower = Object.fromEntries(Object.entries(have).map(([k, v]) => [k.toLowerCase(), v]));
+  let done = 0, goal = 0;
+  for (const [f, g] of Object.entries(c.goals || {})) {
+    const row = have[f] || lower[String(f).toLowerCase()];
+    if (!row) continue;
+    goal += g;
+    done += Math.min(g, Math.max(0, row.credited_hours - Number((c.baseline || {})[f] || 0)));
+  }
+  const now = new Date();
+  const cur = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const required = c.month < cur ? 1 : c.month > cur ? 0 : Math.min(1, ((now.getDate() - 1) / dim) / BALANCER_FINISH_BY);
+  const fmt = x => (Math.round(x * 10) / 10).toString();
+  const pace = goal > 0 && done / goal < required - 1e-9 ? "behind pace" : "on pace";
+  return `Vote winner for ${name}: ${fmt(done)} of ${fmt(goal)} h, ${pace}`;
+}
+
+function balancerEditorHtml(plan) {
+  const role = plan.balance_role || "";
+  const opt = (v, l) => `<option value="${v}" ${role === v ? "selected" : ""}>${l}</option>`;
+  const note = plan.balancer_note;
+  const noteHtml = note && note.text
+    ? `<div style="font-size:11px;color:#78839a" title="Balancer rule ${esc(note.rule)}">${esc(note.text)}</div>` : "";
+  const lines = (plan.commitments || []).map(c =>
+    `<div class="bal-commitment" style="font-size:12px">${esc(commitmentLine(plan, c))}
+      <button type="button" class="bal-remove" data-month="${esc(c.month)}">Remove</button></div>`).join("");
+  return `<label><span class="lab">Balancer role</span>
+      <select id="f_balance_role">${opt("", "None")}${opt("science", "Science")}${opt("survey", "Survey")}${opt("pretty", "Pretty")}</select>
+    </label>
+    <label><span class="lab">Balancer leaves this alone</span>
+      <input type="checkbox" id="f_balance_hold" ${plan.balance_hold ? "checked" : ""}>
+    </label>
+    ${noteHtml}${lines}`;
+}
+
+// Adopt the commitments the server just changed without losing unsaved edits.
+function adoptCommitments(saved) {
+  if (!editingPlan || !saved || editingPlan.id !== saved.id) return;
+  if (saved.commitments) editingPlan.commitments = saved.commitments; else delete editingPlan.commitments;
+  if (saved.balance_role) editingPlan.balance_role = saved.balance_role;
+  editingPlanOriginalSettings = { ...editingPlanOriginalSettings, balance_role: editingPlan.balance_role || null };
+  renderPlanEditor(editingPlan);
 }
 
 // Redraw the card list after a structural change (add, remove, filter or
@@ -8182,7 +8253,8 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Minimum time (min)</span>
           <input type="number" step="1" min="0" id="f_mintime" value="${editingPlan.minimum_time_min ?? 0}">
         </label>
-        ${projectMateCount > 0 ? `<div class="proj-settings-note" style="font-size:11px;color:#78839a">State, priority and minimum time apply to all ${projectMateCount + 1} plans in project ${esc(editingPlan.project_name)}.</div>` : ""}
+        ${balancerEditorHtml(editingPlan)}
+        ${projectMateCount > 0 ? `<div class="proj-settings-note" style="font-size:11px;color:#78839a">State, priority, minimum time, balancer role and hold apply to all ${projectMateCount + 1} plans in project ${esc(editingPlan.project_name)}.</div>` : ""}
         <label><span class="lab">Min altitude (°)</span>
           <input type="number" step="1" min="0" max="90" id="f_minalt" value="${editingPlan.min_altitude_deg ?? 30}">
         </label>
@@ -8220,6 +8292,10 @@ function renderPlanEditor(plan) {
             </select>
           </label>
           <div id="f_vote_goals" ${editingPlan.public_section === "vote" ? "" : "hidden"}>${voteGoalsHtml(editingPlan)}</div>
+          ${editingPlan.public_section === "vote" && plans.some(p => p.id === editingPlan.id) ? `<div id="f_won_vote">
+            <select id="f_won_month">${wonMonthOptions()}</select>
+            <button type="button" id="f_won_button">Won the vote for</button>
+          </div>` : ""}
           <label><span class="lab">Why I'm shooting this</span>
             <textarea id="f_public_blurb" maxlength="500" rows="3">${esc(editingPlan.public_blurb || "")}</textarea>
           </label>
@@ -8337,6 +8413,36 @@ function renderPlanEditor(plan) {
   wireFilterRows(panel);
   panel.querySelector("#f_state")?.addEventListener("change", e => { editingPlan.state = e.target.value; });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
+  panel.querySelector("#f_balance_role")?.addEventListener("change", e => { editingPlan.balance_role = e.target.value || null; });
+  panel.querySelector("#f_balance_hold")?.addEventListener("change", e => { editingPlan.balance_hold = !!e.target.checked; });
+  for (const btn of panel.querySelectorAll(".bal-remove")) {
+    btn.addEventListener("click", async () => {
+      const month = btn.dataset.month;
+      if (!confirm(`Remove the ${month} vote commitment? The balancer stops holding this plan high for it.`)) return;
+      const r = await fetch(`/api/plans/${encodeURIComponent(editingPlan.id)}/commitments/${encodeURIComponent(month)}`, { method: "DELETE" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(j.error || `Remove failed (${r.status}).`); return; }
+      adoptCommitments(j);
+      await loadPlans();
+    });
+  }
+  panel.querySelector("#f_won_button")?.addEventListener("click", async () => {
+    const month = panel.querySelector("#f_won_month").value;
+    if (editingPlan.id && !editingPlan.vote_goals) { alert("Set vote hours for this plan first."); return; }
+    // Marking a winner ends the round: offer to move the other vote plans out
+    // of the vote section in the same step.
+    const others = plans.filter(p => p.id !== editingPlan.id && p.public_section === "vote").length;
+    const clear = others > 0 && confirm(
+      `Also move the other ${others} plan${others === 1 ? "" : "s"} out of the vote section on the live page?`);
+    const r = await fetch(`/api/plans/${encodeURIComponent(editingPlan.id)}/commitments`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ month, clear_other_votes: clear }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(j.error || `Could not mark the winner (${r.status}).`); return; }
+    adoptCommitments(j);
+    await loadPlans();
+  });
   panel.querySelector("#f_mintime")?.addEventListener("input", e => {
     const v = parseInt(e.target.value, 10); if (Number.isFinite(v) && v >= 0) editingPlan.minimum_time_min = v;
   });
@@ -8535,6 +8641,8 @@ async function savePlan() {
     editingPlan.state !== editingPlanOriginalSettings.state
     || editingPlan.priority !== editingPlanOriginalSettings.priority
     || editingPlan.minimum_time_min !== editingPlanOriginalSettings.minimum_time_min
+    || (editingPlan.balance_role || null) !== editingPlanOriginalSettings.balance_role
+    || (editingPlan.balance_hold === true) !== editingPlanOriginalSettings.balance_hold
     || orderChanged
   );
   if (editingPlan.project_name && settingsChanged) {
@@ -8545,6 +8653,10 @@ async function savePlan() {
         state: editingPlan.state,
         priority: editingPlan.priority,
         minimum_time_min: editingPlan.minimum_time_min,
+        ...((editingPlan.balance_role || null) !== editingPlanOriginalSettings.balance_role
+          ? { balance_role: editingPlan.balance_role || null } : {}),
+        ...((editingPlan.balance_hold === true) !== editingPlanOriginalSettings.balance_hold
+          ? { balance_hold: editingPlan.balance_hold === true } : {}),
         // Switching and smart order each go only when changed here: a value
         // never set stays unknown, and the sync leaves TS's alone.
         ...(editingPlan.filter_switch_frequency !== editingPlanOriginalSettings.filter_switch_frequency
