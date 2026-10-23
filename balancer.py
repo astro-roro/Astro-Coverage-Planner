@@ -292,6 +292,7 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
     # its unused share to the other roles, evenly. Weather is not a hole: when
     # no role imaged recently, nobody is treated as having one.
     holes: dict[str, float] = {}
+    nothing_up = False
     base_targets = dict(targets)
     if recent_hours is not None and not guard:
         recent = {r: 0.0 for r in ROLES}
@@ -303,20 +304,22 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
                 if h > EPS and not pi["blocked"] and not any(
                         p.get("state") == "inactive" for p in pi["plans"]):
                     up[pi["role"]] = True
-        if any(recent[r] > EPS for r in present):
-            empty = [r for r in present if not up[r]]
-            others = [r for r in present if up[r]]
-            if others:
-                for r in empty:
-                    if pcts[r] < targets[r] - EPS:
-                        holes[r] = targets[r] - pcts[r]
-                for r in empty:
-                    if r in holes:
-                        targets[r] = pcts[r]
-                spare = sum(holes.values())
-                for r in others:
-                    targets[r] += spare / len(others)
+        empty = [r for r in present if not up[r]]
+        others = [r for r in present if up[r]]
+        nothing_up = bool(present) and not others
+        if others:
+            for r in empty:
+                if pcts[r] < targets[r] - EPS:
+                    holes[r] = targets[r] - pcts[r]
+            for r in empty:
+                if r in holes:
+                    targets[r] = pcts[r]
+            spare = sum(holes.values())
+            for r in others:
+                targets[r] += spare / len(others)
     hole_notes: list[str] = []
+    if nothing_up:
+        hole_notes.append("Nothing up in any role, so no priorities were changed.")
     if holes:
         others = [r for r in present if r not in holes]
         names = ", ".join(r.capitalize() for r in holes)
@@ -396,6 +399,8 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
             changes.append({"project": name, "field": "priority", "from": was, "to": want,
                             "rule": rule, "reason": why, "note": note})
     changes.sort(key=lambda c: (c["rule"], c["project"].lower()))
+    if nothing_up:
+        changes = []
 
     # Newly met commitments.
     met_new = []
@@ -479,7 +484,7 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
 
     data = {
         "mode": mode, "urgent": urgent, "elapsed": round(elapsed, 4),
-        "holes": sorted(holes), "shares": shares, "bands": bands,
+        "holes": sorted(holes), "nothing_up": nothing_up, "shares": shares, "bands": bands,
         "commitments": [{"project": j["project"], "plan_id": j["plan_id"], "month": j["month"],
                          "done_h": round(j["done_h"], 3), "goal_h": round(j["goal_h"], 3),
                          "required_h": round(j["required_h"], 3), "met": j["met"],

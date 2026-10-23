@@ -143,9 +143,9 @@ A role has a hole when none of its projects is up: no project in it has gained h
 
 - The role's effective target becomes its actual share so far this month. The difference from its normal target is split evenly between the roles that are not in a hole. The effective targets still sum to 100.
 - Hours the role already used this month keep counting in every share. Only its target moves.
-- It applies to any role, not just science. With two roles in a hole, the third takes both spares. With every role in a hole, or none, nothing changes.
+- It applies to any role, not just science. With two roles in a hole, the third takes both spares. With no role in a hole nothing changes.
 - A role at or above its normal target has no spare, so it is never changed by this rule.
-- Weather is not a hole. If no role gained hours in the last 7 nights, nobody is treated as having a hole. The same goes while the `min_month_hours` guard is on.
+- When every role is in a hole (nothing up anywhere, which a cloudy week also looks like), the run changes no priorities, including the vote winner's rule 2, and the report says "Nothing up in any role, so no priorities were changed." No role is given a spare then. None of this applies while the `min_month_hours` guard is on, or when `recent_hours` is not supplied.
 - A held project that gained hours still counts as up, because the hours are real. Hold only stops the balancer changing its priority.
 - Hysteresis uses the effective target, so a role leaving a hole may change band the day after.
 - The run report says it: "Science has nothing up, so its spare 21 points are split: survey 45.4, pretty 40.4." The shares in `data` gain `base_target` and `hole`, and `data.holes` lists the roles.
@@ -346,7 +346,7 @@ Calls to the pure function with `recent_hours`, in `tests/test_balancer.py` (cla
 29. **The hole keeps its hours.** Same inputs. Science still shows 4.5 h and 14 percent, and its band is In.
 30. **No hole.** All three roles gained hours recently. Targets stay 35, 35 and 30, there is no extra report line, and the changes equal a run without `recent_hours`.
 31. **Two holes.** Only Dolphin Nebula gained hours recently. Pretty's target is 100 minus science's and survey's shares, and pretty is In.
-32. **Weather, no data, over share.** No role gained hours recently: no hole. `recent_hours` left out: no hole. Science at or above its target with nothing recent: no hole.
+32. **Nothing up anywhere, no data, over share.** No role gained hours recently: no priority changes, and the report says "Nothing up in any role". `recent_hours` left out: no hole. Science at or above its target with nothing recent: no hole.
 
 No change is needed in the extension or plugin. Their existing tests for "ACP changed it since the base" cover the push.
 
