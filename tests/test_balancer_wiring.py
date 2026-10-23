@@ -344,6 +344,17 @@ class Routes(WiringCase):
                      vote_goals={"Ha": 3.0, "OIII": 3.0}, vote_baseline={"Ha": 1.0, "OIII": 0.0},
                      filter_rows=_rows(2.0, 0.5), **extra)
 
+    def test_23b_vote_winner_role_reaches_unnamed_plans_sharing_a_target(self):
+        a = self._vote_plan("a", "M42")
+        b = _plan("b", "M42", "survey", "normal")
+        for p in (a, b):
+            p.pop("project_name")
+        self.save([a, b])
+        r = self.client.post("/api/plans/a/commitments", json={"month": "2026-11"})
+        self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
+        stored = self.stored()
+        self.assertEqual((stored["a"]["balance_role"], stored["b"]["balance_role"]), ("pretty", "pretty"))
+
     def test_23_commitment_routes(self):
         self.save([self._vote_plan("a", "NGC 300"), self._vote_plan("b", "NGC 1365"),
                    _plan("c", "NGC 300", None, "low")])
