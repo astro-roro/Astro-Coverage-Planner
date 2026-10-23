@@ -7872,32 +7872,26 @@ function originalSettingsOf(plan) {
 // The balancer's part of the plan editor (docs/specs/imaging-balancer.md
 // section 1, UI): role and hold apply to the whole TS project like priority,
 // and a plan that won a vote lists its commitments with a Remove button.
-const BALANCER_FINISH_BY = 0.75;   // the balancer's default; the run report is authoritative
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
 
+// One line per commitment. The hours come from the server (`commitment_progress`
+// on the plan), which counts them as the balancer does, so the editor, the
+// run report and the live page agree.
 function commitmentLine(plan, c) {
   const name = MONTH_NAMES[Number(String(c.month).slice(5, 7)) - 1] || c.month;
-  if (c.met_at) {
-    const d = new Date(`${c.met_at}T00:00:00`);
-    return `Vote winner for ${name}: met ${d.getDate()} ${MONTH_NAMES[d.getMonth()].slice(0, 3)}`;
+  const stored = plan.commitment_progress || plans.find(p => p.id === plan.id)?.commitment_progress || [];
+  const prog = stored.find(x => x.month === c.month);
+  if (c.met_at || (prog && prog.met)) {
+    if (c.met_at) {
+      const d = new Date(`${c.met_at}T00:00:00`);
+      return `Vote winner for ${name}: met ${d.getDate()} ${MONTH_NAMES[d.getMonth()].slice(0, 3)}`;
+    }
+    return `Vote winner for ${name}: met`;
   }
-  const have = hoursByFilter(plan);
-  const lower = Object.fromEntries(Object.entries(have).map(([k, v]) => [k.toLowerCase(), v]));
-  let done = 0, goal = 0;
-  for (const [f, g] of Object.entries(c.goals || {})) {
-    const row = have[f] || lower[String(f).toLowerCase()];
-    if (!row) continue;
-    goal += g;
-    done += Math.min(g, Math.max(0, row.credited_hours - Number((c.baseline || {})[f] || 0)));
-  }
-  const now = new Date();
-  const cur = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const required = c.month < cur ? 1 : c.month > cur ? 0 : Math.min(1, ((now.getDate() - 1) / dim) / BALANCER_FINISH_BY);
+  if (!prog) return `Vote winner for ${name}`;
   const fmt = x => (Math.round(x * 10) / 10).toString();
-  const pace = goal > 0 && done / goal < required - 1e-9 ? "behind pace" : "on pace";
-  return `Vote winner for ${name}: ${fmt(done)} of ${fmt(goal)} h, ${pace}`;
+  return `Vote winner for ${name}: ${fmt(prog.done_h)} of ${fmt(prog.goal_h)} h, ${prog.behind ? "behind pace" : "on pace"}`;
 }
 
 function balancerEditorHtml(plan) {
