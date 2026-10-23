@@ -8198,17 +8198,35 @@ function renderPlanEditor(plan) {
         <legend>Public page</legend>
         <label><span class="lab">Visibility</span>
           <select id="f_visibility">
-            <option value="private" ${(editingPlan.visibility || "private") === "private" ? "selected" : ""}>Private</option>
-            <option value="public"  ${editingPlan.visibility === "public" ? "selected" : ""}>Public</option>
+            <option value="private" ${effectivePlanVisibility(editingPlan) === "private" ? "selected" : ""}>Private</option>
+            <option value="public"  ${effectivePlanVisibility(editingPlan) === "public" ? "selected" : ""}>${esc(publicVisibilityLabel(editingPlan))}</option>
           </select>
         </label>
-        <div id="f_public_extra" ${editingPlan.visibility === "public" ? "" : "hidden"}>
+        <div id="f_public_extra" ${effectivePlanVisibility(editingPlan) === "public" ? "" : "hidden"}>
+          <label><span class="lab">Finished</span>
+            <input type="date" id="f_finished_at" value="${esc(editingPlan.finished_at || "")}">
+            <button type="button" id="f_finished_today">Today</button>
+          </label>
+          <label><span class="lab">AstroBin link</span>
+            <input type="url" id="f_astrobin_url" maxlength="300" placeholder="https://www.astrobin.com/..." value="${esc(editingPlan.astrobin_url || "")}">
+          </label>
           <label><span class="lab">Current project</span>
             <input type="checkbox" id="f_is_current" ${editingPlan.is_current ? "checked" : ""}>
           </label>
+          <label><span class="lab">Section</span>
+            <select id="f_public_section">
+              <option value="current" ${editingPlan.public_section === "vote" ? "" : "selected"}>Currently imaging</option>
+              <option value="vote" ${editingPlan.public_section === "vote" ? "selected" : ""}>Up for the vote</option>
+            </select>
+          </label>
+          <div id="f_vote_goals" ${editingPlan.public_section === "vote" ? "" : "hidden"}>${voteGoalsHtml(editingPlan)}</div>
           <label><span class="lab">Why I'm shooting this</span>
             <textarea id="f_public_blurb" maxlength="500" rows="3">${esc(editingPlan.public_blurb || "")}</textarea>
           </label>
+        </div>
+        <div>
+          <button type="button" id="f_publish_now">Publish now (saved plans)</button>
+          <span id="f_publish_result" style="font-size:12px;margin-left:8px"></span>
         </div>
       </fieldset>` : ""}
 
@@ -8223,7 +8241,10 @@ function renderPlanEditor(plan) {
   // Wire live-edit handlers
   panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
-  panel.querySelector("#f_target_class")?.addEventListener("change", e => { setTargetClass(editingPlan, e.target.value); });
+  panel.querySelector("#f_target_class")?.addEventListener("change", e => {
+    setTargetClass(editingPlan, e.target.value);
+    syncPublicVisibility(panel);
+  });
   const raInput = panel.querySelector("#f_ra");
   const decInput = panel.querySelector("#f_dec");
   const isPlainDecimal = s => /^\s*[+-]?(\d+\.?\d*|\.\d+)\s*$/.test(s);
@@ -8321,8 +8342,46 @@ function renderPlanEditor(plan) {
   });
   panel.querySelector("#f_visibility")?.addEventListener("change", e => {
     editingPlan.visibility = e.target.value;
-    const extra = panel.querySelector("#f_public_extra");
-    if (extra) extra.hidden = e.target.value !== "public";
+    syncPublicVisibility(panel);
+  });
+  panel.querySelector("#f_finished_at")?.addEventListener("input", e => { editingPlan.finished_at = e.target.value; });
+  panel.querySelector("#f_finished_today")?.addEventListener("click", () => {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    editingPlan.finished_at = iso;
+    panel.querySelector("#f_finished_at").value = iso;
+  });
+  panel.querySelector("#f_astrobin_url")?.addEventListener("input", e => { editingPlan.astrobin_url = e.target.value.trim(); });
+  panel.querySelector("#f_public_section")?.addEventListener("change", e => {
+    editingPlan.public_section = e.target.value;
+    const box = panel.querySelector("#f_vote_goals");
+    if (box) box.hidden = e.target.value !== "vote";
+  });
+  panel.querySelector("#f_vote_goals")?.addEventListener("input", e => {
+    if (!e.target.matches("input[data-vote-filter]")) return;
+    const goals = {};
+    for (const inp of panel.querySelectorAll("#f_vote_goals input[data-vote-filter]")) {
+      const v = parseFloat(inp.value);
+      if (Number.isFinite(v) && v > 0) goals[inp.dataset.voteFilter] = v;
+    }
+    editingPlan.vote_goals = goals;
+    const total = Object.values(goals).reduce((t, v) => t + v, 0);
+    const out = panel.querySelector("#f_vote_total");
+    if (out) out.innerHTML = voteTotalHtml(total);
+  });
+  panel.querySelector("#f_publish_now")?.addEventListener("click", async e => {
+    const btn = e.currentTarget, out = panel.querySelector("#f_publish_result");
+    btn.disabled = true; out.textContent = "Publishing…";
+    try {
+      const r = await fetch("/api/publish/shooting", { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      out.textContent = r.ok && j.ok
+        ? `Published ${j.projects} project${j.projects === 1 ? "" : "s"}.`
+        : `Publish failed: ${j.error || r.status}`;
+    } catch (err) {
+      out.textContent = `Publish failed: ${err.message || err}`;
+    } finally { btn.disabled = false; }
   });
   panel.querySelector("#f_is_current")?.addEventListener("change", e => { editingPlan.is_current = !!e.target.checked; });
   panel.querySelector("#f_public_blurb")?.addEventListener("input", e => { editingPlan.public_blurb = e.target.value.slice(0, 500); });
@@ -8413,6 +8472,51 @@ function renderPlanEditor(plan) {
     // from its first render; this resolves it.
     loadPlanVisibility(editingPlan).then(() => updatePlanEditorVis());
   }
+}
+
+const VOTE_HOURS_WARN = 7;
+
+function voteTotalHtml(total) {
+  const t = Math.round(total * 10) / 10;
+  return `Total ${t} h` + (total > VOTE_HOURS_WARN
+    ? ` <strong>This is more than ${VOTE_HOURS_WARN} hours. A vote option is meant to be about 6.</strong>` : "");
+}
+
+// Mirrors shooting_publish.effective_visibility: an explicit value wins, and
+// with none set a pretty plan is public.
+function effectivePlanVisibility(plan) {
+  if (plan.visibility === "public" || plan.visibility === "private") return plan.visibility;
+  return plan.target_class === "pretty" ? "public" : "private";
+}
+
+function publicVisibilityLabel(plan) {
+  const byDefault = !plan.visibility && plan.target_class === "pretty";
+  return byDefault ? "Public (default for pretty plans)" : "Public";
+}
+
+// Re-render the visibility choice and the public-only fields after the
+// visibility or the target class changes.
+function syncPublicVisibility(panel) {
+  const sel = panel.querySelector("#f_visibility");
+  if (!sel || !editingPlan) return;
+  const eff = effectivePlanVisibility(editingPlan);
+  sel.value = eff;
+  const pub = sel.querySelector('option[value="public"]');
+  if (pub) pub.textContent = publicVisibilityLabel(editingPlan);
+  const extra = panel.querySelector("#f_public_extra");
+  if (extra) extra.hidden = eff !== "public";
+}
+
+// The hours table for a plan in the vote section. A blank box means the
+// filter is not part of the vote option.
+function voteGoalsHtml(plan) {
+  const names = Object.keys(hoursByFilter(plan));
+  const goals = plan.vote_goals || {};
+  if (!names.length) return `<div style="font-size:12px">This plan has no filters yet.</div>`;
+  const total = names.reduce((t, n) => t + (Number(goals[n]) > 0 ? Number(goals[n]) : 0), 0);
+  return `<table><tbody>${names.map(n => `<tr><td>${esc(n)}</td>
+      <td><input type="number" min="0" step="0.5" data-vote-filter="${esc(n)}" value="${goals[n] > 0 ? goals[n] : ""}" placeholder="not in vote"> h</td></tr>`).join("")}</tbody></table>
+    <div id="f_vote_total" style="font-size:12px">${voteTotalHtml(total)}</div>`;
 }
 
 async function savePlan() {
