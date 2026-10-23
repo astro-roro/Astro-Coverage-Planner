@@ -7252,12 +7252,17 @@ def _balancer_inputs(plans: list[dict], night: str) -> dict:
     for pid, hours in activity.progress_hours(f"{month}-01", f"{month}-31").items():
         if pid in project_of:
             month_hours[project_of[pid]] = month_hours.get(project_of[pid], 0.0) + hours
+    first = (balancer.date.fromisoformat(night) - balancer.timedelta(days=balancer.RECENT_NIGHTS)).isoformat()
+    recent_hours: dict = {}
+    for pid, hours in activity.progress_hours(first, night).items():
+        if pid in project_of:
+            recent_hours[project_of[pid]] = recent_hours.get(project_of[pid], 0.0) + hours
     manifest, gear = load_manifest(), load_gear()
     done = {p["id"]: sp.current_done_hours(p, manifest, gear)
             for p in plans if isinstance(p, dict) and p.get("commitments")}
     return {"month_hours": month_hours, "done_hours": done, "canon": sp.canon_filter,
             "newest_report_night": activity.newest_progress_night(),
-            "keep_nights": activity.keep_nights()}
+            "keep_nights": activity.keep_nights(), "recent_hours": recent_hours}
 
 
 def _balancer_decide(plans: list[dict], state: dict, night: str, late: bool = False) -> dict:
@@ -7265,7 +7270,7 @@ def _balancer_decide(plans: list[dict], state: dict, night: str, late: bool = Fa
     return balancer.decide(
         plans, inp["month_hours"], inp["done_hours"], state["settings"], state["memory"], night,
         newest_report_night=inp["newest_report_night"], keep_nights=inp["keep_nights"],
-        canon=inp["canon"], late=late)
+        canon=inp["canon"], late=late, recent_hours=inp["recent_hours"])
 
 
 def _balancer_note(change: dict, night: str) -> dict:

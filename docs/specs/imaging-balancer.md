@@ -137,6 +137,21 @@ The guard is applied first. When it forces every role to In, memory records In, 
 
 A role with no projects is left out. The other roles' targets are scaled up in proportion so they still sum to 100. A role with no projects therefore never sits at Under and never moves anything.
 
+### A role with a hole
+
+A role has a hole when none of its projects is up: no project in it has gained hours in the last 7 nights (`RECENT_NIGHTS`, from progress reports) while being active and not closed or draft. Fesen's science target sitting below its minimum altitude in darkness is the usual case. Such a role cannot use its share, so the share goes to the others.
+
+- The role's effective target becomes its actual share so far this month. The difference from its normal target is split evenly between the roles that are not in a hole. The effective targets still sum to 100.
+- Hours the role already used this month keep counting in every share. Only its target moves.
+- It applies to any role, not just science. With two roles in a hole, the third takes both spares. With every role in a hole, or none, nothing changes.
+- A role at or above its normal target has no spare, so it is never changed by this rule.
+- Weather is not a hole. If no role gained hours in the last 7 nights, nobody is treated as having a hole. The same goes while the `min_month_hours` guard is on.
+- A held project that gained hours still counts as up, because the hours are real. Hold only stops the balancer changing its priority.
+- Hysteresis uses the effective target, so a role leaving a hole may change band the day after.
+- The run report says it: "Science has nothing up, so its spare 21 points are split: survey 45.4, pretty 40.4." The shares in `data` gain `base_target` and `hole`, and `data.holes` lists the roles.
+
+Worked example, 23 October 2026, before the rule: science 4.5 h (14 percent), survey 9.9 h (31 percent), pretty 17.2 h (54 percent), total 31.6 h. Science is Under, survey is In, and pretty is Over (target 30, tolerance 10). Science has no hours in the last 7 nights, so the rule gives it a target of 14.2. The spare is 35 − 14.2 = 20.8 points, 10.4 each. Survey's target becomes 45.4, so it is Under at 31 percent. Pretty's becomes 40.4, so it is still Over at 54 percent. Science is In. Pretty projects are therefore still dropped to low by rule 6, because pretty has done 14 points more than even the enlarged share. The rule stops the survey being squeezed by an idle science role, but it does not by itself stop the pretty drop.
+
 ### Urgent or calm
 
 The month is urgent while any project with a role has an unmet current vote commitment. Otherwise it is calm. Pace plays no part.
@@ -194,6 +209,8 @@ If ACP starts after `run_at` and before 23:00, and tonight's run has not happene
 - `plans.json`, read under the plans lock.
 - Month hours per project: the sum of positive `delta_h` over `progress_report` events for that project's plans, on nights in the current month.
 - Commitment progress: `current_done_hours` for the commitment's plan, as the live page counts it.
+
+- Recent hours per project: the same sum over the last 7 nights, to detect a role with a hole (section 2).
 
 Month hours come from progress reports only. Hours that reach ACP only through an archive scan are not counted in shares. That is acceptable for three reasons. The balancer steers TS, and progress reports are what TS itself imaged. A scan can bring in older data or data from another rig, and has no reliable night to put it in. And the shares are soft targets, so a small undercount does no harm. Commitment progress does use archive hours, through `current_done_hours`, so a promise reads the same as on the live page.
 
@@ -320,6 +337,16 @@ Hours below are month hours by role, and the vote winner's done hours. "Required
 25. Moving a plan with a commitment back to the current section clears `vote_baseline` and leaves the commitment's baseline alone.
 26. A live run saves `plans.json` once, records no `project_settings` events, and the group's priority in `_build_ts_export` output matches what the balancer set.
 27. The scheduler runs at 14:00 and not at 13:59, and a second tick on the same night does nothing.
+
+### Holes
+
+Calls to the pure function with `recent_hours`, in `tests/test_balancer.py` (class `Holes`). Fixture: G7.7-3.7 science, PN-A survey, Dolphin Nebula pretty, night 23 October 2026, month hours 4.5, 9.9 and 17.2.
+
+28. **Science hole.** Only PN-A and Dolphin Nebula gained hours in the last 7 nights. Science's target becomes its share (14.2), survey's 45.4 and pretty's 40.4, summing to 100. The report carries the "nothing up" line.
+29. **The hole keeps its hours.** Same inputs. Science still shows 4.5 h and 14 percent, and its band is In.
+30. **No hole.** All three roles gained hours recently. Targets stay 35, 35 and 30, there is no extra report line, and the changes equal a run without `recent_hours`.
+31. **Two holes.** Only Dolphin Nebula gained hours recently. Pretty's target is 100 minus science's and survey's shares, and pretty is In.
+32. **Weather, no data, over share.** No role gained hours recently: no hole. `recent_hours` left out: no hole. Science at or above its target with nothing recent: no hole.
 
 No change is needed in the extension or plugin. Their existing tests for "ACP changed it since the base" cover the push.
 
