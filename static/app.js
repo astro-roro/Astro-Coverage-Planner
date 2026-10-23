@@ -7882,6 +7882,12 @@ function commitmentLine(plan, c) {
   const name = MONTH_NAMES[Number(String(c.month).slice(5, 7)) - 1] || c.month;
   const stored = plan.commitment_progress || plans.find(p => p.id === plan.id)?.commitment_progress || [];
   const prog = stored.find(x => x.month === c.month);
+  if (c.lapsed_at) {
+    const d = new Date(`${c.lapsed_at}T00:00:00`);
+    const fmt = x => (Math.round(x * 10) / 10).toString();
+    const hours = prog ? ` with ${fmt(prog.done_h)} of ${fmt(prog.goal_h)} h done` : "";
+    return `Vote winner for ${name}: lapsed ${d.getDate()} ${MONTH_NAMES[d.getMonth()].slice(0, 3)}, ${c.lapsed_reason || "out of season"}${hours}`;
+  }
   if (c.met_at || (prog && prog.met)) {
     if (c.met_at) {
       const d = new Date(`${c.met_at}T00:00:00`);

@@ -77,6 +77,13 @@ class WiringCase(unittest.TestCase):
         app_module.DESTINATIONS_PATH = self.td / "destinations.json"
         app_module.MANIFEST_PATH = self.td / "manifest.json"
         self._reset_caches()
+        app_module._visibility_cache.clear()
+        self.addCleanup(app_module._visibility_cache.clear)
+        # Every target is in season unless a test says otherwise, and no test
+        # waits on astropy's Earth orientation download.
+        self._in_season = self._visibility([6.0] * 12)
+        self._in_season.start()
+        self.addCleanup(self._in_season.stop)
         self.client = app.test_client()
         self.balancer_path = self.td / "balancer.json"
 
@@ -92,6 +99,14 @@ class WiringCase(unittest.TestCase):
             setattr(app_module, name, None)
 
     # -- helpers -----------------------------------------------------------
+
+    def _visibility(self, hours_by_month):
+        """A stand-in for compute_year_visibility: the same hours every year."""
+        def fake(targets, **kw):
+            return {t["target_id"]: [{"month": m, "label": "fair", "peak_alt_deg": 50.0,
+                                      "hours_above_min": hours_by_month[m - 1]} for m in range(1, 13)]
+                    for t in targets}
+        return mock.patch.object(app_module, "compute_year_visibility", side_effect=fake)
 
     def save(self, plans):
         app_module.save_plans({"version": 1, "settings_migrated": 1, "plans": plans})
@@ -160,6 +175,83 @@ class RunAgainstFiles(WiringCase):
         self.assertEqual(priorities["NGC 300"], "High")
         self.assertEqual(priorities["G7.7-3.7"], "Normal")
         self.assertEqual(priorities["PN-A"], "Low")
+
+    def test_live_run_lapses_an_out_of_season_winner_and_reports_it_once(self):
+        self.save(fixture_plans())
+        self.november_hours()
+        self.set_mode("live")
+        app_module._visibility_cache.clear()
+        with self._visibility([6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0.2, 0.2]):
+            out = app_module.run_balancer("manual", NOV10)
+            again = app_module.run_balancer("manual", datetime(2026, 11, 11, 14, 0, tzinfo=SYD))
+        c = self.stored()["ngc300"]["commitments"][0]
+        self.assertEqual((c["lapsed_at"], c["lapsed_reason"]), ("2026-11-10", "out of season"))
+        self.assertEqual(len(out["lapsed_new"]), 1)
+        self.assertEqual(again["lapsed_new"], [])
+        ev = self.events("balancer_run")
+        self.assertEqual(len(ev), 2)
+        self.assertEqual(sum("lapsed" in e["detail"] for e in ev), 1)
+        self.assertIn("NGC 300's November vote goal lapsed: out of season with 1.5 of 6 h done.",
+                      "\n".join(e["detail"] for e in ev))
+        self.assertEqual(self.stored()["ngc300"]["priority"], "normal")
+
+    def test_dry_run_notes_the_lapse_in_memory_and_writes_no_plans(self):
+        self.save(fixture_plans())
+        self.november_hours()
+        before = app_module.PLANS_PATH.read_bytes()
+        app_module._visibility_cache.clear()
+        with self._visibility([0.0] * 12):
+            app_module.run_balancer("manual", NOV10)
+        self.assertEqual(app_module.PLANS_PATH.read_bytes(), before)
+        state = balancer.load_state(self.balancer_path)
+        self.assertEqual(state["memory"]["lapsed_seen"], {"ngc300:2026-11": "2026-11-01"})
+
+    def test_in_season_but_behind_does_not_lapse(self):
+        self.save(fixture_plans())
+        self.november_hours()
+        self.set_mode("live")
+        app_module._visibility_cache.clear()
+        with self._visibility([6.0] * 12):
+            out = app_module.run_balancer("manual", NOV10)
+        self.assertEqual(out["lapsed_new"], [])
+        self.assertNotIn("lapsed_at", self.stored()["ngc300"]["commitments"][0])
+
+    def test_without_a_visibility_result_a_quiet_plan_lapses_after_21_nights(self):
+        plans = fixture_plans()
+        plans[3]["commitments"][0]["set_at"] = "2026-10-01"
+        self.save(plans)
+        self.report("g77", "2026-11-09", 6)
+        self.set_mode("live")
+        app_module._visibility_cache.clear()
+        with mock.patch.object(app_module, "compute_year_visibility", side_effect=RuntimeError("no iers")):
+            out = app_module.run_balancer("manual", datetime(2026, 11, 25, 14, 0, tzinfo=SYD))
+        self.assertEqual(len(out["lapsed_new"]), 1)
+        c = self.stored()["ngc300"]["commitments"][0]
+        self.assertEqual(c["lapsed_reason"], "no hours in the last 21 nights")
+
+    def test_fallback_leaves_a_held_plan_alone(self):
+        plans = fixture_plans()
+        plans[3]["commitments"][0]["set_at"] = "2026-10-01"
+        plans[3]["balance_hold"] = True
+        self.save(plans)
+        self.set_mode("live")
+        app_module._visibility_cache.clear()
+        with mock.patch.object(app_module, "compute_year_visibility", side_effect=RuntimeError("no iers")):
+            out = app_module.run_balancer("manual", datetime(2026, 11, 25, 14, 0, tzinfo=SYD))
+        self.assertEqual(out["lapsed_new"], [])
+
+    def test_adding_the_vote_win_again_replaces_a_lapsed_commitment(self):
+        plans = fixture_plans()
+        plans[3]["vote_goals"] = {"Ha": 3.0}
+        plans[3]["commitments"][0].update({"lapsed_at": "2026-11-10", "lapsed_reason": "out of season"})
+        self.save(plans)
+        r = self.client.post("/api/plans/ngc300/commitments", json={"month": "2026-11"})
+        self.assertEqual(r.status_code, 201)
+        commitments = self.stored()["ngc300"]["commitments"]
+        self.assertEqual(len(commitments), 1)
+        self.assertNotIn("lapsed_at", commitments[0])
+        r2 = self.client.post("/api/plans/ngc300/commitments", json={"month": "2026-11"})
+        self.assertEqual(r2.status_code, 400)
 
     def test_16_two_runs_one_night_one_event(self):
         self.save(fixture_plans())

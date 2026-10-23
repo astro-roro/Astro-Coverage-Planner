@@ -57,6 +57,7 @@ Each entry in `commitments` applies to its plan's project:
 | `baseline` | object, filter name to hours | set by the server |
 | `set_at` | ISO date | set by the server |
 | `met_at` | ISO date or absent | set by the balancer the first time every goal is met |
+| `lapsed_at`, `lapsed_reason` | ISO date and text, or absent | set by the balancer when it gives up on an unmet commitment (see "Lapsing") |
 
 It is a list so that a carried-over goal and a new vote win can sit on one plan. A plan with any commitment must have `balance_role: "pretty"`.
 
@@ -66,7 +67,7 @@ Progress on a goal filter is `current_done_hours` for that filter minus the comm
 
 ### Routes
 
-- `POST /api/plans/<id>/commitments`, body `{month, clear_other_votes?}`, creates a vote commitment from the plan's `vote_goals` and baseline, and sets the project's role to pretty. It is a 400 when the plan has no `vote_goals`, or already has a commitment for that month.
+- `POST /api/plans/<id>/commitments`, body `{month, clear_other_votes?}`, creates a vote commitment from the plan's `vote_goals` and baseline, and sets the project's role to pretty. It is a 400 when the plan has no `vote_goals`, or already has a commitment for that month. A lapsed commitment for that month does not count: it is replaced by the new one, which is how the user revives a lapsed winner.
 - `DELETE /api/plans/<id>/commitments/<month>` removes one. Only the user removes a commitment.
 - `PUT /api/plans/<id>` never takes `commitments` or `balancer_note` from the client. It always keeps the stored values. It also keeps the stored `balance_role` and `balance_hold` when the payload leaves them out, the same way `_OLD_PAGE_KEEPS` works.
 
@@ -75,7 +76,7 @@ Progress on a goal filter is `current_done_hours` for that filter minus the comm
 Marking a winner also shows it on the live page, so readers can watch the previous month's vote gather data. The contract is in `docs/specs/shooting-page.md` ("Vote winner"). In short:
 
 - A public plan with a current, unmet vote commitment publishes with `status: "vote_winner"`, `vote_month` and `vote_label`, whatever its last imaged date. Its `filters`, `done_hours` and `target_hours` use the commitment's goals and baseline, as the vote section does.
-- Once the commitment is met, the plan falls back to the normal status rules with its full-plan numbers.
+- Once the commitment is met, the plan falls back to the normal status rules with its full-plan numbers. A lapsed commitment (`lapsed_at` set) does the same: no vote winner chip, and the normal chips. A commitment the balancer has only noted in a dry run has no `lapsed_at`, so the page still shows the winner until a live run writes it.
 - A plan with a current commitment is never in the vote section, even if `public_section` is still `"vote"`. The commitment wins.
 - The other vote options leave the vote section at the end of a round through the "Won the vote for" action. When other plans are still in the vote section, the editor asks "Also move the other N plans out of the vote section on the live page?". Yes sends `clear_other_votes: true` with the `POST`, and the server sets those plans to `public_section: "current"` and clears their `vote_baseline`. Their `vote_goals` stay, so they can be put back in next month. No answers the question with nothing changed.
 
@@ -100,7 +101,7 @@ All small, in `static/app.js`.
 
 - The plan editor's Constraints fieldset gains a Balancer role select beside Priority and State, with None, Science, Survey and Pretty. It also gains a "Balancer leaves this alone" checkbox for hold. The existing line about shared projects names them too.
 - When the plan is in the vote, the Public page section gains a "Won the vote for" button. Its month select defaults to the current month.
-- Each commitment shows one line: "Vote winner for November: 1.5 of 6 h, behind pace" or "met 18 Nov". Each line has a Remove button.
+- Each commitment shows one line: "Vote winner for November: 1.5 of 6 h, behind pace" or "met 18 Nov", or "lapsed 12 Nov, out of season with 4 of 6.5 h done". Each line has a Remove button.
 - Under Priority, a plan the balancer changed shows "Balancer set this to High on 10 Nov: the November vote goal is not covered yet." Hovering gives the rule number.
 - The Activity tab header gains a Balancer button. It opens a small dialog with the settings and the current shares and commitments. Its "Preview" button shows what a run would change now, and "Run now" runs it. Run now decides its confirm prompt and its status line from the saved mode (the `mode` in the run result), never from the unsaved Mode select in the dialog.
 
@@ -114,9 +115,24 @@ Pace drives three things:
 
 - The editor line and the run report say "on pace" or "behind pace", with the numbers.
 - On the first run with elapsed at or past `finish_by` and the commitment unmet, a needs-you item says it is short with a week to go (section 3). This is the last-week behaviour the owner chose: the promise is already high, so the balancer tells the owner and does what the weather allows.
-- A commitment whose month has passed and that is still not met is carried over. It stays current, so it stays high until it is met or removed, and a needs-you item says it was missed.
+- A commitment whose month has passed and that is still not met is carried over. It stays current, so it stays high until it is met, removed or lapsed, and a needs-you item says it was missed.
 
 The first build uses no forecast. Pace is judged on elapsed nights alone.
+
+### Lapsing
+
+An unmet current commitment whose target cannot be imaged for now lapses, so a winner that sets for the season does not hold the month in catch-up mode for months. Rohan chose this on 23 October 2026.
+
+The test uses the visibility ACP already calculates for the site (`compute_year_visibility`, the one behind the Inventory's year curves). For the plan's target and its site (the plan's `site_id`, else the first site), take the hours a night above the site's minimum altitude in astronomical darkness, interpolated between the 15th of the surrounding months to the middle of the next 14 nights. Under 1 hour a night is out of season, and the commitment lapses with the reason "out of season". The check runs for every unmet commitment whose month is this month or earlier, in its own month too.
+
+If that calculation fails (astropy cannot load its Earth orientation data) or the target has no coordinates, the fallback applies: the commitment lapses with the reason "no hours in the last 21 nights" when its plan is active, its project is not on hold, the commitment was set at least 21 nights ago and the plan gained no hours in those 21 nights. The fallback is a weaker signal, since a cloudy three weeks looks the same, which is why it only runs when the visibility rule cannot.
+
+- A lapsed commitment is not current. It no longer makes the month urgent, no longer sets its project high, and its missed and short needs-you items resolve. Its project follows rules 4 to 6 on its role.
+- Live mode writes `lapsed_at` (the night) and `lapsed_reason` onto the commitment, plus `updated_at` on the plan. The commitment is never deleted. A project on hold still has its commitment judged, so the lapse is written, but its priority is not touched.
+- The run's Activity detail says it once, on the run that lapses it: "Tarantula's November vote goal lapsed: out of season with 4.0 of 6.5 h done." `data.lapsed` lists it as numbers. Later runs do not repeat it, because the commitment is no longer current.
+- Dry run writes no `lapsed_at`. It notes the lapse in `lapsed_seen` in `balancer.json`, a map of plan id and month to the commitment's `set_at`, so the report says it once and later dry runs treat the commitment as lapsed. A commitment added again for the same month has a new `set_at`, so it does not inherit the lapse.
+- A lapsed commitment does not revive by itself, even when the target comes back into season. The user adds it again with "Won the vote for", which replaces the lapsed entry. A lapsed commitment is never lapsed twice.
+- A commitment that is met never lapses.
 
 ## 2. The rules
 
@@ -162,7 +178,7 @@ TS has only three priority levels, so this is how the balancer gets the order th
 
 The balancer walks every project with a role. The first rule that matches decides the project's priority.
 
-1. **Skip.** The project is on hold, or any of its plans is `closed` or `draft`, or its plans disagree on role. Its priority does not change. A disagreement adds a warning to the run report. A skipped project still has its commitments judged, so `met_at` and the needs-you items in section 3 still update, and an unmet one still makes the month urgent.
+1. **Skip.** The project is on hold, or any of its plans is `closed` or `draft`, or its plans disagree on role. Its priority does not change. A disagreement adds a warning to the run report. A skipped project still has its commitments judged, so `met_at` and the needs-you items in section 3 still update, and an unmet one still makes the month urgent, unless it lapses (see "Lapsing").
 2. **Vote goal open.** The project has an unmet current vote commitment: priority high.
 3. **Vote goal covered.** The project has a current vote commitment, and every current one is met: priority low.
 4. **Science.**
@@ -243,6 +259,8 @@ In `live` mode, all of a run's writes to `plans.json` happen in one save under t
 | `balancer.json` | `last_run_night` | every run |
 | same | `bands`, the band each role ended in | every run |
 | same | `met_seen`, a map of plan id and month to date | dry run only, when a commitment is first found met |
+| same | `lapsed_seen`, a map of plan id and month to the commitment's `set_at` | dry run only, when a commitment first lapses |
+| `plans.json`, the commitment's plan | `commitments[i].lapsed_at` and `lapsed_reason`, plus `updated_at` | live only, the first run that finds the target out of season (see "Lapsing") |
 | same | `skipped_runs`, a count | each skipped run adds one, and a run that completes sets it to 0 |
 | Activity | one `balancer_run` event, and the needs-you items below | every run that is not stopped by Activity being off |
 
@@ -328,6 +346,18 @@ Hours below are month hours by role, and the vote winner's done hours. "Required
 19. **Stale age.** Newest progress report on night 9 Nov. The run on 12 Nov (age 3) gives no warning. The run on 13 Nov (age 4) warns "last progress report 4 nights old".
 20. **Two commitments on one plan.** Follows scenario 11. On 1 Dec the user records a December vote win on NGC 300 with SII 4 h, baseline taken then. Both commitments are current and unmet: NGC 300 stays high. On 6 Dec November is met: its `met_at` is set and its missed item resolves, but December has SII 1 of 4, so NGC 300 stays high and the month stays urgent. On 15 Dec December is met: NGC 300 high to low and the month is calm. With every role In, G7.7-3.7 goes back to high and PN-A and PN-B to normal.
 21. **Activity retention.** With `ACP_ACTIVITY_KEEP_NIGHTS=20`, every run warns that Activity keeps only 20 nights. With 31, or unset, there is no warning.
+
+### Lapsing
+
+Calls with a `season` map (plan id to reason) in `tests/test_balancer.py` (class `Lapse`) and runs against files in `tests/test_balancer_wiring.py`, with `compute_year_visibility` stood in for. Page contract in `tests/test_shooting_publish.py` (class `VoteWinner`).
+
+33. **Lapses out of season.** Scenario 2 on 11 Nov with NGC 300 out of season. The month is calm, NGC 300 leaves high, and the report says "NGC 300's November vote goal lapsed: out of season with 1.5 of 6 h done."
+34. **In season but behind.** Night 29 Nov with NGC 300 behind and in season. Nothing lapses and the month stays urgent.
+35. **Reported once.** In live mode the run after the lapse reports nothing about it. In dry run, `lapsed_seen` holds `ngc300:2026-11` and the next run reports nothing, still treating it as lapsed. If it comes back into season, it stays lapsed. A commitment added again with a later `set_at` is current.
+36. **Carried over.** On 2 Dec a lapse resolves the missed item opened on 1 Dec.
+37. **Held project.** NGC 300 on hold: the lapse is recorded, the month goes calm and its priority is untouched.
+38. **Wiring.** A live run writes `lapsed_at` and `lapsed_reason` once and leaves the priority to rules 4 to 6. A dry run leaves `plans.json` byte-identical. With no visibility result, a quiet active plan lapses with the 21-night reason after 21 nights, and a held plan does not. "Won the vote for" replaces a lapsed commitment.
+39. **Live page.** A lapsed winner publishes with the normal status and no `vote_month`, and a lapsed winner that has gone quiet drops out like any other project.
 
 ### Routes and wiring
 

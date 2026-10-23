@@ -342,7 +342,8 @@ def _vote_winner(plan: dict, done: dict[str, dict], today: date):
 
     A current commitment is a met one in its own month, or an unmet one from
     this month or earlier (it stays current until met), as the balancer
-    treats it. A met one from an earlier month is not current. One
+    treats it. A met one from an earlier month is not current, and neither is
+    one the balancer gave up on (`lapsed_at`). One
     that names no filter the plan can count is ignored, as the balancer
     does. It is met when `met_at` is set or every counted filter is at its
     goal."""
@@ -350,7 +351,8 @@ def _vote_winner(plan: dict, done: dict[str, dict], today: date):
     in_play = False
     for c in sorted((c for c in plan.get("commitments") or []
                      if isinstance(c, dict) and c.get("kind", "vote") == "vote"
-                     and isinstance(c.get("month"), str) and c["month"] <= month),
+                     and isinstance(c.get("month"), str) and c["month"] <= month
+                     and not c.get("lapsed_at")),
                     key=lambda c: c["month"]):
         raw = {k: v for k, v in _goal_filters(c.get("goals"), c.get("baseline"), done, None).items()
                if k in done}

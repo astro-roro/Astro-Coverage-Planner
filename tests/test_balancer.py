@@ -504,5 +504,97 @@ class Holes(unittest.TestCase):
         self.assertEqual(res["data"]["holes"], [])
 
 
+class Lapse(unittest.TestCase):
+    """An unmet vote commitment on a target that is out of season lapses."""
+
+    OUT = {"ngc300": "out of season"}
+
+    def run_it(self, sim, night, season, done_h=None, **kw):
+        return sim.run(night, hours(6, 8, 1.5), done_h or done(1.5, 0), season=season, **kw)
+
+    def test_lapses_when_out_of_season_and_stops_making_the_month_urgent(self):
+        s = Sim()
+        s.run("2026-11-10", hours(6, 8, 1.5), done(1.5, 0))
+        self.assertEqual(s.prio("NGC 300"), "high")
+        res = self.run_it(s, "2026-11-11", self.OUT)
+        self.assertFalse(res["urgent"])
+        self.assertEqual(res["lapsed_new"], [
+            {"plan_id": "ngc300", "month": "2026-11", "project": "NGC 300", "reason": "out of season"}])
+        self.assertIn("NGC 300's November vote goal lapsed: out of season with 1.5 of 6 h done.",
+                      res["detail"])
+        self.assertEqual(res["data"]["lapsed"][0]["reason"], "out of season")
+        self.assertEqual(res["data"]["commitments"], [])
+        self.assertEqual(s.changed(res)["NGC 300"][0], "high")
+        self.assertNotEqual(s.changed(res)["NGC 300"][1], "high")
+
+    def test_does_not_lapse_while_in_season_but_behind(self):
+        s = Sim()
+        res = s.run("2026-11-29", hours(6, 8, 1.5), done(1.5, 0), season={})
+        self.assertTrue(res["urgent"])
+        self.assertEqual(res["lapsed_new"], [])
+        self.assertNotIn("lapsed", res["detail"])
+        self.assertEqual(s.prio("NGC 300"), "high")
+
+    def test_a_met_commitment_never_lapses(self):
+        s = Sim()
+        res = self.run_it(s, "2026-11-12", self.OUT, done(3.0, 3.0))
+        self.assertEqual(res["lapsed_new"], [])
+        self.assertIn("vote goal met", res["detail"])
+
+    def test_reported_once_in_live_mode(self):
+        s = Sim(mode="live")
+        first = self.run_it(s, "2026-11-11", self.OUT)
+        for m in first["lapsed_new"]:
+            for p in s.plans:
+                for c in p.get("commitments", []):
+                    if p["id"] == m["plan_id"] and c["month"] == m["month"]:
+                        c["lapsed_at"] = "2026-11-11"
+                        c["lapsed_reason"] = m["reason"]
+        second = self.run_it(s, "2026-11-12", self.OUT)
+        self.assertEqual(len(first["lapsed_new"]), 1)
+        self.assertEqual(second["lapsed_new"], [])
+        self.assertNotIn("lapsed", second["detail"])
+
+    def test_reported_once_in_dry_run_through_memory(self):
+        s = Sim(mode="dry_run")
+        first = self.run_it(s, "2026-11-11", self.OUT)
+        self.assertEqual(s.memory["lapsed_seen"], {"ngc300:2026-11": "2026-11-01"})
+        second = self.run_it(s, "2026-11-12", self.OUT)
+        self.assertEqual(len(first["lapsed_new"]), 1)
+        self.assertEqual(second["lapsed_new"], [])
+        self.assertFalse(second["urgent"])
+
+    def test_lapse_does_not_revive_when_back_in_season(self):
+        s = Sim(mode="dry_run")
+        self.run_it(s, "2026-11-11", self.OUT)
+        res = self.run_it(s, "2026-11-12", {})
+        self.assertFalse(res["urgent"])
+        self.assertEqual(res["data"]["commitments"], [])
+
+    def test_a_commitment_added_again_for_the_month_is_a_new_one(self):
+        s = Sim(mode="dry_run")
+        self.run_it(s, "2026-11-11", self.OUT)
+        s.plans[3]["commitments"][0]["set_at"] = "2026-11-13"
+        res = self.run_it(s, "2026-11-14", {})
+        self.assertTrue(res["urgent"])
+
+    def test_carried_over_commitment_lapses_too_and_its_missed_item_resolves(self):
+        s = Sim()
+        first = s.run("2026-12-01", hours(6, 8, 1.5), done(1.5, 0), season={})
+        self.assertEqual([i["key"] for i in first["items_open"]], ["balancer_missed:ngc300:2026-11"])
+        res = self.run_it(s, "2026-12-02", self.OUT)
+        self.assertEqual(res["items_resolve"], ["balancer_missed:ngc300:2026-11"])
+        self.assertEqual(res["items_open"], [])
+
+    def test_held_project_is_judged_but_its_priority_is_untouched(self):
+        s = Sim()
+        s.plans[3]["balance_hold"] = True
+        res = self.run_it(s, "2026-11-11", self.OUT)
+        self.assertEqual(len(res["lapsed_new"]), 1)
+        self.assertNotIn("NGC 300", s.changed(res))
+        self.assertEqual(s.prio("NGC 300"), "low")
+        self.assertFalse(res["urgent"])
+
+
 if __name__ == "__main__":
     unittest.main()
