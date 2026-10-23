@@ -803,6 +803,20 @@ class VoteWinner(unittest.TestCase):
         pr = self._publish(self._winner(commitments=[c]), last=_ago(1))
         self.assertEqual(pr["status"], "imaging_now")
 
+    def test_lapsed_winner_has_no_winner_chip_and_uses_the_normal_chips(self):
+        c = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 4.0}, "baseline": {"Ha": 2.0},
+             "lapsed_at": "2026-09-20", "lapsed_reason": "out of season"}
+        pr = self._publish(self._winner(commitments=[c]), last=_ago(1))
+        self.assertEqual(pr["status"], "imaging_now")
+        self.assertNotIn("vote_month", pr)
+        self.assertNotIn("vote_label", pr)
+        self.assertEqual(pr["filters"]["Ha"], {"target_hours": 10.0, "done_hours": 4.0})
+
+    def test_lapsed_winner_that_has_gone_quiet_drops_out(self):
+        c = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 4.0}, "baseline": {"Ha": 2.0},
+             "lapsed_at": "2026-09-20"}
+        self.assertIsNone(self._publish(self._winner(commitments=[c]), last=_ago(40)))
+
     def test_carried_over_commitment_is_still_the_winner(self):
         c = {"kind": "vote", "month": "2026-08", "goals": {"Ha": 4.0}, "baseline": {"Ha": 2.0}}
         pr = self._publish(self._winner(commitments=[c]))

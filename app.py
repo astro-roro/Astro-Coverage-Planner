@@ -4797,9 +4797,12 @@ def _commitment_progress(plan: dict) -> list[dict]:
                             settings["finish_by"], {})
         if j["skipped"]:
             continue
-        out.append({"month": c["month"], "done_h": round(j["done_h"], 3),
-                    "goal_h": round(j["goal_h"], 3), "met": bool(j["met"]),
-                    "behind": bool(j["behind"])})
+        entry = {"month": c["month"], "done_h": round(j["done_h"], 3),
+                 "goal_h": round(j["goal_h"], 3), "met": bool(j["met"]),
+                 "behind": bool(j["behind"])}
+        if c.get("lapsed_at"):
+            entry.update({"lapsed_at": c["lapsed_at"], "lapsed_reason": c.get("lapsed_reason")})
+        out.append(entry)
     return out
 
 
@@ -7194,8 +7197,14 @@ def api_add_commitment(plan_id: str):
     goals = plan.get("vote_goals")
     if not isinstance(goals, dict) or not goals:
         return jsonify({"error": "the plan has no vote goals; set them in the Public page section first"}), 400
-    if any(c.get("month") == month for c in plan.get("commitments") or [] if isinstance(c, dict)):
+    if any(c.get("month") == month and not c.get("lapsed_at")
+           for c in plan.get("commitments") or [] if isinstance(c, dict)):
         return jsonify({"error": f"the plan already has a commitment for {month}"}), 400
+    # A lapsed commitment for the month is replaced: adding it again is how
+    # the user revives one.
+    if plan.get("commitments"):
+        plan["commitments"] = [c for c in plan["commitments"]
+                               if not (isinstance(c, dict) and c.get("month") == month)]
     baseline = plan.get("vote_baseline")
     if not isinstance(baseline, dict):
         baseline = sp.current_done_hours(plan, load_manifest(), load_gear())
@@ -7239,6 +7248,94 @@ def api_remove_commitment(plan_id: str, month: str):
     return jsonify(_with_goals_view(plan))
 
 
+SEASON_WINDOW_NIGHTS = 14
+SEASON_MIN_HOURS = 1.0
+LAPSE_QUIET_NIGHTS = 21
+
+
+def _season_hours(plan: dict, night: str) -> float | None:
+    """Hours a night the plan's target spends above its site's minimum altitude
+    in astronomical darkness, averaged over the next SEASON_WINDOW_NIGHTS
+    nights. Read from the year visibility the Inventory uses (one value for
+    the 15th of each month), interpolated to the middle of the window. None
+    when the target has no coordinates, there is no site, or the calculation
+    fails (for example astropy cannot fetch its Earth orientation data)."""
+    tg = plan.get("target") if isinstance(plan.get("target"), dict) else {}
+    try:
+        ra = float(tg["center_ra_deg"]) % 360.0
+        dec = float(tg["center_dec_deg"])
+        sites = load_sites().get("sites") or DEFAULT_SITES["sites"]
+        wanted = plan.get("site_id")
+        s = next((x for x in sites if wanted and x.get("id") == wanted), sites[0])
+        site = {"lat": float(s["lat"]), "lon": float(s["lon"]),
+                "elev_m": float(s.get("elev_m") or 0.0),
+                "min_alt_deg": float(s.get("min_alt_deg") or 30.0)}
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    mid = balancer.date.fromisoformat(night) + balancer.timedelta(days=SEASON_WINDOW_NIGHTS // 2)
+
+    def mid_month(year: int, month: int) -> float:
+        key = _site_cache_key(site) + (round(ra, 4), round(dec, 4), year)
+        bins = _visibility_cache.get(key)
+        if bins is None:
+            bins = compute_year_visibility(
+                [{"target_id": 0, "center_ra_deg": ra, "center_dec_deg": dec}],
+                lat=site["lat"], lon=site["lon"], elev_m=site["elev_m"],
+                min_alt_deg=site["min_alt_deg"], year=year)
+            _visibility_cache[key] = bins
+        return float(bins[0][month - 1]["hours_above_min"])
+
+    try:
+        if mid.day >= 15:
+            a = balancer.date(mid.year, mid.month, 15)
+            b = balancer.date(mid.year + (mid.month == 12), mid.month % 12 + 1, 15)
+        else:
+            a = balancer.date(mid.year - (mid.month == 1), (mid.month - 2) % 12 + 1, 15)
+            b = balancer.date(mid.year, mid.month, 15)
+        ha, hb = mid_month(a.year, a.month), mid_month(b.year, b.month)
+    except Exception:
+        logging.exception("balancer: could not work out the season for plan %s", plan.get("id"))
+        return None
+    return ha + (hb - ha) * (mid - a).days / max(1, (b - a).days)
+
+
+def _balancer_season(plans: list[dict], night: str) -> dict:
+    """Plan id to the reason its unmet vote commitment should lapse. A target
+    that spends under SEASON_MIN_HOURS a night above the site's minimum
+    altitude in darkness over the next two weeks is "out of season". When that
+    cannot be calculated, a plan that is active and not on hold, has had its
+    commitment for LAPSE_QUIET_NIGHTS nights and gained no hours in that time
+    lapses as "no hours in the last 21 nights"."""
+    cur_month = night[:7]
+    first = (balancer.date.fromisoformat(night)
+             - balancer.timedelta(days=LAPSE_QUIET_NIGHTS)).isoformat()
+    recent = None
+    out: dict = {}
+    for p in plans:
+        if not isinstance(p, dict) or not isinstance(p.get("commitments"), list):
+            continue
+        open_ones = [c for c in p["commitments"]
+                     if isinstance(c, dict) and c.get("kind", "vote") == "vote"
+                     and isinstance(c.get("month"), str) and c["month"] <= cur_month
+                     and not c.get("met_at") and not c.get("lapsed_at")]
+        if not open_ones:
+            continue
+        hours = _season_hours(p, night)
+        if hours is not None:
+            if hours < SEASON_MIN_HOURS:
+                out[p.get("id")] = "out of season"
+            continue
+        if p.get("balance_hold") is True or p.get("state") != "active":
+            continue
+        if any(str(c.get("set_at") or "9999") > first for c in open_ones):
+            continue
+        if recent is None:
+            recent = activity.progress_hours(first, night)
+        if not recent.get(p.get("id")):
+            out[p.get("id")] = f"no hours in the last {LAPSE_QUIET_NIGHTS} nights"
+    return out
+
+
 def _balancer_inputs(plans: list[dict], night: str) -> dict:
     """Everything `decide` needs beyond plans, settings and memory."""
     import shooting_publish as sp
@@ -7258,7 +7355,8 @@ def _balancer_inputs(plans: list[dict], night: str) -> dict:
             for p in plans if isinstance(p, dict) and p.get("commitments")}
     return {"month_hours": month_hours, "done_hours": done, "canon": sp.canon_filter,
             "newest_report_night": activity.newest_progress_night(),
-            "keep_nights": activity.keep_nights(), "recent_hours": recent_hours}
+            "keep_nights": activity.keep_nights(), "recent_hours": recent_hours,
+            "season": _balancer_season(plans, night)}
 
 
 def _balancer_decide(plans: list[dict], state: dict, night: str, late: bool = False) -> dict:
@@ -7266,7 +7364,7 @@ def _balancer_decide(plans: list[dict], state: dict, night: str, late: bool = Fa
     return balancer.decide(
         plans, inp["month_hours"], inp["done_hours"], state["settings"], state["memory"], night,
         newest_report_night=inp["newest_report_night"], keep_nights=inp["keep_nights"],
-        canon=inp["canon"], late=late, recent_hours=inp["recent_hours"])
+        canon=inp["canon"], late=late, recent_hours=inp["recent_hours"], season=inp["season"])
 
 
 def _balancer_note(change: dict, night: str) -> dict:
@@ -7333,7 +7431,7 @@ def run_balancer(trigger: str = "manual", now: datetime | None = None, preview: 
                 result = _balancer_decide(plans, state, night, late)
                 if preview:
                     return {"ran": True, "preview": True, **result}
-                if mode == "live" and (result["changes"] or result["met_new"]):
+                if mode == "live" and (result["changes"] or result["met_new"] or result["lapsed_new"]):
                     stamp = now.isoformat()
                     for ch in result["changes"]:
                         apply_project_settings(
@@ -7347,6 +7445,17 @@ def run_balancer(trigger: str = "manual", now: datetime | None = None, preview: 
                             for c in listed if isinstance(listed, list) else []:
                                 if isinstance(c, dict) and c.get("month") == m["month"] and not c.get("met_at"):
                                     c["met_at"] = night
+                                    p["updated_at"] = stamp
+                    for m in result["lapsed_new"]:
+                        for p in plans:
+                            if p.get("id") != m["plan_id"]:
+                                continue
+                            listed = p.get("commitments")
+                            for c in listed if isinstance(listed, list) else []:
+                                if isinstance(c, dict) and c.get("month") == m["month"] \
+                                        and not c.get("met_at") and not c.get("lapsed_at"):
+                                    c["lapsed_at"] = night
+                                    c["lapsed_reason"] = m["reason"]
                                     p["updated_at"] = stamp
                     save_plans({**data, "version": data.get("version", 1), "plans": plans})
         except Exception:

@@ -39,6 +39,7 @@ DEFAULT_MEMORY = {
     "last_attempt_night": None,
     "bands": {},
     "met_seen": {},
+    "lapsed_seen": {},
     "skipped_runs": 0,
     "open_items": [],
 }
@@ -156,8 +157,19 @@ def _canon_map(mapping, canon) -> dict[str, float]:
     return out
 
 
+def is_lapsed(plan: dict, c: dict, lapsed_seen: dict | None = None) -> bool:
+    """Whether the balancer gave up on this commitment: `lapsed_at` is set, or
+    (dry run) an earlier run noted it in memory for this same commitment. The
+    memory entry holds the commitment's `set_at`, so a commitment added again
+    for the same month is a new one and does not inherit the lapse."""
+    if c.get("lapsed_at"):
+        return True
+    seen = (lapsed_seen or {}).get(f"{plan.get('id')}:{c.get('month')}")
+    return seen is not None and seen == (c.get("set_at") or "")
+
+
 def _judge(plan: dict, c: dict, done: dict, canon, cur_month: str, elapsed: float,
-           finish_by: float, met_seen: dict) -> dict:
+           finish_by: float, met_seen: dict, lapsed_seen: dict | None = None) -> dict:
     """One commitment's progress. `done` is hours per canonical filter for
     this plan, as the live page counts them."""
     goals = _canon_map(c.get("goals"), canon)
@@ -168,9 +180,13 @@ def _judge(plan: dict, c: dict, done: dict, canon, cur_month: str, elapsed: floa
     sticky = bool(c.get("met_at")) or f"{plan.get('id')}:{month}" in met_seen
     # A met commitment is current only in its own month. An unmet one carried
     # over from an earlier month stays current until it is met.
-    current = isinstance(month, str) and (month == cur_month or (month < cur_month and not sticky))
+    lapsed = is_lapsed(plan, c, lapsed_seen)
+    current = isinstance(month, str) and not lapsed \
+        and (month == cur_month or (month < cur_month and not sticky))
     out = {"plan_id": plan.get("id"), "month": month, "met_at": c.get("met_at"),
-           "current": current, "skipped": not counted, "ignored": ignored}
+           "current": current, "skipped": not counted, "ignored": ignored,
+           "lapsed": lapsed, "lapsed_at": c.get("lapsed_at"),
+           "lapsed_reason": c.get("lapsed_reason")}
     if not counted:
         return out
     progress = sum(min(g, max(0.0, float(done[k]) - baseline.get(k, 0.0)))
@@ -206,13 +222,16 @@ def _band_for(role: str, share: float, target: float, tol: float, prev: str | No
 def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dict,
            memory: dict, night: str, *, newest_report_night: str | None = None,
            keep_nights: int | None = None, canon=None, late: bool = False,
-           recent_hours: dict | None = None) -> dict:
+           recent_hours: dict | None = None, season: dict | None = None) -> dict:
     """The whole decision for one run. `month_hours` is hours this month per
     project name, `done_hours` is current hours per canonical filter for each
     plan id (only plans with commitments need one). `late` says the run is
     after the nightly launcher (15:00), so its changes reach TS a night
     later. `recent_hours` is hours per project name over the last
     RECENT_NIGHTS nights; without it no role is treated as having a hole.
+    `season` maps a plan id to why its target cannot be imaged for now (a
+    short phrase such as "out of season"); an unmet current commitment on
+    such a plan lapses. Plans it leaves out are never lapsed.
     Returns a dict, see the keys built at the bottom."""
     canon = canon or (lambda s: s)
     settings = {**DEFAULT_SETTINGS, **settings}
@@ -245,6 +264,7 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
 
     # Commitments, judged for every project the balancer can see.
     commitments: list[dict] = []
+    lapsed_new: list[dict] = []
     for name in sorted(info):
         for p in info[name]["plans"]:
             listed = p.get("commitments")
@@ -256,8 +276,14 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
                         f"{name}: a vote commitment has no usable month, so the balancer skipped it.")
                     continue
                 j = _judge(p, c, done_hours.get(p.get("id")) or {}, canon, cur_month,
-                           elapsed, finish_by, memory["met_seen"])
+                           elapsed, finish_by, memory["met_seen"], memory["lapsed_seen"])
                 j["project"] = name
+                j["set_at"] = c.get("set_at") or ""
+                j["lapsed_now"] = False
+                if j["current"] and not j["skipped"] and not j["met"] and (season or {}).get(p.get("id")):
+                    j.update({"current": False, "lapsed": True, "lapsed_now": True,
+                              "lapsed_reason": season[p.get("id")]})
+                    lapsed_new.append(j)
                 if j["skipped"]:
                     if j["current"]:
                         warnings.append(
@@ -417,6 +443,11 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
         for m in met_new:
             met_seen[f"{m['plan_id']}:{m['month']}"] = night
 
+    lapsed_seen = dict(memory["lapsed_seen"])
+    if mode != "live":
+        for j in lapsed_new:
+            lapsed_seen[f"{j['plan_id']}:{j['month']}"] = j["set_at"]
+
     # Needs-you items.
     wanted: dict[str, dict] = {}
     open_before = set(memory["open_items"])
@@ -460,6 +491,10 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
         title = "Balancer (dry run): no changes" if dry else "Balancer: no changes"
     lines = [f"{c['project']}: priority {c['from']} to {c['to']}. {c['reason']}" for c in changes]
     for j in sorted(commitments, key=lambda j: (j["project"].lower(), str(j["month"]))):
+        if j["lapsed_now"]:
+            lines.append(f"{j['project']}'s {month_name(j['month'])} vote goal lapsed: "
+                         f"{j['lapsed_reason']} with {_fmt_h(j['done_h'])} of {_goal_h(j['goal_h'])} h done.")
+            continue
         if not j["current"] or j["skipped"]:
             continue
         m = month_name(j["month"])
@@ -493,12 +528,18 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
                          "behind": j["behind"]}
                         for j in live_commitments],
         "changes": [{k: c[k] for k in ("project", "field", "from", "to", "rule")} for c in changes],
+        "lapsed": [{"project": j["project"], "plan_id": j["plan_id"], "month": j["month"],
+                    "reason": j["lapsed_reason"], "done_h": round(j["done_h"], 3),
+                    "goal_h": round(j["goal_h"], 3)} for j in lapsed_new],
     }
     new_memory = {
-        **memory, "bands": bands, "met_seen": met_seen, "open_items": sorted(wanted),
+        **memory, "bands": bands, "met_seen": met_seen, "lapsed_seen": lapsed_seen,
+        "open_items": sorted(wanted),
     }
     return {
         "mode": mode, "night": night, "changes": changes, "met_new": met_new,
+        "lapsed_new": [{"plan_id": j["plan_id"], "month": j["month"], "project": j["project"],
+                        "reason": j["lapsed_reason"]} for j in lapsed_new],
         "memory": new_memory, "urgent": urgent, "shares": shares, "bands": bands,
         "warnings": warnings, "items_open": items_open, "items_resolve": items_resolve,
         "title": title, "detail": "\n".join(lines), "data": data,
