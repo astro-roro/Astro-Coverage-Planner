@@ -2774,3 +2774,9 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   .tour-ring { transition: left 0.18s ease, top 0.18s ease, width 0.18s ease, height 0.18s ease; }
   .tour-card { transition: left 0.18s ease, top 0.18s ease; }
 }
+
+/* Balancer dialog (docs/specs/imaging-balancer.md) */
+.activity .act-head { display: flex; justify-content: flex-end; }
+.balancer-dialog { max-width: 560px; width: 92vw; }
+.balancer-dialog .bal-field { display: flex; justify-content: space-between; gap: 8px; margin: 4px 0; }
+.balancer-dialog .bal-actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
