@@ -10,6 +10,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# This also brings in bundled_extensions/ (the Target Scheduler sync), which
+# ACP loads by default, so a container needs no extensions mount for it.
+# ACP_DISABLE_BUNDLED_EXTENSIONS=1 turns it off.
 COPY . .
 
 # Run as a normal user rather than root. A container that is only publishing

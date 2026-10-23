@@ -37,6 +37,9 @@ jobs:
           # maintainer's local private extensions don't interfere
           # with the in-tree test suite.
           ACP_EXTENSIONS_DIR: /tmp/acp-no-extensions
+          # The bundled sync extension has its own tests (tests/ts_sync);
+          # keep it out of every test that imports app.
+          ACP_DISABLE_BUNDLED_EXTENSIONS: "1"
         run: |
           mkdir -p /tmp/acp-no-extensions
           python -m unittest discover -s tests -v
@@ -62,6 +65,7 @@ jobs:
       - name: Run tests
         env:
           ACP_EXTENSIONS_DIR: ${{ runner.temp }}\acp-no-extensions
+          ACP_DISABLE_BUNDLED_EXTENSIONS: "1"
         run: |
           New-Item -ItemType Directory -Force -Path "$env:ACP_EXTENSIONS_DIR" | Out-Null
           python -m unittest discover -s tests -v
