@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,8 +19,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from shooting_publish import (  # noqa: E402
+    LIVE_STATUS_WINDOWS,
     PublishConfigError,
     build_shooting_document,
+    current_done_hours,
+    effective_visibility,
+    valid_astrobin_url,
+    strip_site_tag,
     push_document,
     resolve_dest,
     write_document,
@@ -35,9 +40,11 @@ GEAR = {
 
 
 def _plan(**over):
+    # finished_at keeps the default plan on the page whatever the manifest
+    # holds. Tests of the activity rules pass finished_at=None.
     p = {
         "id": "p1", "guid": "abc-123", "project_name": "Vela", "visibility": "public",
-        "is_current": True, "public_blurb": "Big and faint.",
+        "is_current": True, "public_blurb": "Big and faint.", "finished_at": "2026-09-03",
         "telescope_id": "t1", "camera_id": "c1",
         "target": {"name": "Vela SNR", "center_ra_deg": 128.5, "center_dec_deg": -45.0,
                    "rotation_deg": 0, "mosaic": {"rows": 1, "cols": 1, "overlap_pct": 0}},
@@ -69,6 +76,100 @@ def _manifest(*targets):
     return {"scan_date": "2026-09-03T06:10:00", "targets": list(targets)}
 
 
+class SiteTag(unittest.TestCase):
+    def test_strips_trailing_skies_tag(self):
+        self.assertEqual(strip_site_tag("Skull Nebula (Any Skies)"), "Skull Nebula")
+        self.assertEqual(strip_site_tag("Robin's Egg and Fornax Galaxies (Dark Skies)"),
+                         "Robin's Egg and Fornax Galaxies")
+        self.assertEqual(strip_site_tag("Skull Nebula (dark skies)  "), "Skull Nebula")
+
+    def test_leaves_other_parentheses_alone(self):
+        self.assertEqual(strip_site_tag("Dolphin Nebula (Sh2-308)"), "Dolphin Nebula (Sh2-308)")
+        self.assertEqual(strip_site_tag("(Dark Skies) Vela"), "(Dark Skies) Vela")
+        self.assertEqual(strip_site_tag("Vela"), "Vela")
+
+    def test_document_strips_names_only_in_published_output(self):
+        plan = _plan(project_name="Vela (Dark Skies)")
+        plan["target"]["name"] = "Vela SNR (Any Skies)"
+        doc = build_shooting_document([plan], _manifest(), GEAR, now=NOW)
+        self.assertEqual(doc["projects"][0]["project_name"], "Vela")
+        self.assertEqual(doc["projects"][0]["target_name"], "Vela SNR")
+        self.assertEqual(plan["project_name"], "Vela (Dark Skies)")
+
+
+class VoteSection(unittest.TestCase):
+    def _vote_plan(self, **over):
+        rows = [
+            {"id": "r-ha", "filter": "Ha", "template": "Ha", "template_sub_s": 300,
+             "unit": "h", "target_hours": 10.0, "actual_hours": 4.0},
+            {"id": "r-oiii", "filter": "OIII", "template": "OIII", "template_sub_s": 300,
+             "unit": "h", "target_hours": 8.0, "actual_hours": 1.0},
+        ]
+        base = {"public_section": "vote", "vote_goals": {"Ha": 4.0, "OIII": 2.0},
+                "vote_baseline": {"Ha": 4.0, "OIII": 0.5}, "filter_rows": rows}
+        base.update(over)
+        return _plan(**base)
+
+    def test_section_defaults_to_current(self):
+        pr = build_shooting_document([_plan()], _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["section"], "current")
+
+    def test_old_plan_publishes_as_before(self):
+        pr = build_shooting_document([_plan()], _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["filters"], {"Ha": {"target_hours": 10.0, "done_hours": 0.0},
+                                         "OIII": {"target_hours": 8.0, "done_hours": 0.0}})
+
+    def test_vote_goals_present_but_section_current_is_ignored(self):
+        pr = build_shooting_document([self._vote_plan(public_section="current")],
+                                     _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["section"], "current")
+        self.assertEqual(pr["filters"]["Ha"]["target_hours"], 10.0)
+
+    def test_vote_project_lists_only_goal_filters_with_done_since_baseline(self):
+        plan = self._vote_plan(vote_goals={"Ha": 4.0})
+        pr = build_shooting_document([plan], _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["section"], "vote")
+        self.assertEqual(pr["filters"], {"Ha": {"target_hours": 4.0, "done_hours": 0.0}})
+
+    def test_vote_done_counts_hours_added_after_baseline(self):
+        plan = self._vote_plan(vote_baseline={"Ha": 3.0, "OIII": 0.5})
+        pr = build_shooting_document([plan], _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["filters"]["Ha"]["done_hours"], 1.0)
+        self.assertEqual(pr["filters"]["OIII"], {"target_hours": 2.0, "done_hours": 0.5})
+
+    def test_vote_done_floored_at_zero(self):
+        plan = self._vote_plan(vote_baseline={"Ha": 9.0, "OIII": 0.0})
+        pr = build_shooting_document([plan], _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["filters"]["Ha"]["done_hours"], 0.0)
+
+    def test_vote_done_uses_manifest_hours_like_current_projects(self):
+        # 2.5 h logged in the archive for Ha, baseline taken when it was 2.5.
+        plan = self._vote_plan(vote_goals={"Ha": 4.0}, vote_baseline={"Ha": 0.0},
+                               filter_rows=[{"id": "r", "filter": "Ha", "template": "Ha",
+                                             "template_sub_s": 300, "unit": "h", "target_hours": 10.0}])
+        manifest = _manifest(_target(128.5, -45.0))
+        pr = build_shooting_document([plan], manifest, GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["filters"]["Ha"]["done_hours"], 2.5)
+        self.assertEqual(current_done_hours(plan, manifest, GEAR), {"Ha": 2.5})
+
+    def test_vote_keeps_last_imaged(self):
+        manifest = _manifest(_target(128.5, -45.0, last="2026-09-01"))
+        pr = build_shooting_document([self._vote_plan()], manifest, GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["last_imaged"], "2026-09-01")
+        self.assertEqual(pr["last_imaged_nights_ago"], 2)
+
+    def test_vote_without_baseline_counts_from_zero(self):
+        plan = self._vote_plan()
+        del plan["vote_baseline"]
+        pr = build_shooting_document([plan], _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertEqual(pr["filters"]["Ha"]["done_hours"], 4.0)
+
+    def test_vote_fields_never_leak_into_the_document(self):
+        pr = build_shooting_document([self._vote_plan()], _manifest(), GEAR, now=NOW)["projects"][0]
+        self.assertNotIn("vote_baseline", pr)
+        self.assertNotIn("vote_goals", pr)
+
+
 class BuildDocument(unittest.TestCase):
     def test_private_plan_excluded_even_if_current(self):
         doc = build_shooting_document(
@@ -81,8 +182,9 @@ class BuildDocument(unittest.TestCase):
         self.assertEqual(len(doc["projects"]), 1)
         pr = doc["projects"][0]
         self.assertEqual(set(pr), {"project_name", "target_name", "blurb", "is_current",
-                                   "center_ra_deg", "center_dec_deg", "fov_arcmin",
-                                   "telescope", "filters", "last_imaged", "last_imaged_nights_ago"})
+                                   "section", "status", "center_ra_deg", "center_dec_deg", "fov_arcmin",
+                                   "telescope", "filters", "done_hours", "target_hours",
+                                   "last_imaged", "last_imaged_nights_ago", "finished_at"})
         self.assertEqual(doc["version"], 1)
         self.assertEqual(doc["data_as_of"], "2026-09-03")
         self.assertTrue(doc["generated_at"].startswith("2026-09-03"))
@@ -190,6 +292,160 @@ class BuildDocument(unittest.TestCase):
         plans = [_plan(id="a", project_name="Zulu"), _plan(id="b", project_name="alpha")]
         doc = build_shooting_document(plans, _manifest(_target(128.5, -45.0)), GEAR, now=NOW)
         self.assertEqual([p["project_name"] for p in doc["projects"]], ["alpha", "Zulu"])
+
+
+TODAY = NOW.astimezone().date()
+
+
+def _ago(days):
+    return (TODAY - timedelta(days=days)).isoformat()
+
+
+def _doc(plan, *targets):
+    return build_shooting_document([plan], _manifest(*targets), GEAR, now=NOW)
+
+
+class StatusFromActivity(unittest.TestCase):
+    """status is worked out at publish time from the last imaged night."""
+
+    def _status(self, nights):
+        doc = _doc(_plan(finished_at=None), _target(128.5, -45.0, last=_ago(nights)))
+        return doc["projects"][0]["status"] if doc["projects"] else None
+
+    def test_windows_live_in_one_settings_block(self):
+        self.assertEqual(LIVE_STATUS_WINDOWS,
+                         {"imaging_now_nights": 3, "recent_days": 14, "finished_days": 30})
+
+    def test_imaging_now_boundary_is_three_nights(self):
+        self.assertEqual(self._status(0), "imaging_now")
+        self.assertEqual(self._status(3), "imaging_now")
+        self.assertEqual(self._status(4), "recent")
+
+    def test_recent_boundary_is_fourteen_days(self):
+        self.assertEqual(self._status(14), "recent")
+        self.assertIsNone(self._status(15))
+
+    def test_older_than_fourteen_days_and_not_finished_drops_out(self):
+        self.assertEqual(_doc(_plan(finished_at=None), _target(128.5, -45.0, last=_ago(40)))["projects"], [])
+
+    def test_never_imaged_and_not_finished_drops_out(self):
+        self.assertEqual(_doc(_plan(finished_at=None))["projects"], [])
+
+    def test_windows_can_change_in_the_settings_block(self):
+        import shooting_publish as sp
+        old = dict(sp.LIVE_STATUS_WINDOWS)
+        sp.LIVE_STATUS_WINDOWS["recent_days"] = 20
+        try:
+            self.assertEqual(self._status(18), "recent")
+        finally:
+            sp.LIVE_STATUS_WINDOWS.clear()
+            sp.LIVE_STATUS_WINDOWS.update(old)
+
+    def test_vote_project_stays_whatever_its_activity(self):
+        plan = _plan(finished_at=None, public_section="vote", vote_goals={"Ha": 4.0})
+        doc = _doc(plan, _target(128.5, -45.0, last=_ago(90)))
+        self.assertEqual(doc["projects"][0]["status"], "vote")
+
+    def test_old_fields_stay_for_one_release(self):
+        pr = _doc(_plan(finished_at=None), _target(128.5, -45.0, last=_ago(1)))["projects"][0]
+        self.assertTrue(pr["is_current"])
+        self.assertEqual(pr["section"], "current")
+
+
+class FinishedProjects(unittest.TestCase):
+    URL = "https://www.astrobin.com/abc123/"
+
+    def _finished(self, days_ago, **over):
+        plan = _plan(finished_at=_ago(days_ago), **over)
+        return _doc(plan, _target(128.5, -45.0, last=_ago(200)))["projects"]
+
+    def test_finished_within_thirty_days_shows(self):
+        self.assertEqual(self._finished(0)[0]["status"], "finished")
+        self.assertEqual(self._finished(30)[0]["status"], "finished")
+
+    def test_finished_thirty_one_days_ago_drops_out(self):
+        self.assertEqual(self._finished(31), [])
+
+    def test_finished_with_astrobin_link(self):
+        pr = self._finished(5, astrobin_url=self.URL)[0]
+        self.assertEqual(pr["astrobin_url"], self.URL)
+        self.assertEqual(pr["finished_at"], _ago(5))
+
+    def test_finished_without_link_omits_the_key(self):
+        pr = self._finished(5)[0]
+        self.assertNotIn("astrobin_url", pr)
+        self.assertEqual(pr["finished_at"], _ago(5))
+
+    def test_finished_keeps_its_final_progress(self):
+        pr = self._finished(5)[0]
+        self.assertEqual(pr["filters"]["Ha"]["done_hours"], 2.5)
+        self.assertEqual(pr["filters"]["Ha"]["target_hours"], 10.0)
+
+    def test_finish_fields_are_only_published_for_finished_projects(self):
+        plan = _plan(finished_at=None, astrobin_url=self.URL)
+        pr = _doc(plan, _target(128.5, -45.0, last=_ago(1)))["projects"][0]
+        self.assertNotIn("finished_at", pr)
+        self.assertNotIn("astrobin_url", pr)
+
+    def test_an_unsafe_link_already_in_a_plan_is_not_published(self):
+        pr = self._finished(5, astrobin_url="https://evil.example/astrobin.com")[0]
+        self.assertNotIn("astrobin_url", pr)
+
+    def test_astrobin_url_validator(self):
+        ok = ("https://astrobin.com/x", "https://www.astrobin.com/x/", "https://app.astrobin.com/u/r")
+        bad = ("http://astrobin.com/x", "https://astrobin.com.evil.com/x", "https://evilastrobin.com/x",
+               "https://user:pw@astrobin.com/x", "javascript:alert(1)", "https://astrobin.com/a b",
+               "", None, 5, "https://example.com/astrobin.com")
+        for u in ok:
+            self.assertTrue(valid_astrobin_url(u), u)
+        for u in bad:
+            self.assertFalse(valid_astrobin_url(u), u)
+
+
+class PrettyDefaultsPublic(unittest.TestCase):
+    def _published(self, **over):
+        plan = _plan(finished_at=None, **over)
+        plan.pop("visibility", None) if "visibility" not in over else None
+        return _doc(plan, _target(128.5, -45.0, last=_ago(1)))["projects"]
+
+    def test_pretty_plan_with_no_visibility_is_public(self):
+        self.assertEqual(len(self._published(target_class="pretty")), 1)
+
+    def test_explicit_private_wins_over_pretty(self):
+        self.assertEqual(self._published(target_class="pretty", visibility="private"), [])
+
+    def test_survey_deep_and_unclassed_stay_private(self):
+        for cls in ("survey", "deep", None):
+            self.assertEqual(self._published(target_class=cls), [], cls)
+
+    def test_explicit_public_survey_plan_publishes(self):
+        self.assertEqual(len(self._published(target_class="survey", visibility="public")), 1)
+
+    def test_effective_visibility(self):
+        self.assertEqual(effective_visibility({"target_class": "pretty"}), "public")
+        self.assertEqual(effective_visibility({"target_class": "pretty", "visibility": "private"}), "private")
+        self.assertEqual(effective_visibility({"target_class": "deep"}), "private")
+        self.assertEqual(effective_visibility({}), "private")
+
+
+class OverallTotals(unittest.TestCase):
+    def test_each_filter_is_capped_at_its_target(self):
+        rows = [
+            {"id": "a", "filter": "Ha", "template": "Ha", "template_sub_s": 300,
+             "unit": "h", "target_hours": 4.0, "actual_hours": 9.0},
+            {"id": "b", "filter": "OIII", "template": "OIII", "template_sub_s": 300,
+             "unit": "h", "target_hours": 6.0, "actual_hours": 1.5},
+        ]
+        pr = _doc(_plan(filter_rows=rows))["projects"][0]
+        # Ha is 9 of 4 and counts 4. OIII counts 1.5. Target is 10.
+        self.assertEqual(pr["done_hours"], 5.5)
+        self.assertEqual(pr["target_hours"], 10.0)
+
+    def test_vote_totals_use_the_vote_filters_only(self):
+        plan = _plan(public_section="vote", vote_goals={"Ha": 4.0}, vote_baseline={"Ha": 0.0})
+        pr = _doc(plan, _target(128.5, -45.0))["projects"][0]
+        self.assertEqual(pr["target_hours"], 4.0)
+        self.assertEqual(pr["done_hours"], 2.5)
 
 
 class WriteAndPush(unittest.TestCase):
@@ -332,7 +588,8 @@ class Endpoints(unittest.TestCase):
         app_module._destinations_cache_mtime = None
         app_module.LIVE_OUT_DIR = td / "live"
         (td / "plans.json").write_text(json.dumps(
-            {"version": 1, "plans": [_plan(), _plan(id="p2", visibility="private")]}))
+            {"version": 1, "plans": [_plan(finished_at=date.today().isoformat()),
+                                     _plan(id="p2", visibility="private")]}))
         (td / "manifest.json").write_text(json.dumps(_manifest(_target(128.5, -45.0))))
         (td / "gear.json").write_text(json.dumps(GEAR))
         self.client = app_module.app.test_client()
@@ -399,6 +656,73 @@ class Endpoints(unittest.TestCase):
         self.assertIn("server log", r.get_json()["error"])
 
 
+class RigMatching(unittest.TestCase):
+    """Archive hours count only when shot with the plan's telescope and camera."""
+
+    GEAR2 = {
+        "telescopes": [{"id": "t1", "name": "RedCat 51", "focal_length_mm": 250},
+                       {"id": "t2", "name": "190MN", "focal_length_mm": 1000}],
+        "cameras": [{"id": "c1", "name": "ZWO ASI2600MM Pro", "pixel_size_um": 3.76, "sensor_px": [6248, 4176]},
+                    {"id": "c2", "name": "ZWO ASI6200MM Pro", "pixel_size_um": 3.76, "sensor_px": [9576, 6388]}],
+    }
+
+    @staticmethod
+    def _rigs_target(rigs, total=None):
+        total = sum(h for _, _, h in rigs) if total is None else total
+        return {
+            "target_id": 7, "objects": ["Vela SNR"],
+            "center_ra_deg": 128.5, "center_dec_deg": -45.0, "fov_arcmin": [190.0, 127.0],
+            "date_range": ["2026-08-01", "2026-09-01"],
+            "filters": {"Ha": {"total_hours": total, "rigs": {
+                f"{t}|{c}": {"telescope": t, "camera": c, "headline_hours": h}
+                for t, c, h in rigs}}},
+        }
+
+    def _ha(self, plan, target):
+        doc = build_shooting_document([plan], _manifest(target), self.GEAR2, now=NOW)
+        return doc["projects"][0]["filters"]["Ha"]["done_hours"]
+
+    def test_frames_from_another_rig_are_not_counted(self):
+        plan = _plan(telescope_id="t2", camera_id="c2")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0), ("190MN", "ASI6200MM Pro", 1.5)])
+        self.assertEqual(self._ha(plan, t), 1.5)
+
+    def test_same_telescope_but_other_camera_is_excluded(self):
+        plan = _plan(telescope_id="t1", camera_id="c2")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0)])
+        self.assertEqual(self._ha(plan, t), 0.0)
+
+    def test_frames_from_the_plans_rig_still_count(self):
+        plan = _plan(telescope_id="t1", camera_id="c1")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 4.0), ("190MN", "ASI6200MM Pro", 9.0)])
+        self.assertEqual(self._ha(plan, t), 4.0)
+
+    def test_frames_with_no_rig_information_count(self):
+        plan = _plan(telescope_id="t2", camera_id="c2")
+        t = self._rigs_target([(None, None, 3.0), ("RedCat 51", "ASI2600MM Pro", 26.0)])
+        self.assertEqual(self._ha(plan, t), 3.0)
+        # A manifest with no rig rows at all (older scan, database floor) counts as before.
+        self.assertEqual(self._ha(plan, _target(128.5, -45.0)), 2.5)
+        # Total above the rig rows (unattributed hours) keeps the surplus.
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0)], total=28.0)
+        self.assertEqual(self._ha(plan, t), 2.0)
+
+    def test_vote_baseline_uses_the_same_rule(self):
+        plan = _plan(telescope_id="t2", camera_id="c2")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0), ("190MN", "ASI6200MM Pro", 1.5)])
+        done = current_done_hours(plan, _manifest(t), self.GEAR2)
+        self.assertEqual(done["Ha"], 1.5)
+
+    def test_mosaic_total_stays_per_panel_goal_times_panels(self):
+        plan = _plan(telescope_id="t2", camera_id="c2",
+                     target={**_plan()["target"], "mosaic": {"rows": 2, "cols": 1, "overlap_pct": 15}})
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0)])
+        doc = build_shooting_document([plan], _manifest(t), self.GEAR2, now=NOW)
+        ha = doc["projects"][0]["filters"]["Ha"]
+        self.assertEqual(ha["target_hours"], 20.0)
+        self.assertEqual(ha["done_hours"], 0.0)
+
+
 class Cli(unittest.TestCase):
     SCRIPT = ROOT / "scripts" / "publish_shooting.py"
 
@@ -414,7 +738,7 @@ class Cli(unittest.TestCase):
 
     def test_dry_run_writes_json_without_pushing(self):
         td = Path(tempfile.mkdtemp())
-        (td / "plans.json").write_text(json.dumps({"version": 1, "plans": [_plan()]}))
+        (td / "plans.json").write_text(json.dumps({"version": 1, "plans": [_plan(finished_at=date.today().isoformat())]}))
         (td / "manifest.json").write_text(json.dumps(_manifest()))
         (td / "gear.json").write_text(json.dumps(GEAR))
         env = self._env(td)
