@@ -97,7 +97,7 @@ export async function openBalancerDialog() {
     // The server runs in the saved mode, so the confirm and the status line
     // follow it, not the select, which may hold an unsaved change.
     const saved = await call("/api/balancer");
-    const live = !!saved.ok && saved.body.settings.mode === "live";
+    const live = !saved.ok || saved.body.settings.mode === "live";
     if (live && !confirm("Run the balancer now? It will change project priorities.")) return;
     status.textContent = "Running…";
     const res = await call("/api/balancer/run", "POST");
