@@ -93,7 +93,7 @@ Rules:
 Plans do not know which manifest targets are theirs. The publisher matches them by sky position:
 
 - A manifest target belongs to a plan when the angular separation between their centres is at most half the larger of the two diagonal extents. The plan's extent is the full mosaic footprint, computed from the plan's telescope and camera via the existing `_fov_arcmin` and mosaic geometry.
-- `done_hours` per filter is the sum of `filters.<f>.total_hours` across matched targets. If the plan's own `filter_goals.<f>.actual_hours` is higher, use that instead, since it came from a fresher source.
+- `done_hours` per filter is the sum of `filters.<f>.total_hours` across matched targets, less the `headline_hours` of any `rigs` row whose telescope or camera name differs from the plan's (a side that either the row or the plan does not name never excludes it). If the plan's own `filter_goals.<f>.actual_hours` is higher, use that instead, since it came from a fresher source.
 - `last_imaged` is the latest `date_range[1]` across matched targets, or null if none match.
 - Filter names are matched after the same canonicalisation the scanner uses, so `Ha`, `H-alpha` and `HA` agree.
 
