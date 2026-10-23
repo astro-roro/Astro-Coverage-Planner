@@ -723,6 +723,103 @@ class RigMatching(unittest.TestCase):
         self.assertEqual(ha["done_hours"], 0.0)
 
 
+class VoteWinner(unittest.TestCase):
+    """A plan with a current, unmet vote commitment publishes as vote_winner
+    (docs/specs/shooting-page.md, Vote winner)."""
+
+    def _winner(self, **over):
+        rows = [
+            {"id": "r-ha", "filter": "Ha", "template": "Ha", "template_sub_s": 300,
+             "unit": "h", "target_hours": 10.0, "actual_hours": 4.0},
+            {"id": "r-oiii", "filter": "OIII", "template": "OIII", "template_sub_s": 300,
+             "unit": "h", "target_hours": 8.0, "actual_hours": 1.0},
+        ]
+        commitment = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 4.0, "OIII": 2.0},
+                      "baseline": {"Ha": 2.0, "OIII": 0.5}, "set_at": "2026-09-01"}
+        base = {"finished_at": None, "filter_rows": rows, "commitments": [commitment]}
+        base.update(over)
+        return _plan(**base)
+
+    def _publish(self, plan, last=None):
+        targets = [_target(128.5, -45.0, hours_ha=0.0, last=last)] if last else []
+        projects = build_shooting_document([plan], _manifest(*targets), GEAR, now=NOW)["projects"]
+        return projects[0] if projects else None
+
+    def test_winner_has_its_own_status_month_and_label(self):
+        pr = self._publish(self._winner())
+        self.assertEqual(pr["status"], "vote_winner")
+        self.assertEqual(pr["vote_month"], "2026-09")
+        self.assertEqual(pr["vote_label"], "September vote winner")
+        self.assertEqual(pr["section"], "current")
+
+    def test_winner_numbers_are_the_commitments_goals_since_its_baseline(self):
+        pr = self._publish(self._winner())
+        self.assertEqual(pr["filters"], {"Ha": {"target_hours": 4.0, "done_hours": 2.0},
+                                         "OIII": {"target_hours": 2.0, "done_hours": 0.5}})
+        self.assertEqual((pr["done_hours"], pr["target_hours"]), (2.5, 6.0))
+
+    def test_winner_beats_the_vote_section(self):
+        plan = self._winner(public_section="vote", vote_goals={"Ha": 9.0},
+                            vote_baseline={"Ha": 0.0})
+        pr = self._publish(plan)
+        self.assertEqual(pr["status"], "vote_winner")
+        self.assertEqual(pr["section"], "current")
+        self.assertEqual(pr["filters"]["Ha"]["target_hours"], 4.0)
+
+    def test_winner_older_than_14_days_still_shows(self):
+        pr = self._publish(self._winner(), last=_ago(40))
+        self.assertEqual(pr["status"], "vote_winner")
+        self.assertEqual(pr["last_imaged_nights_ago"], 40)
+
+    def test_winner_never_imaged_still_shows(self):
+        self.assertEqual(self._publish(self._winner())["last_imaged"], None)
+
+    def test_met_winner_falls_back_to_the_normal_rules_with_full_numbers(self):
+        met = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 3.0, "OIII": 1.0},
+               "baseline": {"Ha": 0.0, "OIII": 0.0}}
+        plan = self._winner(commitments=[met], public_section="vote")
+        pr = self._publish(plan, last=_ago(1))
+        self.assertEqual(pr["status"], "imaging_now")
+        self.assertEqual(pr["section"], "current")
+        self.assertNotIn("vote_month", pr)
+        self.assertEqual(pr["filters"]["Ha"], {"target_hours": 10.0, "done_hours": 4.0})
+        self.assertEqual(pr["target_hours"], 18.0)
+
+    def test_met_winner_that_has_gone_quiet_drops_out(self):
+        met = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 3.0}, "baseline": {"Ha": 0.0}}
+        self.assertIsNone(self._publish(self._winner(commitments=[met]), last=_ago(40)))
+
+    def test_met_at_counts_as_met(self):
+        c = {"kind": "vote", "month": "2026-09", "goals": {"Ha": 40.0}, "baseline": {"Ha": 0.0},
+             "met_at": "2026-09-02"}
+        pr = self._publish(self._winner(commitments=[c]), last=_ago(1))
+        self.assertEqual(pr["status"], "imaging_now")
+
+    def test_carried_over_commitment_is_still_the_winner(self):
+        c = {"kind": "vote", "month": "2026-08", "goals": {"Ha": 4.0}, "baseline": {"Ha": 2.0}}
+        pr = self._publish(self._winner(commitments=[c]))
+        self.assertEqual((pr["status"], pr["vote_label"]), ("vote_winner", "August vote winner"))
+
+    def test_future_commitment_is_ignored(self):
+        c = {"kind": "vote", "month": "2026-10", "goals": {"Ha": 4.0}, "baseline": {"Ha": 0.0}}
+        plan = self._winner(commitments=[c], public_section="vote", vote_goals={"Ha": 4.0},
+                            vote_baseline={"Ha": 0.0})
+        pr = self._publish(plan)
+        self.assertEqual((pr["status"], pr["section"]), ("vote", "vote"))
+
+    def test_commitment_on_a_filter_the_plan_cannot_count_is_ignored(self):
+        c = {"kind": "vote", "month": "2026-09", "goals": {"SII": 4.0}, "baseline": {"SII": 0.0}}
+        self.assertIsNone(self._publish(self._winner(commitments=[c])))
+
+    def test_private_winner_is_not_published(self):
+        self.assertIsNone(self._publish(self._winner(visibility="private")))
+
+    def test_commitments_never_leak_into_the_document(self):
+        pr = self._publish(self._winner())
+        for key in ("commitments", "goals", "baseline", "balance_role", "balancer_note"):
+            self.assertNotIn(key, pr)
+
+
 class Cli(unittest.TestCase):
     SCRIPT = ROOT / "scripts" / "publish_shooting.py"
 
