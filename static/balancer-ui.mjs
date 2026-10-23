@@ -22,15 +22,15 @@ async function call(url, method = "GET", body) {
 }
 
 function numberField(id, label, value, step = "1") {
-  return `<label class="bal-field"><span>${esc(label)}</span>` +
+  return `<label class="modal-row"><span>${esc(label)}</span>` +
     `<input type="number" id="${id}" step="${step}" value="${esc(value)}"></label>`;
 }
 
 function formHtml(s) {
   const modes = MODES.map(([v, l]) =>
     `<option value="${v}"${s.mode === v ? " selected" : ""}>${esc(l)}</option>`).join("");
-  return `<label class="bal-field"><span>Mode</span><select id="bal_mode">${modes}</select></label>` +
-    `<label class="bal-field"><span>Run at (local time)</span>` +
+  return `<label class="modal-row"><span>Mode</span><select id="bal_mode">${modes}</select></label>` +
+    `<label class="modal-row"><span>Run at (local time)</span>` +
     `<input type="time" id="bal_run_at" value="${esc(s.run_at)}"></label>` +
     numberField("bal_share_science", "Science share (%)", s.shares.science) +
     numberField("bal_share_survey", "Survey share (%)", s.shares.survey) +
@@ -60,19 +60,19 @@ export async function openBalancerDialog() {
   const first = await call("/api/balancer");
   if (!first.ok) { alert("The balancer is not available on this server."); return; }
   const dlg = document.createElement("dialog");
-  dlg.className = "balancer-dialog";
+  dlg.className = "acp-modal balancer-dialog";
   dlg.innerHTML =
     `<h3>Balancer</h3>` +
     `<div class="bal-notes">${first.body.notes.map(n => `<p class="panel-error">${esc(n)}</p>`).join("")}</div>` +
     `<form id="balForm" onsubmit="return false">${formHtml(first.body.settings)}</form>` +
-    `<div class="bal-actions">` +
-    `<button type="button" id="balSave">Save settings</button> ` +
+    `<div class="bal-actions modal-actions">` +
+    `<button type="button" id="balSave" class="primary">Save settings</button> ` +
     `<button type="button" id="balPreview">Preview</button> ` +
     `<button type="button" id="balRun">Run now</button> ` +
     `<button type="button" id="balTag">Tag projects from target class</button> ` +
     `<button type="button" id="balClose">Close</button></div>` +
-    `<p id="balStatus" style="font-size:12px"></p>` +
-    `<pre id="balResult" style="white-space:pre-wrap;font-size:12px"></pre>`;
+    `<p id="balStatus" class="bal-status"></p>` +
+    `<pre id="balResult" class="bal-result"></pre>`;
   document.body.appendChild(dlg);
   const status = dlg.querySelector("#balStatus");
   const result = dlg.querySelector("#balResult");
