@@ -8198,11 +8198,18 @@ function renderPlanEditor(plan) {
         <legend>Public page</legend>
         <label><span class="lab">Visibility</span>
           <select id="f_visibility">
-            <option value="private" ${(editingPlan.visibility || "private") === "private" ? "selected" : ""}>Private</option>
-            <option value="public"  ${editingPlan.visibility === "public" ? "selected" : ""}>Public</option>
+            <option value="private" ${effectivePlanVisibility(editingPlan) === "private" ? "selected" : ""}>Private</option>
+            <option value="public"  ${effectivePlanVisibility(editingPlan) === "public" ? "selected" : ""}>${esc(publicVisibilityLabel(editingPlan))}</option>
           </select>
         </label>
-        <div id="f_public_extra" ${editingPlan.visibility === "public" ? "" : "hidden"}>
+        <div id="f_public_extra" ${effectivePlanVisibility(editingPlan) === "public" ? "" : "hidden"}>
+          <label><span class="lab">Finished</span>
+            <input type="date" id="f_finished_at" value="${esc(editingPlan.finished_at || "")}">
+            <button type="button" id="f_finished_today">Today</button>
+          </label>
+          <label><span class="lab">AstroBin link</span>
+            <input type="url" id="f_astrobin_url" maxlength="300" placeholder="https://www.astrobin.com/..." value="${esc(editingPlan.astrobin_url || "")}">
+          </label>
           <label><span class="lab">Current project</span>
             <input type="checkbox" id="f_is_current" ${editingPlan.is_current ? "checked" : ""}>
           </label>
@@ -8234,7 +8241,10 @@ function renderPlanEditor(plan) {
   // Wire live-edit handlers
   panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
-  panel.querySelector("#f_target_class")?.addEventListener("change", e => { setTargetClass(editingPlan, e.target.value); });
+  panel.querySelector("#f_target_class")?.addEventListener("change", e => {
+    setTargetClass(editingPlan, e.target.value);
+    syncPublicVisibility(panel);
+  });
   const raInput = panel.querySelector("#f_ra");
   const decInput = panel.querySelector("#f_dec");
   const isPlainDecimal = s => /^\s*[+-]?(\d+\.?\d*|\.\d+)\s*$/.test(s);
@@ -8332,9 +8342,17 @@ function renderPlanEditor(plan) {
   });
   panel.querySelector("#f_visibility")?.addEventListener("change", e => {
     editingPlan.visibility = e.target.value;
-    const extra = panel.querySelector("#f_public_extra");
-    if (extra) extra.hidden = e.target.value !== "public";
+    syncPublicVisibility(panel);
   });
+  panel.querySelector("#f_finished_at")?.addEventListener("input", e => { editingPlan.finished_at = e.target.value; });
+  panel.querySelector("#f_finished_today")?.addEventListener("click", () => {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    editingPlan.finished_at = iso;
+    panel.querySelector("#f_finished_at").value = iso;
+  });
+  panel.querySelector("#f_astrobin_url")?.addEventListener("input", e => { editingPlan.astrobin_url = e.target.value.trim(); });
   panel.querySelector("#f_public_section")?.addEventListener("change", e => {
     editingPlan.public_section = e.target.value;
     const box = panel.querySelector("#f_vote_goals");
@@ -8462,6 +8480,31 @@ function voteTotalHtml(total) {
   const t = Math.round(total * 10) / 10;
   return `Total ${t} h` + (total > VOTE_HOURS_WARN
     ? ` <strong>This is more than ${VOTE_HOURS_WARN} hours. A vote option is meant to be about 6.</strong>` : "");
+}
+
+// Mirrors shooting_publish.effective_visibility: an explicit value wins, and
+// with none set a pretty plan is public.
+function effectivePlanVisibility(plan) {
+  if (plan.visibility === "public" || plan.visibility === "private") return plan.visibility;
+  return plan.target_class === "pretty" ? "public" : "private";
+}
+
+function publicVisibilityLabel(plan) {
+  const byDefault = !plan.visibility && plan.target_class === "pretty";
+  return byDefault ? "Public (default for pretty plans)" : "Public";
+}
+
+// Re-render the visibility choice and the public-only fields after the
+// visibility or the target class changes.
+function syncPublicVisibility(panel) {
+  const sel = panel.querySelector("#f_visibility");
+  if (!sel || !editingPlan) return;
+  const eff = effectivePlanVisibility(editingPlan);
+  sel.value = eff;
+  const pub = sel.querySelector('option[value="public"]');
+  if (pub) pub.textContent = publicVisibilityLabel(editingPlan);
+  const extra = panel.querySelector("#f_public_extra");
+  if (extra) extra.hidden = eff !== "public";
 }
 
 // The hours table for a plan in the vote section. A blank box means the

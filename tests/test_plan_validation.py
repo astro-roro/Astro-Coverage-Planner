@@ -592,6 +592,42 @@ class TestPublicPageFields(unittest.TestCase):
         self.assertEqual(r.status_code, 201)
 
 
+class TestFinishedFields(unittest.TestCase):
+    """finished_at / astrobin_url (docs/specs/shooting-page.md). Both optional;
+    an empty string clears them."""
+
+    def setUp(self):
+        _fresh_plans_path()
+        self.client = app.test_client()
+
+    def _post(self, **over):
+        return self.client.post("/api/plans", json=_valid_plan_payload(**over))
+
+    def test_finished_at_accepts_a_date_empty_and_absent(self):
+        for v in ("2026-10-23", "", None):
+            self.assertEqual(self._post(plan_id=f"f-{v}", finished_at=v).status_code, 201, v)
+
+    def test_finished_at_rejects_bad_dates(self):
+        for v in ("23/10/2026", "2026-13-01", "2026-02-30", 20261023, "yesterday"):
+            r = self._post(finished_at=v)
+            self.assertEqual(r.status_code, 400, v)
+            self.assertIn("finished_at", r.get_json()["error"])
+
+    def test_astrobin_url_accepts_astrobin_https_links(self):
+        for i, v in enumerate(("https://www.astrobin.com/abc123/", "https://astrobin.com/x", "")):
+            self.assertEqual(self._post(plan_id=f"a{i}", astrobin_url=v).status_code, 201, v)
+
+    def test_astrobin_url_is_refused_when_invalid(self):
+        for v in ("http://www.astrobin.com/abc/", "https://example.com/astrobin.com",
+                  "https://astrobin.com.evil.com/x", "javascript:alert(1)", "not a url", 5):
+            r = self._post(astrobin_url=v)
+            self.assertEqual(r.status_code, 400, v)
+            self.assertIn("astrobin_url", r.get_json()["error"])
+
+    def test_old_plans_without_the_fields_still_save(self):
+        self.assertEqual(self._post().status_code, 201)
+
+
 class TestVoteSectionFields(unittest.TestCase):
     """public_section / vote_goals / vote_baseline (docs/specs/shooting-page.md).
     The baseline is the server's: set on entering the vote, cleared on leaving,
