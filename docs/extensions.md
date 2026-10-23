@@ -25,6 +25,10 @@ There are three ways an extension can plug in:
 
 Each entry is either a single `.py` file or a package directory.
 
+### Extensions that ship inside ACP
+
+ACP also loads the extensions in its own `bundled_extensions/` folder, currently the Target Scheduler sync (`nina_ts_sync`). They are ordinary extensions that core never imports, and they load by default after the ones in your extensions directory. If your directory already holds an entry with the same name, such as a standalone copy of `nina_ts_sync`, yours loads and the bundled one is skipped, so nothing is registered twice. A broken copy of yours is not quietly replaced by the bundled one. Set `ACP_DISABLE_BUNDLED_EXTENSIONS=1` to skip the whole folder.
+
 ## The contract
 
 Each extension defines a top-level `register(app)` callable that receives the Flask app. From there you can register blueprints, append to the registries, read `app.config`, attach teardown hooks — anything Flask supports plus the plugin registries below.

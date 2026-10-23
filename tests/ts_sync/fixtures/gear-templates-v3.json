@@ -1,0 +1,785 @@
+{
+  "version": 3,
+  "rev": 1,
+  "templates_migrated": 1,
+  "telescopes": [
+    {
+      "aperture_mm": 110,
+      "default_camera_id": "zwo-asi6200mm-pro",
+      "focal_length_mm": 550,
+      "id": "telescope-2",
+      "name": "110GTX"
+    },
+    {
+      "aperture_mm": 51,
+      "focal_length_mm": 250,
+      "id": "redcat51",
+      "name": "RedCat 51 APO"
+    },
+    {
+      "aperture_mm": 190,
+      "focal_length_mm": 1000,
+      "id": "telescope-3",
+      "name": "190MN"
+    },
+    {
+      "aperture_mm": 0,
+      "focal_length_mm": 516.5149,
+      "id": "hyperstar",
+      "name": "HyperStar"
+    },
+    {
+      "id": "skywatcher-190makn",
+      "name": "SkyWatcher 190MakN",
+      "focal_length_mm": 248.132210845322,
+      "aperture_mm": 0
+    },
+    {
+      "id": "190mak",
+      "name": "190Mak",
+      "focal_length_mm": 248.221949805311,
+      "aperture_mm": 0
+    },
+    {
+      "id": "c9-25-edgehd-0-7x-re",
+      "name": "C9.25 EdgeHD 0.7x Re",
+      "focal_length_mm": 0,
+      "aperture_mm": 0
+    },
+    {
+      "id": "fsq-106edx4",
+      "name": "FSQ-106EDX4",
+      "focal_length_mm": 0,
+      "aperture_mm": 0
+    }
+  ],
+  "telescope_colours": {},
+  "tidy": {},
+  "links_capable": {},
+  "cameras": [
+    {
+      "id": "zwo-asi6200mm-pro",
+      "name": "ZWO ASI6200MM Pro",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        9576,
+        6388
+      ],
+      "filters": {
+        "L": {
+          "templates": [
+            {
+              "id": "4dcac5c9-db19-5d0b-a580-f14ad4e4259a",
+              "name": "L",
+              "sub_s": 120.0,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 18,
+                  "guid": "e31b4bc3-0227-5fb9-b820-393235209641",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "L",
+                    "filtername": "L",
+                    "defaultexposure": 120.0,
+                    "gain": -1,
+                    "offset": -1,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            }
+          ]
+        },
+        "R": {
+          "templates": [
+            {
+              "id": "697620ff-4c8a-54e3-ad69-52b6e0a5164d",
+              "name": "R (ZWO ASI6200MM Pro)",
+              "sub_s": 120.0,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [
+                "R"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 19,
+                  "guid": "06096922-2b87-5eeb-a950-afe9c6ae4567",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "R (ZWO ASI6200MM Pro)",
+                    "filtername": "R",
+                    "defaultexposure": 120.0,
+                    "gain": -1,
+                    "offset": -1,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            },
+            {
+              "id": "58e7f7a5-0aa1-5b0f-a6c6-61acd75e418e",
+              "name": "R Stars",
+              "sub_s": 15.0,
+              "gain": -1,
+              "offset": 25,
+              "bin": 1,
+              "starred": false,
+              "aliases": [],
+              "ts_names": [
+                "R Stars (ZWO ASI6200MM Pro)"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 5,
+                  "guid": "93646bfa-1994-4ede-9c6b-d361752ae64b",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "R Stars",
+                    "filtername": "R",
+                    "defaultexposure": 15.0,
+                    "gain": -1,
+                    "offset": 25,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            }
+          ]
+        },
+        "G": {
+          "templates": [
+            {
+              "id": "883e182b-868f-55c1-af75-36e950a5208a",
+              "name": "G (ZWO ASI6200MM Pro)",
+              "sub_s": 120.0,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [
+                "G"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 16,
+                  "guid": "1495a03e-3dd9-5722-b0ce-5dc156df6222",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "G (ZWO ASI6200MM Pro)",
+                    "filtername": "G",
+                    "defaultexposure": 120.0,
+                    "gain": -1,
+                    "offset": -1,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            },
+            {
+              "id": "21c39b67-e6fb-53e9-9873-9d52874813ad",
+              "name": "G Stars",
+              "sub_s": 15.0,
+              "gain": -1,
+              "offset": 25,
+              "bin": 1,
+              "starred": false,
+              "aliases": [],
+              "ts_names": [
+                "G Stars (ZWO ASI6200MM Pro)"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 6,
+                  "guid": "331393f8-801c-4d01-8fa5-aa35c3327f4a",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "G Stars",
+                    "filtername": "G",
+                    "defaultexposure": 15.0,
+                    "gain": -1,
+                    "offset": 25,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            }
+          ]
+        },
+        "B": {
+          "templates": [
+            {
+              "id": "7de9ca8b-c56b-5e76-8366-0d41bb796269",
+              "name": "B",
+              "sub_s": 120.0,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 14,
+                  "guid": "8d655a9d-f228-5963-ac49-3f1a9d7041fe",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "B",
+                    "filtername": "B",
+                    "defaultexposure": 120.0,
+                    "gain": -1,
+                    "offset": -1,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            },
+            {
+              "id": "2babd0b9-87fa-5f1b-822d-f2622f429f64",
+              "name": "B Stars",
+              "sub_s": 15.0,
+              "gain": -1,
+              "offset": 25,
+              "bin": 1,
+              "starred": false,
+              "aliases": [],
+              "ts_names": [
+                "B Stars (ZWO ASI6200MM Pro)"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 7,
+                  "guid": "2e0bd380-f280-4c30-8767-e01dd8883250",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "B Stars",
+                    "filtername": "B",
+                    "defaultexposure": 15.0,
+                    "gain": -1,
+                    "offset": 25,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            }
+          ]
+        },
+        "Ha": {
+          "templates": [
+            {
+              "id": "93b597b5-bbb5-53c4-b601-c10500d58d14",
+              "name": "Ha",
+              "sub_s": 300.0,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [
+                "H"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 12,
+                  "guid": "65587bc4-5c38-5dc8-a0e4-3283c81ee193",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "Ha",
+                    "filtername": "H",
+                    "defaultexposure": 300.0,
+                    "gain": -1,
+                    "offset": -1,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            }
+          ]
+        },
+        "OIII": {
+          "templates": [
+            {
+              "id": "b74313b1-3924-5451-89dd-9673a7833ff7",
+              "name": "OIII",
+              "sub_s": 300.0,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [
+                "O"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 11,
+                  "guid": "82eff392-3890-54c8-a619-31318ec05e2c",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "OIII",
+                    "filtername": "O",
+                    "defaultexposure": 300.0,
+                    "gain": -1,
+                    "offset": -1,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            }
+          ]
+        },
+        "SII": {
+          "templates": [
+            {
+              "id": "1e838dfc-2d05-5719-ae14-766701d42222",
+              "name": "SII",
+              "sub_s": 300.0,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [
+                "S"
+              ],
+              "ts": {
+                "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7": {
+                  "id": 13,
+                  "guid": "f2b777fc-24f2-5c69-a91d-d75581eeefaa",
+                  "pushed_iso": "2026-10-12T21:00:00Z",
+                  "base": {
+                    "name": "SII",
+                    "filtername": "S",
+                    "defaultexposure": 300.0,
+                    "gain": -1,
+                    "offset": -1,
+                    "bin": 1
+                  },
+                  "repoint_from": []
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qhy268m",
+      "name": "QHY268M",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        6252,
+        4176
+      ],
+      "filters": {
+        "Ha": {
+          "templates": [
+            {
+              "id": "6b2a2486-8386-5f16-abb5-09b98cc540e4",
+              "name": "Ha (QHY268M)",
+              "sub_s": 300,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "L": {
+          "templates": [
+            {
+              "id": "a047b634-71e6-5931-9645-1fdb194a116d",
+              "name": "L (QHY268M)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "zwo-asi2600mm-pro",
+      "name": "ZWO ASI2600MM Pro",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        6248,
+        4176
+      ],
+      "filters": {
+        "B": {
+          "templates": [
+            {
+              "id": "c21b71e6-2e3b-5b6d-b358-a0a574b5ba90",
+              "name": "B (ZWO ASI2600MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "G": {
+          "templates": [
+            {
+              "id": "c10f8b43-56ef-5d58-bf35-2145dd2fae80",
+              "name": "G (ZWO ASI2600MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "Ha": {
+          "templates": [
+            {
+              "id": "ab2287e8-fac0-50a0-9c05-23986699cc28",
+              "name": "Ha (ZWO ASI2600MM Pro)",
+              "sub_s": 300,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "L": {
+          "templates": [
+            {
+              "id": "382e9f48-f388-50d0-b9d4-f3c7cc0163db",
+              "name": "L (ZWO ASI2600MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "OIII": {
+          "templates": [
+            {
+              "id": "df2589a5-c725-5962-8b53-2fab400a46a0",
+              "name": "OIII (ZWO ASI2600MM Pro)",
+              "sub_s": 300,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "R": {
+          "templates": [
+            {
+              "id": "9315f0dd-df31-502c-91d1-ce43d0ab060d",
+              "name": "R (ZWO ASI2600MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "SII": {
+          "templates": [
+            {
+              "id": "ab34d71b-f765-5864-b217-dd27bb0e8250",
+              "name": "SII (ZWO ASI2600MM Pro)",
+              "sub_s": 300,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "zwo-asi294mc-pro",
+      "name": "ZWO ASI294MC Pro",
+      "pixel_size_um": 4.63,
+      "sensor_px": [
+        4144,
+        2822
+      ],
+      "filters": {
+        "NoFilter": {
+          "templates": [
+            {
+              "id": "997f064b-4331-5993-ba0b-937089aaa7e2",
+              "name": "NoFilter (ZWO ASI294MC Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "asi-camera-1-as",
+      "name": "ASI Camera (1) (AS",
+      "pixel_size_um": 2.315,
+      "sensor_px": [
+        8064,
+        5380
+      ],
+      "filters": {}
+    },
+    {
+      "id": "zwo-asi2600mm-duo",
+      "name": "ZWO ASI2600MM Duo",
+      "pixel_size_um": 3.76,
+      "sensor_px": [
+        6248,
+        4176
+      ],
+      "filters": {
+        "Ha": {
+          "templates": [
+            {
+              "id": "566693f7-0c1d-5014-860b-7139ad33bcea",
+              "name": "Ha (ZWO ASI2600MM Duo)",
+              "sub_s": 300,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "L": {
+          "templates": [
+            {
+              "id": "cdc597a2-d4b8-5e4a-847e-86e15aef1b02",
+              "name": "L (ZWO ASI2600MM Duo)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "R": {
+          "templates": [
+            {
+              "id": "298c49a5-4616-5916-8c98-df43a949669f",
+              "name": "R (ZWO ASI2600MM Duo)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "zwo-asi294mm-pro",
+      "name": "ZWO ASI294MM Pro",
+      "pixel_size_um": 2.315,
+      "sensor_px": [
+        4144,
+        2822
+      ],
+      "filters": {
+        "Antlia Ha": {
+          "templates": [
+            {
+              "id": "fd7f728a-3b54-52a1-aeec-59495b8b67ad",
+              "name": "Antlia Ha (ZWO ASI294MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "B": {
+          "templates": [
+            {
+              "id": "beeed3a7-adf2-5b1e-9888-54ccbbe58315",
+              "name": "B (ZWO ASI294MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "Ha": {
+          "templates": [
+            {
+              "id": "12b6d5ff-c252-5dc5-9c79-1af514e7b1a5",
+              "name": "Ha (ZWO ASI294MM Pro)",
+              "sub_s": 300,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "IDAS + RED": {
+          "templates": [
+            {
+              "id": "0395f8f8-b590-5ee5-9050-e8b1b4d7874c",
+              "name": "IDAS + RED (ZWO ASI294MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "OIII": {
+          "templates": [
+            {
+              "id": "34482719-2a30-53ce-a137-46842e2472a0",
+              "name": "OIII (ZWO ASI294MM Pro)",
+              "sub_s": 300,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        },
+        "R": {
+          "templates": [
+            {
+              "id": "cc41af43-38a5-5e39-8c71-d924395f34f8",
+              "name": "R (ZWO ASI294MM Pro)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "poseidon-m-pro",
+      "name": "Poseidon-M PRO",
+      "pixel_size_um": 0,
+      "sensor_px": [
+        0,
+        0
+      ],
+      "colour": false,
+      "sensor_width_px": 0,
+      "sensor_height_px": 0,
+      "filters": {
+        "L": {
+          "templates": [
+            {
+              "id": "22108be6-20e2-52c9-9e8f-925d1ea15b67",
+              "name": "L (Poseidon-M PRO)",
+              "sub_s": 120,
+              "gain": -1,
+              "offset": -1,
+              "bin": 1,
+              "starred": true,
+              "aliases": [],
+              "ts_names": [],
+              "ts": {}
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
