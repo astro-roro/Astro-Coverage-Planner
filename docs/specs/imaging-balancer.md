@@ -328,7 +328,13 @@ No change is needed in the extension or plugin. Their existing tests for "ACP ch
 Choices made while building where the spec was silent. None changes what the telescope does.
 
 - Run now when the mode is `off` is refused (409). Preview always works.
-- A scheduled run that fails or finds Activity off counts as that night's attempt (`last_attempt_night` in `balancer.json`), so a broken run is not retried every poll. It is not a second kind of memory: it only stops the retry.
+- Only scheduled runs set `last_run_night` and `last_attempt_night`, and only scheduled runs count toward `skipped_runs`. A manual "Run now" never blocks that day's scheduled run, and a failed manual run does not count against the balancer. A completed manual run still resets `skipped_runs` and resolves the blind item. `last_attempt_night` is one memory key beyond the spec: a failed scheduled run is not retried every poll. The scheduler also remembers its attempt in process, so a failure to save `balancer.json` cannot cause a retry loop.
+- A project is keyed the way `_build_ts_export` keys it: its project name, else its target's name, else its plan id. A plan with no project name is its own project everywhere (shares, rules, writes). "Won the vote for" on an unnamed plan sets the role on that plan only.
+- A run after 15:00 adds the line "This run was after 15:00, so its changes reach TS at the next night's sync." to its report when it changed something.
+- A commitment whose `month` is not a valid `YYYY-MM` string is skipped with a warning. A malformed `commitments` or `goals` value is read as empty.
+- `save_state` and Activity recording failures are logged and shown as warnings on the run result. They do not fail the run.
+- Whether a commitment is met is judged on unrounded hours on the live page too, as the balancer does. Only the published numbers are rounded.
+- The plan list and the commitment routes carry a derived `commitment_progress` (month, done_h, goal_h, met, behind), counted as the balancer counts. The editor's commitment line reads it. It is never stored.
 - A project's role is the one role its plans agree on. A plan with no role among plans that share one is ignored for the vote, so a new plan in a tagged project does not make the project skip.
 - A commitment that names some filters the plan cannot count is judged on the countable ones, with a warning naming the rest. With none countable it is skipped, as the spec says.
 - A commitment stays met once `met_at` (or, in dry run, `met_seen`) is set, even if credited hours later dip.
