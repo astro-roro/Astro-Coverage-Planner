@@ -11,7 +11,7 @@ The user's own words set the shape. The survey is deliberately over-planned fill
 - **Project**: a TS project, which in ACP is the group of plans that share a `project_name` (`docs/specs/ts-project-settings.md` section 1). Priority and state live on every plan in the group. The balancer works on projects, never on single plans.
 - **Role**: what a project is for, in the balancer's eyes. One of `science`, `survey` or `pretty`. A project with no role is invisible to the balancer.
 - **Commitment**: a promise with a goal in hours per filter and a month. The first build has one kind, `vote`, for the monthly vote winner.
-- **Current commitment**: one whose month is this month or earlier. A commitment for a later month is ignored until its month starts.
+- **Current commitment**: a met commitment is current only in its own month. An unmet one from this month or an earlier month stays current until it is met. A commitment for a later month is ignored until its month starts. After its month, a met winner is an ordinary project again: it follows rules 4 to 6, and its "vote goal met" line stops appearing in reports.
 - **Month**: a calendar month of nights. A night belongs to the month of its evening date, using the same night rule as the Activity tab (cut-over at local noon in `ACP_ACTIVITY_TZ`). So the night of 31 October belongs to October, even though most of it falls on 1 November.
 - **Elapsed**: the share of the month's nights that are already over. On the afternoon of night N in a month of D nights, elapsed is (N − 1) / D. Tonight does not count.
 - **Share**: a role's hours this month divided by the hours of every project with a role this month. Every project whose plans agree on a role counts, whatever its state or hold. A project whose plans disagree on role counts nowhere.
@@ -102,7 +102,7 @@ All small, in `static/app.js`.
 - When the plan is in the vote, the Public page section gains a "Won the vote for" button. Its month select defaults to the current month.
 - Each commitment shows one line: "Vote winner for November: 1.5 of 6 h, behind pace" or "met 18 Nov". Each line has a Remove button.
 - Under Priority, a plan the balancer changed shows "Balancer set this to High on 10 Nov: the November vote goal is not covered yet." Hovering gives the rule number.
-- The Activity tab header gains a Balancer button. It opens a small dialog with the settings and the current shares and commitments. Its "Preview" button shows what a run would change now, and "Run now" runs it.
+- The Activity tab header gains a Balancer button. It opens a small dialog with the settings and the current shares and commitments. Its "Preview" button shows what a run would change now, and "Run now" runs it. Run now decides its confirm prompt and its status line from the saved mode (the `mode` in the run result), never from the unsaved Mode select in the dialog.
 
 ### Pace
 
@@ -356,7 +356,7 @@ Choices made while building where the spec was silent. None changes what the tel
 
 - Run now when the mode is `off` is refused (409). Preview always works.
 - Only scheduled runs set `last_run_night` and `last_attempt_night`, and only scheduled runs count toward `skipped_runs`. A manual "Run now" never blocks that day's scheduled run, and a failed manual run does not count against the balancer. A completed manual run still resets `skipped_runs` and resolves the blind item. `last_attempt_night` is one memory key beyond the spec: a failed scheduled run is not retried every poll. The scheduler also remembers its attempt in process, so a failure to save `balancer.json` cannot cause a retry loop.
-- A project is keyed the way `_build_ts_export` keys it: its project name, else its target's name, else its plan id. A plan with no project name is its own project everywhere (shares, rules, writes). "Won the vote for" on an unnamed plan sets the role on that plan only.
+- A project is keyed the way `_build_ts_export` keys it: its project name, else its target's name, else its plan id. Two unnamed plans with the same target name are one project. "Won the vote for" sets the pretty role through that key on every plan in the project, named or not.
 - A run after 15:00 adds the line "This run was after 15:00, so its changes reach TS at the next night's sync." to its report when it changed something.
 - A commitment whose `month` is not a valid `YYYY-MM` string is skipped with a warning. A malformed `commitments` or `goals` value is read as empty.
 - `save_state` and Activity recording failures are logged and shown as warnings on the run result. They do not fail the run.

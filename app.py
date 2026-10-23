@@ -7205,11 +7205,7 @@ def api_add_commitment(plan_id: str):
         "goals": copy.deepcopy(goals), "baseline": copy.deepcopy(baseline),
         "set_at": now[:10],
     })
-    if str(plan.get("project_name") or "").strip():
-        apply_project_settings(plans, balancer.project_key(plan), {"balance_role": "pretty"}, now)
-    else:
-        # An unnamed plan is its own TS project: touch nothing else.
-        plan["balance_role"] = "pretty"
+    apply_project_settings(plans, balancer.project_key(plan), {"balance_role": "pretty"}, now)
     cleared = 0
     if payload.get("clear_other_votes") is True:
         for other in plans:

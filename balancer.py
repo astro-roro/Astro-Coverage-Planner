@@ -165,9 +165,12 @@ def _judge(plan: dict, c: dict, done: dict, canon, cur_month: str, elapsed: floa
     counted = {k: g for k, g in goals.items() if k in done}
     ignored = sorted(k for k in goals if k not in done)
     month = c.get("month")
+    sticky = bool(c.get("met_at")) or f"{plan.get('id')}:{month}" in met_seen
+    # A met commitment is current only in its own month. An unmet one carried
+    # over from an earlier month stays current until it is met.
+    current = isinstance(month, str) and (month == cur_month or (month < cur_month and not sticky))
     out = {"plan_id": plan.get("id"), "month": month, "met_at": c.get("met_at"),
-           "current": isinstance(month, str) and month <= cur_month,
-           "skipped": not counted, "ignored": ignored}
+           "current": current, "skipped": not counted, "ignored": ignored}
     if not counted:
         return out
     progress = sum(min(g, max(0.0, float(done[k]) - baseline.get(k, 0.0)))
@@ -175,7 +178,6 @@ def _judge(plan: dict, c: dict, done: dict, canon, cur_month: str, elapsed: floa
     total = sum(counted.values())
     met_now = all(max(0.0, float(done[k]) - baseline.get(k, 0.0)) >= g - EPS
                   for k, g in counted.items())
-    sticky = bool(c.get("met_at")) or f"{plan.get('id')}:{month}" in met_seen
     required = 1.0 if month < cur_month else min(1.0, elapsed / finish_by)
     frac = progress / total if total else 1.0
     met = met_now or sticky

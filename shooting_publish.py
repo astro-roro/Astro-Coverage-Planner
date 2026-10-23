@@ -340,7 +340,9 @@ def _vote_winner(plan: dict, done: dict[str, dict], today: date):
     commitment it can count, so a met winner can leave the vote section:
     (winner_or_None, in_play).
 
-    A current commitment is one whose month is this month or earlier. One
+    A current commitment is a met one in its own month, or an unmet one from
+    this month or earlier (it stays current until met), as the balancer
+    treats it. A met one from an earlier month is not current. One
     that names no filter the plan can count is ignored, as the balancer
     does. It is met when `met_at` is set or every counted filter is at its
     goal."""
@@ -354,10 +356,12 @@ def _vote_winner(plan: dict, done: dict[str, dict], today: date):
                if k in done}
         if not raw:
             continue
-        in_play = True
         # Met is judged on unrounded hours, as the balancer does; rounding is
         # for display only.
         met = bool(c.get("met_at")) or all(f["done_hours"] >= f["target_hours"] - 1e-9 for f in raw.values())
+        if met and c["month"] < month:
+            continue
+        in_play = True
         if not met:
             filters = {k: v for k, v in _goal_filters(c.get("goals"), c.get("baseline"), done).items()
                        if k in done}
@@ -428,7 +432,11 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
 def build_shooting_document(plans: list[dict], manifest: dict | None, gear: dict,
                             now: datetime | None = None) -> dict:
     """Pure builder. Raises RuntimeError if a path-shaped string slips in."""
-    now = now or datetime.now(timezone.utc).astimezone()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is not None:
+        # "Today" is Sydney's, as the balancer's is; the container runs on UTC.
+        import activity
+        now = now.astimezone(activity.tz())
     today = now.date()
     targets = list((manifest or {}).get("targets") or [])
     scan = str((manifest or {}).get("scan_date") or "")[:10] or None

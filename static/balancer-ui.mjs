@@ -94,10 +94,15 @@ export async function openBalancerDialog() {
     show(await call("/api/balancer/preview", "POST"), "Preview only. Nothing was written.");
   });
   dlg.querySelector("#balRun").addEventListener("click", async () => {
-    const live = dlg.querySelector("#bal_mode").value === "live";
+    // The server runs in the saved mode, so the confirm and the status line
+    // follow it, not the select, which may hold an unsaved change.
+    const saved = await call("/api/balancer");
+    const live = !!saved.ok && saved.body.settings.mode === "live";
     if (live && !confirm("Run the balancer now? It will change project priorities.")) return;
     status.textContent = "Running…";
-    show(await call("/api/balancer/run", "POST"), live ? "Run finished." : "Run finished (dry run, no priorities written).");
+    const res = await call("/api/balancer/run", "POST");
+    const ranLive = res.body && res.body.mode ? res.body.mode === "live" : live;
+    show(res, ranLive ? "Run finished." : "Run finished (dry run, no priorities written).");
   });
   dlg.querySelector("#balTag").addEventListener("click", async () => {
     const res = await call("/api/balancer/tag-from-class", "POST");
