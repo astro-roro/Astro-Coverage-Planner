@@ -60,7 +60,8 @@ Status, worked out at publish time and published as `status`. A public plan gets
 
 | Status | When |
 |---|---|
-| `vote` | `public_section == "vote"`. Always shown, whatever the activity. |
+| `vote` | `public_section == "vote"` and the plan has no current commitment. Always shown, whatever the activity. |
+| `vote_winner` | The plan has a current vote commitment that is not met (see Vote winner below). Always shown, whatever the activity. Checked before everything else. |
 | `finished` | `finished_at` is set and no more than 30 days ago. A plan with `finished_at` older than that is left out, even if frames were added since. |
 | `imaging_now` | Last imaged within the last 3 nights. |
 | `recent` | Last imaged within the last 14 days. |
@@ -68,6 +69,43 @@ Status, worked out at publish time and published as `status`. A public plan gets
 A public plan with none of these is left out of the document. A plan never imaged and not finished is left out. The three windows (3 nights, 14 days, 30 days) are the `LIVE_STATUS_WINDOWS` block at the top of `shooting_publish.py`, inclusive at the boundary. A `finished_at` in the future counts as finished.
 
 `section` and `is_current` are still published for one release so the old page keeps rendering. They are deprecated: the new page should group by `status`. They go in a later release, with a bump of `version` if the page needs it.
+
+### Vote winner
+
+Added 2026-10-23, from `docs/specs/imaging-balancer.md`. A plan that won the monthly vote carries a commitment (`commitments` on the plan, made by the "Won the vote for" action in the editor). Commitments are never published.
+
+A commitment is current when its month is this month or earlier, judged on the publish date. It is met when `met_at` is set or every goal filter the plan can count is at its goal, counted from the commitment's own baseline. A commitment naming no filter the plan can count is ignored.
+
+- **Unmet current commitment.** The plan publishes with `status: "vote_winner"`, `vote_month` (for example `"2026-11"`) and `vote_label` (for example `"November vote winner"`), whatever its last imaged date, as long as it is public. Vote winners are pretty plans, so they are public by default. `filters`, `done_hours` and `target_hours` use the commitment's `goals` and `baseline` the same way the vote section uses `vote_goals` and `vote_baseline`. `section` is `"current"`, so the old page renders it as a current project. With several unmet commitments the earliest month is the one shown, so a carried-over goal comes first.
+- **Met.** The plan falls back to the normal rules (`imaging_now`, `recent`, `finished`, or left out) with its full-plan numbers, and has no `vote_month` or `vote_label`.
+- **Vote section.** A plan with a current commitment is not in the vote section, even with `public_section: "vote"`: the commitment wins. A commitment for a later month is ignored until its month starts, so the plan stays in the vote section until then.
+- **End of a round.** The "Won the vote for" action offers to move the other vote plans out of the vote section in one step. See the balancer spec, "The vote winner on the live page".
+
+Example (a winner in the middle of its month):
+
+```jsonc
+{
+  "project_name": "NGC 300",
+  "target_name": "NGC 300",
+  "blurb": "...",
+  "is_current": false,
+  "status": "vote_winner",
+  "section": "current",
+  "vote_month": "2026-11",
+  "vote_label": "November vote winner",
+  "center_ra_deg": 13.72, "center_dec_deg": -37.68,
+  "fov_arcmin": [220.0, 165.0],
+  "telescope": "51mm refractor",
+  "filters": {
+    "Ha":   {"target_hours": 3.0, "done_hours": 1.5},
+    "OIII": {"target_hours": 3.0, "done_hours": 0.0}
+  },
+  "done_hours": 1.5,
+  "target_hours": 6.0,
+  "last_imaged": "2026-11-09",
+  "last_imaged_nights_ago": 1
+}
+```
 
 ## The published JSON
 
@@ -84,7 +122,7 @@ A public plan with none of these is left out of the document. A plan never image
       "target_name": "Vela Supernova Remnant",
       "blurb": "Huge, faint, and I have never had enough OIII on it.",
       "is_current": true,
-      "status": "imaging_now",            // "imaging_now", "recent", "finished" or "vote"
+      "status": "imaging_now",            // "imaging_now", "recent", "finished", "vote" or "vote_winner"
       "section": "current",               // "current" or "vote", deprecated, see below
       "center_ra_deg": 128.5, "center_dec_deg": -45.0,
       "fov_arcmin": [220.0, 165.0],       // whole mosaic extent, not one panel
@@ -181,6 +219,8 @@ There is also `POST /api/publish/shooting`, which runs steps 2 to 4 without a re
 - A pretty plan with no `visibility` publishes; explicit private wins; survey, deep and unclassed plans stay private unless explicitly public.
 - Finished with and without an AstroBin link; an unsafe stored link is not published. An invalid `astrobin_url` or `finished_at` is a 400.
 - Overall totals cap each filter at its target.
+- Vote winner: a plan with an unmet current commitment publishes as `vote_winner` with `vote_month`, `vote_label` and the commitment's goals and baseline as its numbers; it shows whatever its last imaged date; it beats `public_section: "vote"`; a met commitment falls back to the normal rules with full-plan numbers; a later month's commitment and one with no countable filter are ignored; commitments never appear in the document.
+- The other vote plans leave the vote section when "Won the vote for" is sent with `clear_other_votes` (`tests/test_balancer_wiring.py`).
 - The output passes `validate_no_paths` and contains none of the forbidden keys listed above.
 - A manifest target inside the plan's extent contributes its hours and date; one outside does not.
 - `done_hours` takes the larger of manifest hours and `actual_hours`.

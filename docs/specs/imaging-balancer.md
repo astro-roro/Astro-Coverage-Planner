@@ -1,6 +1,6 @@
 # Spec: a monthly balancer that keeps imaging promises
 
-Status: draft, 2026-10-23. Not built. The owner answered the open questions the same day, and an independent review followed. Both are folded in, and the answers are in "Decisions" at the end.
+Status: built 2026-10-23, shipping in dry-run mode. The owner answered the open questions the same day, and an independent review followed. Both are folded in, and the answers are in "Decisions" at the end.
 
 ACP gains a balancer. Once each afternoon it looks at the month so far. It then changes the Target Scheduler (TS) priority of the projects the user has tagged. It never changes their state. The night's "ACP: Sync for tonight" push then carries those changes to TS. The point is to keep two promises. The monthly vote winner gets its hours. Dr Fesen's remnants get a fair share without taking the whole month. The planetary nebula survey fills whatever is left.
 
@@ -66,9 +66,18 @@ Progress on a goal filter is `current_done_hours` for that filter minus the comm
 
 ### Routes
 
-- `POST /api/plans/<id>/commitments`, body `{month}`, creates a vote commitment from the plan's `vote_goals` and baseline, and sets the project's role to pretty. It is a 400 when the plan has no `vote_goals`, or already has a commitment for that month.
+- `POST /api/plans/<id>/commitments`, body `{month, clear_other_votes?}`, creates a vote commitment from the plan's `vote_goals` and baseline, and sets the project's role to pretty. It is a 400 when the plan has no `vote_goals`, or already has a commitment for that month.
 - `DELETE /api/plans/<id>/commitments/<month>` removes one. Only the user removes a commitment.
 - `PUT /api/plans/<id>` never takes `commitments` or `balancer_note` from the client. It always keeps the stored values. It also keeps the stored `balance_role` and `balance_hold` when the payload leaves them out, the same way `_OLD_PAGE_KEEPS` works.
+
+### The vote winner on the live page
+
+Marking a winner also shows it on the live page, so readers can watch the previous month's vote gather data. The contract is in `docs/specs/shooting-page.md` ("Vote winner"). In short:
+
+- A public plan with a current, unmet vote commitment publishes with `status: "vote_winner"`, `vote_month` and `vote_label`, whatever its last imaged date. Its `filters`, `done_hours` and `target_hours` use the commitment's goals and baseline, as the vote section does.
+- Once the commitment is met, the plan falls back to the normal status rules with its full-plan numbers.
+- A plan with a current commitment is never in the vote section, even if `public_section` is still `"vote"`. The commitment wins.
+- The other vote options leave the vote section at the end of a round through the "Won the vote for" action. When other plans are still in the vote section, the editor asks "Also move the other N plans out of the vote section on the live page?". Yes sends `clear_other_votes: true` with the `POST`, and the server sets those plans to `public_section: "current"` and clears their `vote_baseline`. Their `vote_goals` stay, so they can be put back in next month. No answers the question with nothing changed.
 
 ### Settings
 
@@ -313,6 +322,20 @@ Hours below are month hours by role, and the vote winner's done hours. "Required
 27. The scheduler runs at 14:00 and not at 13:59, and a second tick on the same night does nothing.
 
 No change is needed in the extension or plugin. Their existing tests for "ACP changed it since the base" cover the push.
+
+## Built notes
+
+Choices made while building where the spec was silent. None changes what the telescope does.
+
+- Run now when the mode is `off` is refused (409). Preview always works.
+- A scheduled run that fails or finds Activity off counts as that night's attempt (`last_attempt_night` in `balancer.json`), so a broken run is not retried every poll. It is not a second kind of memory: it only stops the retry.
+- A project's role is the one role its plans agree on. A plan with no role among plans that share one is ignored for the vote, so a new plan in a tagged project does not make the project skip.
+- A commitment that names some filters the plan cannot count is judged on the countable ones, with a warning naming the rest. With none countable it is skipped, as the spec says.
+- A commitment stays met once `met_at` (or, in dry run, `met_seen`) is set, even if credited hours later dip.
+- The editor's pace line uses the default `finish_by` of 0.75. The run report uses the saved setting and is the authority.
+- The "tag from target class" button is `POST /api/balancer/tag-from-class`. It skips projects that already have a role and projects whose plans do not all share one class.
+- Needs-you items and the run report use the Activity types `balancer_alert` and `balancer_run`, both under the Plans chip.
+- `PUT /api/balancer/settings`, `GET /api/balancer`, `POST /api/balancer/preview` and `POST /api/balancer/run` back the dialog. `ACP_BALANCER=off` stops the scheduler thread from starting.
 
 ## Decisions
 
