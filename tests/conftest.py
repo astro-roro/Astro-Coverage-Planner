@@ -14,6 +14,10 @@ import shutil
 import tempfile
 
 os.environ.setdefault("ACP_SKIP_STARTUP_MIGRATION", "1")
+# The bundled Target Scheduler sync would otherwise register its routes and
+# start its upload worker inside every test that imports app. Its own tests
+# (tests/ts_sync) drive it through a stand-in host instead.
+os.environ.setdefault("ACP_DISABLE_BUNDLED_EXTENSIONS", "1")
 
 _dir = tempfile.mkdtemp(prefix="acp-activity-tests-")
 atexit.register(shutil.rmtree, _dir, ignore_errors=True)

@@ -1,0 +1,18 @@
+{
+ "profile_name": "Foo",
+ "profile_id": "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7",
+ "fingerprint_id": "a6e109adf3f939e3bb8c45fc920b0190c6c0ff7c",
+ "received_at": "2026-10-13T09:56:42.493051+00:00",
+ "mode": "fit",
+ "summary": {"total": 1},
+ "fingerprint": {
+  "profile_name": "Foo",
+  "camera": {"name": "ASI6200MM", "sensor_px": [9576, 6388], "pixel_size_um": 3.76, "colour": false, "bin": 1},
+  "filters": ["B", "G", "Ha", "L", "OIII", "R", "SII"],
+  "mount": "",
+  "focal_length_mm": 530.0,
+  "wheel_slots": ["L", "R", "G", "B", "H", "O", "S"],
+  "profile_id": "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7",
+  "nina_version": "3.1"
+ }
+}
