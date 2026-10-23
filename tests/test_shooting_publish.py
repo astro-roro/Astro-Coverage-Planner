@@ -495,6 +495,73 @@ class Endpoints(unittest.TestCase):
         self.assertIn("server log", r.get_json()["error"])
 
 
+class RigMatching(unittest.TestCase):
+    """Archive hours count only when shot with the plan's telescope and camera."""
+
+    GEAR2 = {
+        "telescopes": [{"id": "t1", "name": "RedCat 51", "focal_length_mm": 250},
+                       {"id": "t2", "name": "190MN", "focal_length_mm": 1000}],
+        "cameras": [{"id": "c1", "name": "ZWO ASI2600MM Pro", "pixel_size_um": 3.76, "sensor_px": [6248, 4176]},
+                    {"id": "c2", "name": "ZWO ASI6200MM Pro", "pixel_size_um": 3.76, "sensor_px": [9576, 6388]}],
+    }
+
+    @staticmethod
+    def _rigs_target(rigs, total=None):
+        total = sum(h for _, _, h in rigs) if total is None else total
+        return {
+            "target_id": 7, "objects": ["Vela SNR"],
+            "center_ra_deg": 128.5, "center_dec_deg": -45.0, "fov_arcmin": [190.0, 127.0],
+            "date_range": ["2026-08-01", "2026-09-01"],
+            "filters": {"Ha": {"total_hours": total, "rigs": {
+                f"{t}|{c}": {"telescope": t, "camera": c, "headline_hours": h}
+                for t, c, h in rigs}}},
+        }
+
+    def _ha(self, plan, target):
+        doc = build_shooting_document([plan], _manifest(target), self.GEAR2, now=NOW)
+        return doc["projects"][0]["filters"]["Ha"]["done_hours"]
+
+    def test_frames_from_another_rig_are_not_counted(self):
+        plan = _plan(telescope_id="t2", camera_id="c2")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0), ("190MN", "ASI6200MM Pro", 1.5)])
+        self.assertEqual(self._ha(plan, t), 1.5)
+
+    def test_same_telescope_but_other_camera_is_excluded(self):
+        plan = _plan(telescope_id="t1", camera_id="c2")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0)])
+        self.assertEqual(self._ha(plan, t), 0.0)
+
+    def test_frames_from_the_plans_rig_still_count(self):
+        plan = _plan(telescope_id="t1", camera_id="c1")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 4.0), ("190MN", "ASI6200MM Pro", 9.0)])
+        self.assertEqual(self._ha(plan, t), 4.0)
+
+    def test_frames_with_no_rig_information_count(self):
+        plan = _plan(telescope_id="t2", camera_id="c2")
+        t = self._rigs_target([(None, None, 3.0), ("RedCat 51", "ASI2600MM Pro", 26.0)])
+        self.assertEqual(self._ha(plan, t), 3.0)
+        # A manifest with no rig rows at all (older scan, database floor) counts as before.
+        self.assertEqual(self._ha(plan, _target(128.5, -45.0)), 2.5)
+        # Total above the rig rows (unattributed hours) keeps the surplus.
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0)], total=28.0)
+        self.assertEqual(self._ha(plan, t), 2.0)
+
+    def test_vote_baseline_uses_the_same_rule(self):
+        plan = _plan(telescope_id="t2", camera_id="c2")
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0), ("190MN", "ASI6200MM Pro", 1.5)])
+        done = current_done_hours(plan, _manifest(t), self.GEAR2)
+        self.assertEqual(done["Ha"], 1.5)
+
+    def test_mosaic_total_stays_per_panel_goal_times_panels(self):
+        plan = _plan(telescope_id="t2", camera_id="c2",
+                     target={**_plan()["target"], "mosaic": {"rows": 2, "cols": 1, "overlap_pct": 15}})
+        t = self._rigs_target([("RedCat 51", "ASI2600MM Pro", 26.0)])
+        doc = build_shooting_document([plan], _manifest(t), self.GEAR2, now=NOW)
+        ha = doc["projects"][0]["filters"]["Ha"]
+        self.assertEqual(ha["target_hours"], 20.0)
+        self.assertEqual(ha["done_hours"], 0.0)
+
+
 class Cli(unittest.TestCase):
     SCRIPT = ROOT / "scripts" / "publish_shooting.py"
 

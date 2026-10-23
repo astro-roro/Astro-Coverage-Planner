@@ -22,7 +22,7 @@ _SCRIPTS = str(REPO_ROOT / "scripts")
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
-from build_archive_manifest import canon_filter  # noqa: E402
+from build_archive_manifest import canon_filter, sanitize_camera, sanitize_telescope  # noqa: E402
 import filter_rows as fr  # noqa: E402
 from sanitise_manifest import _aperture_class, validate_no_paths  # noqa: E402
 
@@ -121,12 +121,54 @@ def _matched_targets(plan_ra: float, plan_dec: float, plan_extent: tuple[float, 
 
 # --- Aggregation ------------------------------------------------------------
 
-def _hours_by_filter(targets: list[dict]) -> dict[str, float]:
+_GEAR_NOISE = re.compile(r"[^a-z0-9]+")
+
+
+def _gear_key(raw) -> str:
+    return _GEAR_NOISE.sub("", str(raw or "").casefold())
+
+
+def _rig_matches(row: dict, plan_scope: str, plan_cam: str) -> bool:
+    """Whether an archive rig row was shot with the plan's rig. Compared by
+    name (the manifest records the TELESCOP and INSTRUME names, not a focal
+    length). A side the row or the plan does not name never excludes it."""
+    row_scope, row_cam = _gear_key(row.get("telescope")), _gear_key(row.get("camera"))
+    if plan_scope and row_scope and plan_scope != row_scope:
+        return False
+    if plan_cam and row_cam and plan_cam != row_cam:
+        return False
+    return True
+
+
+def _filter_hours(cfg: dict, rig: tuple[str, str] | None) -> float:
+    """total_hours less the headline hours of rig rows that are not the
+    plan's rig. Hours with no rig row (database floor, an older manifest)
+    stay in, as before."""
+    total = float(cfg.get("total_hours") or 0)
+    if rig is None:
+        return total
+    other = sum(
+        float(row.get("headline_hours") or 0)
+        for row in (cfg.get("rigs") or {}).values()
+        if isinstance(row, dict) and not _rig_matches(row, *rig)
+    )
+    return max(0.0, total - other)
+
+
+def _plan_rig(telescope: dict | None, camera: dict | None) -> tuple[str, str] | None:
+    """The plan's telescope and camera as comparable keys, normalised the same
+    way the scanner normalises header names. None when the plan names neither."""
+    scope = _gear_key(sanitize_telescope((telescope or {}).get("name")))
+    cam = _gear_key(sanitize_camera((camera or {}).get("name")))
+    return (scope, cam) if (scope or cam) else None
+
+
+def _hours_by_filter(targets: list[dict], rig: tuple[str, str] | None = None) -> dict[str, float]:
     out: dict[str, float] = {}
     for t in targets:
         for fname, cfg in (t.get("filters") or {}).items():
             key = canon_filter(fname) or fname
-            out[key] = out.get(key, 0.0) + float((cfg or {}).get("total_hours") or 0)
+            out[key] = out.get(key, 0.0) + _filter_hours(cfg or {}, rig)
     return out
 
 
@@ -153,12 +195,13 @@ def _plan_context(plan: dict, manifest_targets: list[dict], gear: dict):
     mosaic = tg.get("mosaic") or {}
     ext = _mosaic_extent_arcmin(fov_w, fov_h, mosaic)
     matched = _matched_targets(ra, dec, ext, manifest_targets)
-    return tg, ra, dec, telescope, mosaic, ext, matched
+    return tg, ra, dec, telescope, mosaic, ext, matched, _plan_rig(telescope, camera)
 
 
-def _done_and_goals(plan: dict, matched: list[dict]) -> dict[str, dict]:
+def _done_and_goals(plan: dict, matched: list[dict],
+                    rig: tuple[str, str] | None = None) -> dict[str, dict]:
     """Per canonical filter: the plan's goal and the hours done so far."""
-    logged = _hours_by_filter(matched)
+    logged = _hours_by_filter(matched, rig)
     out: dict[str, dict] = {}
     for fname, goal in fr.hours_by_filter(plan).items():
         key = canon_filter(fname) or fname
@@ -175,8 +218,8 @@ def current_done_hours(plan: dict, manifest: dict | None, gear: dict) -> dict[st
     """Hours done per canonical filter, as the live page would show them for
     a current project. Used to set a vote plan's baseline."""
     targets = list((manifest or {}).get("targets") or [])
-    *_, matched = _plan_context(plan, targets, gear)
-    return {k: round(v["done_hours"], 3) for k, v in _done_and_goals(plan, matched).items()}
+    *_, matched, rig = _plan_context(plan, targets, gear)
+    return {k: round(v["done_hours"], 3) for k, v in _done_and_goals(plan, matched, rig).items()}
 
 
 def _vote_filters(plan: dict, done: dict[str, dict]) -> dict[str, dict]:
@@ -201,8 +244,8 @@ def _vote_filters(plan: dict, done: dict[str, dict]) -> dict[str, dict]:
 
 
 def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: date) -> dict:
-    tg, ra, dec, telescope, mosaic, ext, matched = _plan_context(plan, manifest_targets, gear)
-    done = _done_and_goals(plan, matched)
+    tg, ra, dec, telescope, mosaic, ext, matched, rig = _plan_context(plan, manifest_targets, gear)
+    done = _done_and_goals(plan, matched, rig)
     section = "vote" if plan.get("public_section") == "vote" else "current"
     if section == "vote":
         filters = _vote_filters(plan, done)
