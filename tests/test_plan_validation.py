@@ -592,6 +592,73 @@ class TestPublicPageFields(unittest.TestCase):
         self.assertEqual(r.status_code, 201)
 
 
+class TestVoteSectionFields(unittest.TestCase):
+    """public_section / vote_goals / vote_baseline (docs/specs/shooting-page.md).
+    The baseline is the server's: set on entering the vote, cleared on leaving,
+    never taken from the client."""
+
+    def setUp(self):
+        _fresh_plans_path()
+        self.client = app.test_client()
+        patcher = mock.patch.object(app_module, "load_manifest", return_value={"targets": []})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _post(self, **kw):
+        return self.client.post("/api/plans", json=_valid_plan_payload(**kw))
+
+    def test_section_accepts_current_and_vote(self):
+        for v in ("current", "vote"):
+            self.assertEqual(self._post(plan_id=v, public_section=v).status_code, 201, v)
+
+    def test_section_rejects_other_values(self):
+        r = self._post(public_section="maybe")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("public_section", r.get_json()["error"])
+
+    def test_goals_reject_negative_zero_and_non_numbers(self):
+        for bad in ({"OIII": -1}, {"OIII": 0}, {"OIII": "2"}, {"OIII": True}, ["OIII"]):
+            r = self._post(public_section="vote", vote_goals=bad)
+            self.assertEqual(r.status_code, 400, bad)
+            self.assertIn("vote_goals", r.get_json()["error"])
+
+    def test_goals_accept_positive_numbers(self):
+        self.assertEqual(self._post(public_section="vote", vote_goals={"OIII": 2.5}).status_code, 201)
+
+    def test_old_plan_without_fields_still_saves(self):
+        r = self._post()
+        self.assertEqual(r.status_code, 201)
+        self.assertNotIn("vote_baseline", r.get_json())
+
+    def test_baseline_set_on_entering_vote_and_cleared_on_leaving(self):
+        row = _row(actual_hours=3.0)
+        self.assertEqual(self._post(filter_rows=[row]).status_code, 201)
+        r = self._post(filter_rows=[row], public_section="vote", vote_goals={"OIII": 2})
+        self.assertEqual(r.get_json()["vote_baseline"], {"OIII": 3.0})
+        # More hours arrive, then the plan is saved again still in the vote.
+        row2 = _row(actual_hours=4.5)
+        r = self._post(filter_rows=[row2], public_section="vote", vote_goals={"OIII": 2})
+        self.assertEqual(r.get_json()["vote_baseline"], {"OIII": 3.0})
+        r = self._post(filter_rows=[row2], public_section="current", vote_goals={"OIII": 2})
+        self.assertNotIn("vote_baseline", r.get_json())
+        self.assertNotIn("vote_baseline", self.client.get("/api/plans/p1").get_json())
+
+    def test_baseline_from_client_is_ignored(self):
+        r = self._post(filter_rows=[_row(actual_hours=3.0)], public_section="vote",
+                       vote_goals={"OIII": 2}, vote_baseline={"OIII": 0})
+        self.assertEqual(r.get_json()["vote_baseline"], {"OIII": 3.0})
+
+    def test_baseline_taken_again_on_re_entering_vote(self):
+        self._post(filter_rows=[_row(actual_hours=3.0)], public_section="vote", vote_goals={"OIII": 2})
+        self._post(filter_rows=[_row(actual_hours=3.0)], public_section="current")
+        r = self._post(filter_rows=[_row(actual_hours=5.0)], public_section="vote", vote_goals={"OIII": 2})
+        self.assertEqual(r.get_json()["vote_baseline"], {"OIII": 5.0})
+
+    def test_baseline_negative_value_rejected(self):
+        r = self._post(public_section="vote", vote_baseline={"OIII": -1})
+        self.assertEqual(r.status_code, 400)
+
+
 class TestPlanState(unittest.TestCase):
     """`state` is one of the four TS project states (draft, active,
     inactive, closed), per docs/specs/ts-project-settings.md section 1.

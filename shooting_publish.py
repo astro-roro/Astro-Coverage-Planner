@@ -40,6 +40,16 @@ _FREE_TEXT_LEAK = re.compile(
 )
 
 
+# A site tag such as " (Dark Skies)" or " (Any Skies)" is a note for the user
+# about where a project can be shot from. It means nothing to a reader.
+_SITE_TAG = re.compile(r"\s*\([^()]*skies\)\s*$", re.IGNORECASE)
+
+
+def strip_site_tag(name: str) -> str:
+    """Drop one trailing parenthetical ending in "Skies". Published text only."""
+    return _SITE_TAG.sub("", name).strip()
+
+
 def _check_free_text(field: str, value: str) -> str:
     if _FREE_TEXT_LEAK.search(value):
         raise RuntimeError(f"path-shaped text in {field}: {value!r}")
@@ -129,7 +139,9 @@ def _last_imaged(targets: list[dict]) -> str | None:
     return max(dates) if dates else None
 
 
-def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: date) -> dict:
+def _plan_context(plan: dict, manifest_targets: list[dict], gear: dict):
+    """Everything both the baseline and the published entry need: geometry,
+    the manifest targets that belong to the plan, and the logged hours."""
     tg = plan.get("target") or {}
     ra = float(tg.get("center_ra_deg") or 0) % 360.0
     dec = float(tg.get("center_dec_deg") or 0)
@@ -141,9 +153,13 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
     mosaic = tg.get("mosaic") or {}
     ext = _mosaic_extent_arcmin(fov_w, fov_h, mosaic)
     matched = _matched_targets(ra, dec, ext, manifest_targets)
-    logged = _hours_by_filter(matched)
+    return tg, ra, dec, telescope, mosaic, ext, matched
 
-    filters: dict[str, dict] = {}
+
+def _done_and_goals(plan: dict, matched: list[dict]) -> dict[str, dict]:
+    """Per canonical filter: the plan's goal and the hours done so far."""
+    logged = _hours_by_filter(matched)
+    out: dict[str, dict] = {}
     for fname, goal in fr.hours_by_filter(plan).items():
         key = canon_filter(fname) or fname
         # credited_hours comes from the Target Scheduler extension when it is
@@ -151,19 +167,60 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
         # filter with two rows (R and R Stars) shows their sum. For a mosaic
         # each panel counts up to its own goal only, as the planner shows it.
         done = max(logged.get(key, 0.0), goal["credited_hours"])
-        filters[key] = {
-            "target_hours": round(goal["target_hours"], 1),
-            "done_hours": round(done, 1),
+        out[key] = {"target_hours": goal["target_hours"], "done_hours": done}
+    return out
+
+
+def current_done_hours(plan: dict, manifest: dict | None, gear: dict) -> dict[str, float]:
+    """Hours done per canonical filter, as the live page would show them for
+    a current project. Used to set a vote plan's baseline."""
+    targets = list((manifest or {}).get("targets") or [])
+    *_, matched = _plan_context(plan, targets, gear)
+    return {k: round(v["done_hours"], 3) for k, v in _done_and_goals(plan, matched).items()}
+
+
+def _vote_filters(plan: dict, done: dict[str, dict]) -> dict[str, dict]:
+    """A vote project shows only the filters in vote_goals. The goal is the
+    vote goal, and done is what was added since the plan entered the vote."""
+    baseline = {
+        (canon_filter(k) or k): float(v)
+        for k, v in (plan.get("vote_baseline") or {}).items()
+    }
+    goals: dict[str, float] = {}
+    for fname, hours in (plan.get("vote_goals") or {}).items():
+        key = canon_filter(fname) or fname
+        goals[key] = goals.get(key, 0.0) + float(hours)
+    out: dict[str, dict] = {}
+    for key, goal in goals.items():
+        now = done.get(key, {}).get("done_hours", 0.0)
+        out[key] = {
+            "target_hours": round(goal, 1),
+            "done_hours": round(max(0.0, now - baseline.get(key, 0.0)), 1),
+        }
+    return out
+
+
+def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: date) -> dict:
+    tg, ra, dec, telescope, mosaic, ext, matched = _plan_context(plan, manifest_targets, gear)
+    done = _done_and_goals(plan, matched)
+    section = "vote" if plan.get("public_section") == "vote" else "current"
+    if section == "vote":
+        filters = _vote_filters(plan, done)
+    else:
+        filters = {
+            k: {"target_hours": round(v["target_hours"], 1), "done_hours": round(v["done_hours"], 1)}
+            for k, v in done.items()
         }
 
     last = _last_imaged(matched)
     nights = (today - date.fromisoformat(last)).days if last else None
 
     entry = {
-        "project_name": _check_free_text("project_name", str(plan.get("project_name") or "")),
-        "target_name": _check_free_text("target_name", str(tg.get("name") or "")),
+        "project_name": _check_free_text("project_name", strip_site_tag(str(plan.get("project_name") or ""))),
+        "target_name": _check_free_text("target_name", strip_site_tag(str(tg.get("name") or ""))),
         "blurb": _check_free_text("public_blurb", str(plan.get("public_blurb") or "")),
         "is_current": bool(plan.get("is_current")),
+        "section": section,
         "center_ra_deg": round(ra, 2),
         "center_dec_deg": round(dec, 2),
         "fov_arcmin": [round(ext[0], 1), round(ext[1], 1)],

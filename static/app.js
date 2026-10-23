@@ -8206,9 +8206,20 @@ function renderPlanEditor(plan) {
           <label><span class="lab">Current project</span>
             <input type="checkbox" id="f_is_current" ${editingPlan.is_current ? "checked" : ""}>
           </label>
+          <label><span class="lab">Section</span>
+            <select id="f_public_section">
+              <option value="current" ${editingPlan.public_section === "vote" ? "" : "selected"}>Currently imaging</option>
+              <option value="vote" ${editingPlan.public_section === "vote" ? "selected" : ""}>Up for the vote</option>
+            </select>
+          </label>
+          <div id="f_vote_goals" ${editingPlan.public_section === "vote" ? "" : "hidden"}>${voteGoalsHtml(editingPlan)}</div>
           <label><span class="lab">Why I'm shooting this</span>
             <textarea id="f_public_blurb" maxlength="500" rows="3">${esc(editingPlan.public_blurb || "")}</textarea>
           </label>
+        </div>
+        <div>
+          <button type="button" id="f_publish_now">Publish now (saved plans)</button>
+          <span id="f_publish_result" style="font-size:12px;margin-left:8px"></span>
         </div>
       </fieldset>` : ""}
 
@@ -8324,6 +8335,36 @@ function renderPlanEditor(plan) {
     const extra = panel.querySelector("#f_public_extra");
     if (extra) extra.hidden = e.target.value !== "public";
   });
+  panel.querySelector("#f_public_section")?.addEventListener("change", e => {
+    editingPlan.public_section = e.target.value;
+    const box = panel.querySelector("#f_vote_goals");
+    if (box) box.hidden = e.target.value !== "vote";
+  });
+  panel.querySelector("#f_vote_goals")?.addEventListener("input", e => {
+    if (!e.target.matches("input[data-vote-filter]")) return;
+    const goals = {};
+    for (const inp of panel.querySelectorAll("#f_vote_goals input[data-vote-filter]")) {
+      const v = parseFloat(inp.value);
+      if (Number.isFinite(v) && v > 0) goals[inp.dataset.voteFilter] = v;
+    }
+    editingPlan.vote_goals = goals;
+    const total = Object.values(goals).reduce((t, v) => t + v, 0);
+    const out = panel.querySelector("#f_vote_total");
+    if (out) out.innerHTML = voteTotalHtml(total);
+  });
+  panel.querySelector("#f_publish_now")?.addEventListener("click", async e => {
+    const btn = e.currentTarget, out = panel.querySelector("#f_publish_result");
+    btn.disabled = true; out.textContent = "Publishing…";
+    try {
+      const r = await fetch("/api/publish/shooting", { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      out.textContent = r.ok && j.ok
+        ? `Published ${j.projects} project${j.projects === 1 ? "" : "s"}.`
+        : `Publish failed: ${j.error || r.status}`;
+    } catch (err) {
+      out.textContent = `Publish failed: ${err.message || err}`;
+    } finally { btn.disabled = false; }
+  });
   panel.querySelector("#f_is_current")?.addEventListener("change", e => { editingPlan.is_current = !!e.target.checked; });
   panel.querySelector("#f_public_blurb")?.addEventListener("input", e => { editingPlan.public_blurb = e.target.value.slice(0, 500); });
   panel.querySelector("#f_minalt")?.addEventListener("input", e => {
@@ -8413,6 +8454,26 @@ function renderPlanEditor(plan) {
     // from its first render; this resolves it.
     loadPlanVisibility(editingPlan).then(() => updatePlanEditorVis());
   }
+}
+
+const VOTE_HOURS_WARN = 7;
+
+function voteTotalHtml(total) {
+  const t = Math.round(total * 10) / 10;
+  return `Total ${t} h` + (total > VOTE_HOURS_WARN
+    ? ` <strong>This is more than ${VOTE_HOURS_WARN} hours. A vote option is meant to be about 6.</strong>` : "");
+}
+
+// The hours table for a plan in the vote section. A blank box means the
+// filter is not part of the vote option.
+function voteGoalsHtml(plan) {
+  const names = Object.keys(hoursByFilter(plan));
+  const goals = plan.vote_goals || {};
+  if (!names.length) return `<div style="font-size:12px">This plan has no filters yet.</div>`;
+  const total = names.reduce((t, n) => t + (Number(goals[n]) > 0 ? Number(goals[n]) : 0), 0);
+  return `<table><tbody>${names.map(n => `<tr><td>${esc(n)}</td>
+      <td><input type="number" min="0" step="0.5" data-vote-filter="${esc(n)}" value="${goals[n] > 0 ? goals[n] : ""}" placeholder="not in vote"> h</td></tr>`).join("")}</tbody></table>
+    <div id="f_vote_total" style="font-size:12px">${voteTotalHtml(total)}</div>`;
 }
 
 async function savePlan() {

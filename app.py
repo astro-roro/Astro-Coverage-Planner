@@ -4646,7 +4646,50 @@ def _validate_plan_payload(payload: dict) -> str | None:
             return "public_blurb must be a string"
         if len(blurb) > 500:
             return "public_blurb must be 500 characters or fewer"
+    section = payload.get("public_section")
+    if section is not None and section not in ("current", "vote"):
+        return "public_section must be 'current' or 'vote'"
+    for key in ("vote_goals", "vote_baseline"):
+        mapping = payload.get(key)
+        if mapping is None:
+            continue
+        if not isinstance(mapping, dict):
+            return f"{key} must be an object of filter name to hours"
+        for fname, hours in mapping.items():
+            if not isinstance(fname, str) or not fname.strip():
+                return f"{key} filter names must be non-empty strings"
+            if isinstance(hours, bool) or not isinstance(hours, (int, float)) or not math.isfinite(hours):
+                return f"{key} hours must be numbers"
+            if key == "vote_goals" and hours <= 0:
+                return "vote_goals hours must be greater than 0"
+            if key == "vote_baseline" and hours < 0:
+                return "vote_baseline hours must be 0 or more"
     return None
+
+
+def _set_vote_baseline(payload: dict, existing: dict | None) -> None:
+    """The vote baseline is the server's: the hours the plan already had when
+    it entered the vote, so the public page counts only what is added after.
+    It is never taken from the client. Set on entering the vote section or on
+    first setting goals, topped up for any goal filter without one, cleared
+    when the plan goes back to the current section."""
+    if payload.get("public_section") != "vote":
+        payload.pop("vote_baseline", None)
+        return
+    import shooting_publish as sp
+    was_vote = bool(existing) and existing.get("public_section") == "vote"
+    kept = dict(existing.get("vote_baseline") or {}) if was_vote else {}
+    if not was_vote or "vote_baseline" not in (existing or {}):
+        kept = sp.current_done_hours(payload, load_manifest(), load_gear())
+    else:
+        have = {sp.canon_filter(k) or k for k in kept}
+        missing = [f for f in (payload.get("vote_goals") or {}) if (sp.canon_filter(f) or f) not in have]
+        if missing:
+            now = sp.current_done_hours(payload, load_manifest(), load_gear())
+            for f in missing:
+                key = sp.canon_filter(f) or f
+                kept[key] = now.get(key, 0.0)
+    payload["vote_baseline"] = kept
 
 
 _PLAN_EXPAND_TOKENS = frozenset({"gear", "site", "panels"})
@@ -4755,6 +4798,7 @@ def api_plans():
     before = copy.deepcopy(previous) if previous is not None and activity.enabled() else None
     fr.keep_aac(payload, previous)
     fr.sync_actuals(payload)
+    _set_vote_baseline(payload, previous)
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -4822,6 +4866,7 @@ def api_plan(plan_id: str):
     _keep_rows_from_old_page(payload, existing)
     fr.keep_aac(payload, existing)
     fr.sync_actuals(payload)
+    _set_vote_baseline(payload, existing)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     if before is not None:
