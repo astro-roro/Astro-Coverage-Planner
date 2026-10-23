@@ -35,6 +35,7 @@ DEFAULT_SETTINGS = {
 
 DEFAULT_MEMORY = {
     "last_run_night": None,
+    "last_attempt_night": None,
     "bands": {},
     "met_seen": {},
     "skipped_runs": 0,
@@ -129,7 +130,7 @@ def is_due(local_now: datetime, night: str, settings: dict, memory: dict) -> boo
     minutes = local_now.hour * 60 + local_now.minute
     if minutes < hh * 60 + mm or minutes >= 23 * 60:
         return False
-    return memory.get("last_run_night") != night
+    return night not in (memory.get("last_run_night"), memory.get("last_attempt_night"))
 
 
 # --- Commitments -------------------------------------------------------------
