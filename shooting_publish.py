@@ -110,10 +110,14 @@ def valid_astrobin_url(value) -> bool:
     return host == "astrobin.com" or host.endswith(".astrobin.com")
 
 
-def project_status(plan: dict, last: str | None, today: date) -> str | None:
+def project_status(plan: dict, last: str | None, today: date, in_vote: bool | None = None) -> str | None:
     """The live-page status for a public plan, or None to leave it out.
-    Checked in order: vote, finished, imaging_now, recent."""
-    if plan.get("public_section") == "vote":
+    Checked in order: vote, finished, imaging_now, recent. `in_vote` says
+    whether the plan sits in the vote section; left out, it follows
+    `public_section`. A vote winner is decided before this is called."""
+    if in_vote is None:
+        in_vote = plan.get("public_section") == "vote"
+    if in_vote:
         return "vote"
     w = LIVE_STATUS_WINDOWS
     fin = parse_finished_at(plan.get("finished_at"))
@@ -299,15 +303,16 @@ def current_done_hours(plan: dict, manifest: dict | None, gear: dict) -> dict[st
     return {k: round(v["done_hours"], 3) for k, v in _done_and_goals(plan, matched, rig).items()}
 
 
-def _vote_filters(plan: dict, done: dict[str, dict]) -> dict[str, dict]:
-    """A vote project shows only the filters in vote_goals. The goal is the
-    vote goal, and done is what was added since the plan entered the vote."""
+def _goal_filters(goals_in: dict | None, baseline_in: dict | None,
+                  done: dict[str, dict]) -> dict[str, dict]:
+    """Filters for a vote project or a vote winner: only the goal filters.
+    The goal is the vote goal, and done is what was added since the baseline."""
     baseline = {
         (canon_filter(k) or k): float(v)
-        for k, v in (plan.get("vote_baseline") or {}).items()
+        for k, v in (baseline_in or {}).items()
     }
     goals: dict[str, float] = {}
-    for fname, hours in (plan.get("vote_goals") or {}).items():
+    for fname, hours in (goals_in or {}).items():
         key = canon_filter(fname) or fname
         goals[key] = goals.get(key, 0.0) + float(hours)
     out: dict[str, dict] = {}
@@ -320,13 +325,56 @@ def _vote_filters(plan: dict, done: dict[str, dict]) -> dict[str, dict]:
     return out
 
 
+def _vote_filters(plan: dict, done: dict[str, dict]) -> dict[str, dict]:
+    """A vote project shows only the filters in vote_goals. The goal is the
+    vote goal, and done is what was added since the plan entered the vote."""
+    return _goal_filters(plan.get("vote_goals"), plan.get("vote_baseline"), done)
+
+
+MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December")
+
+
+def _vote_winner(plan: dict, done: dict[str, dict], today: date):
+    """(commitment, filters) for the plan's earliest unmet current vote
+    commitment, or None. Also returns whether the plan has any current
+    commitment it can count, so a met winner can leave the vote section:
+    (winner_or_None, in_play).
+
+    A current commitment is one whose month is this month or earlier. One
+    that names no filter the plan can count is ignored, as the balancer
+    does. It is met when `met_at` is set or every counted filter is at its
+    goal."""
+    month = today.strftime("%Y-%m")
+    in_play = False
+    for c in sorted((c for c in plan.get("commitments") or []
+                     if isinstance(c, dict) and c.get("kind", "vote") == "vote"
+                     and isinstance(c.get("month"), str) and c["month"] <= month),
+                    key=lambda c: c["month"]):
+        filters = {k: v for k, v in _goal_filters(c.get("goals"), c.get("baseline"), done).items()
+                   if k in done}
+        if not filters:
+            continue
+        in_play = True
+        met = bool(c.get("met_at")) or all(f["done_hours"] >= f["target_hours"] for f in filters.values())
+        if not met:
+            return (c, filters), True
+    return None, in_play
+
+
 def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: date) -> dict | None:
     """The published entry for one plan, or None when its status says to leave
     it out. The caller has already checked visibility."""
     tg, ra, dec, telescope, mosaic, ext, matched, rig = _plan_context(plan, manifest_targets, gear)
     done = _done_and_goals(plan, matched, rig)
-    section = "vote" if plan.get("public_section") == "vote" else "current"
-    if section == "vote":
+    winner, in_play = _vote_winner(plan, done, today)
+    # A plan with a current commitment is a winner, so it is never in the vote
+    # section: the commitment wins over public_section.
+    in_vote = plan.get("public_section") == "vote" and not in_play
+    section = "vote" if in_vote else "current"
+    if winner:
+        filters = winner[1]
+    elif in_vote:
         filters = _vote_filters(plan, done)
     else:
         filters = {
@@ -335,7 +383,7 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
         }
 
     last = _last_imaged(matched)
-    status = project_status(plan, last, today)
+    status = "vote_winner" if winner else project_status(plan, last, today, in_vote=in_vote)
     if status is None:
         return None
     nights = (today - date.fromisoformat(last)).days if last else None
@@ -359,6 +407,10 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
         "last_imaged": last,
         "last_imaged_nights_ago": nights,
     }
+    if winner:
+        month = winner[0]["month"]
+        entry["vote_month"] = month
+        entry["vote_label"] = f"{MONTH_NAMES[int(month[5:7]) - 1]} vote winner"
     if status == "finished":
         entry["finished_at"] = parse_finished_at(plan.get("finished_at")).isoformat()
         url = plan.get("astrobin_url")
