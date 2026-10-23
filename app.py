@@ -1784,8 +1784,12 @@ for _entry in _load_surveys_registry():
 # is absent, so a stock checkout runs unchanged. Loaded after the built-in
 # source registers so extensions can read or extend `app.coverage_sources`.
 try:
-    from extensions import load_extensions
+    from extensions import load_bundled_extensions, load_extensions
     load_extensions(app)
+    # The extensions that ship inside ACP (the Target Scheduler sync) load
+    # after the user's, which win on a name clash. ACP_DISABLE_BUNDLED_EXTENSIONS=1
+    # switches them off.
+    load_bundled_extensions(app)
 except ImportError:
     pass
 

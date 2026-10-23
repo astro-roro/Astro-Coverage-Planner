@@ -54,6 +54,7 @@ Both the build script and the webapp read these environment variables. Set whate
 | `HOST` | `127.0.0.1` | Bind host. Use `0.0.0.0` only on a trusted LAN, ACP has no authentication. |
 | `PORT` | `5555` | Bind port. |
 | `ACP_EXTENSIONS_DIR` | `%APPDATA%/acp/extensions` (Win) / `~/.config/acp/extensions` | Directory of extension modules. |
+| `ACP_DISABLE_BUNDLED_EXTENSIONS` | unset | Set to `1` to skip the extensions that ship inside ACP (the Target Scheduler sync). |
 | `ACP_FRIEND_MANIFESTS` | unset | Semicolon-separated paths to sanitised friend manifests. |
 | `ACP_SURVEYS_PATH` | `./data/surveys.json` | Path to the public-survey registry. |
 | `ACP_CATALOG_REGISTRY` | `./data/catalog_registry.json` | Catalogue registry read by the catalogue loader. |
