@@ -1,7 +1,7 @@
 """Build and publish the public "live" document for a static web page.
 
-Spec: docs/specs/shooting-page.md. Only plans with visibility == "public"
-are included. The document is scanned for path-shaped strings before it
+Spec: docs/specs/shooting-page.md. Only plans that are public (explicitly,
+or by default for a "pretty" plan) and have recent activity are included. The document is scanned for path-shaped strings before it
 leaves this module, using the same tripwire as the friend-manifest sanitiser.
 
 This module has no Flask import so the CLI can use it without starting
@@ -16,6 +16,7 @@ import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent
 _SCRIPTS = str(REPO_ROOT / "scripts")
@@ -27,6 +28,17 @@ import filter_rows as fr  # noqa: E402
 from sanitise_manifest import _aperture_class, validate_no_paths  # noqa: E402
 
 DOC_VERSION = 1
+
+# How long a project stays on the live page, counted from its last imaged
+# night (or from the day it was marked finished). Change a window here and
+# nowhere else. Boundaries are inclusive.
+LIVE_STATUS_WINDOWS = {
+    "imaging_now_nights": 3,   # last imaged within this many nights: imaging_now
+    "recent_days": 14,         # last imaged within this many days: recent
+    "finished_days": 30,       # finished within this many days: finished
+}
+
+_ASTROBIN_MAX_LEN = 300
 
 # The friend sanitiser's tripwire only matches a path at the start or a
 # file extension at the end of a string. Free text written by a person can
@@ -58,6 +70,71 @@ def _check_free_text(field: str, value: str) -> str:
 
 class PublishConfigError(RuntimeError):
     """ACP_PUBLISH_DEST is unset or empty."""
+
+
+# --- Status and visibility --------------------------------------------------
+
+def effective_visibility(plan: dict) -> str:
+    """"public" or "private". An explicit visibility always wins. With none
+    set, a "pretty" plan is public and every other class is private."""
+    vis = plan.get("visibility")
+    if vis in ("public", "private"):
+        return vis
+    return "public" if plan.get("target_class") == "pretty" else "private"
+
+
+def parse_finished_at(value) -> date | None:
+    """A plan's finished_at as a date, or None when unset or unreadable."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def valid_astrobin_url(value) -> bool:
+    """https on astrobin.com or a subdomain, no credentials, no whitespace."""
+    if not isinstance(value, str) or not value or len(value) > _ASTROBIN_MAX_LEN:
+        return False
+    if any(c.isspace() for c in value):
+        return False
+    try:
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower()
+        parts.port  # raises ValueError on a bad port
+    except ValueError:
+        return False
+    if parts.scheme != "https" or parts.username or parts.password:
+        return False
+    return host == "astrobin.com" or host.endswith(".astrobin.com")
+
+
+def project_status(plan: dict, last: str | None, today: date) -> str | None:
+    """The live-page status for a public plan, or None to leave it out.
+    Checked in order: vote, finished, imaging_now, recent."""
+    if plan.get("public_section") == "vote":
+        return "vote"
+    w = LIVE_STATUS_WINDOWS
+    fin = parse_finished_at(plan.get("finished_at"))
+    if fin is not None:
+        # A finished project is judged by its finish date alone. Once the
+        # window passes it drops out, even if frames were added since.
+        return "finished" if (today - fin).days <= w["finished_days"] else None
+    if last:
+        nights = (today - date.fromisoformat(last)).days
+        if nights <= w["imaging_now_nights"]:
+            return "imaging_now"
+        if nights <= w["recent_days"]:
+            return "recent"
+    return None
+
+
+def _totals(filters: dict[str, dict]) -> tuple[float, float]:
+    """Overall (done, target) hours, each filter's done capped at its target."""
+    done = sum(min(f["done_hours"], f["target_hours"]) for f in filters.values())
+    target = sum(f["target_hours"] for f in filters.values())
+    return round(done, 1), round(target, 1)
 
 
 # --- Geometry ---------------------------------------------------------------
@@ -243,7 +320,9 @@ def _vote_filters(plan: dict, done: dict[str, dict]) -> dict[str, dict]:
     return out
 
 
-def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: date) -> dict:
+def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: date) -> dict | None:
+    """The published entry for one plan, or None when its status says to leave
+    it out. The caller has already checked visibility."""
     tg, ra, dec, telescope, mosaic, ext, matched, rig = _plan_context(plan, manifest_targets, gear)
     done = _done_and_goals(plan, matched, rig)
     section = "vote" if plan.get("public_section") == "vote" else "current"
@@ -256,12 +335,18 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
         }
 
     last = _last_imaged(matched)
+    status = project_status(plan, last, today)
+    if status is None:
+        return None
     nights = (today - date.fromisoformat(last)).days if last else None
+    done_total, target_total = _totals(filters)
 
     entry = {
         "project_name": _check_free_text("project_name", strip_site_tag(str(plan.get("project_name") or ""))),
         "target_name": _check_free_text("target_name", strip_site_tag(str(tg.get("name") or ""))),
         "blurb": _check_free_text("public_blurb", str(plan.get("public_blurb") or "")),
+        "status": status,
+        # is_current and section stay for one release so the old page renders.
         "is_current": bool(plan.get("is_current")),
         "section": section,
         "center_ra_deg": round(ra, 2),
@@ -269,9 +354,16 @@ def _project_entry(plan: dict, manifest_targets: list[dict], gear: dict, today: 
         "fov_arcmin": [round(ext[0], 1), round(ext[1], 1)],
         "telescope": _aperture_class((telescope or {}).get("name") or ""),
         "filters": filters,
+        "done_hours": done_total,
+        "target_hours": target_total,
         "last_imaged": last,
         "last_imaged_nights_ago": nights,
     }
+    if status == "finished":
+        entry["finished_at"] = parse_finished_at(plan.get("finished_at")).isoformat()
+        url = plan.get("astrobin_url")
+        if url and valid_astrobin_url(url):
+            entry["astrobin_url"] = url
     rows, cols = int(mosaic.get("rows") or 1), int(mosaic.get("cols") or 1)
     if rows > 1 or cols > 1:
         entry["mosaic"] = {"rows": rows, "cols": cols}
@@ -285,11 +377,12 @@ def build_shooting_document(plans: list[dict], manifest: dict | None, gear: dict
     today = now.date()
     targets = list((manifest or {}).get("targets") or [])
     scan = str((manifest or {}).get("scan_date") or "")[:10] or None
-    projects = [
+    entries = (
         _project_entry(p, targets, gear, today)
         for p in plans
-        if p.get("visibility") == "public"
-    ]
+        if effective_visibility(p) == "public"
+    )
+    projects = [e for e in entries if e is not None]
 
     def _key(p: dict):
         last = p["last_imaged"]

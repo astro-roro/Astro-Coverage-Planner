@@ -4649,6 +4649,19 @@ def _validate_plan_payload(payload: dict) -> str | None:
     section = payload.get("public_section")
     if section is not None and section not in ("current", "vote"):
         return "public_section must be 'current' or 'vote'"
+    finished = payload.get("finished_at")
+    if finished not in (None, ""):
+        if not isinstance(finished, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", finished):
+            return "finished_at must be a date as YYYY-MM-DD"
+        try:
+            datetime.strptime(finished, "%Y-%m-%d")
+        except ValueError:
+            return "finished_at must be a real calendar date"
+    astrobin = payload.get("astrobin_url")
+    if astrobin not in (None, ""):
+        import shooting_publish as sp
+        if not sp.valid_astrobin_url(astrobin):
+            return "astrobin_url must be an https link on astrobin.com"
     for key in ("vote_goals", "vote_baseline"):
         mapping = payload.get(key)
         if mapping is None:
@@ -5976,7 +5989,7 @@ def api_publish_config():
 @app.route("/api/public/shooting")
 def api_public_shooting():
     """Preview of the document the live-page publisher pushes.
-    Only plans with visibility == "public" appear. See docs/specs/shooting-page.md."""
+    Only public plans with a live status appear. See docs/specs/shooting-page.md."""
     return jsonify(_build_live_document())
 
 

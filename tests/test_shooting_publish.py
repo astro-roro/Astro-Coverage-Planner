@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,9 +19,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from shooting_publish import (  # noqa: E402
+    LIVE_STATUS_WINDOWS,
     PublishConfigError,
     build_shooting_document,
     current_done_hours,
+    effective_visibility,
+    valid_astrobin_url,
     strip_site_tag,
     push_document,
     resolve_dest,
@@ -37,9 +40,11 @@ GEAR = {
 
 
 def _plan(**over):
+    # finished_at keeps the default plan on the page whatever the manifest
+    # holds. Tests of the activity rules pass finished_at=None.
     p = {
         "id": "p1", "guid": "abc-123", "project_name": "Vela", "visibility": "public",
-        "is_current": True, "public_blurb": "Big and faint.",
+        "is_current": True, "public_blurb": "Big and faint.", "finished_at": "2026-09-03",
         "telescope_id": "t1", "camera_id": "c1",
         "target": {"name": "Vela SNR", "center_ra_deg": 128.5, "center_dec_deg": -45.0,
                    "rotation_deg": 0, "mosaic": {"rows": 1, "cols": 1, "overlap_pct": 0}},
@@ -177,8 +182,9 @@ class BuildDocument(unittest.TestCase):
         self.assertEqual(len(doc["projects"]), 1)
         pr = doc["projects"][0]
         self.assertEqual(set(pr), {"project_name", "target_name", "blurb", "is_current",
-                                   "section", "center_ra_deg", "center_dec_deg", "fov_arcmin",
-                                   "telescope", "filters", "last_imaged", "last_imaged_nights_ago"})
+                                   "section", "status", "center_ra_deg", "center_dec_deg", "fov_arcmin",
+                                   "telescope", "filters", "done_hours", "target_hours",
+                                   "last_imaged", "last_imaged_nights_ago", "finished_at"})
         self.assertEqual(doc["version"], 1)
         self.assertEqual(doc["data_as_of"], "2026-09-03")
         self.assertTrue(doc["generated_at"].startswith("2026-09-03"))
@@ -286,6 +292,160 @@ class BuildDocument(unittest.TestCase):
         plans = [_plan(id="a", project_name="Zulu"), _plan(id="b", project_name="alpha")]
         doc = build_shooting_document(plans, _manifest(_target(128.5, -45.0)), GEAR, now=NOW)
         self.assertEqual([p["project_name"] for p in doc["projects"]], ["alpha", "Zulu"])
+
+
+TODAY = NOW.astimezone().date()
+
+
+def _ago(days):
+    return (TODAY - timedelta(days=days)).isoformat()
+
+
+def _doc(plan, *targets):
+    return build_shooting_document([plan], _manifest(*targets), GEAR, now=NOW)
+
+
+class StatusFromActivity(unittest.TestCase):
+    """status is worked out at publish time from the last imaged night."""
+
+    def _status(self, nights):
+        doc = _doc(_plan(finished_at=None), _target(128.5, -45.0, last=_ago(nights)))
+        return doc["projects"][0]["status"] if doc["projects"] else None
+
+    def test_windows_live_in_one_settings_block(self):
+        self.assertEqual(LIVE_STATUS_WINDOWS,
+                         {"imaging_now_nights": 3, "recent_days": 14, "finished_days": 30})
+
+    def test_imaging_now_boundary_is_three_nights(self):
+        self.assertEqual(self._status(0), "imaging_now")
+        self.assertEqual(self._status(3), "imaging_now")
+        self.assertEqual(self._status(4), "recent")
+
+    def test_recent_boundary_is_fourteen_days(self):
+        self.assertEqual(self._status(14), "recent")
+        self.assertIsNone(self._status(15))
+
+    def test_older_than_fourteen_days_and_not_finished_drops_out(self):
+        self.assertEqual(_doc(_plan(finished_at=None), _target(128.5, -45.0, last=_ago(40)))["projects"], [])
+
+    def test_never_imaged_and_not_finished_drops_out(self):
+        self.assertEqual(_doc(_plan(finished_at=None))["projects"], [])
+
+    def test_windows_can_change_in_the_settings_block(self):
+        import shooting_publish as sp
+        old = dict(sp.LIVE_STATUS_WINDOWS)
+        sp.LIVE_STATUS_WINDOWS["recent_days"] = 20
+        try:
+            self.assertEqual(self._status(18), "recent")
+        finally:
+            sp.LIVE_STATUS_WINDOWS.clear()
+            sp.LIVE_STATUS_WINDOWS.update(old)
+
+    def test_vote_project_stays_whatever_its_activity(self):
+        plan = _plan(finished_at=None, public_section="vote", vote_goals={"Ha": 4.0})
+        doc = _doc(plan, _target(128.5, -45.0, last=_ago(90)))
+        self.assertEqual(doc["projects"][0]["status"], "vote")
+
+    def test_old_fields_stay_for_one_release(self):
+        pr = _doc(_plan(finished_at=None), _target(128.5, -45.0, last=_ago(1)))["projects"][0]
+        self.assertTrue(pr["is_current"])
+        self.assertEqual(pr["section"], "current")
+
+
+class FinishedProjects(unittest.TestCase):
+    URL = "https://www.astrobin.com/abc123/"
+
+    def _finished(self, days_ago, **over):
+        plan = _plan(finished_at=_ago(days_ago), **over)
+        return _doc(plan, _target(128.5, -45.0, last=_ago(200)))["projects"]
+
+    def test_finished_within_thirty_days_shows(self):
+        self.assertEqual(self._finished(0)[0]["status"], "finished")
+        self.assertEqual(self._finished(30)[0]["status"], "finished")
+
+    def test_finished_thirty_one_days_ago_drops_out(self):
+        self.assertEqual(self._finished(31), [])
+
+    def test_finished_with_astrobin_link(self):
+        pr = self._finished(5, astrobin_url=self.URL)[0]
+        self.assertEqual(pr["astrobin_url"], self.URL)
+        self.assertEqual(pr["finished_at"], _ago(5))
+
+    def test_finished_without_link_omits_the_key(self):
+        pr = self._finished(5)[0]
+        self.assertNotIn("astrobin_url", pr)
+        self.assertEqual(pr["finished_at"], _ago(5))
+
+    def test_finished_keeps_its_final_progress(self):
+        pr = self._finished(5)[0]
+        self.assertEqual(pr["filters"]["Ha"]["done_hours"], 2.5)
+        self.assertEqual(pr["filters"]["Ha"]["target_hours"], 10.0)
+
+    def test_finish_fields_are_only_published_for_finished_projects(self):
+        plan = _plan(finished_at=None, astrobin_url=self.URL)
+        pr = _doc(plan, _target(128.5, -45.0, last=_ago(1)))["projects"][0]
+        self.assertNotIn("finished_at", pr)
+        self.assertNotIn("astrobin_url", pr)
+
+    def test_an_unsafe_link_already_in_a_plan_is_not_published(self):
+        pr = self._finished(5, astrobin_url="https://evil.example/astrobin.com")[0]
+        self.assertNotIn("astrobin_url", pr)
+
+    def test_astrobin_url_validator(self):
+        ok = ("https://astrobin.com/x", "https://www.astrobin.com/x/", "https://app.astrobin.com/u/r")
+        bad = ("http://astrobin.com/x", "https://astrobin.com.evil.com/x", "https://evilastrobin.com/x",
+               "https://user:pw@astrobin.com/x", "javascript:alert(1)", "https://astrobin.com/a b",
+               "", None, 5, "https://example.com/astrobin.com")
+        for u in ok:
+            self.assertTrue(valid_astrobin_url(u), u)
+        for u in bad:
+            self.assertFalse(valid_astrobin_url(u), u)
+
+
+class PrettyDefaultsPublic(unittest.TestCase):
+    def _published(self, **over):
+        plan = _plan(finished_at=None, **over)
+        plan.pop("visibility", None) if "visibility" not in over else None
+        return _doc(plan, _target(128.5, -45.0, last=_ago(1)))["projects"]
+
+    def test_pretty_plan_with_no_visibility_is_public(self):
+        self.assertEqual(len(self._published(target_class="pretty")), 1)
+
+    def test_explicit_private_wins_over_pretty(self):
+        self.assertEqual(self._published(target_class="pretty", visibility="private"), [])
+
+    def test_survey_deep_and_unclassed_stay_private(self):
+        for cls in ("survey", "deep", None):
+            self.assertEqual(self._published(target_class=cls), [], cls)
+
+    def test_explicit_public_survey_plan_publishes(self):
+        self.assertEqual(len(self._published(target_class="survey", visibility="public")), 1)
+
+    def test_effective_visibility(self):
+        self.assertEqual(effective_visibility({"target_class": "pretty"}), "public")
+        self.assertEqual(effective_visibility({"target_class": "pretty", "visibility": "private"}), "private")
+        self.assertEqual(effective_visibility({"target_class": "deep"}), "private")
+        self.assertEqual(effective_visibility({}), "private")
+
+
+class OverallTotals(unittest.TestCase):
+    def test_each_filter_is_capped_at_its_target(self):
+        rows = [
+            {"id": "a", "filter": "Ha", "template": "Ha", "template_sub_s": 300,
+             "unit": "h", "target_hours": 4.0, "actual_hours": 9.0},
+            {"id": "b", "filter": "OIII", "template": "OIII", "template_sub_s": 300,
+             "unit": "h", "target_hours": 6.0, "actual_hours": 1.5},
+        ]
+        pr = _doc(_plan(filter_rows=rows))["projects"][0]
+        # Ha is 9 of 4 and counts 4. OIII counts 1.5. Target is 10.
+        self.assertEqual(pr["done_hours"], 5.5)
+        self.assertEqual(pr["target_hours"], 10.0)
+
+    def test_vote_totals_use_the_vote_filters_only(self):
+        plan = _plan(public_section="vote", vote_goals={"Ha": 4.0}, vote_baseline={"Ha": 0.0})
+        pr = _doc(plan, _target(128.5, -45.0))["projects"][0]
+        self.assertEqual(pr["target_hours"], 4.0)
+        self.assertEqual(pr["done_hours"], 2.5)
 
 
 class WriteAndPush(unittest.TestCase):
@@ -428,7 +588,8 @@ class Endpoints(unittest.TestCase):
         app_module._destinations_cache_mtime = None
         app_module.LIVE_OUT_DIR = td / "live"
         (td / "plans.json").write_text(json.dumps(
-            {"version": 1, "plans": [_plan(), _plan(id="p2", visibility="private")]}))
+            {"version": 1, "plans": [_plan(finished_at=date.today().isoformat()),
+                                     _plan(id="p2", visibility="private")]}))
         (td / "manifest.json").write_text(json.dumps(_manifest(_target(128.5, -45.0))))
         (td / "gear.json").write_text(json.dumps(GEAR))
         self.client = app_module.app.test_client()
@@ -577,7 +738,7 @@ class Cli(unittest.TestCase):
 
     def test_dry_run_writes_json_without_pushing(self):
         td = Path(tempfile.mkdtemp())
-        (td / "plans.json").write_text(json.dumps({"version": 1, "plans": [_plan()]}))
+        (td / "plans.json").write_text(json.dumps({"version": 1, "plans": [_plan(finished_at=date.today().isoformat())]}))
         (td / "manifest.json").write_text(json.dumps(_manifest()))
         (td / "gear.json").write_text(json.dumps(GEAR))
         env = self._env(td)
