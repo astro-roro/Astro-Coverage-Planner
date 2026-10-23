@@ -13,7 +13,7 @@ import copy
 import json
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROLES = ("science", "survey", "pretty")
@@ -23,6 +23,7 @@ BLOCKED_STATES = ("closed", "draft")
 MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
                "August", "September", "October", "November", "December")
 EPS = 1e-9
+RECENT_NIGHTS = 7
 
 DEFAULT_SETTINGS = {
     "mode": "dry_run",
@@ -202,12 +203,15 @@ def _band_for(role: str, share: float, target: float, tol: float, prev: str | No
 
 def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dict,
            memory: dict, night: str, *, newest_report_night: str | None = None,
-           keep_nights: int | None = None, canon=None, late: bool = False) -> dict:
+           keep_nights: int | None = None, canon=None, late: bool = False,
+           recent_hours: dict | None = None) -> dict:
     """The whole decision for one run. `month_hours` is hours this month per
     project name, `done_hours` is current hours per canonical filter for each
     plan id (only plans with commitments need one). `late` says the run is
     after the nightly launcher (15:00), so its changes reach TS a night
-    later. Returns a dict, see the keys built at the bottom."""
+    later. `recent_hours` is hours per project name over the last
+    RECENT_NIGHTS nights; without it no role is treated as having a hole.
+    Returns a dict, see the keys built at the bottom."""
     canon = canon or (lambda s: s)
     settings = {**DEFAULT_SETTINGS, **settings}
     memory = {**copy.deepcopy(DEFAULT_MEMORY), **(memory or {})}
@@ -281,16 +285,61 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
     total = sum(role_hours[r] for r in present)
     share_sum = sum(settings["shares"][r] for r in present) or 1
     guard = total < settings["min_month_hours"]
+    targets = {r: settings["shares"][r] * 100.0 / share_sum for r in present}
+    pcts = {r: role_hours[r] / total * 100.0 if total > 0 else 0.0 for r in present}
+
+    # A role with a hole: nothing in it was up on recent nights, so it hands
+    # its unused share to the other roles, evenly. Weather is not a hole: when
+    # no role imaged recently, nobody is treated as having one.
+    holes: dict[str, float] = {}
+    base_targets = dict(targets)
+    if recent_hours is not None and not guard:
+        recent = {r: 0.0 for r in ROLES}
+        up = {r: False for r in ROLES}
+        for pi in info.values():
+            if pi["role"]:
+                h = float(recent_hours.get(pi["name"]) or 0.0)
+                recent[pi["role"]] += h
+                if h > EPS and not pi["blocked"] and not any(
+                        p.get("state") == "inactive" for p in pi["plans"]):
+                    up[pi["role"]] = True
+        if any(recent[r] > EPS for r in present):
+            empty = [r for r in present if not up[r]]
+            others = [r for r in present if up[r]]
+            if others:
+                for r in empty:
+                    if pcts[r] < targets[r] - EPS:
+                        holes[r] = targets[r] - pcts[r]
+                for r in empty:
+                    if r in holes:
+                        targets[r] = pcts[r]
+                spare = sum(holes.values())
+                for r in others:
+                    targets[r] += spare / len(others)
+    hole_notes: list[str] = []
+    if holes:
+        others = [r for r in present if r not in holes]
+        names = ", ".join(r.capitalize() for r in holes)
+        verb = "has" if len(holes) == 1 else "have"
+        given = ", ".join(f"{r} {targets[r]:.1f}" for r in others)
+        hole_notes.append(
+            f"{names} {verb} nothing up, so its spare {sum(holes.values()):.0f} points are split: {given}."
+            if len(holes) == 1 else
+            f"{names} {verb} nothing up, so their spare {sum(holes.values()):.0f} points go to: {given}.")
+
     shares: dict[str, dict] = {}
     bands: dict[str, str] = {}
     for r in present:
-        target = settings["shares"][r] * 100.0 / share_sum
-        pct = role_hours[r] / total * 100.0 if total > 0 else 0.0
+        target = targets[r]
+        pct = pcts[r]
         band = "in" if guard else _band_for(
             r, pct, target, settings["tolerance"], memory["bands"].get(r))
         bands[r] = band
         shares[r] = {"hours": round(role_hours[r], 3), "share": round(pct, 2),
                      "target": round(target, 2), "band": band}
+        if holes:
+            shares[r]["base_target"] = round(base_targets[r], 2)
+            shares[r]["hole"] = r in holes
 
     # Rules.
     changes: list[dict] = []
@@ -423,13 +472,14 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
         for r in present))
     if guard:
         lines.append(f"Under {_goal_h(settings['min_month_hours'])} h this month, so no share is judged yet.")
+    lines.extend(hole_notes)
     lines.extend(warnings)
     if late and not dry and changes:
         lines.append("This run was after 15:00, so its changes reach TS at the next night's sync.")
 
     data = {
         "mode": mode, "urgent": urgent, "elapsed": round(elapsed, 4),
-        "shares": shares, "bands": bands,
+        "holes": sorted(holes), "shares": shares, "bands": bands,
         "commitments": [{"project": j["project"], "plan_id": j["plan_id"], "month": j["month"],
                          "done_h": round(j["done_h"], 3), "goal_h": round(j["goal_h"], 3),
                          "required_h": round(j["required_h"], 3), "met": j["met"],
