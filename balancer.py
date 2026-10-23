@@ -319,7 +319,7 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
                 targets[r] += spare / len(others)
     hole_notes: list[str] = []
     if nothing_up:
-        hole_notes.append("Nothing up in any role, so no priorities were changed.")
+        hole_notes.append("Nothing up in any role, so shares were not rebalanced.")
     if holes:
         others = [r for r in present if r not in holes]
         names = ", ".join(r.capitalize() for r in holes)
@@ -394,13 +394,13 @@ def decide(plans: list[dict], month_hours: dict, done_hours: dict, settings: dic
             else:
                 why = f"{label} is within its share of the month."
                 note = f"{label.lower()} is within its share of the month."
+        if nothing_up and rule >= 4:
+            continue
         was = project_priority(pi["plans"])
         if was != want:
             changes.append({"project": name, "field": "priority", "from": was, "to": want,
                             "rule": rule, "reason": why, "note": note})
     changes.sort(key=lambda c: (c["rule"], c["project"].lower()))
-    if nothing_up:
-        changes = []
 
     # Newly met commitments.
     met_new = []

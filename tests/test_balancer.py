@@ -473,15 +473,27 @@ class Holes(unittest.TestCase):
                                100 - sh["science"]["share"] - sh["survey"]["share"], places=1)
         self.assertEqual(sh["pretty"]["band"], "in")
 
-    def test_nothing_up_anywhere_changes_no_priorities(self):
+    def test_nothing_up_anywhere_does_not_rebalance_shares(self):
         res = self.run_it(self.OCT, {})
         self.assertTrue(res["data"]["nothing_up"])
         self.assertEqual(res["data"]["holes"], [])
         self.assertEqual(res["changes"], [])
         self.assertEqual(res["shares"]["science"]["target"], 35.0)
-        self.assertIn("Nothing up in any role", res["detail"])
+        self.assertIn("Nothing up in any role, so shares were not rebalanced", res["detail"])
         self.assertEqual(res["title"], "Balancer: no changes")
         self.assertFalse(self.run_it(self.OCT, {"PN-A": 1.0})["data"]["nothing_up"])
+
+    def test_cloudy_week_still_sets_an_unmet_vote_winner_high(self):
+        plans = self.plans()
+        plans[2]["priority"] = "low"
+        plans[2]["commitments"] = [{"kind": "vote", "month": "2026-10", "goals": {"Ha": 5.0},
+                                    "baseline": {"Ha": 0.0}, "set_at": "2026-10-01"}]
+        s = {**balancer.DEFAULT_SETTINGS, "mode": "live"}
+        res = balancer.decide(plans, self.OCT, {"dolphin": {"Ha": 1.0}}, s,
+                              copy.deepcopy(balancer.DEFAULT_MEMORY), self.NIGHT, recent_hours={})
+        self.assertTrue(res["data"]["nothing_up"])
+        self.assertEqual({c["project"]: (c["from"], c["to"]) for c in res["changes"]},
+                         {"Dolphin Nebula": ("low", "high")})
 
     def test_without_recent_hours_nothing_changes(self):
         self.assertEqual(self.run_it(self.OCT, None)["data"]["holes"], [])
