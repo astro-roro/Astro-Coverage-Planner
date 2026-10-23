@@ -48,7 +48,8 @@ REF_KEYS = ("plan_id", "project", "target", "bucket", "filter", "ra_deg", "dec_d
 # Chip id, label, and the event types it shows. Mirrored in static/activity.mjs.
 CHIPS = (
     ("plans", "Plans", ("plan_created", "plan_edited", "plan_deleted", "project_settings",
-                        "gear_changed", "counts_corrected", "other")),
+                        "gear_changed", "counts_corrected", "balancer_run",
+                        "balancer_alert", "other")),
     ("syncs", "Syncs", ("sync_for_tonight", "rig_synced", "ts_upload_received",
                         "ts_upload_applied", "ts_upload_discarded", "ts_push")),
     ("imaging", "Imaging", ("imaging_target", "goal_reached", "progress_report",
@@ -1043,6 +1044,34 @@ def summary() -> dict:
 def _hours(v) -> float:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) \
         and math.isfinite(v) else 0.0
+
+
+def progress_hours(first_night: str, last_night: str) -> dict:
+    """Hours each plan gained over the nights from first_night to last_night
+    (inclusive): the sum of the positive ``delta_h`` of its progress reports.
+    Keyed by plan id."""
+    out: dict = {}
+    with _lock:
+        rows = _connect().execute(
+            "SELECT refs, data FROM events WHERE type = 'progress_report' "
+            "AND night >= ? AND night <= ?", (first_night, last_night)).fetchall()
+    for row in rows:
+        plan_id = json.loads(row["refs"]).get("plan_id")
+        filters = (json.loads(row["data"]).get("filters") or {})
+        if not plan_id or not isinstance(filters, dict):
+            continue
+        gained = sum(_hours(f.get("delta_h")) for f in filters.values()
+                     if isinstance(f, dict) and _hours(f.get("delta_h")) > 0)
+        out[plan_id] = out.get(plan_id, 0.0) + gained
+    return out
+
+
+def newest_progress_night() -> str | None:
+    """The night of the newest progress report, or None when there is none."""
+    with _lock:
+        row = _connect().execute(
+            "SELECT MAX(night) FROM events WHERE type = 'progress_report'").fetchone()
+    return row[0] if row and row[0] else None
 
 
 def _last_night(conn) -> dict | None:

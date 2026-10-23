@@ -7,7 +7,8 @@ export const ACTIVITY_PANEL_W = 560;
 // Chip id, label and event types. Mirrors CHIPS in activity.py.
 export const CHIPS = [
   { id: "plans", label: "Plans", types: ["plan_created", "plan_edited", "plan_deleted",
-    "project_settings", "gear_changed", "counts_corrected", "other"] },
+    "project_settings", "gear_changed", "counts_corrected", "balancer_run", "balancer_alert",
+    "other"] },
   { id: "syncs", label: "Syncs", types: ["sync_for_tonight", "rig_synced", "ts_upload_received",
     "ts_upload_applied", "ts_upload_discarded", "ts_push"] },
   { id: "imaging", label: "Imaging", types: ["imaging_target", "goal_reached", "progress_report",
