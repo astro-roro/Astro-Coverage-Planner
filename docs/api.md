@@ -52,6 +52,9 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest), drives the Extensions rail accordion and the core-button swap mechanism |
 | `GET /api/ext/...` | Routes registered by [extensions](extensions.md) |
 | `GET /api/version` | `{version, plans_last_modified, manifest_last_modified}`, lets a client poll cheaply instead of refetching plans on a timer |
+| `GET /api/settings` | Where each setting came from, whether the environment locks it, `first_run`, `writable` and the version. Folder and manifest paths go to an authorised client only |
+| `PUT /api/settings` | Save `fits_roots` (and `shortcuts` where available). Authorised client only, JSON body |
+| `POST /api/settings/adopt-env` | Copy the folders in `FITS_ROOTS` into the settings file. Authorised client only |
 
 The API is unauthenticated by default and binds to `127.0.0.1`, see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network, and [Optional bearer-token auth](#optional-bearer-token-auth) below if you do.
 
@@ -70,6 +73,29 @@ Until 2026-09-07 the gate covered `/api/*` only, and the page and static files w
 The API sends no CORS headers and grants no preflight, deliberately. It used to send `Access-Control-Allow-Origin: *` on reads and answer the preflight, on the reasoning that withholding the header from write responses kept writes closed. That is half right: it stops an attacker reading the reply, not sending the request. Since the preflight listed `PUT` and `DELETE` as allowed, any web page a user visited could delete their plans or publish one, silently, because ACP normally runs on the same machine as their browser.
 
 Nothing needs it. The NINA plugin is a desktop HTTP client and never sees CORS, and ACP's own page is same-origin. If a browser-based client is ever wanted, allow that single origin by name, never `*`, and never on a preflight for a method that writes.
+
+### Settings: `/api/settings`
+
+The routes behind the settings file described in [the archive setup guide](setup-archive.md#the-settings-file).
+
+`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to), `error` (`null`, or `settings_file_corrupt`), `shortcuts` (`{available, value}`) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
+
+An authorised client is one that passed the access gate with the bearer token or session cookie, or, when `ACP_API_TOKEN` is not set, one connecting from the same machine (`127.0.0.1`, `::1`) with no `X-Forwarded-For` header and a `Host` of `localhost`, `127.0.0.1` or `[::1]`. The `Host` rule stops a web page on another site from reaching ACP through a DNS name it has pointed at your machine.
+
+`PUT /api/settings` and `POST /api/settings/adopt-env` need an authorised client and `Content-Type: application/json`, and refuse a cross-site `Origin`. Errors are `{"error": <code>}`:
+
+| Status | Code | Meaning |
+|---|---|---|
+| 400 | `unknown_key` | The body has a key other than `fits_roots` or `shortcuts`. `port`, `manifest_path` and `scan_cron` are edited in the file. |
+| 400 | `not_absolute`, `invalid`, `duplicate`, `too_many` | A folder failed the syntax check. Nothing is saved. |
+| 400 | `unavailable` | `shortcuts` where shortcuts are not supported. |
+| 400 | `nothing_to_adopt` | `adopt-env` with no `FITS_ROOTS` set. |
+| 400 | `bad_host` | The `Host` header does not name this machine. |
+| 403 | `forbidden` | Not an authorised client. |
+| 409 | `locked_by_env` | The environment sets that key. |
+| 409 | `scan_running` | `fits_roots` cannot change during a scan. |
+| 409 | `not_writable` | There is no writable settings folder. |
+| 415 | `unsupported_media_type` | Not a JSON body. |
 
 ## Manifest schema
 

@@ -36,6 +36,42 @@ The script walks every folder under each root, opens every FITS/XISF master to r
 
 When it finishes, the app will pick up the new manifest automatically, no restart needed. Refresh the browser tab.
 
+## The settings file
+
+ACP can also read a few settings from a file, `settings.json`, so you do not have to set environment variables. An environment variable always wins over the file when it is set and not empty. A blank variable counts as unset.
+
+| OS | Settings file |
+|---|---|
+| Windows | `%APPDATA%\ACP\settings.json` |
+| macOS | `~/Library/Application Support/ACP/settings.json` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/acp/settings.json` |
+
+`ACP_HOME` replaces that folder on every OS. The file holds these keys:
+
+| Key | Variable that overrides it | Default |
+|---|---|---|
+| `fits_roots` | `FITS_ROOTS` | none |
+| `manifest_path` | `MANIFEST_PATH` | `<data folder>/manifest.json` |
+| `port` | `PORT` | `5555` |
+| `scan_cron` | `ACP_SCAN_CRON` | unset |
+| `shortcuts` | none | `null` (reserved, no effect yet) |
+
+`fits_roots` is a list of folder paths. `manifest_path` and `port` need a restart to take effect. The bind address is never read from the file: `HOST` stays an environment variable so no file or page can open ACP to the network. A scan started by the app, and `python scripts/build_archive_manifest.py` run by hand from a source checkout, both read `fits_roots` from the file.
+
+If the file cannot be parsed, ACP starts on the defaults and saves the unreadable file once as `settings.json.bak`. A second unreadable file does not replace that copy. `GET /api/settings` reports the problem as `"error": "settings_file_corrupt"`.
+
+The installed Docker image does not need a file. It sets `FITS_ROOTS`, and the environment keeps winning.
+
+### The data folder
+
+Every file ACP writes, such as the manifest, plans, gear, sites, saved searches, the scan cache and `catalogs.json`, lives in `./data` in a source install. Set `ACP_DATA_DIR` to move all of them at once. A per-file variable such as `PLANS_PATH` still beats it. Three files that ship with ACP stay in `./data` of the app folder and are never moved: `catalog_registry.json`, `filter_catalogue.json` and `surveys.json`. `ACP_DATA_DIR` is an environment variable only, because the settings file cannot say where the settings file is.
+
+### Settings routes
+
+`GET /api/settings` reports each key's value, where it came from (`env`, `file` or `default`) and whether the environment locks it. Folder and manifest paths go only to an authorised client: one that sent the bearer token or session cookie, or, when `ACP_API_TOKEN` is not set, one on the same machine addressing ACP as `localhost` or `127.0.0.1`.
+
+`PUT /api/settings` saves `fits_roots` (and `shortcuts`, once that is available). It takes JSON, answers 409 `locked_by_env` for a key the environment sets, and 409 `scan_running` for `fits_roots` while a scan runs. `POST /api/settings/adopt-env` copies the folders in `FITS_ROOTS` into the file. See [api.md](api.md) for the details.
+
 ## Configuration variables
 
 Both the build script and the webapp read these environment variables. Set whatever you need before launching either; defaults are sensible for most setups.
@@ -52,6 +88,9 @@ Both the build script and the webapp read these environment variables. Set whate
 | `TS_DB_PATH` | `%LOCALAPPDATA%/NINA/SchedulerPlugin/schedulerdb.sqlite` | NINA Target Scheduler DB (Windows only, optional). |
 | `ZIP_OUTPUT_DIR` | `./data/exports` | Where TS-sync zips are written. |
 | `HOST` | `127.0.0.1` | Bind host. Use `0.0.0.0` only on a trusted LAN, ACP has no authentication. |
+| `ACP_BIND_HOST` | unset | Bind host for `python app.py`, checked before `HOST`. A launcher sets it to the address it really binds. |
+| `ACP_DATA_DIR` | `./data` | Moves every file ACP writes. See [the data folder](#the-data-folder). Environment only. |
+| `ACP_HOME` | per-OS folder | Replaces the folder that holds `settings.json`. |
 | `PORT` | `5555` | Bind port. |
 | `ACP_EXTENSIONS_DIR` | `%APPDATA%/acp/extensions` (Win) / `~/.config/acp/extensions` | Directory of extension modules. |
 | `ACP_DISABLE_BUNDLED_EXTENSIONS` | unset | Set to `1` to skip the extensions that ship inside ACP (the Target Scheduler sync). |
