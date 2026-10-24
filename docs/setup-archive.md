@@ -77,9 +77,9 @@ ACP can also read a few settings from a file, `settings.json`, so you do not hav
 
 `fits_roots` is a list of folder paths. `manifest_path` and `port` need a restart to take effect. The bind address is never read from the file: `HOST` stays an environment variable so no file or page can open ACP to the network. A scan started by the app, and `python scripts/build_archive_manifest.py` run by hand from a source checkout, both read `fits_roots` from the file.
 
-If the file cannot be parsed, ACP starts on the defaults and saves the unreadable file once as `settings.json.bak`. A second unreadable file does not replace that copy. `GET /api/settings` reports the problem as `"error": "settings_file_corrupt"`.
+If the file cannot be parsed, ACP starts on the defaults and leaves the file alone, and reading never writes anything. The next save copies the unreadable file to `settings.json.bak` first, and refuses to save if that copy fails. A second unreadable file does not replace the first copy. `GET /api/settings` reports the problem as `"error": "settings_file_corrupt"`.
 
-The installed Docker image does not need a file. It sets `FITS_ROOTS`, and the environment keeps winning.
+The Docker image does not need a file. It sets `FITS_ROOTS`, and the environment keeps winning. Inside a container (ACP looks for `/.dockerenv` or `/run/.containerenv`) the settings page is read-only and `PUT` answers 409 `not_writable`, because a file written there is lost when the container is recreated. Configure a container with environment variables.
 
 ### The data folder
 
