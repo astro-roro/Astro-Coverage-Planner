@@ -28,6 +28,8 @@ Endpoints:
 - GET /api/gaps                  multi-source gap-finder (JSON)
 - GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
 - GET /api/scan/status           state of the scheduled archive rescan
+- GET/PUT /api/settings           settings file: folders, sources, locks (docs/api.md)
+- POST /api/settings/adopt-env    copy FITS_ROOTS into the settings file
 - GET /api/version               app version + plans/manifest mtimes, for the NINA plugin's poll loop
 
 Env:
