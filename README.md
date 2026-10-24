@@ -66,6 +66,15 @@ Switch to **Planning mode** in the topbar. Click the sky to drop a target centre
 
 ## Get it running
 
+### Windows: download and run
+
+The simplest way on Windows, with no Python or terminal. Extract it to a short place such as `C:\` (giving `C:\ACP`), because Windows struggles with long paths. [Download ACP-windows-x64.zip](https://github.com/astro-roro/Astro-Coverage-Planner/releases/latest/download/ACP-windows-x64.zip) (not the "Source code" files the release page also lists), right-click it, choose Properties and tick **Unblock**, extract it and double-click `Start ACP.bat`. Extraction takes several minutes. If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**.
+
+ACP offers a Start menu and desktop shortcut the first time, then lives in the notification area (Windows 11 may hide the icon behind the ^ arrow). **Quit ACP** in the icon's menu stops it. The NINA plugin's address is `http://127.0.0.1:5555`, and this build can only be reached from the computer it runs on. [The install guide](docs/install.md#windows-download-and-run) has the details.
+
+### From source
+
+
 You need **Python 3.10+** and **git** installed. If you don't have them yet, follow the [zero-to-hero install guide](docs/install.md) first — separate Windows, macOS, and Linux walkthroughs included.
 
 Once they're there, anywhere with a terminal:
