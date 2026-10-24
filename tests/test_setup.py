@@ -291,6 +291,46 @@ print(json.dumps({"writable": view["writable"], "first_run": view["first_run"],
         self.assertEqual(out["put"], 409)
 
 
+class TestAboutCard(SetupCase):
+    """The "About this install" card tells a container install the truth: the
+    port is the one inside the container, and the settings come from the
+    compose file. The page fills the card in with script, so these tests check
+    the served markup and the script's switch on ``writable``."""
+
+    def page(self):
+        resp = self.client.get("/setup")
+        self.assertEqual(resp.status_code, 200)
+        return resp.get_data(as_text=True)
+
+    def script(self):
+        return (Path(app_module.__file__).parent / "static" / "setup.js").read_text(encoding="utf-8")
+
+    def test_writable_install_keeps_the_settings_file_line_and_shows_it_first(self):
+        html = self.page()
+        self.assertIn('id="infoHintWritable">The port and manifest path are changed in the settings file, '
+                      'then ACP needs a restart.</p>', html)
+        self.assertIn('<dt id="infoPortLabel">Port</dt>', html)
+        # Not hidden in the markup, so a writable install shows it without script help.
+        self.assertNotIn('id="infoHintWritable" hidden', html)
+
+    def test_read_only_install_has_its_own_line_about_the_compose_file(self):
+        html = self.page()
+        self.assertIn('id="infoHintReadOnly" hidden>', html)
+        start = html.index('id="infoHintReadOnly"')
+        line = html[start:html.index("</p>", start)]
+        self.assertIn("compose file", line)
+        self.assertIn("container needs a restart", line)
+        self.assertIn("inside the container", line)
+        self.assertNotIn("settings file", line)
+
+    def test_the_script_switches_label_and_lines_on_read_only(self):
+        js = self.script()
+        self.assertIn('readOnly ? "Port inside the container" : "Port"', js)
+        self.assertIn('show($("infoHintWritable"), !readOnly)', js)
+        self.assertIn('show($("infoHintReadOnly"), readOnly)', js)
+        self.assertIn("const readOnly = s.writable === false;", js)
+
+
 def urlpath(location: str) -> str:
     from urllib.parse import urlparse
     return urlparse(location).path

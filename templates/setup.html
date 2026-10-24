@@ -104,11 +104,12 @@
       <dl class="info-list">
         <dt>Data folder</dt><dd id="infoData"></dd>
         <dt>Manifest file</dt><dd id="infoManifest"></dd>
-        <dt>Port</dt><dd id="infoPort"></dd>
+        <dt id="infoPortLabel">Port</dt><dd id="infoPort"></dd>
         <dt>Version</dt><dd><span id="infoVersion"></span>
           <a href="https://github.com/astro-roro/Astro-Coverage-Planner/releases" target="_blank" rel="noopener">See new releases</a></dd>
       </dl>
-      <p class="setup-hint">The port and manifest path are changed in the settings file, then ACP needs a restart.</p>
+      <p class="setup-hint" id="infoHintWritable">The port and manifest path are changed in the settings file, then ACP needs a restart.</p>
+      <p class="setup-hint" id="infoHintReadOnly" hidden>The port and manifest path are set in the compose file, and the container needs a restart to change them. The port shown is the one inside the container, which can differ from the port you open in your browser.</p>
     </section>
   </main>
 
