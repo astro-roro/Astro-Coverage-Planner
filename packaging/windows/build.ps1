@@ -67,10 +67,23 @@ $pth = @("python$minor.zip", '.', '..\site-packages', '..\app') -join "`r`n"
 [System.IO.File]::WriteAllText((Join-Path $stage "python\python$minor._pth"), $pth + "`r`n")
 
 # --- 3. Dependencies -------------------------------------------------------------
+Step 'Building wheels for packages that publish only a source package'
+# xisf is pure Python with no wheel on PyPI. Build it here, with the build Python,
+# so the install below can stay wheels-only for everything else.
+$wheels = Join-Path $work 'wheels'
+New-Item -ItemType Directory -Force -Path $wheels | Out-Null
+foreach ($line in Get-Content (Join-Path $repo 'packaging\sdist-only.txt')) {
+    $req = ($line -replace '#.*$', '').Trim()
+    if (-not $req) { continue }
+    Run-Native 'python' @('-m', 'pip', 'wheel', '--disable-pip-version-check', '--no-deps',
+        '-c', (Join-Path $repo 'packaging\constraints.txt'), '-w', $wheels, $req)
+}
+if (-not (Get-ChildItem $wheels -Filter '*.whl')) { throw 'No wheels were built from packaging/sdist-only.txt' }
+
 Step 'Installing dependencies (wheels only)'
 $site = Join-Path $stage 'site-packages'
 Run-Native 'python' @('-m', 'pip', 'install', '--disable-pip-version-check', '--target', $site,
-    '--only-binary=:all:', '-c', (Join-Path $repo 'packaging\constraints.txt'),
+    '--only-binary=:all:', '--find-links', $wheels, '-c', (Join-Path $repo 'packaging\constraints.txt'),
     '-r', (Join-Path $repo 'requirements.txt'), '-r', (Join-Path $repo 'requirements-packaged.txt'))
 
 # --- 4. Trim ----------------------------------------------------------------------

@@ -1,0 +1,6 @@
+# Packages that publish no wheel on PyPI, only a source package. build.ps1 turns each
+# into a wheel with the build Python first (pip wheel --no-deps), then installs it with
+# everything else, which stays wheels-only. Keep this list to packages that are pure
+# Python: a compiled one would need a compiler on the runner.
+# One requirement per line, pinned the same as in constraints.txt.
+xisf==0.9.7
