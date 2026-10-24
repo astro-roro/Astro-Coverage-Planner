@@ -1,0 +1,115 @@
+name: Windows download
+
+# Builds ACP-windows-x64.zip, smoke-tests the unzipped result, and on a version
+# tag attaches it to the GitHub release. Spec: docs/specs/windows-download-and-setup.md,
+# sections 3.7 and 3.9.
+#
+# Release procedure: bump VERSION in app.py, commit, tag v<VERSION>, push the tag.
+# The tag must equal VERSION or the build fails. The first release is 1.0.0.
+
+on:
+  push:
+    branches: [main, 'packaging/**']
+    tags: ['v*']
+  pull_request:
+    # A change to app.py or requirements.txt can break the zip, so the filter
+    # names what is excluded and not what is included.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+  # Never cancel a tag run half way through a release.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Build the zip
+        shell: pwsh
+        run: |
+          $tag = ''
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $tag = $env:GITHUB_REF_NAME }
+          ./packaging/windows/build.ps1 -OutDir dist -Tag $tag
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acp-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: acp-windows
+          path: dist
+
+      - name: Unzip to a different folder from the build
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'smoke-extract'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          # bsdtar reads zip files and is much faster than Expand-Archive on this many files.
+          tar -xf dist\ACP-windows-x64.zip -C $dest
+          if ($LASTEXITCODE -ne 0) { throw 'unzip failed' }
+          "ACP_PACKAGE=$dest\ACP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $version = (Select-String -Path app.py -Pattern '^VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "ACP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Smoke test with the zip's own Python (K1 to K4, K6, K8)
+        shell: pwsh
+        run: |
+          & "$env:ACP_PACKAGE\python\python.exe" -X utf8 -B packaging\smoke.py `
+            --package "$env:ACP_PACKAGE" --version "$env:ACP_VERSION" --tray --windows-checks
+          if ($LASTEXITCODE -ne 0) { throw 'smoke test failed' }
+
+      - name: Start through Start ACP.bat and through a shortcut (W2)
+        shell: pwsh
+        run: ./packaging/windows/smoke-start.ps1 -Package "$env:ACP_PACKAGE"
+
+  release:
+    # Only on a version tag, and only after the smoke test passed. The one job
+    # that can write to the repository.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: acp-windows
+          path: dist
+
+      - name: Create the release if it does not exist, then upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The Mac and Linux workflows do the same, so whichever finishes first
+          # creates the release and the others only upload.
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes || \
+              gh release view "$TAG" --repo "$REPO" >/dev/null
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            dist/ACP-windows-x64.zip dist/SHA256SUMS-windows.txt

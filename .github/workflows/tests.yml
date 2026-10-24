@@ -29,7 +29,7 @@ jobs:
       - name: Audit dependencies for known vulnerabilities
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
-          inputs: requirements.txt
+          inputs: requirements.txt requirements-packaged.txt
 
       - name: Run tests
         env:
