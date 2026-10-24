@@ -91,6 +91,7 @@ except ImportError:
         "Install with `pip install mocpy>=0.13` to enable /api/moc/<id>."
     )
 
+import acp_settings
 import activity
 import balancer
 import filter_rows as fr
@@ -110,37 +111,39 @@ MAX_ACQUIRED_HOURS = 100_000.0
 VERSION = "1.0.0"
 
 REPO_ROOT = Path(__file__).resolve().parent
-MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH", REPO_ROOT / "data" / "manifest.json"))
-CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
-GEAR_PATH = Path(os.environ.get("GEAR_PATH", REPO_ROOT / "data" / "gear.json"))
-PLANS_PATH = Path(os.environ.get("PLANS_PATH", REPO_ROOT / "data" / "plans.json"))
+data_path = acp_settings.data_path
+MANIFEST_PATH = Path(acp_settings.resolve_all()["manifest_path"]["value"]
+                     or data_path("manifest.json"))
+CATALOGS_PATH = Path(os.environ.get("CATALOGS_PATH", data_path("catalogs.json")))
+GEAR_PATH = Path(os.environ.get("GEAR_PATH", data_path("gear.json")))
+PLANS_PATH = Path(os.environ.get("PLANS_PATH", data_path("plans.json")))
 # Last gear fingerprint each NINA profile reported to /api/plans/match.
 FINGERPRINTS_PATH = Path(os.environ.get(
-    "FINGERPRINTS_PATH", REPO_ROOT / "data" / "fingerprints.json"))
+    "FINGERPRINTS_PATH", data_path("fingerprints.json")))
 # Where the live-page publisher writes shooting.json before uploading it.
-LIVE_OUT_DIR = Path(os.environ.get("ACP_LIVE_OUT_DIR", REPO_ROOT / "data" / "live"))
-SITES_PATH = Path(os.environ.get("SITES_PATH", REPO_ROOT / "data" / "sites.json"))
+LIVE_OUT_DIR = Path(os.environ.get("ACP_LIVE_OUT_DIR", data_path("live")))
+SITES_PATH = Path(os.environ.get("SITES_PATH", data_path("sites.json")))
 DESTINATIONS_PATH = Path(os.environ.get(
-    "DESTINATIONS_PATH", REPO_ROOT / "data" / "destinations.json"))
+    "DESTINATIONS_PATH", data_path("destinations.json")))
 SAVED_SEARCHES_PATH = Path(os.environ.get(
-    "SAVED_SEARCHES_PATH", REPO_ROOT / "data" / "saved_searches.json"))
+    "SAVED_SEARCHES_PATH", data_path("saved_searches.json")))
 TARGET_OVERRIDES_PATH = Path(os.environ.get(
-    "TARGET_OVERRIDES_PATH", REPO_ROOT / "data" / "target_overrides.json"))
+    "TARGET_OVERRIDES_PATH", data_path("target_overrides.json")))
 # Plans, projects and coverage targets the user has hidden (test shots and
 # the like). Its own file, not a key in plans.json, because the plan save
 # route replaces the whole plan and would drop a flag the editor never sent.
-HIDDEN_PATH = Path(os.environ.get("HIDDEN_PATH", REPO_ROOT / "data" / "hidden.json"))
+HIDDEN_PATH = Path(os.environ.get("HIDDEN_PATH", data_path("hidden.json")))
 TS_TEMPLATES_PATH = Path(os.environ.get(
-    "TS_TEMPLATES_PATH", REPO_ROOT / "data" / "ts_templates.json"))
+    "TS_TEMPLATES_PATH", data_path("ts_templates.json")))
 TS_DB_PATH = os.environ.get(
     "TS_DB_PATH",
     str(Path(os.environ.get("LOCALAPPDATA", "")) / "NINA" / "SchedulerPlugin" / "schedulerdb.sqlite"),
 )
-ZIP_OUTPUT_DIR = Path(os.environ.get("ZIP_OUTPUT_DIR", REPO_ROOT / "data" / "exports"))
+ZIP_OUTPUT_DIR = Path(os.environ.get("ZIP_OUTPUT_DIR", data_path("exports")))
 SURVEYS_PATH = Path(os.environ.get("ACP_SURVEYS_PATH", REPO_ROOT / "data" / "surveys.json"))
 CATALOG_REGISTRY_PATH = Path(os.environ.get(
     "ACP_CATALOG_REGISTRY", REPO_ROOT / "data" / "catalog_registry.json"))
-MOC_CACHE_DIR = Path(os.environ.get("ACP_MOC_CACHE_DIR", REPO_ROOT / "data" / "moc_cache"))
+MOC_CACHE_DIR = Path(os.environ.get("ACP_MOC_CACHE_DIR", data_path("moc_cache")))
 SCAN_SCRIPT_PATH = REPO_ROOT / "scripts" / "build_archive_manifest.py"
 
 # Hostname allowlist for MOC fetches. Both entries point at the same CDS
@@ -6943,7 +6946,8 @@ def _run_scan_subprocess(args: list[str]) -> int:
     reading and a decode error here would lose the reason a scan failed.
     """
     proc = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True,
-                          text=True, encoding="utf-8", errors="replace")
+                          text=True, encoding="utf-8", errors="replace",
+                          env=_scan_subprocess_env())
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
         logging.error("scheduled scan failed (exit %s):\n%s",
@@ -6954,22 +6958,72 @@ def _run_scan_subprocess(args: list[str]) -> int:
     return proc.returncode
 
 
-def run_scan_now(trigger: str = "cron") -> bool:
-    """Run one scan, unless one is already running.
+def _scan_subprocess_env() -> dict:
+    """The builder's environment: ours, plus the effective folders and manifest.
 
-    Returns False when a scan was already in flight. Two builders writing the
-    same manifest and the same scan cache at once would race each other's
-    output, and on a big archive the overlap is likely rather than theoretical,
-    so a second start is refused rather than queued.
+    The builder reads the settings file itself when run by hand, but the app
+    hands it the values it resolved so both agree for a scan started here. The
+    manifest is the path this process reads, not a fresh resolve, so a file
+    edited since startup cannot send the scan somewhere the app will not look.
+    FITS_ROOTS is left alone when nothing is effective, so the builder keeps
+    its own fallback root for the maintainer's setup.
     """
+    env = dict(os.environ)
+    roots = acp_settings.effective("fits_roots")
+    if roots:
+        env["FITS_ROOTS"] = ";".join(roots)
+    env["MANIFEST_PATH"] = str(MANIFEST_PATH)
+    return env
+
+
+def _packaged() -> bool:
+    return (os.environ.get("ACP_PACKAGED") or "").strip() == "1"
+
+
+def claim_scan(trigger: str = "cron") -> str:
+    """Take the one scan slot, under the same lock that guards the state.
+
+    Returns "claimed", "running" (a scan is already in flight) or "no_roots".
+    Two builders writing the same manifest and the same scan cache at once
+    would race each other's output, and on a big archive the overlap is likely
+    rather than theoretical, so a second start is refused rather than queued.
+
+    A scan from the page, and any scan in packaged mode, refuses to start with
+    no folders effective: the builder's fallback root belongs to the
+    maintainer's machine and must never be scanned by accident. Source and
+    Docker scheduled scans behave as before.
+    """
+    must_have_roots = trigger == "page" or _packaged()
+    has_roots = bool(acp_settings.effective("fits_roots"))
     with SCAN_STATE_LOCK:
         if _scan_state["running"]:
             logging.warning("scan already running; skipping %s trigger", trigger)
-            return False
+            return "running"
+        if must_have_roots and not has_roots:
+            logging.warning("no image folders set; skipping %s scan", trigger)
+            return "no_roots"
         _scan_state["running"] = True
         _scan_state["last_start"] = datetime.now().isoformat(timespec="seconds")
         _scan_state["last_finish"] = None
         _scan_state["last_trigger"] = trigger
+    return "claimed"
+
+
+def run_scan_now(trigger: str = "cron") -> bool:
+    """Claim the scan slot and run one scan in this thread.
+
+    Returns False when no scan ran: one was already in flight, or there were
+    no folders to read where that is required (see claim_scan).
+    """
+    if claim_scan(trigger) != "claimed":
+        return False
+    run_claimed_scan()
+    return True
+
+
+def run_claimed_scan() -> None:
+    """Run the scan whose slot claim_scan took. The route claims first so it
+    can answer 202 or 409 at once, then hands this to a worker thread."""
     code = None
     before = _manifest_snapshot() if activity.enabled() else None
     try:
@@ -6983,7 +7037,6 @@ def run_scan_now(trigger: str = "cron") -> bool:
             _scan_state["last_finish"] = datetime.now().isoformat(timespec="seconds")
             _scan_state["last_exit_code"] = code
     _run_activity(lambda: _record_scan_activity(before, code == 0))
-    return True
 
 
 def _manifest_snapshot() -> dict | None:
@@ -7112,7 +7165,7 @@ def start_scan_scheduler(expr: str | None = None) -> bool:
     calls it twice) cannot end up with two threads racing the same builder.
     """
     global _scan_scheduler_thread, _scan_cron_expr
-    expr = (expr if expr is not None else os.environ.get("ACP_SCAN_CRON", "")).strip()
+    expr = (expr if expr is not None else acp_settings.effective("scan_cron") or "").strip()
     if not expr:
         return False
     try:
@@ -7157,6 +7210,187 @@ def stop_scan_scheduler() -> None:
 def api_scan_status():
     """Last start, last finish, last exit code, and whether a scan is running."""
     return jsonify(scan_status())
+
+
+# --- Settings (docs/specs/windows-download-and-setup.md, sections 1 and 2) ----
+#
+# The settings file holds the image folders and the shortcuts answer. The
+# environment still wins, so a Docker deployment sets FITS_ROOTS and sees the
+# page lock. Routes that reveal a local path or change state are "restricted":
+# see _restricted_refusal.
+
+_LOOPBACK_ADDRS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "::ffff:127.0.0.1"})
+_SETTINGS_WRITABLE_KEYS = ("fits_roots", "shortcuts")
+
+
+def _shortcuts_available() -> bool:
+    """Phase 2 turns this on for the packaged Windows and Linux builds."""
+    return False
+
+
+def _client_is_loopback() -> bool:
+    """A request from this machine that no proxy relayed. A proxy on the same
+    machine makes every client look like 127.0.0.1, so any X-Forwarded-For
+    header means the address says nothing."""
+    return (request.remote_addr in _LOOPBACK_ADDRS
+            and "X-Forwarded-For" not in request.headers)
+
+
+def _host_is_loopback() -> bool:
+    """The Host header names this machine. A page on another site that
+    rebinds its DNS name to 127.0.0.1 still sends its own name here."""
+    raw = request.headers.get("Host", "").strip().lower()
+    if raw.startswith("["):
+        host = raw[1:].split("]", 1)[0]
+    elif raw.count(":") == 1:
+        host = raw.split(":", 1)[0]
+    else:
+        host = raw
+    return host in _LOOPBACK_HOSTS
+
+
+def _authorised_client() -> bool:
+    """With a token set the gate has already demanded a bearer header or the
+    session cookie, so the request is authorised. Without one, only a
+    loopback client addressing us by a loopback name is."""
+    if _api_auth_token():
+        return True
+    return _client_is_loopback() and _host_is_loopback()
+
+
+def _restricted_refusal():
+    """Refuse a restricted route that takes a JSON body, or return None.
+
+    Order: who is asking, then which name they used, then the content type,
+    then the Origin. A browser form cannot send application/json without a
+    preflight ACP never answers, so the type check stops cross-site writes
+    even from a page that gets past the Origin test.
+    """
+    if not _api_auth_token():
+        if not _client_is_loopback():
+            return jsonify({"error": "forbidden"}), 403
+        if not _host_is_loopback():
+            return jsonify({"error": "bad_host"}), 400
+    if request.mimetype != "application/json":
+        return jsonify({"error": "unsupported_media_type"}), 415
+    return _origin_refused()
+
+
+def _settings_state():
+    """The settings file, its path and any load error, read fresh."""
+    path = acp_settings.settings_file()
+    data, error = acp_settings.load_file(path)
+    return path, data, error
+
+
+def _settings_view(authorised: bool) -> dict:
+    path, data, error = _settings_state()
+    resolved = acp_settings.resolve_all(file_data=data)
+    keys = {}
+    for name, info in resolved.items():
+        entry = {"source": info["source"], "locked": info["locked"]}
+        hidden = name in ("fits_roots", "manifest_path") and not authorised
+        if not hidden:
+            entry["value"] = info["value"]
+        keys[name] = entry
+    if authorised:
+        # The manifest the app is reading, which a restart would change.
+        keys["manifest_path"]["value"] = str(MANIFEST_PATH)
+    view = {
+        "version": VERSION,
+        "first_run": not resolved["fits_roots"]["value"] and not MANIFEST_PATH.exists(),
+        "writable": acp_settings.is_writable(path),
+        "error": "settings_file_corrupt" if error == "corrupt" else error,
+        "shortcuts": {"available": _shortcuts_available(),
+                      "value": acp_settings.shortcuts_value(data)},
+        "keys": keys,
+    }
+    if authorised:
+        view["data_dir"] = str(acp_settings.data_dir())
+    return view
+
+
+def _save_settings(path, updates: dict):
+    """Write the file, refusing a change of image folders while a scan runs.
+    Holds the lock the scan claim uses, so a scan cannot start between the
+    check and the write."""
+    try:
+        with SCAN_STATE_LOCK:
+            if "fits_roots" in updates and _scan_state["running"]:
+                return jsonify({"error": "scan_running"}), 409
+            acp_settings.save(path, updates)
+    except OSError:
+        logging.exception("could not write the settings file")
+        return jsonify({"error": "write_failed"}), 500
+    return None
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings():
+    return jsonify(_settings_view(_authorised_client()))
+
+
+@app.route("/api/settings", methods=["PUT"])
+def api_put_settings():
+    refused = _restricted_refusal()
+    if refused:
+        return refused
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not body:
+        return jsonify({"error": "bad_request"}), 400
+    if any(key not in _SETTINGS_WRITABLE_KEYS for key in body):
+        return jsonify({"error": "unknown_key"}), 400
+    path, _, _ = _settings_state()
+    if not acp_settings.is_writable(path):
+        return jsonify({"error": "not_writable"}), 409
+
+    updates: dict = {}
+    if "shortcuts" in body:
+        value = body["shortcuts"]
+        if value is not None and not isinstance(value, bool):
+            return jsonify({"error": "bad_request"}), 400
+        if not _shortcuts_available():
+            return jsonify({"error": "unavailable"}), 400
+        updates["shortcuts"] = value
+    if "fits_roots" in body:
+        raw = body["fits_roots"]
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            return jsonify({"error": "bad_request"}), 400
+        if acp_settings.resolve_all()["fits_roots"]["locked"]:
+            return jsonify({"error": "locked_by_env", "key": "fits_roots"}), 409
+        roots, code = acp_settings.validate_roots(raw)
+        if code:
+            return jsonify({"error": code}), 400
+        updates["fits_roots"] = roots
+
+    failed = _save_settings(path, updates)
+    if failed:
+        return failed
+    return jsonify(_settings_view(True))
+
+
+@app.route("/api/settings/adopt-env", methods=["POST"])
+def api_settings_adopt_env():
+    """Copy the folders FITS_ROOTS names into the settings file. The variable
+    still wins until the user removes it, so this changes nothing they can
+    see today; it makes the file ready for the day they do."""
+    refused = _restricted_refusal()
+    if refused:
+        return refused
+    path, _, _ = _settings_state()
+    if not acp_settings.is_writable(path):
+        return jsonify({"error": "not_writable"}), 409
+    raw = acp_settings.parse_roots(os.environ.get("FITS_ROOTS") or "")
+    if not raw:
+        return jsonify({"error": "nothing_to_adopt"}), 400
+    roots, code = acp_settings.validate_roots(raw)
+    if code:
+        return jsonify({"error": code}), 400
+    failed = _save_settings(path, {"fits_roots": roots})
+    if failed:
+        return failed
+    return jsonify(_settings_view(True))
 
 
 
@@ -7633,8 +7867,25 @@ start_scan_scheduler()
 start_balancer_scheduler()
 
 
+def effective_port(env=None) -> int:
+    """PORT, then the settings file, then 5555. A bad value is skipped."""
+    return acp_settings.effective("port", env)
+
+
+def effective_bind_host(env=None) -> str:
+    """ACP_BIND_HOST, then HOST, then loopback. Never the settings file: no file
+    or page may open ACP to the network. A launcher sets ACP_BIND_HOST to what
+    it really binds, since it ignores HOST."""
+    env = os.environ if env is None else env
+    for name in ("ACP_BIND_HOST", "HOST"):
+        value = (env.get(name) or "").strip()
+        if value:
+            return value
+    return "127.0.0.1"
+
+
 if __name__ == "__main__":
-    host = os.environ.get("HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT", 5555))
+    host = effective_bind_host()
+    port = effective_port()
     print(f"Astro Coverage Planner -> http://{host}:{port}")
     app.run(host=host, port=port, debug=False)

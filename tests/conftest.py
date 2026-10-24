@@ -22,3 +22,6 @@ os.environ.setdefault("ACP_DISABLE_BUNDLED_EXTENSIONS", "1")
 _dir = tempfile.mkdtemp(prefix="acp-activity-tests-")
 atexit.register(shutil.rmtree, _dir, ignore_errors=True)
 os.environ["ACP_ACTIVITY_DB"] = os.path.join(_dir, "activity.sqlite")
+# Keep the settings file out of the developer's real profile. Tests that need a
+# settings file point ACP_HOME at their own folder.
+os.environ.setdefault("ACP_HOME", os.path.join(_dir, "acp-home"))

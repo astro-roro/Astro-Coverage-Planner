@@ -30,9 +30,14 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 
 import os
+import sys
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CACHE_PATH = Path(os.environ.get("CATALOGS_PATH", REPO_ROOT / "data" / "catalogs.json"))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+import acp_settings  # noqa: E402
+
+CACHE_PATH = Path(os.environ.get("CATALOGS_PATH", acp_settings.data_path("catalogs.json")))
 CACHE_DIR = CACHE_PATH.parent
 
 
