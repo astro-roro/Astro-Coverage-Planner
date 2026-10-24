@@ -95,6 +95,7 @@ MANIFEST_PATH = Path(acp_settings.effective("manifest_path")
                      or acp_settings.data_path("manifest.json"))
 REPORT_DIR = MANIFEST_PATH.parent
 SUMMARY_PATH = REPORT_DIR / "archive_manifest_summary.md"
+PROGRESS_PATH = REPORT_DIR / "scan_progress.json"
 
 # Ledger of every target number ever issued, so a rescan keeps each target's
 # number (see scripts/target_ids.py).
@@ -2176,7 +2177,61 @@ class ArchiveWalk(NamedTuple):
     skipped_links: list  # absolute paths of directory links not followed
 
 
-def glob_archive(roots, extensions, log=print):
+
+class ScanProgress:
+    """Where the scan is, for the setup page's progress panel.
+
+    Writes ``scan_progress.json`` beside the manifest: the stage, how many files
+    it has seen and a timestamp, never a path. The app reads it, and the app's
+    status route is unauthenticated in the stock configuration. A write is
+    atomic and throttled to one every two seconds unless the stage changes. A
+    failed write is logged once and never fails the scan: on Windows
+    ``os.replace`` fails while a reader holds the file, and a progress bar is
+    not worth a half-finished scan.
+    """
+
+    EVERY = 2.0
+
+    def __init__(self, path: Path, clock=time.monotonic):
+        self.path = Path(path)
+        self.clock = clock
+        self.stage: str | None = None
+        self.files_seen = 0
+        self._last_write: float | None = None
+        self._warned = False
+
+    def update(self, stage: str, files_seen: int | None = None) -> None:
+        if files_seen is not None:
+            self.files_seen = int(files_seen)
+        changed = stage != self.stage
+        self.stage = stage
+        now = self.clock()
+        if not changed and self._last_write is not None and now - self._last_write < self.EVERY:
+            return
+        self._last_write = now
+        self._write()
+
+    def _write(self) -> None:
+        doc = {"stage": self.stage, "files_seen": self.files_seen,
+               "updated": datetime.now().isoformat(timespec="seconds")}
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(doc), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError as err:
+            if not self._warned:
+                self._warned = True
+                print(f"  WARN: could not write the progress file: {type(err).__name__}")
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+PROGRESS = ScanProgress(PROGRESS_PATH)
+
+
+def glob_archive(roots, extensions, log=print, on_file=None):
     """Walk the roots and collect every file with a matching extension.
 
     Returns an ``ArchiveWalk``. Each file is ``(Path, size_bytes, mtime)``; the
@@ -2270,6 +2325,8 @@ def glob_archive(roots, extensions, log=print):
                             roots),
                     })
                 files.append((p, sz, mtime))
+                if on_file is not None:
+                    on_file(len(files))
         log(f"  scan {root}: {len(files)} files so far ({time.time()-t0:.1f}s)")
     for d in unreadable_dirs:
         log(f"  WARN: could not read {d['path']}: {d['error']}. "
@@ -4130,6 +4187,7 @@ def main():
 
     print(f"[{time.time()-t0:6.1f}s] Phase 1: Deep archive scan")
     print(f"[{time.time()-t0:6.1f}s] Step 1: Globbing file tree")
+    PROGRESS.update("listing", 0)
     scan_roots = list(NAS_ROOTS)
     if FULL_MASTERS.exists():
         scan_roots.append(FULL_MASTERS)
@@ -4144,7 +4202,8 @@ def main():
         sys.exit(1)
     walk = glob_archive(
         scan_roots, EXTENSIONS,
-        log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"))
+        log=lambda m: print(f"[{time.time()-t0:6.1f}s]{m}"),
+        on_file=lambda n: PROGRESS.update("listing", n))
     files, unreadable_dirs = walk.files, walk.unreadable_dirs
     # Keyed by path so the cache write can ask about one file cheaply.
     stat_failed_paths = {f["path"] for f in walk.stat_failures}
@@ -4262,6 +4321,7 @@ def main():
         print(f"[{time.time()-t0:6.1f}s]   --refresh-rotation: re-reading "
               f"{rotation_rereads} solved master(s) cached without an angle")
 
+    PROGRESS.update("reading", cache_hits)
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         futures = {ex.submit(_read_one, f): f for f in cold}
         done = 0
@@ -4292,6 +4352,7 @@ def main():
             except Exception as e:
                 entry["error"] = f"{type(e).__name__}: {e}"
             done += 1
+            PROGRESS.update("reading", cache_hits + done)
             if done % 500 == 0:
                 print(f"[{time.time()-t0:6.1f}s]   headers read {done}/{len(cold)}")
     cache_dropped = len([k for k in old_cache if k not in new_cache])
@@ -4304,6 +4365,7 @@ def main():
 
     # Step 3b: classify each file by its OWN header + path fallback.
     print(f"[{time.time()-t0:6.1f}s] Step 3b: Post-read classification (IMAGETYP-first)")
+    PROGRESS.update("matching", cache_hits + len(cold))
     roles_count = defaultdict(int)
     n_unreadable = 0
     # Grouped by the error that stopped the read, the way wcs_read_errors is:
@@ -4794,6 +4856,7 @@ def main():
 
     # Step 7: Write manifest
     print(f"[{time.time()-t0:6.1f}s] Step 7: Writing manifest")
+    PROGRESS.update("writing", cache_hits + len(cold))
     hour_flags = build_integrity_hour_flags(
         targets, uncoordinated_captured_hours=uncoordinated_hours_total)
     manifest = {
