@@ -84,7 +84,7 @@ Nothing needs it. The NINA plugin is a desktop HTTP client and never sees CORS, 
 
 The routes behind the settings file described in [the archive setup guide](setup-archive.md#the-settings-file).
 
-`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to), `error` (`null`, or `settings_file_corrupt`), `shortcuts` (`{available, value}`) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
+`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to, and always false inside a container), `error` (`null`, or `settings_file_corrupt`), `shortcuts` (`{available, value}`) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
 
 An authorised client is one that passed the access gate with the bearer token or session cookie, or, when `ACP_API_TOKEN` is not set, one connecting from the same machine (`127.0.0.1`, `::1`) with no `X-Forwarded-For` header and a `Host` of `localhost`, `127.0.0.1` or `[::1]`. The `Host` rule stops a web page on another site from reaching ACP through a DNS name it has pointed at your machine.
 

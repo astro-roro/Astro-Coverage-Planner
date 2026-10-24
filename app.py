@@ -7043,8 +7043,10 @@ def claim_scan(trigger: str = "cron") -> str:
     """
     global _scan_started_at
     must_have_roots = trigger == "page" or _packaged()
-    has_roots = bool(acp_settings.effective("fits_roots"))
     with SCAN_STATE_LOCK:
+        # Read inside the lock: a PUT that clears the folders takes the same
+        # lock, so it cannot slip between this check and the claim.
+        has_roots = bool(acp_settings.effective("fits_roots"))
         if _scan_state["running"]:
             logging.warning("scan already running; skipping %s trigger", trigger)
             return "running"

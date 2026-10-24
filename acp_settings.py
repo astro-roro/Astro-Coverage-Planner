@@ -106,10 +106,25 @@ def data_path(name: str, env: Mapping[str, str] | None = None) -> Path:
     return data_dir(env) / name
 
 
+# Files a container runtime creates inside every container. Docker makes
+# /.dockerenv and Podman makes /run/.containerenv. Checking them needs no change
+# to the image, so images already published and running read as containers too.
+CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+
+def in_container() -> bool:
+    """Whether ACP is running inside a container. A settings file written there
+    lives in the container's own layer, which Watchtower or a compose pull
+    throws away, so the setup page is read-only: a container is configured by
+    environment variables."""
+    return any(os.path.exists(marker) for marker in CONTAINER_MARKERS)
+
+
 def is_writable(path: PurePath | None) -> bool:
-    """Whether a file at ``path`` could be created or replaced. Checks the
-    nearest folder that exists, so it never creates anything."""
-    if path is None:
+    """Whether a file at ``path`` could be created or replaced, and whether
+    keeping one there makes sense (never in a container). Checks the nearest
+    folder that exists, so it never creates anything."""
+    if path is None or in_container():
         return False
     folder = Path(path).parent
     while not folder.exists():
@@ -126,10 +141,10 @@ def is_writable(path: PurePath | None) -> bool:
 def load_file(path: PurePath | None) -> tuple[dict, str | None]:
     """The file's contents and an error code. No file is ``({}, None)``.
 
-    A corrupt file is never overwritten here. ACP carries on with defaults, and
-    the bad file is saved once as ``settings.json.bak``: a second corrupt file
-    does not replace the first copy, because the first is the one the user
-    most likely still cares about.
+    Reading never writes. A corrupt file gives ``({}, "corrupt")`` and ACP
+    carries on with defaults; ``save`` takes the one backup before it replaces
+    the bad file. A read that wrote would let any client that can call
+    ``GET /api/settings`` put files on the disk.
     """
     if path is None:
         return {}, None
@@ -146,26 +161,34 @@ def load_file(path: PurePath | None) -> tuple[dict, str | None]:
         data = None
     if isinstance(data, dict):
         return data, None
+    return {}, "corrupt"
+
+
+def _back_up_corrupt(path: Path) -> None:
+    """Save the bad file once as ``settings.json.bak``. A second corrupt file
+    does not replace the first copy, because the first is the one the user
+    most likely still cares about. Raises OSError if the copy fails, so the
+    caller never replaces a file it could not save."""
     backup = path.with_name(path.name + ".bak")
     if not backup.exists():
-        try:
-            shutil.copyfile(path, backup)
-        except OSError:
-            pass
-    return {}, "corrupt"
+        shutil.copyfile(path, backup)
 
 
 def save(path: PurePath, updates: Mapping) -> dict:
     """Merge ``updates`` into the file atomically and return what was written.
-    Keys this version does not know are kept."""
+    Keys this version does not know are kept. A corrupt file is backed up
+    first, and the write is refused (OSError) if the backup fails."""
     scripts = str(REPO_ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
     import target_ids
 
-    current, _ = load_file(path)
+    path = Path(path)
+    current, error = load_file(path)
+    if error == "corrupt":
+        _back_up_corrupt(path)
     merged = {**current, **updates, "version": SETTINGS_VERSION}
-    target_ids.atomic_write_json(Path(path), merged, indent=2)
+    target_ids.atomic_write_json(path, merged, indent=2)
     return merged
 
 
