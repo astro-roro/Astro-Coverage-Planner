@@ -13,6 +13,8 @@
       <span class="meta">{{ total_targets }} targets · {{ total_hours }}h · scan {{ scan_date }}</span>
     </div>
 
+    <a class="settings-link" href="/setup" title="Image folders, scanning and install details">Settings</a>
+
     <div class="mode-toggle" role="tablist" aria-label="App mode">
       <button id="modeCoverage" class="mode-btn active" role="tab" aria-selected="true">Coverage</button>
       <button id="modePlanning" class="mode-btn"          role="tab" aria-selected="false">Planning</button>
@@ -74,11 +76,12 @@
       <div id="onboardingBanner" class="onboarding-banner" hidden>
         <div class="onboarding-banner-inner">
           <h2>Welcome to Astro Coverage Planner</h2>
-          <p>You don't have a manifest yet — your imaging archive will appear here once you build one.</p>
+          <p>You don't have a manifest yet. Your imaging archive will appear here once ACP has scanned it.</p>
           <p class="onboarding-step">
-            <strong>Next step:</strong> point ACP at your FITS/XISF library. See the
-            <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">archive setup guide</a>
-            for the manifest builder. Once it's done, refresh this page.
+            <strong>Next step:</strong> open <a href="/setup">Settings</a>, add the folder that
+            holds your FITS/XISF library and press Scan. When the scan finishes, the map fills in.
+            The <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">archive setup guide</a>
+            covers the command line, Docker and scheduled scans.
           </p>
           <p class="onboarding-demo">
             Just want to look around? Run
@@ -295,7 +298,7 @@
             </ul>
             <h4>Set up outside the app</h4>
             <ul class="help-list">
-              <li>Library scans, and scans on a schedule, run from the command line. See <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">setting up your archive</a>.</li>
+              <li>Your image folders and library scans are on the <a href="/setup">Settings</a> page. Scans on a schedule run from the command line, see <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">setting up your archive</a>.</li>
               <li>A friend's coverage loads as a layer through a setting. See <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/sharing.md#how-to-consume-one" target="_blank" rel="noopener">sharing coverage</a>.</li>
               <li>The public page of what you are shooting is published by a script. See <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/sharing.md#publishing-a-live-page" target="_blank" rel="noopener">publishing a live page</a>.</li>
             </ul>

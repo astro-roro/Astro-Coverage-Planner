@@ -2832,3 +2832,15 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   width: 100%;
 }
 .acp-modal :is(button, input, select):focus-visible { outline: 2px solid #4da6ff; outline-offset: 1px; }
+
+/* Link from the map's header to the setup and settings page. */
+.settings-link {
+  color: #a2aec2;
+  font-size: 12px;
+  text-decoration: none;
+  padding: 3px 8px;
+  border: 1px solid #2a3246;
+  border-radius: 3px;
+  background: #1a2030;
+}
+.settings-link:hover { background: #212939; color: #e0e4ea; }
