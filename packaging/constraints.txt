@@ -4,11 +4,12 @@
 # Dependabot updates this file (the pip entry for /packaging in .github/dependabot.yml)
 # and the smoke test in release-windows.yml catches a bad update.
 #
-# First draft, 24 October 2026: taken from the maintainer's virtualenv, with the
-# direct dependencies raised to the floor in requirements.txt where that venv was
-# behind, and the Windows-only packages added by hand. Nobody has run an install
-# against it for Python 3.12 on Windows yet. If the first release-windows run says
-# a pin has no wheel, change that line to the nearest version that has one.
+# Versions resolved against PyPI for Python 3.12 on win_amd64 on 24 October 2026
+# (first draft, taken from a macOS venv, failed CI on astropy-iers-data). xisf,
+# pystray, zstandard and the Windows-only lines were not part of that resolution and
+# are kept from the first draft: xisf has no wheel and is built by build.ps1 (see
+# sdist-only.txt), and zstandard is needed by xisf. If the install step reports a pin
+# with no wheel or a conflict, move that line to the nearest version that resolves.
 #
 # python-xlib (Linux) and pyobjc-framework-Quartz (macOS) are pinned when
 # phases 3 and 4 first build for those platforms.
@@ -23,25 +24,25 @@ mocpy==0.20.0
 xisf==0.9.7
 waitress==3.0.2
 croniter==6.2.4
-paramiko==5.0.0
+paramiko==5.1.0
 tzdata==2026.5; sys_platform == "win32"
 
 # Direct dependencies (requirements-packaged.txt)
 pystray==0.19.5
-pillow==12.3.0
+pillow==13.0.0
 
 # Everything those pull in
-astropy-iers-data==0.2026.8.24.0.24.29
+astropy-iers-data==0.2026.10.19.0.52.1
 bcrypt==5.0.0
 beautifulsoup4==4.15.0
 blinker==1.9.0
-certifi==2026.7.22
+certifi==2026.10.23
 cffi==2.1.1
-charset-normalizer==3.5.1
+charset-normalizer==3.5.2
 click==8.5.0
-cryptography==50.0.1
+cryptography==50.0.2
 html5lib==1.1
-idna==3.19
+idna==3.20
 invoke==3.0.3
 itsdangerous==2.2.0
 jaraco.classes==3.4.0
@@ -50,22 +51,22 @@ jaraco.functools==4.6.0
 jinja2==3.1.6
 keyring==25.7.0
 lz4==4.4.5
-markupsafe==3.0.3
-more-itertools==11.1.0
+markupsafe==3.0.4
+more-itertools==11.2.1
 packaging==26.3
-pycparser==3.0
+pycparser==3.12
 pyerfa==2.0.1.5
 pynacl==1.6.2
-python-dateutil==2.9.0.post0
+python-dateutil==3.0.0
 pyvo==1.9.1
 pyyaml==6.0.3
 requests==2.34.2
 six==1.17.0
-soupsieve==2.9.2
+soupsieve==3.0.4
 typing-extensions==4.16.0
-urllib3==2.7.0
+urllib3==2.8.0
 webencodings==0.6.1
-werkzeug==3.1.8
+werkzeug==3.1.9
 zstandard==0.25.0
 
 # Windows only
