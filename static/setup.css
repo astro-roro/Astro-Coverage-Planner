@@ -109,6 +109,7 @@ body.setup-body {
 .folder-empty[hidden] { display: none; }
 
 .add-form { display: flex; gap: 8px; margin-top: 12px; }
+.add-form[hidden] { display: none; }
 .setup-msg {
   margin-top: 8px !important;
   padding: 8px 10px;
