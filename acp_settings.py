@@ -124,10 +124,10 @@ def is_writable(path: PurePath | None) -> bool:
 def load_file(path: PurePath | None) -> tuple[dict, str | None]:
     """The file's contents and an error code. No file is ``({}, None)``.
 
-    A corrupt file is never overwritten here. ACP carries on with defaults, and
-    the bad file is saved once as ``settings.json.bak``: a second corrupt file
-    does not replace the first copy, because the first is the one the user
-    most likely still cares about.
+    Reading never writes. A corrupt file gives ``({}, "corrupt")`` and ACP
+    carries on with defaults; ``save`` takes the one backup before it replaces
+    the bad file. A read that wrote would let any client that can call
+    ``GET /api/settings`` put files on the disk.
     """
     if path is None:
         return {}, None
@@ -144,26 +144,34 @@ def load_file(path: PurePath | None) -> tuple[dict, str | None]:
         data = None
     if isinstance(data, dict):
         return data, None
+    return {}, "corrupt"
+
+
+def _back_up_corrupt(path: Path) -> None:
+    """Save the bad file once as ``settings.json.bak``. A second corrupt file
+    does not replace the first copy, because the first is the one the user
+    most likely still cares about. Raises OSError if the copy fails, so the
+    caller never replaces a file it could not save."""
     backup = path.with_name(path.name + ".bak")
     if not backup.exists():
-        try:
-            shutil.copyfile(path, backup)
-        except OSError:
-            pass
-    return {}, "corrupt"
+        shutil.copyfile(path, backup)
 
 
 def save(path: PurePath, updates: Mapping) -> dict:
     """Merge ``updates`` into the file atomically and return what was written.
-    Keys this version does not know are kept."""
+    Keys this version does not know are kept. A corrupt file is backed up
+    first, and the write is refused (OSError) if the backup fails."""
     scripts = str(REPO_ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
     import target_ids
 
-    current, _ = load_file(path)
+    path = Path(path)
+    current, error = load_file(path)
+    if error == "corrupt":
+        _back_up_corrupt(path)
     merged = {**current, **updates, "version": SETTINGS_VERSION}
-    target_ids.atomic_write_json(Path(path), merged, indent=2)
+    target_ids.atomic_write_json(path, merged, indent=2)
     return merged
 
 
