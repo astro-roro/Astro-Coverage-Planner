@@ -179,3 +179,17 @@ body.setup-body {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+.shortcuts-offer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #c3cad8;
+  cursor: pointer;
+}
+.shortcuts-offer[hidden] { display: none; }
+#shortcutsDd button { margin-left: 8px; padding: 3px 10px; font-size: 12px; }
+#shortcutsDd button[hidden] { display: none; }
+#shortcutsMsg { margin-left: 8px; }
