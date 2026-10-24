@@ -646,3 +646,19 @@ Two independent reviews of the earlier version produced these changes. A means t
 | Smaller | The NINA address, the HOST limit, the pinned `.bat` and `msvcp140.dll` are in the docs and QA. |
 | Follow-up 3 | Rohan asked for shortcuts and a tray icon. Sections 3.4 and 3.5 add them, and sections 2.3, 4.2, 5.1, 7, 8, 9 and 10 follow. |
 | Open questions | Settled with the defaults from the brief: token cookie counts, first release 1.0.0, Apple Silicon only, native alert instead of Terminal, no shipped catalogues. |
+
+## Phase 2 build notes
+
+What the Windows build changed from this spec, and what it could not check.
+
+| Spec text | What phase 2 does | Why |
+|---|---|---|
+| Section 3.7 step 6: `compileall --invalidation-mode unchecked-hash` | `checked-hash` | A hash survives zip's two-second time rounding either way. `unchecked-hash` also ignores an edited `.py` file, which breaks the "fix in place" row in section 3.1. Checking costs one hash per import. |
+| Section 3.3 step 4: port in use is found when waitress binds | The launcher also tries to connect to the port first | On Windows, `SO_REUSEADDR` lets a second program bind a port that is already listening, so a bind does not always fail. |
+| Section 3.7 step 4: delete `tests` folders | Keeps `astropy/tests` | astropy imports it when it starts. |
+| Section 3.1 and 9, K6: scan runs with `-X utf8 -B` | `app.py` repeats its own `-X utf8` and `-B` flags on the scan and catalogue commands | The `._pth` file makes the embedded Python ignore the environment variables a child would otherwise inherit. |
+| Section 7: Host check on every route in packaged mode | Added as a `before_request` in `app.py` | It was not part of phase 1, which has no packaged mode to apply it to. |
+| `POST /api/quit` "exists only when `ACP_PACKAGED=1`" | The route is always registered and answers 404 when not packaged | The result is the same to a client, and it can be tested without importing `app.py` twice. |
+| Section 3.2: `python312._pth` | Written for the Python minor in `packaging/pins.txt` (3.12.10, the last 3.12 with a Windows embeddable package) | |
+
+Not checked, because the work was done on a Mac with no network route to python.org or PyPI: the real zip size (section 3.8 still shows estimates), the `._pth` behaviour, `msvcrt` locking, PowerShell shortcut creation, wheel availability for every pin on Python 3.12 Windows, and whether `pystray` shows an icon on a runner. The Windows workflow checks each of these.
