@@ -278,7 +278,8 @@ print(json.dumps({"writable": view["writable"], "first_run": view["first_run"],
     def test_p9_a_user_with_no_home_folder_gets_the_read_only_page(self):
         out = json.loads(run_python(self.SNIPPET, {
             "ACP_API_TOKEN": "t" * 24, "FITS_ROOTS": "/mnt/nas/astro", "HOST": "0.0.0.0",
-            "PORT": "5555", "MANIFEST_PATH": "/app/data/manifest.json"}))
+            "PORT": "5555", "MANIFEST_PATH": "/app/data/manifest.json",
+            "APPDATA": ""}))  # Windows finds its settings folder from APPDATA before it needs a home
         self.assertIs(out["writable"], False)
         self.assertIs(out["first_run"], False)
         self.assertEqual(out["roots"]["source"], "env")

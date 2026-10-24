@@ -491,7 +491,7 @@ class TestDockerStyleEnvironment(unittest.TestCase):
             "MANIFEST_PATH": "/app/data/manifest.json"}))
         self.assertEqual(out["bind"], "0.0.0.0")
         self.assertEqual(out["port"], 5555)
-        self.assertEqual(out["manifest"], "/app/data/manifest.json")
+        self.assertEqual(out["manifest"], str(Path("/app/data/manifest.json")))
         self.assertEqual(out["scan_env"], "/mnt/nas/astro;/mnt/nas/more")
         self.assertEqual(out["roots"], {"source": "env", "locked": True,
                                         "value": ["/mnt/nas/astro", "/mnt/nas/more"]})
@@ -580,6 +580,8 @@ class TestGetSettings(EnvCase):
 
     def test_no_home_folder_means_writable_false(self):
         os.environ.pop("ACP_HOME")
+        # Windows finds its settings folder from APPDATA before it needs a home.
+        os.environ.pop("APPDATA", None)
         with mock.patch("pathlib.Path.home", side_effect=RuntimeError("no home")):
             body = self.client.get("/api/settings").get_json()
         self.assertIs(body["writable"], False)
@@ -683,6 +685,7 @@ class TestPutSettings(EnvCase):
 
     def test_a_read_only_install_refuses_writes(self):
         os.environ.pop("ACP_HOME")
+        os.environ.pop("APPDATA", None)
         with mock.patch("pathlib.Path.home", side_effect=RuntimeError("no home")):
             resp = self.put({"fits_roots": [self.folder()]})
         self.assertEqual(resp.status_code, 409)
