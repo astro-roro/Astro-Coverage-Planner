@@ -58,6 +58,10 @@ class EnvCase(unittest.TestCase):
         for name in CLEAN_VARS:
             os.environ.pop(name, None)
         os.environ["ACP_HOME"] = str(self.tmp / "home")
+        # These tests are not about containers, even if the suite runs in one.
+        container = mock.patch.object(acp_settings, "CONTAINER_MARKERS", ())
+        container.start()
+        self.addCleanup(container.stop)
         self.client = app_module.app.test_client()
         self.addCleanup(self._reset_scan_state)
         self.addCleanup(setattr, app_module, "MANIFEST_PATH", app_module.MANIFEST_PATH)
@@ -284,6 +288,23 @@ class TestConfigFolder(unittest.TestCase):
     def test_s12_a_missing_appdata_on_windows_falls_back_to_the_home_folder(self):
         got = acp_settings.config_dir("win32", {}, lambda: PureWindowsPath(r"C:\Users\Pat"))
         self.assertEqual(str(got), r"C:\Users\Pat\AppData\Roaming\ACP")
+
+
+class TestInContainer(unittest.TestCase):
+
+    def test_a_marker_file_means_a_container_and_none_means_not(self):
+        tmp = Path(tempfile.mkdtemp(prefix="acp-marker-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        marker = tmp / "dockerenv"
+        with mock.patch.object(acp_settings, "CONTAINER_MARKERS", (str(marker),)):
+            self.assertFalse(acp_settings.in_container())
+            self.assertTrue(acp_settings.is_writable(tmp / "settings.json"))
+            marker.write_text("", encoding="utf-8")
+            self.assertTrue(acp_settings.in_container())
+            self.assertFalse(acp_settings.is_writable(tmp / "settings.json"))
+
+    def test_docker_and_podman_markers_are_checked(self):
+        self.assertEqual(acp_settings.CONTAINER_MARKERS, ("/.dockerenv", "/run/.containerenv"))
 
 
 class TestDataPath(unittest.TestCase):
@@ -831,6 +852,32 @@ class TestReviewFindings(EnvCase):
         self.assertEqual(resp.status_code, 500)
         self.assertEqual(resp.get_json()["error"], "write_failed")
         self.assertEqual(self.settings_file.read_text(encoding="utf-8"), original)
+
+    def test_stock_image_user_reads_as_not_writable(self):
+        # The image's own user (useradd --create-home acp) has a writable home,
+        # so only the container check keeps the page read-only. Spec 1.5.
+        home = self.tmp / "home" / "acp"
+        home.mkdir(parents=True)
+        os.environ.pop("ACP_HOME")
+        os.environ["HOME"] = str(home)
+        os.environ["HOST"] = "0.0.0.0"
+        marker = self.tmp / "dockerenv"
+        marker.write_text("", encoding="utf-8")
+        settings = home / ".config" / "acp" / "settings.json"
+        with mock.patch.object(acp_settings.sys, "platform", "linux"):
+            with mock.patch.object(acp_settings, "CONTAINER_MARKERS", ()):
+                self.assertIs(self.client.get("/api/settings").get_json()["writable"], True,
+                              "without a container marker the same user can write")
+            with mock.patch.object(acp_settings, "CONTAINER_MARKERS", (str(marker),)):
+                body = self.client.get("/api/settings").get_json()
+                put = self.client.put("/api/settings", json={"fits_roots": ["/images"]})
+                adopt_env = {**os.environ, "FITS_ROOTS": "/images"}
+                with mock.patch.dict(os.environ, adopt_env):
+                    adopt = self.client.post("/api/settings/adopt-env", json={})
+        self.assertIs(body["writable"], False)
+        self.assertEqual((put.status_code, put.get_json()["error"]), (409, "not_writable"))
+        self.assertEqual((adopt.status_code, adopt.get_json()["error"]), (409, "not_writable"))
+        self.assertFalse(settings.exists(), "settings were written into the container's home")
 
     def test_a_uid_with_no_passwd_entry_reads_as_not_writable(self):
         # Docker sets HOME=/ for a uid with no passwd entry (Brutix runs as 99:100).

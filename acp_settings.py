@@ -104,10 +104,25 @@ def data_path(name: str, env: Mapping[str, str] | None = None) -> Path:
     return data_dir(env) / name
 
 
+# Files a container runtime creates inside every container. Docker makes
+# /.dockerenv and Podman makes /run/.containerenv. Checking them needs no change
+# to the image, so images already published and running read as containers too.
+CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+
+def in_container() -> bool:
+    """Whether ACP is running inside a container. A settings file written there
+    lives in the container's own layer, which Watchtower or a compose pull
+    throws away, so the setup page is read-only: a container is configured by
+    environment variables."""
+    return any(os.path.exists(marker) for marker in CONTAINER_MARKERS)
+
+
 def is_writable(path: PurePath | None) -> bool:
-    """Whether a file at ``path`` could be created or replaced. Checks the
-    nearest folder that exists, so it never creates anything."""
-    if path is None:
+    """Whether a file at ``path`` could be created or replaced, and whether
+    keeping one there makes sense (never in a container). Checks the nearest
+    folder that exists, so it never creates anything."""
+    if path is None or in_container():
         return False
     folder = Path(path).parent
     while not folder.exists():
