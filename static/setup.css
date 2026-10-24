@@ -1,0 +1,180 @@
+/* Setup and settings page. Same palette as style.css. */
+
+body.setup-body {
+  display: block;
+  height: auto;
+  min-height: 100vh;
+  overflow: auto;
+}
+
+.setup-topbar { justify-content: space-between; }
+.setup-back { color: #6aa6ff; font-size: 12px; text-decoration: none; }
+.setup-back:hover { color: #88baff; text-decoration: underline; }
+
+.setup-main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.setup-card {
+  background: #14192a;
+  border: 1px solid #2a3246;
+  border-radius: 8px;
+  padding: 20px 24px 22px;
+  color: #b6bdcd;
+}
+.setup-card[hidden] { display: none; }
+.setup-card h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+  color: #f0f3f8;
+}
+.setup-card h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #f0f3f8;
+}
+.setup-card p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.setup-card p:last-child { margin-bottom: 0; }
+.setup-card a { color: #6aa6ff; }
+.setup-card a:hover { color: #88baff; }
+.setup-card code {
+  background: #0d111c;
+  border: 1px solid #2a3246;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #c8d1e0;
+}
+.setup-lead { font-size: 14px !important; color: #c3cad8; }
+.setup-hint { font-size: 12px !important; color: #8c95a8; }
+.setup-note { color: #f3c8c8; }
+
+.setup-card input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: text;
+}
+.setup-card button,
+.setup-button-link {
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.setup-card button.primary,
+.setup-button-link {
+  background: #2a4f7a;
+  border: 1px solid #355d8e;
+  color: #f0f5ff;
+  border-radius: 3px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+.setup-card button.primary:hover,
+.setup-button-link:hover { background: #345f92; color: #fff; }
+.setup-card button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.folder-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.folder-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  margin-bottom: 4px;
+  background: #0d111c;
+  border: 1px solid #2a3246;
+  border-radius: 4px;
+}
+.folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #d4dae6;
+}
+.folder-list button { padding: 3px 10px; font-size: 12px; }
+.folder-empty[hidden] { display: none; }
+
+.add-form { display: flex; gap: 8px; margin-top: 12px; }
+.setup-msg {
+  margin-top: 8px !important;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: #3a1d1d;
+  border: 1px solid #6a2a2a;
+  color: #f3c8c8;
+}
+.setup-msg.warn { background: #3a311d; border-color: #6a5a2a; color: #f0dfb0; }
+.setup-msg[hidden] { display: none; }
+
+.setup-callout {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: #11151c;
+  border: 1px solid #2a3246;
+}
+.setup-callout[hidden] { display: none; }
+.setup-callout.ok { border-color: #2f6b4a; background: #14231c; }
+.setup-callout.bad { border-color: #6a2a2a; background: #2a1717; color: #f3c8c8; }
+
+.scan-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 12px 0 4px; }
+.setup-skip { font-size: 12px; color: #8c95a8 !important; }
+
+.progress-box { margin-top: 14px; }
+.progress-box[hidden] { display: none; }
+.progress-bar {
+  height: 6px;
+  background: #0d111c;
+  border: 1px solid #2a3246;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.progress-bar-fill {
+  height: 100%;
+  width: 35%;
+  background: #4b7bb5;
+  animation: setup-slide 1.4s ease-in-out infinite;
+}
+@keyframes setup-slide {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar-fill { animation: none; width: 100%; }
+}
+.progress-line { margin: 0 0 4px !important; }
+
+.info-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.info-list dt { color: #8c95a8; }
+.info-list dd { margin: 0; overflow-wrap: anywhere; color: #d4dae6; }
+.info-list dd a { margin-left: 8px; font-size: 12px; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Astro Coverage Planner: setup</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/setup.css" />
+</head>
+<body class="setup-body">
+  <header class="topbar setup-topbar">
+    <div class="title">
+      <strong>Astro Coverage Planner</strong>
+      <span class="meta">Version {{ version }}</span>
+    </div>
+    <a class="setup-back" href="/?setup=skip">Back to the map</a>
+  </header>
+
+  <main class="setup-main">
+    <noscript><p class="setup-note">This page needs JavaScript turned on.</p></noscript>
+
+    <section class="setup-card" id="introCard">
+      <h1 id="pageTitle">Settings</h1>
+      <p id="pageLead" class="setup-lead"></p>
+    </section>
+
+    <section class="setup-card" id="readonlyCard" hidden>
+      <h2>Settings are fixed on this install</h2>
+      <p>This copy of ACP is set up with environment variables, so this page cannot change anything.
+        To use different image folders, set <code>FITS_ROOTS</code> and restart ACP, then start a scan
+        with <code>docker exec</code> or schedule one with <code>ACP_SCAN_CRON</code>. The
+        <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">archive setup guide</a>
+        has the details.</p>
+    </section>
+
+    <section class="setup-card" id="remoteCard" hidden>
+      <h2>Open this page on the computer that runs ACP</h2>
+      <p>Image folders can only be changed from the computer ACP is running on, or with the access token.</p>
+    </section>
+
+    <section class="setup-card" id="foldersCard" hidden>
+      <h2>Your image folders</h2>
+      <p class="setup-hint">ACP reads the FITS and XISF files in these folders, and the folders inside them. It never changes or moves your files.</p>
+      <ul id="folderList" class="folder-list"></ul>
+      <p id="folderEmpty" class="setup-hint folder-empty">No folders yet. Add the one that holds your images.</p>
+
+      <div id="lockedBox" class="setup-callout" hidden>
+        <p>These folders come from the <code>FITS_ROOTS</code> environment variable, so ACP cannot change them here.</p>
+        <div id="adoptBox" hidden>
+          <p>To manage them on this page instead, copy them into the settings file, then remove the variable.
+            On Windows that is Settings, then "Edit environment variables for your account".
+            The settings file takes effect once the variable is gone.</p>
+          <button type="button" id="adoptBtn" class="primary">Copy to settings file</button>
+        </div>
+      </div>
+
+      <form id="addForm" class="add-form" autocomplete="off">
+        <label for="pathInput" class="visually-hidden">Folder path</label>
+        <input type="text" id="pathInput" spellcheck="false" placeholder="Paste or type the full path to a folder" />
+        <button type="submit" id="addBtn" class="primary">Add</button>
+      </form>
+      <p id="pathHelp" class="setup-hint"></p>
+      <p id="pathMsg" class="setup-msg" role="alert" hidden></p>
+    </section>
+
+    <section class="setup-card" id="scanCard" hidden>
+      <h2>Scan</h2>
+      <p class="setup-hint">ACP reads the headers of your image files to work out what you have photographed. A big library can take a while. You can leave this page open or come back later.</p>
+      <div class="scan-actions">
+        <button type="button" id="scanBtn" class="primary" disabled>Scan my images</button>
+        <a id="skipLink" class="setup-skip" href="/?setup=skip">Skip for now</a>
+      </div>
+
+      <div id="progressBox" class="progress-box" aria-live="polite" hidden>
+        <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+        <p class="progress-line"><strong id="progressStage"></strong></p>
+        <p class="progress-line setup-hint" id="progressDetail"></p>
+      </div>
+
+      <div id="doneBox" class="setup-callout ok" role="status" hidden>
+        <p id="doneText"></p>
+        <p><a id="doneLink" class="setup-button-link" href="/">Open the map</a>
+          <span class="setup-hint" id="doneCountdown"></span></p>
+      </div>
+
+      <div id="failBox" class="setup-callout bad" role="alert" hidden>
+        <p id="failText"></p>
+        <button type="button" id="changeFoldersBtn">Change folders</button>
+      </div>
+    </section>
+
+    <section class="setup-card" id="catalogCard" hidden>
+      <h2>Catalogues for the map</h2>
+      <p class="setup-hint">The map can show supernova remnants, HII regions, Sharpless objects and planetary nebulae. These lists are not included with ACP. Pressing the button makes ACP connect to the internet (to the VizieR service run by CDS in Strasbourg) and download them. It can take a few minutes.</p>
+      <div class="scan-actions">
+        <button type="button" id="catalogBtn">Download catalogues</button>
+        <span id="catalogStatus" class="setup-hint" role="status"></span>
+      </div>
+    </section>
+
+    <section class="setup-card" id="infoCard" hidden>
+      <h2>About this install</h2>
+      <dl class="info-list">
+        <dt>Data folder</dt><dd id="infoData"></dd>
+        <dt>Manifest file</dt><dd id="infoManifest"></dd>
+        <dt>Port</dt><dd id="infoPort"></dd>
+        <dt>Version</dt><dd><span id="infoVersion"></span>
+          <a href="https://github.com/astro-roro/Astro-Coverage-Planner/releases" target="_blank" rel="noopener">See new releases</a></dd>
+      </dl>
+      <p class="setup-hint">The port and manifest path are changed in the settings file, then ACP needs a restart.</p>
+    </section>
+  </main>
+
+  <script src="/static/setup.js"></script>
+</body>
+</html>
