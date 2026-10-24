@@ -158,6 +158,11 @@
       $("infoManifest").textContent = (keys.manifest_path || {}).value || "";
       $("infoPort").textContent = String((keys.port || {}).value || "");
       $("infoVersion").textContent = s.version || "";
+      // A container cannot know the port it is published on, and its settings
+      // come from the compose file, not a settings file.
+      $("infoPortLabel").textContent = readOnly ? "Port inside the container" : "Port";
+      show($("infoHintWritable"), !readOnly);
+      show($("infoHintReadOnly"), readOnly);
     }
   }
 
