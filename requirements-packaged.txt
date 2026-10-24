@@ -1,0 +1,9 @@
+# Extra dependencies for the packaged downloads only (the tray icon and shortcut
+# icons). Source installs and the Docker image do not install this file.
+# Installed alongside requirements.txt by packaging/windows/build.ps1, with the
+# exact versions in packaging/constraints.txt.
+pystray>=0.19.5
+Pillow>=12.3.0
+# macOS menu bar (phase 3) and Linux X11 tray (phase 4).
+pyobjc-framework-Quartz; sys_platform == "darwin"
+python-xlib; sys_platform == "linux"
