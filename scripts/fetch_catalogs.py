@@ -39,6 +39,8 @@ import acp_settings  # noqa: E402
 
 CACHE_PATH = Path(os.environ.get("CATALOGS_PATH", acp_settings.data_path("catalogs.json")))
 CACHE_DIR = CACHE_PATH.parent
+NETWORK_SOURCES = ("green_snrs", "anderson_hii", "sharpless", "eso_pne")
+EXIT_NO_NETWORK = 3
 
 
 def with_gal(entry: dict) -> dict:
@@ -370,6 +372,12 @@ def main() -> None:
     print(f"\nWrote {CACHE_PATH} — {total} entries total in {time.time()-t0:.1f}s")
     for k, v in cats.items():
         print(f"  {k:24s} {len(v):6d}")
+    # Messier is built in, so the file always has something. When every VizieR
+    # table came back empty the machine most likely has no internet, and the
+    # app wants to tell the user that rather than call it a success.
+    if not any(cats.get(k) for k in NETWORK_SOURCES):
+        print("\nNo VizieR table could be fetched; check the internet connection.")
+        sys.exit(EXIT_NO_NETWORK)
 
 
 if __name__ == "__main__":
