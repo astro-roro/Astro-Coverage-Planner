@@ -118,6 +118,16 @@ class TestStartFiles(unittest.TestCase):
             self.assertIn(needle, ps1)
         self.assertIn("'--invalidation-mode', 'checked-hash'", ps1)
 
+    def test_source_only_packages_are_built_first_and_still_pinned(self):
+        ps1 = (REPO / "packaging" / "windows" / "build.ps1").read_text(encoding="utf-8")
+        self.assertIn("'pip', 'wheel'", ps1)
+        self.assertIn("'--find-links', $wheels", ps1)
+        self.assertIn("'--only-binary=:all:'", ps1)
+        pins = {l for l in constraint_lines(REPO / "packaging" / "constraints.txt")}
+        listed = constraint_lines(REPO / "packaging" / "sdist-only.txt")
+        self.assertIn("xisf==0.9.7", listed)
+        self.assertTrue(set(listed) <= pins, "each source-only package must match its constraint")
+
     def test_the_readme_covers_the_points_the_spec_lists(self):
         text = (REPO / "packaging" / "windows" / "README.txt").read_text(encoding="utf-8")
         for needle in ("C:\\ACP", "Unblock", "Run anyway", "notification area", "Quit ACP",
