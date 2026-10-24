@@ -12,6 +12,8 @@ The sanitiser rebuilds the manifest from a small whitelist:
 
 ## How to produce one
 
+Both paths need a scanned archive. If you have not scanned yet, add your image folders and press Scan on the Settings page (`/setup`) first.
+
 Two paths:
 
 ```bash

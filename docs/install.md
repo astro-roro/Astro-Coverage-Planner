@@ -132,11 +132,9 @@ Open <http://127.0.0.1:5555/> in your browser.
 
 ## What happens after ACP starts
 
-A fresh install opens to an **empty sky map** with a banner explaining the next step: build a manifest by pointing the scanner at your FITS/XISF archive. ACP doesn't ship with anyone else's imaging data — what you see is what you've shot.
+A fresh install opens the **setup page** (`/setup`). Paste the full path of the folder that holds your FITS/XISF images, press **Add**, then **Scan my images**. The page shows progress, and when the scan finishes it opens the map. ACP doesn't ship with anyone else's imaging data, so what you see is what you've shot. The **Skip for now** link shows the empty map instead, and the **Settings** link in the map's header brings the page back.
 
-When you're ready to scan, see **[Setting up your own archive](setup-archive.md)**. It covers the manifest builder, environment variables, and the optional pipeline-DB integration for sub-exposure hours.
-
-Once your manifest is built, refresh the browser tab — your archive will appear on the sky map.
+For several image folders, the command-line builder, environment variables, Docker and the optional pipeline-DB integration for sub-exposure hours, see **[Setting up your own archive](setup-archive.md)**.
 
 ## Optional: load demo data first
 

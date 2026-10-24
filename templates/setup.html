@@ -27,8 +27,8 @@
 
     <section class="setup-card" id="readonlyCard" hidden>
       <h2>Settings are fixed on this install</h2>
-      <p>This copy of ACP is set up with environment variables, so this page cannot change anything.
-        To use different image folders, set <code>FITS_ROOTS</code> and restart ACP, then start a scan
+      <p>This copy of ACP is set up with environment variables, so this page only shows its settings.
+        Docker users set <code>FITS_ROOTS</code> in their compose file and restart the container, then start a scan
         with <code>docker exec</code> or schedule one with <code>ACP_SCAN_CRON</code>. The
         <a href="https://github.com/astro-roro/Astro-Coverage-Planner/blob/main/docs/setup-archive.md" target="_blank" rel="noopener">archive setup guide</a>
         has the details.</p>
