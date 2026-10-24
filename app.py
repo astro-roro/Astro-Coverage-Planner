@@ -7099,7 +7099,9 @@ def run_claimed_scan() -> None:
     before = None
     try:
         before = _manifest_snapshot() if activity.enabled() else None
-        code = _run_scan_subprocess([sys.executable, *_interpreter_args(), str(SCAN_SCRIPT_PATH)])
+        scan_args = [sys.executable, *_interpreter_args(), str(SCAN_SCRIPT_PATH)]
+        logging.info("starting the archive scan: %s", " ".join(scan_args))
+        code = _run_scan_subprocess(scan_args)
     except Exception as e:
         logging.error("scheduled scan could not start: %s: %s", type(e).__name__, e)
         _record_scan_error(f"{type(e).__name__}: {e}", kind="could_not_start")

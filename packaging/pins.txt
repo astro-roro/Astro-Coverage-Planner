@@ -1,0 +1,13 @@
+# Pinned inputs for the packaged builds, one KEY=value per line.
+#
+# 3.12.10 is the last 3.12 release that python.org ships a Windows embeddable
+# package for; later 3.12 releases are source only.
+#
+# FILL IN BEFORE THE FIRST BUILD: the SHA-256 of the file at
+#   https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip
+# Get it on a machine with internet access:
+#   curl -sL https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip | shasum -a 256
+# Then cross-check it against the file's entry on the python.org 3.12.10 release page.
+# build.ps1 refuses to build while this is TODO, and prints the hash it computed.
+PYTHON_VERSION=3.12.10
+PYTHON_WINDOWS_EMBED_SHA256=TODO
