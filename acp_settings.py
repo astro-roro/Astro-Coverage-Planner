@@ -14,7 +14,9 @@ import json
 import os
 import shutil
 import sys
-from pathlib import Path, PurePath, PureWindowsPath
+import threading
+import time
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Callable, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -299,3 +301,153 @@ def validate_roots(raw: list) -> tuple[list[str], str | None]:
         seen.add(key)
         cleaned.append(text)
     return cleaned, None
+
+
+# --------------------------------------------------------------------------
+# Checking a folder path against the disk
+# --------------------------------------------------------------------------
+
+READ_TIMEOUT = 5.0
+IMAGE_EXTENSIONS = (".fit", ".fits", ".fts", ".xisf")
+IMAGE_WALK_ENTRIES = 5000
+IMAGE_WALK_SECONDS = 2.0
+
+
+def _probe_directory(text: str) -> str:
+    """The blocking code for one folder, or "ok". Every call here can hang on
+    a sleeping NAS, so this only ever runs in a worker thread (see
+    check_directory). The code names the failure; the operating system's own
+    wording is dropped, because it repeats the path."""
+    try:
+        if not os.path.exists(text):
+            return "not_found"
+        if not os.path.isdir(text):
+            return "not_a_directory"
+        with os.scandir(text) as entries:
+            next(entries, None)
+    except PermissionError:
+        return "not_readable"
+    except FileNotFoundError:
+        return "not_found"
+    except NotADirectoryError:
+        return "not_a_directory"
+    except (OSError, ValueError):
+        return "not_readable"
+    return "ok"
+
+
+def _within_deadline(work: Callable[[], object], timeout: float):
+    """Run ``work`` in a daemon thread and wait up to ``timeout`` seconds.
+    Returns ``(finished, result)``. A call that never returns is abandoned, not
+    waited on, so it cannot hold up one of the web server's few threads."""
+    box: list = []
+    done = threading.Event()
+
+    def run():
+        try:
+            box.append(work())
+        except Exception:
+            box.append(None)
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="acp-path-check", daemon=True).start()
+    if not done.wait(timeout):
+        return False, None
+    return True, box[0] if box else None
+
+
+def check_directory(text: str, timeout: float = READ_TIMEOUT) -> str:
+    """``ok``, ``not_found``, ``not_a_directory``, ``not_readable`` or
+    ``timed_out`` for an absolute path that already passed the syntax check."""
+    finished, code = _within_deadline(lambda: _probe_directory(text), timeout)
+    if not finished:
+        return "timed_out"
+    return code or "not_readable"
+
+
+def has_images(text: str, max_entries: int = IMAGE_WALK_ENTRIES,
+               max_seconds: float = IMAGE_WALK_SECONDS) -> bool | None:
+    """Whether a FITS or XISF file sits inside the folder. Breadth first, so a
+    top-level frame is found before a deep subfolder is opened, and capped at
+    ``max_entries`` entries or ``max_seconds`` so a huge archive costs a moment.
+    None means the walk ran out of budget or could not read the folder, and the
+    caller says nothing rather than warn on a guess."""
+    deadline = time.monotonic() + max_seconds
+    queue = [text]
+    seen = 0
+    while queue:
+        folder = queue.pop(0)
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > max_entries or time.monotonic() > deadline:
+                        return None
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            queue.append(entry.path)
+                        elif entry.name.lower().endswith(IMAGE_EXTENSIONS):
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return False
+
+
+def _split(text: str) -> list[str]:
+    return [part for part in _compare_key(text).replace("\\", "/").split("/") if part]
+
+
+def _is_drive_root(text: str) -> bool:
+    """``C:\\`` or ``/``. A UNC share root is not one: a NAS share is a
+    normal thing to scan."""
+    win = PureWindowsPath(text)
+    if win.drive and not win.drive.startswith("\\\\"):
+        return len(win.parts) <= 1
+    if text.startswith("/"):
+        return len(PurePosixPath(text).parts) <= 1
+    return False
+
+
+def path_warnings(text: str, others: list[str]) -> list[str]:
+    """Warnings that do not block: ``overlaps`` (inside, or containing, another
+    saved folder) and ``very_large`` (a drive root). Syntax only."""
+    out = []
+    mine = _split(text)
+    for other in others:
+        theirs = _split(other)
+        shorter = min(len(mine), len(theirs))
+        if mine[:shorter] == theirs[:shorter]:
+            out.append("overlaps")
+            break
+    if _is_drive_root(text):
+        out.append("very_large")
+    return out
+
+
+def check_path(raw: str, saved: list[str], timeout: float = READ_TIMEOUT,
+               look_for_images: bool = True) -> dict:
+    """Every check in section 2.4 for one path, against the saved list.
+
+    Returns ``{"code": <code>, "warnings": [...]}``. The code is ``ok`` or the
+    first blocking one. Syntax is judged first and never touches the disk, so
+    a UNC path is refused or accepted before Windows could open a connection
+    to it. Nothing here writes.
+    """
+    if len(saved) >= MAX_ROOTS:
+        return {"code": "too_many", "warnings": []}
+    cleaned, code = validate_roots(list(saved) + [raw])
+    if code:
+        return {"code": code, "warnings": []}
+    text = cleaned[-1]
+    code = check_directory(text, timeout)
+    if code != "ok":
+        return {"code": code, "warnings": []}
+    warnings = path_warnings(text, list(saved))
+    if look_for_images:
+        finished, found = _within_deadline(lambda: has_images(text), IMAGE_WALK_SECONDS + 1)
+        if finished and found is False:
+            warnings.append("no_images_seen")
+    return {"code": "ok", "warnings": warnings}
