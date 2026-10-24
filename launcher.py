@@ -549,6 +549,19 @@ def load_tray(platform: str, env: Mapping[str, str], runtime: Runtime,
         return None
 
 
+def run_tray_or_wait(runtime: Runtime, tray: Tray | None) -> None:
+    """Run the tray on this (the main) thread, or wait for shutdown when there
+    is none or it fails. The server never depends on the tray."""
+    if tray is not None:
+        runtime.tray = tray
+        try:
+            tray.run()
+        except Exception:
+            LOG.exception("tray unavailable: it stopped with an error")
+            runtime.tray = None
+    runtime.wait()
+
+
 # --------------------------------------------------------------------------
 # Shortcuts that point at a folder that has moved
 # --------------------------------------------------------------------------
@@ -631,14 +644,7 @@ def _run(env: dict, platform: str, opener, config: Path) -> int:
         tray = load_tray(platform, env, runtime, acp_app.scan_status,
                          lambda: open_when_ready(port, 0, opener, env, platform,
                                                  probe=lambda p: True))
-        if tray is not None:
-            runtime.tray = tray
-            try:
-                tray.run()
-            except Exception:
-                LOG.exception("tray unavailable: it stopped with an error")
-                runtime.tray = None
-        runtime.wait()
+        run_tray_or_wait(runtime, tray)
         return 0
     finally:
         lock.release()
