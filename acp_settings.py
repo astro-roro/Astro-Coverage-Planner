@@ -357,10 +357,11 @@ def _within_deadline(work: Callable[[], object], timeout: float):
     return True, box[0] if box else None
 
 
-def check_directory(text: str, timeout: float = READ_TIMEOUT) -> str:
+def check_directory(text: str, timeout: float | None = None) -> str:
     """``ok``, ``not_found``, ``not_a_directory``, ``not_readable`` or
     ``timed_out`` for an absolute path that already passed the syntax check."""
-    finished, code = _within_deadline(lambda: _probe_directory(text), timeout)
+    finished, code = _within_deadline(lambda: _probe_directory(text),
+                                      READ_TIMEOUT if timeout is None else timeout)
     if not finished:
         return "timed_out"
     return code or "not_readable"
@@ -427,7 +428,7 @@ def path_warnings(text: str, others: list[str]) -> list[str]:
     return out
 
 
-def check_path(raw: str, saved: list[str], timeout: float = READ_TIMEOUT,
+def check_path(raw: str, saved: list[str], timeout: float | None = None,
                look_for_images: bool = True) -> dict:
     """Every check in section 2.4 for one path, against the saved list.
 
