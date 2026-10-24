@@ -413,6 +413,49 @@ class TestImportTimePaths(unittest.TestCase):
         self.assertEqual([Path(p) for p in json.loads(out)], [Path("Z:/Astro/Images")])
 
 
+DOCKER_SNIPPET = """
+import json, os
+import app
+c = app.app.test_client()
+h = {"Authorization": "Bearer " + os.environ["ACP_API_TOKEN"]}
+view = c.get("/api/settings", headers=h).get_json()
+put = c.put("/api/settings", json={"fits_roots": ["/images"]}, headers=h)
+print(json.dumps({
+  "bind": app.effective_bind_host(), "port": app.effective_port(),
+  "manifest": str(app.MANIFEST_PATH), "scan_env": app._scan_subprocess_env()["FITS_ROOTS"],
+  "roots": view["keys"]["fits_roots"], "writable": view["writable"], "first_run": view["first_run"],
+  "put": [put.status_code, put.get_json()["error"]],
+  "anon": c.get("/api/settings").status_code,
+}))
+"""
+
+
+class TestDockerStyleEnvironment(unittest.TestCase):
+    """What the image on Brutix sees: variables set, a token, and a user who has
+    no folder to keep a settings file in. Nothing may change for it."""
+
+    def test_variables_keep_winning_and_the_page_is_read_only(self):
+        tmp = Path(tempfile.mkdtemp(prefix="acp-docker-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        blocker = tmp / "not-a-folder"
+        blocker.write_text("a file where the config folder would go", encoding="utf-8")
+        out = json.loads(run_python(DOCKER_SNIPPET, {
+            "ACP_HOME": str(blocker / "acp"), "ACP_API_TOKEN": "t" * 24,
+            "FITS_ROOTS": "/mnt/nas/astro;/mnt/nas/more", "HOST": "0.0.0.0", "PORT": "5555",
+            "MANIFEST_PATH": "/app/data/manifest.json"}))
+        self.assertEqual(out["bind"], "0.0.0.0")
+        self.assertEqual(out["port"], 5555)
+        self.assertEqual(out["manifest"], "/app/data/manifest.json")
+        self.assertEqual(out["scan_env"], "/mnt/nas/astro;/mnt/nas/more")
+        self.assertEqual(out["roots"], {"source": "env", "locked": True,
+                                        "value": ["/mnt/nas/astro", "/mnt/nas/more"]})
+        self.assertIs(out["writable"], False)
+        self.assertIs(out["first_run"], False)
+        self.assertEqual(out["put"], [409, "not_writable"])
+        self.assertEqual(out["anon"], 401)
+        self.assertEqual(blocker.read_text(encoding="utf-8"), "a file where the config folder would go")
+
+
 class TestBindAddress(unittest.TestCase):
 
     def test_acp_bind_host_then_host_then_loopback(self):
