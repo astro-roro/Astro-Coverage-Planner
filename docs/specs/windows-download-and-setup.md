@@ -9,7 +9,10 @@ This spec removes the terminal from installing ACP. A first-run page takes the i
 | Where settings live | A JSON file in a per-OS folder. Environment variables still win. |
 | How a user picks a folder | A typed or pasted path, checked by the server, with on-page help for copying a path. No folder browser. |
 | Packaging, all three | A bundled, relocatable Python plus the app. Not PyInstaller or py2app. |
-| What the user starts | `Start ACP.bat` on Windows, `ACP.app` on Mac, `start-acp` on Linux. |
+| What the user starts | `Start ACP.bat` the first time on Windows, then a Start menu shortcut. `ACP.app` on Mac. `start-acp` on Linux, then a launcher entry. |
+| Running state | A tray icon (menu bar on Mac) with Open ACP, a status line and Quit ACP. Windows shows no console window. |
+| Shortcuts | Offered once with a tick box on the setup page. Never created silently. |
+| Icon | Drawn at build time from the shapes in `static/favicon.svg`. |
 | Mac | Apple Silicon only, signed and notarised. Intel later if asked. |
 | Linux | x86_64 and arm64 (Raspberry Pi), built to run on distros back to glibc 2.28. |
 | Bind address in packaged builds | `127.0.0.1` only. |
@@ -23,6 +26,8 @@ This spec removes the terminal from installing ACP. A first-run page takes the i
 - **Config folder**: the per-OS folder that holds the settings file.
 - **Data directory**: the folder for files the user creates, such as the manifest, plans and gear.
 - **Packaged mode**: ACP started by a launcher. The launcher sets `ACP_PACKAGED=1`.
+- **Tray icon**: the icon in the Windows notification area, the Mac menu bar or a Linux system tray, with a small menu.
+- **Shortcut**: a Start menu and desktop link on Windows, or an applications-menu entry on Linux, that starts ACP.
 - **Effective value**: the value ACP uses after applying precedence in section 1.3.
 - **Authorised client**: a request that passes the existing access gate with a bearer header or the session cookie from `/login`, or, when `ACP_API_TOKEN` is not set, one that comes from a loopback address (`127.0.0.1`, `::1` or `::ffff:127.0.0.1`) and carries no `X-Forwarded-For` header.
 - **Restricted route**: a route that reveals a local path, changes state or contacts the file system. Section 6 lists them.
@@ -51,6 +56,7 @@ The extension folder default (`~/.config/acp/extensions` outside Windows) does n
 | `manifest_path` | `MANIFEST_PATH` | `<data directory>/manifest.json` | Shown on the setup page, edited in the file only. |
 | `port` | `PORT` | 5555 | Shown on the setup page, edited in the file only. Needs a restart. |
 | `scan_cron` | `ACP_SCAN_CRON` | unset | File and environment only. No page control in this change. |
+| `shortcuts` | none | `null` | `null` means not offered yet, `true` means the user wants shortcuts, `false` means declined. File only. |
 
 The file also carries `"version": 1`. `HOST` stays environment-only on purpose, so no file or page can open ACP to the network. `ACP_DATA_DIR` is environment-only too, because the file cannot say where the file is.
 
@@ -92,8 +98,8 @@ A Windows source user may already have `FITS_ROOTS` set in their profile, as `do
 | Route | Authorised client only | Purpose |
 |---|---|---|
 | `GET /setup` | no | The page. It contains no local paths. Scripts fill them in. |
-| `GET /api/settings` | for paths | Sources, locked flags, `first_run`, `writable` and the version go to every client. Folder, manifest and data paths go to authorised clients only. |
-| `PUT /api/settings` | yes | Saves `fits_roots`. Any other key returns 400. |
+| `GET /api/settings` | for paths | Sources, locked flags, `first_run`, `writable` and the version go to every client, with a `shortcuts` object (`available`, `value`). Folder, manifest and data paths go to authorised clients only. |
+| `PUT /api/settings` | yes | Saves `fits_roots` and `shortcuts`. Any other key returns 400. Setting `shortcuts` creates or removes the shortcut files (section 3.5), and returns 400 `unavailable` where they are not supported. |
 | `POST /api/settings/check-path` | yes | Validates one path and returns codes. Writes nothing. |
 | `POST /api/settings/adopt-env` | yes | Copies environment roots into the file (section 1.5). |
 | `POST /api/scan/start` | yes | Starts one scan. Returns 202, or 409 if one is running. |
@@ -118,8 +124,9 @@ A user with a manifest but no roots is not first run. They see the onboarding ba
 - On success, the number of targets and a button to the map. The page continues to `/` after three seconds.
 - On failure, the message for the error kind and a Change folders button.
 - A "Download catalogues" button with its status, because the overlays are empty until it runs once.
+- A tick box, ticked by default, beside the Scan button: "Add ACP to the Start menu and desktop" on Windows, "Add ACP to the applications menu" on Linux. It shows only when `shortcuts.available` is true and the value is `null`. Pressing Scan or Skip sends the box's value, and either value ends the offer.
 
-The same URL is the settings page afterwards. A "Settings" link in the header opens it. It shows the data folder, the manifest path, the port and the version, with a link to the GitHub releases page that opens in a new tab. In packaged mode it shows a Quit ACP button.
+The same URL is the settings page afterwards. A "Settings" link in the header opens it. It shows the data folder, the manifest path, the port and the version, with a link to the GitHub releases page that opens in a new tab. In packaged mode it shows a Quit ACP button, which stays because a tray can be hidden or missing. The same page offers the shortcuts to a user who skipped setup, and afterwards shows a Shortcuts row with Create and Remove buttons.
 
 When `writable` is false, the page hides every control and shows one paragraph. The paragraph says this ACP is configured by environment variables, links to `docs/setup-archive.md`, and says to set `FITS_ROOTS` and restart, then run a scan with `docker exec` or schedule one with `ACP_SCAN_CRON`.
 
@@ -199,46 +206,105 @@ ACP\
 
 `Start ACP.bat` does these things, with every path built from `%~dp0` and quoted:
 
-1. Check that `%~dp0python\python.exe` exists. If not, print "Extract the whole zip first, then run Start ACP.bat from the extracted folder", and pause. This is the message a user sees after double-clicking inside the zip in Explorer.
-2. Run `"%~dp0python\python.exe" -X utf8 -B "%~dp0app\launcher.py"`. The flags go on the command line because the `._pth` file makes Python ignore `PYTHONUTF8` and `PYTHONDONTWRITEBYTECODE`.
-3. Pause if the launcher exits with an error.
+1. Check that `%~dp0python\pythonw.exe` exists. If not, print "Extract the whole zip first, then run Start ACP.bat from the extracted folder", and pause. A console is open at that point, because the user started a `.bat`.
+2. Run `start "" "%~dp0python\pythonw.exe" -X utf8 -B "%~dp0app\launcher.py"` and exit. `pythonw.exe` opens no console window. The flags go on the command line because the `._pth` file makes Python ignore `PYTHONUTF8` and `PYTHONDONTWRITEBYTECODE`.
 
-The console window stays open and shows the log. Closing it stops ACP. The first step of phase 2 prints `sys.flags` from the zip's Python and checks the `._pth` behaviour. I have not confirmed it on Windows.
+There is no console window while ACP runs. The log is in the log file, and ACP stops from the tray menu or the Quit ACP button on the settings page. The shortcuts in section 3.5 start `pythonw.exe` directly, so they never flash a console. The first step of phase 2 prints `sys.flags` from the zip's Python and checks the `._pth` behaviour. I have not confirmed it on Windows.
 
 ### 3.3 The launcher
 
 `launcher.py` serves all three platforms. It does these steps in order.
 
 1. Resolve the config folder: `ACP_HOME` if set, else the per-OS folder. Set `ACP_DATA_DIR` to `<config folder>/data` unless the user already set it. Set `ACP_PACKAGED=1` and `ACP_BIND_HOST=127.0.0.1`. All of this happens before `app.py` is imported, because `app.py` reads them at import.
-2. Send stdout and stderr to `logs/acp.log`, so `print` output from `app.py` lands there. Windows also shows the log in the console.
+2. Send stdout and stderr to `logs/acp.log`, so `print` output from `app.py` lands there. `pythonw.exe` has no stdout at all, so this happens before anything prints. A Linux launch from a terminal also echoes the log to it.
 3. Take an exclusive lock on `acp.lock` in the config folder, held for the life of the process. The file records the port. If the lock is held, ACP is already running, possibly still starting. Open the browser at the recorded port and exit. A second double-click during a slow start therefore never starts a second copy.
 4. Read the effective port. If another program is using it, stop with a message naming the port. The launcher does not move to another port, because the NINA plugin is set to the port it knows.
-5. Start waitress bound to `127.0.0.1` with `waitress.create_server`, in the main thread. The launcher ignores `HOST`.
-6. A background thread polls `/api/version` for up to 90 seconds, then opens the browser. After 90 seconds it prints the URL and opens the browser anyway. `ACP_NO_BROWSER=1` skips this, for tests.
+5. Create the server with `waitress.create_server`, bound to `127.0.0.1`, so a port error surfaces now. Run it with `server.run()` in a worker thread. The launcher ignores `HOST`.
+6. A background thread polls `/api/version` for up to 90 seconds, then opens the browser. After 90 seconds it logs the URL and opens the browser anyway. `ACP_NO_BROWSER=1` skips this, for tests.
+7. Run the tray (section 3.4) in the main thread. If there is no tray, or it fails to start, join the server thread instead. That is how ACP ran before the tray existed.
+8. If a shortcut was made in another folder, rewrite it (section 3.5).
 
-If anything fails before the browser opens, the Windows console shows the error and the Mac app shows a native alert (section 4.2).
+If anything fails before the browser opens, the launcher shows the error and the log path in a native dialog. Windows uses `MessageBoxW` through `ctypes`, because there is no console. Mac uses `osascript -e 'display alert'`. Linux uses the terminal when there is one, else `zenity` or `kdialog` if installed, else the log only.
 
-Packaged mode enables `POST /api/quit`, which calls `server.close()` on the waitress server. It returns 409 while a scan runs, and the page tells the user to wait. Mac needs it because that app has no window to close.
+One function, `shutdown()`, stops ACP. It returns False while a scan runs. Otherwise it stops the tray, calls `server.close()` and releases the lock. The tray's Quit item and `POST /api/quit` both call it, and the route answers 409 when it returns False. The Quit ACP button on the settings page stays, because Windows hides new tray icons in an overflow menu and a Linux desktop may have no tray.
 
-### 3.4 Where data lives
+### 3.4 Tray icon
+
+The library is `pystray`. It is the one library with a backend for Windows, Mac and Linux. The alternatives cover one platform each (`infi.systray` for Windows, `rumps` for Mac) or are heavy (Qt, wxPython). It needs Pillow for the image. Both go in a new `requirements-packaged.txt`, with `pyobjc-framework-Quartz` on macOS and `python-xlib` on Linux, so source and Docker installs get nothing new. The `pip-audit` step in `tests.yml` audits both files.
+
+Threads:
+
+- The main thread runs the tray. Mac's menu bar API must run on the main thread, and Windows and Linux use the same arrangement so there is one code path.
+- A worker thread runs waitress.
+- A poller thread reads `app.scan_status()` and the progress file every 2 seconds. It calls `icon.update_menu()` only when the text changes. The launcher imports `app`, so it needs no HTTP call.
+
+The menu:
+
+| Item | Behaviour |
+|---|---|
+| Open ACP | The default item. Opens the browser at the bound port. |
+| Status line | Disabled text: "ACP is running", or "Scanning: reading, 12,340 files" from the stage and count. |
+| Quit ACP | Calls `shutdown()`. Disabled while a scan runs, so the status line explains why. |
+
+Per platform:
+
+- **Windows**: `pythonw.exe`, so no console window. Windows 11 puts a new icon in the overflow menu, and the docs tell the user to drag it out.
+- **Mac**: `LSUIElement` stays true, so the menu bar item is the app's only presence and there is no Dock icon. pystray's Mac backend starts the AppKit loop from `icon.run()` on the main thread. I did not confirm that it works under the stub's `execv`.
+- **Linux**: pystray's `xorg` backend only, because the GTK and AppIndicator backends need the system `gi` module, which the bundled Python cannot import. It shows in X11 panels that have a system tray, such as the Raspberry Pi desktop, MATE, XFCE and KDE. It does not show in GNOME or on native Wayland. Before starting, the launcher checks that `DISPLAY` is set and that something owns the `_NET_SYSTEM_TRAY_S0` selection. If not, it skips the tray and runs as before: server in the main thread, Ctrl+C in a terminal, and the Quit button on the page.
+
+`ACP_NO_TRAY=1` skips the tray, for tests. Any exception while starting the tray logs "tray unavailable" and falls back, and never stops the server.
+
+Icon files: Windows and Linux use `acp-tray.png` (32 px). Mac uses `acp-menubar.png`, black on transparent at 22 pt with a 44 px copy for retina. I will confirm at build whether pystray tints it as a template image. If it does not, the file uses a mid-grey that reads on light and dark menu bars.
+
+### 3.5 Shortcuts and the icon
+
+The `shortcuts` key is `null` until the user answers the tick box in section 2.3. ACP also records `shortcuts_app_dir`, the folder the shortcuts point into. `shortcuts.py` at the repo root does the work. Mac has no shortcuts (`available` is false), and the docs tell the user to drag `ACP.app` to Applications.
+
+Windows creates two links with PowerShell and the `WScript.Shell` COM object, so there is no new dependency. The script text is fixed. Every path reaches it through environment variables and is never interpolated, which avoids the quoting trap with spaces and non-ASCII names. It runs with `-NoProfile -NonInteractive -Command` and `CREATE_NO_WINDOW`. The execution policy does not apply to `-Command` text.
+
+| Property | Value |
+|---|---|
+| Files | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Astro Coverage Planner.lnk`, and the same name in the folder `GetFolderPath('Desktop')` returns, which follows a OneDrive-redirected desktop. |
+| `TargetPath` | `<root>\python\pythonw.exe` |
+| `Arguments` | `-X utf8 -B "<root>\app\launcher.py"` |
+| `WorkingDirectory` | `<root>` |
+| `IconLocation` | `<root>\app\static\acp.ico` |
+
+Linux writes `~/.local/share/applications/acp.desktop`, mode 0644, with `Type=Application`, `Name=Astro Coverage Planner`, `Exec="<root>/start-acp"` (absolute and quoted), `Icon=<root>/app/static/acp.png` (an absolute path), `Terminal=false` and `Categories=Science;Astronomy;`.
+
+Remove deletes the files ACP made. At each packaged start, if `shortcuts` is true and `shortcuts_app_dir` differs from the current root, the launcher rewrites the shortcut files that still exist and records the new folder. This covers a user who moves the folder. A shortcut the user deleted is not recreated. An upgrade into the same path needs nothing.
+
+The icon comes from `static/favicon.svg`, the only icon in the repo: a blue diamond with a white four-point star. The build has no SVG renderer, so `packaging/icons/make_icons.py` redraws the two polygons with Pillow at 8 times size and scales down. It writes these files into `app/static/` of the package. They are build outputs and are not committed.
+
+| File | Use |
+|---|---|
+| `acp.ico` | 16, 24, 32, 48, 64, 128 and 256 px, for Windows shortcuts |
+| `acp.png` | 512 px, for the Linux entry |
+| `acp-tray.png` | 32 px, for the Windows and Linux tray |
+| `acp-menubar.png` | 22 pt and 44 px, black on transparent, for the Mac menu bar |
+| `ACP.icns` | Mac runner only, from an iconset through `iconutil` |
+
+A test compares the polygon points in the script with the paths in `favicon.svg`, so the two cannot drift apart.
+
+### 3.6 Where data lives
 
 The unzipped folder is never written to. Settings, data, logs and the lock go to `%APPDATA%\ACP`. Bytecode is compiled at build time and `-B` stops new files. An upgrade is: quit ACP, delete the old folder, unzip the new one.
 
-### 3.5 Build
+### 3.7 Build
 
 `packaging/windows/build.ps1` runs on `windows-latest`.
 
 1. Download the embeddable zip for the pinned Python 3.12 patch release and check its SHA-256 against `packaging/pins.txt`.
 2. Write `python312._pth` as in section 3.2.
-3. Install with the runner's Python 3.12: `pip install --target site-packages --only-binary=:all: -c packaging/constraints.txt -r requirements.txt`. A package with no wheel fails the build instead of compiling.
+3. Install with the runner's Python 3.12: `pip install --target site-packages --only-binary=:all: -c packaging/constraints.txt -r requirements.txt -r requirements-packaged.txt`. A package with no wheel fails the build instead of compiling.
 4. Delete `tests`, `__pycache__` and the deepest test and data folders until the longest path in the tree is under 150 characters.
-5. Copy `app\`, write `Start ACP.bat`, `README.txt` and `VERSION.txt`.
+5. Run `packaging/icons/make_icons.py` into `app\static`, copy `app\`, and write `Start ACP.bat`, `README.txt` and `VERSION.txt`.
 6. Run `compileall --invalidation-mode unchecked-hash` over the tree. A `.pyc` that records the source's timestamp goes stale when zip's two-second time resolution shifts it. The hash mode stays valid. The runner's Python and the embedded Python share a minor version, which the bytecode format requires.
 7. Zip, and write `SHA256SUMS-windows.txt`.
 
 `packaging/constraints.txt` pins every dependency with `==` so two builds of one tag match. Dependabot updates it (a new `pip` entry in `.github/dependabot.yml` with `directory: /packaging`), and the smoke test catches a bad update.
 
-### 3.6 Size
+### 3.8 Size
 
 These are estimates from typical wheel sizes. I have not built it. Phase 2 measures the real figures and writes them here.
 
@@ -250,7 +316,7 @@ These are estimates from typical wheel sizes. I have not built it. Phase 2 measu
 
 Explorer's extractor is slow on this many files because Defender scans each one. The docs say extraction takes several minutes.
 
-### 3.7 CI
+### 3.9 CI
 
 A new workflow, `release-windows.yml`, runs on tags matching `v*`, on manual dispatch, on every push to `main`, and on every pull request except those that change only `docs/` or `*.md`. A change to `app.py` or `requirements.txt` can break the zip, so the filter is on what is excluded. Three jobs.
 
@@ -282,6 +348,7 @@ The release asset is `ACP-macos-arm64.zip`, linked as `releases/latest/download/
 ACP.app/Contents/
   Info.plist            see below
   MacOS/ACP             compiled stub (Mach-O)
+  Resources/ACP.icns    built by make_icons.py
   Resources/python/     python-build-standalone, pinned release, SHA-256 in packaging/pins.txt
   Resources/app/        same file set as Windows
 ```
@@ -293,10 +360,10 @@ The main executable is a compiled stub, about twenty lines of C built with `clan
 `Info.plist` carries:
 
 - `CFBundleIdentifier`, `CFBundleExecutable` (`ACP`), `CFBundleShortVersionString` (from `VERSION`) and `LSMinimumSystemVersion`.
-- `LSUIElement` set to true, so there is no Dock icon.
+- `CFBundleIconFile` (`ACP`), and `LSUIElement` set to true, so there is no Dock icon.
 - `NSDocumentsFolderUsageDescription`, `NSDesktopFolderUsageDescription`, `NSRemovableVolumesUsageDescription` and `NSNetworkVolumesUsageDescription`. Scanning an archive in Documents, on an external drive or on a NAS triggers privacy prompts, and a denied prompt would otherwise show only as `not_readable`.
 
-The app has no window. Double-clicking opens the browser, and starting it again while it runs only opens the browser again. The user stops it with Quit ACP on the settings page. If the server fails to start before the browser opens, the launcher shows a native alert with the error and the log path, using `osascript -e 'display alert'`. No Terminal window opens. The launcher also reports an error after the browser has opened through the log only.
+The app has no window and no Dock icon. Its presence is a menu bar item (section 3.4) with Open ACP, a status line and Quit ACP. Double-clicking the app opens the browser, and starting it again while it runs only opens the browser again. Quit ACP on the settings page also works. pystray's Mac backend adds `pyobjc-framework-Quartz`, which brings more Mach-O files to sign, and the signing step already finds them by file magic. If the server fails to start before the browser opens, the launcher shows a native alert with the error and the log path, using `osascript -e 'display alert'`. No Terminal window opens. The launcher also reports an error after the browser has opened through the log only.
 
 A signed bundle must not change after signing. Bytecode is compiled at build, `-B` is set, and the smoke test checks the bundle is unchanged after a run. macOS can run a downloaded app from a randomised read-only copy, which is another reason data lives in `~/Library/Application Support/ACP`.
 
@@ -363,6 +430,8 @@ ACP/
 - Data lives in `${XDG_CONFIG_HOME:-~/.config}/acp/data`, beside the settings file.
 - With no `DISPLAY` and no `WAYLAND_DISPLAY`, it prints the URL instead of opening a browser. It also prints the SSH port-forward command that reaches ACP from another computer: `ssh -L 5555:127.0.0.1:5555 <user>@<host>`.
 - The lock uses `fcntl.flock`.
+- The tray is best effort, as section 3.4 describes. Without one, `start-acp` runs in the foreground as before.
+- The applications-menu entry from section 3.5 is offered by the same tick box. Starting ACP from it opens no terminal, so the log file and the native dialog from section 3.3 are what the user sees.
 
 ### 5.2 Which distros
 
@@ -393,6 +462,7 @@ Binding off loopback. A headless Pi user will want to open ACP from a laptop, an
 - **Authorisation.** Restricted routes are the five marked "Authorised client only" in section 2.1, plus the path values from `GET /api/settings`. With `ACP_API_TOKEN` set, the existing gate already requires a bearer header or session cookie on every route, and the cookie counts. With no token, a restricted route answers 403 to anything but a loopback client with no `X-Forwarded-For`. Rohan's Brutix instance has a token set, so its browser reaches the new routes through its cookie, the same as today.
 - **Cross-site requests.** Restricted routes that take a body require `Content-Type: application/json` (415 otherwise). A browser form cannot send that type without a preflight, which ACP never answers. `check-path` is one of them, because on Windows a UNC path makes the machine open an SMB connection and send its login hash. It must refuse before it touches the path. If an `Origin` header is present, the routes reuse `_origin_refused`.
 - **DNS rebinding.** In packaged mode, `before_request` checks the `Host` header on every route for requests that carry no valid token or cookie. The host part must be `127.0.0.1`, `localhost`, `[::1]` or `::ffff:127.0.0.1`. Packaged mode has no reverse proxy, so this is safe there. In a source install the same check applies to the restricted routes only, because a same-machine proxy with a hostname would otherwise lock out its own users. `X-Forwarded-Host` is compared as `_origin_refused` already does.
+- **Tray and shortcuts.** The tray's Quit calls the same `shutdown()` as the route. Setting `shortcuts` goes through `PUT /api/settings`, so it is a restricted route. Shortcut creation writes only the fixed files in section 3.5, builds them from the app's own folder, and takes no text from the request. The PowerShell script is fixed and gets paths through environment variables.
 - Paths are validated as in section 2.4. They are read as scan roots only, and test C11 pins that a scan never writes inside a root.
 - Responses carry error codes and fixed messages, not operating-system error text or paths from errors.
 - Outbound calls from a packaged app are the MOC fetches ACP already makes, the astropy earth rotation tables it already downloads, and the VizieR queries when the user presses Download catalogues. The launcher itself never calls out.
@@ -400,9 +470,9 @@ Binding off loopback. A headless Pi user will want to open ACP from a laptop, an
 ## 8. Docs
 
 - `docs/install.md` and the README open with three short sections: **Windows: download and run**, **Mac: download and run** and **Linux: download and run**. Each links to the version-free release asset. Each warns that the release page also lists "Source code (zip)", which is not the app.
-- The Windows section says first to extract the zip to a short path such as `C:\ACP`, before the download link, because Explorer fails on long paths. It says extraction takes several minutes. It tells the user to right-click the zip, choose Properties and tick Unblock, then double-click `Start ACP.bat`. If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**. It suggests pinning the `.bat` to the taskbar and says that closing the black window, or Quit ACP on the page, stops ACP.
-- The Mac section says to open the zip, drag `ACP.app` to Applications and open it. macOS asks once to confirm a downloaded app.
-- The Linux section gives the `curl` and `tar` commands and `./ACP/start-acp`, and mentions the SSH forward for a headless Pi.
+- The Windows section says first to extract the zip to a short path such as `C:\ACP`, before the download link, because Explorer fails on long paths. It says extraction takes several minutes. It tells the user to right-click the zip, choose Properties and tick Unblock, then double-click `Start ACP.bat`. If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**. It says the first run offers a Start menu and desktop shortcut, and to use that afterwards. It says ACP then lives in the notification area, that Windows 11 may hide the icon behind the ^ arrow, and that Quit ACP in the icon's menu stops it.
+- The Mac section says to open the zip, drag `ACP.app` to Applications and open it. macOS asks once to confirm a downloaded app. ACP then appears in the menu bar, with Open ACP and Quit ACP.
+- The Linux section gives the `curl` and `tar` commands and `./ACP/start-acp`. It mentions the applications-menu entry, the tray on desktops that have one, and the SSH forward for a headless Pi.
 - Each section says the NINA plugin's address is `http://127.0.0.1:5555`, and that a packaged ACP cannot be reached from another computer.
 - The existing Windows, macOS and Linux sections stay as "install from source". Their environment variable and manifest script steps become "open `/setup`". That also changes the Linux terminal steps, which Rohan had left unchanged. `docs/setup-archive.md` keeps the variables as a reference for Docker and scripting.
 - `docs/sharing.md` and the onboarding banner text point at `/setup`.
@@ -429,6 +499,7 @@ The build includes these tests, written against the spec. A reviewer checks that
 | S12 | Resolving the config folder with `Path.home()` raising returns "no settings file" and does not raise. |
 | S13 | The builder, run by hand from a source checkout with roots only in the settings file, finds them. |
 | S14 | `adopt-env` copies environment roots into the file and the file value is then shadowed until the variable is removed. |
+| S15 | `shortcuts` round-trips as `null`, `true` and `false`. `PUT` of `shortcuts` where `available` is false returns 400 `unavailable`. `GET /api/settings` reports the `shortcuts` object to every client. |
 
 ### First run and paths (`tests/test_setup.py`)
 
@@ -477,7 +548,16 @@ The build includes these tests, written against the spec. A reviewer checks that
 | K4 | Smoke: `POST /api/quit` stops the process and the port is free. |
 | K5 | Build: the tag equals `VERSION`, the archive is under 400 MB, the longest path inside is under 150 characters, and it contains the launcher script, the bundled Python and `bundled_extensions/nina_ts_sync`. |
 | K6 | Windows smoke prints `sys.flags` from the zip's Python and asserts `utf8_mode` is 1 and `dont_write_bytecode` is 1. A scan subprocess also runs with those flags. |
-| K7 | Linux smoke runs K1 to K4 on x86_64 and arm64, and again inside `ubuntu:20.04` on each. |
+| K7 | Linux smoke runs K1 to K4 on x86_64 and arm64, and again inside `ubuntu:20.04` on each, with `ACP_NO_TRAY=1`. |
+| K8 | Windows and Mac smoke start with the tray enabled. `/api/version` must answer. If the runner cannot show a tray, the log says "tray unavailable" and the server still answers. |
+| T1 | `tests/test_launcher.py`, with pystray stubbed: Open ACP opens the browser at the bound port. The status line reads "ACP is running" or "Scanning: reading, N files" from a stubbed scan state. Quit is disabled during a scan and enabled after. |
+| T2 | With pystray stubbed: Quit runs the same `shutdown()` as `POST /api/quit`, releases the lock and stops the server thread. The tray runs on the main thread and waitress on another. |
+| T3 | A tray that raises on start, `ACP_NO_TRAY=1`, no `DISPLAY` on Linux, and no owner for `_NET_SYSTEM_TRAY_S0` each leave the server running in the main thread and log the reason. |
+| T4 | The startup error reporter calls `MessageBoxW` on Windows, `osascript` on Mac, and the terminal, `zenity` or `kdialog` on Linux, with those calls stubbed. |
+| W1 | Windows CI: `shortcuts.create()` with the Start menu and desktop folders redirected to a temp folder. It reads each `.lnk` back through PowerShell and checks target, arguments, working folder and icon. The app folder has spaces and non-ASCII characters. Remove deletes both. A moved folder rewrites only the links that still exist. |
+| W2 | Windows smoke starts through `Start ACP.bat` and through a shortcut. In both, the ACP process is `pythonw.exe` and has no `conhost.exe` child. |
+| X1 | Linux: the `.desktop` file has an absolute quoted `Exec`, an absolute `Icon`, `Terminal=false`, and passes `desktop-file-validate`. It is written only when `shortcuts` is true, and rewritten when the folder moves. |
+| I1 | `make_icons.py` writes an `.ico` holding all seven sizes, the PNGs at their stated sizes, and an `.icns` on the Mac runner. Its polygon points equal the paths in `static/favicon.svg`. |
 | M1 | Mac smoke repeats K1 to K4, checks the bundle is unchanged after a run, and imports every package in `requirements.txt`. |
 | M2 | Mac signed builds pass `codesign --verify --deep --strict` on the app, and `spctl --assess` and `stapler validate` on a quarantined copy. |
 | M3 | A workflow lint test (`tests/test_workflows.py`) fails if a release workflow contains `set -x`, a `secrets.` reference outside an `env:` block, or a signing step that can run on `pull_request`. |
@@ -490,11 +570,11 @@ Each phase merges on its own and leaves the app working.
 | Phase | Contents | Merge value |
 |---|---|---|
 | 1 | Settings, setup page and catalogue button. Two pull requests in order: 1a is `acp_settings.py`, `data_path`, `ACP_DATA_DIR`, the claim/run split of `run_scan_now` and the settings routes (S tests). 1b is the setup page, scan start, progress, first-run redirect and the catalogue fetch (F, P, C tests), plus the docs for source installs. | Mac and Linux source users and Docker users stop setting environment variables. |
-| 2 | `launcher.py`, `/api/quit`, `packaging/` constraints and pins, `packaging/windows`, the Windows workflow and docs (L, K tests). Measures the real size. | Windows users get a download. |
-| 3 | `packaging/macos`, the stub, signing and notarising, the Mac workflow and docs (M tests). Needs Rohan's secrets for a signed result, and works without them. | Mac users get a signed download. |
-| 4 | `packaging/linux`, `start-acp`, the Linux workflow and docs (K7). | Linux and Raspberry Pi users get a download. |
+| 2 | `launcher.py`, `/api/quit`, the tray, `shortcuts.py` and its tick box and settings row, `make_icons.py`, `requirements-packaged.txt`, `packaging/` constraints and pins, `packaging/windows`, the Windows workflow and docs (L, K, T, W, I tests). Measures the real size. | Windows users get a download. |
+| 3 | `packaging/macos`, the stub, the menu bar item and its `pyobjc` dependency, `ACP.icns`, signing and notarising, the Mac workflow and docs (M tests). Needs Rohan's secrets for a signed result, and works without them. | Mac users get a signed download. |
+| 4 | `packaging/linux`, `start-acp`, the best-effort tray, the `.desktop` entry, the Linux workflow and docs (K7, X1). | Linux and Raspberry Pi users get a download. |
 
-Phases 3 and 4 reuse `launcher.py` from phase 2, so they follow it. Phases 3 and 4 do not depend on each other. All three packaged phases need phase 1, because a packaged app has no other way to set image folders.
+Phases 3 and 4 reuse `launcher.py`, the tray code, `shortcuts.py` and `make_icons.py` from phase 2, so they follow it. None of the tray or shortcut code goes in phase 1, because it needs the packaged layout to run. Phase 1 adds nothing for it. Phases 3 and 4 do not depend on each other. All three packaged phases need phase 1, because a packaged app has no other way to set image folders.
 
 ## 11. Out of scope
 
@@ -508,6 +588,9 @@ Phases 3 and 4 reuse `launcher.py` from phase 2, so they follow it. Phases 3 and
 - A 32-bit Raspberry Pi build.
 - A menu-bar icon or Dock icon for the Mac app.
 - Shipping `catalogs.json` in a release.
+- Starting ACP at login, and desktop notifications from the tray.
+- A tray on GNOME or native Wayland, and tray items beyond Open ACP, the status line and Quit ACP (no Open log folder, no pause).
+- Shortcuts on Mac, and a Linux desktop-folder shortcut.
 
 ## 12. Limits of this spec
 
@@ -519,6 +602,10 @@ I have not built or run any of it. These points rest on reading the code or on g
 - The bundled Mac Python loads all its extensions under hardened runtime without extra entitlements, and notarisation accepts the stub.
 - `ubuntu-22.04-arm` is available to this repository.
 - The licence terms of the four VizieR tables.
+- pystray's Mac backend runs under the stub's `execv` as an accessory app, and tints a menu bar template image.
+- pystray's `xorg` backend shows an icon on the Raspberry Pi desktop, and `_NET_SYSTEM_TRAY_S0` is a reliable test for a tray.
+- `server.close()` from another thread ends waitress's loop cleanly. If it does not, `shutdown()` ends the process after flushing the log.
+- GitHub's Windows and Mac runners can show a tray icon. K8 tolerates a runner that cannot.
 
 ## Review changes
 
@@ -547,7 +634,7 @@ Two independent reviews of the earlier version produced these changes. A means t
 | B3 | The Mac main executable is a compiled stub. |
 | B4 | The token rule says the cookie counts. `ACP_BIND_HOST` carries the real bind. The `Host` check skips token holders. |
 | B5 | The launcher sets the config folder first, then `ACP_DATA_DIR` from it, before `app.py` imports. |
-| B6 | A release procedure is in section 3.7. |
+| B6 | A release procedure is in section 3.9. |
 | B9 | Locked roots get unlock instructions and a "Copy to settings file" button. |
 | B10 | Help text for copying a path sits beside the box. |
 | B11 | The longest path is under 150 characters, the top folder is `ACP`, and the extract-first line leads the docs. |
@@ -557,4 +644,5 @@ Two independent reviews of the earlier version produced these changes. A means t
 | B16 | Added S5 parameters, C10 file case, the fixture source, S11, S4 once, and L1 and L2 in subprocesses. |
 | B17 | Linux docs change is stated in section 8. The two-folder note on Mac is in section 1.1. |
 | Smaller | The NINA address, the HOST limit, the pinned `.bat` and `msvcp140.dll` are in the docs and QA. |
+| Follow-up 3 | Rohan asked for shortcuts and a tray icon. Sections 3.4 and 3.5 add them, and sections 2.3, 4.2, 5.1, 7, 8, 9 and 10 follow. |
 | Open questions | Settled with the defaults from the brief: token cookie counts, first release 1.0.0, Apple Silicon only, native alert instead of Terminal, no shipped catalogues. |
