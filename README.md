@@ -199,6 +199,14 @@ Hygiene for the supply chain is automated end-to-end:
 - **CodeQL** runs on every push to `main` and weekly on a schedule, with the `security-and-quality` query suite.
 - **Vulnerability reports** go through GitHub's [Private Vulnerability Reporting](https://github.com/astro-roro/Astro-Coverage-Planner/security) on the Security tab — see [`SECURITY.md`](SECURITY.md) for the full process.
 
+## Credits
+
+- The sky map is drawn by [Aladin Lite](https://aladin.cds.unistra.fr/AladinLite/), and the surveys, name search and catalogue downloads come from CDS (Centre de Données astronomiques de Strasbourg): HiPS tiles, SIMBAD and VizieR.
+- Milky Way panorama: Axel Mellinger. It is the background of the hero poster and of the survey-swap and smart-search GIFs.
+- The zoomed-in backgrounds in the catalogue and planning GIFs look like DSS2 (Digitized Sky Survey), and the survey-swap GIF cycles through several more. Each belongs to its survey team.
+- Survey images belong to their authors. ACP does not store them: your browser loads them from CDS.
+- Built on Astropy, Flask, NumPy, SciPy and other open source packages. The full list, with licences and the credit each project asks for, is in [docs/credits.md](docs/credits.md).
+
 ## License
 
 MIT, see `LICENSE`. The bundled Target Scheduler sync extension (`bundled_extensions/nina_ts_sync`) is by the same owner under the same licence.
