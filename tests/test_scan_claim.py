@@ -53,6 +53,7 @@ class TestClaimAndRun(ScanCase):
         self.assertEqual(app_module.claim_scan("test"), "running")
 
     def test_claimed_run_does_the_scan_and_clears_the_flag(self):
+        self.write_settings({"fits_roots": ["/some/root"]})
         calls = []
         app_module._run_scan_subprocess = lambda args: calls.append(args) or 0
         self.assertEqual(app_module.claim_scan("page"), "claimed")
@@ -64,6 +65,7 @@ class TestClaimAndRun(ScanCase):
         self.assertEqual(status["last_trigger"], "page")
 
     def test_c2_two_claims_fired_together_get_one_winner(self):
+        self.write_settings({"fits_roots": ["/some/root"]})
         results = []
         barrier = threading.Barrier(8)
 
@@ -117,19 +119,16 @@ class TestScanEnvironment(ScanCase):
             app_module._run_scan_subprocess(["python", "builder.py"])
         return seen["env"]
 
-    def test_c4_roots_and_manifest_from_the_file_reach_the_subprocess(self):
-        self.write_settings({"fits_roots": ["/a", "/b"], "manifest_path": "/m/manifest.json"})
+    def test_c4_roots_from_the_file_reach_the_subprocess(self):
+        self.write_settings({"fits_roots": ["/a", "/b"]})
         env = self.run_real_subprocess()
         self.assertEqual(env["FITS_ROOTS"], "/a;/b")
-        self.assertEqual(env["MANIFEST_PATH"], "/m/manifest.json")
 
     def test_c4_the_environment_wins_when_both_exist(self):
-        self.write_settings({"fits_roots": ["/file"], "manifest_path": "/file/m.json"})
+        self.write_settings({"fits_roots": ["/file"]})
         os.environ["FITS_ROOTS"] = "/env"
-        os.environ["MANIFEST_PATH"] = "/env/m.json"
         env = self.run_real_subprocess()
         self.assertEqual(env["FITS_ROOTS"], "/env")
-        self.assertEqual(env["MANIFEST_PATH"], "/env/m.json")
 
     def test_with_nothing_effective_the_builder_keeps_its_own_fallback(self):
         env = self.run_real_subprocess()

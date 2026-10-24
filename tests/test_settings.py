@@ -716,10 +716,11 @@ class TestRestrictedRoutes(EnvCase):
                         environ_base=REMOTE)
         self.assertEqual(resp.status_code, 200)
         cookie = app_module._session_cookie_value("t" * 24)
-        self.client.set_cookie(app_module.SESSION_COOKIE_NAME, cookie)
-        resp = self.put({"fits_roots": []}, environ_base=REMOTE, headers={"Host": "acp.example"})
+        self.client.set_cookie(app_module.SESSION_COOKIE_NAME, cookie, domain="acp.example")
+        site = {"base_url": "http://acp.example", "environ_base": REMOTE}
+        resp = self.put({"fits_roots": []}, **site)
         self.assertEqual(resp.status_code, 200)
-        body = self.client.get("/api/settings", environ_base=REMOTE).get_json()
+        body = self.client.get("/api/settings", **site).get_json()
         self.assertIn("value", body["keys"]["manifest_path"])
 
     def test_c9_with_a_token_a_request_with_neither_gets_401_on_get_too(self):

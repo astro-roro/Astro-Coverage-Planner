@@ -61,20 +61,22 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 import target_ids  # noqa: E402
 
+# The settings file lives at the repo root, so a hand-run scan from a source
+# checkout sees the folders saved on the setup page.
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import acp_settings  # noqa: E402
+
 import warnings
 warnings.filterwarnings("ignore", category=Warning)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-def _env_paths(var: str) -> list[Path] | None:
-    raw = os.environ.get(var)
-    if not raw:
-        return None
-    return [Path(p.strip()) for p in raw.split(";") if p.strip()]
-
-# NAS roots (Windows SMB mappings) — edit this list for your setup, or override
-# with FITS_ROOTS="D:/Astro/Images;E:/Archive" before running.
-NAS_ROOTS = _env_paths("FITS_ROOTS") or [
+# NAS roots (Windows SMB mappings). Set the image folders on the /setup page,
+# or with FITS_ROOTS="D:/Astro/Images;E:/Archive" before running; the
+# environment variable wins over the settings file. The list below is the
+# maintainer's own fallback, used when neither is set.
+NAS_ROOTS = [Path(p) for p in acp_settings.effective("fits_roots")] or [
     Path("Z:/Astro/Images"),
 ]
 NAS_PREFIX = os.environ.get("NAS_PREFIX", "/mnt/remotes/NAS/")
@@ -89,7 +91,8 @@ DB_PATH = Path(os.environ.get("PIPELINE_DB") or (REPO_ROOT / "state" / "job_queu
 
 # Manifest output — default to ``data/manifest.json`` (the path the planner
 # reads by default). Override with MANIFEST_PATH if you want it elsewhere.
-MANIFEST_PATH = Path(os.environ.get("MANIFEST_PATH") or (REPO_ROOT / "data" / "manifest.json"))
+MANIFEST_PATH = Path(acp_settings.effective("manifest_path")
+                     or acp_settings.data_path("manifest.json"))
 REPORT_DIR = MANIFEST_PATH.parent
 SUMMARY_PATH = REPORT_DIR / "archive_manifest_summary.md"
 
@@ -104,7 +107,7 @@ EXTENSIONS = (".fit", ".fits", ".fts", ".xisf")
 # nightly runs, so we remember what each reader returned and skip the read when
 # path, size and mtime all still match. Override the location with
 # ACP_SCAN_CACHE; --no-cache re-reads everything.
-SCAN_CACHE_PATH = Path(os.environ.get("ACP_SCAN_CACHE") or (REPO_ROOT / "data" / "scan_cache.json"))
+SCAN_CACHE_PATH = Path(os.environ.get("ACP_SCAN_CACHE") or acp_settings.data_path("scan_cache.json"))
 SCAN_CACHE_SCHEMA = 1
 
 # Mount-name patterns that show up in the TELESCOP header instead of the scope.

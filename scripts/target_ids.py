@@ -614,10 +614,19 @@ class TargetStore:
     combine: Callable[[dict, dict | None], dict]
 
 
+def _data_path(name: str) -> Path:
+    """Where a user-written file lives: ACP_DATA_DIR, else <repo>/data. Read
+    live, because the stores are looked up at carry-over time. Mirrors
+    acp_settings.data_path without importing it, so this file stays usable on
+    its own."""
+    override = (os.environ.get("ACP_DATA_DIR") or "").strip()
+    base = Path(override) if override else Path(__file__).resolve().parent.parent / "data"
+    return base / name
+
+
 def _overrides_path() -> Path:
-    repo = Path(__file__).resolve().parent.parent
     return Path(os.environ.get("TARGET_OVERRIDES_PATH")
-                or (repo / "data" / "target_overrides.json"))
+                or _data_path("target_overrides.json"))
 
 
 def _combine_hidden(old: dict, new: dict | None) -> dict:
@@ -626,9 +635,8 @@ def _combine_hidden(old: dict, new: dict | None) -> dict:
 
 
 def _hidden_path() -> Path:
-    repo = Path(__file__).resolve().parent.parent
     return Path(os.environ.get("HIDDEN_PATH")
-                or (repo / "data" / "hidden.json"))
+                or _data_path("hidden.json"))
 
 
 # Register any new per-target file here (hidden marks, for one) so a merge
