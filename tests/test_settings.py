@@ -29,6 +29,9 @@ CLEAN_VARS = ("FITS_ROOTS", "MANIFEST_PATH", "PORT", "ACP_SCAN_CRON", "ACP_API_T
               "ACP_DATA_DIR", "ACP_PACKAGED", "ACP_HOME", "ACP_BIND_HOST", "HOST")
 
 
+REMOTE = {"REMOTE_ADDR": "203.0.113.9"}
+
+
 def run_python(code: str, env_extra: dict, cwd: Path = REPO) -> str:
     """Run code in a fresh interpreter with a scrubbed environment."""
     env = {k: v for k, v in os.environ.items()
@@ -192,20 +195,34 @@ class TestFileHandling(unittest.TestCase):
         self.assertEqual(acp_settings.load_file(self.path), ({}, None))
         self.assertFalse(self.path.parent.exists())
 
-    def test_s4_corrupt_file_gives_defaults_an_error_and_one_backup(self):
+    def test_s4_corrupt_file_gives_defaults_and_an_error_and_a_read_writes_nothing(self):
         self.path.parent.mkdir()
         self.path.write_text("{ not json", encoding="utf-8")
         data, error = acp_settings.load_file(self.path)
         self.assertEqual(data, {})
         self.assertEqual(error, "corrupt")
         self.assertEqual(self.path.read_text(encoding="utf-8"), "{ not json")
+        self.assertEqual([p.name for p in self.path.parent.iterdir()], ["settings.json"])
+
+    def test_s4_saving_over_a_corrupt_file_keeps_one_backup(self):
+        self.path.parent.mkdir()
         bak = self.path.with_name("settings.json.bak")
+        self.path.write_text("{ not json", encoding="utf-8")
+        acp_settings.save(self.path, {"fits_roots": ["/a"]})
         self.assertEqual(bak.read_text(encoding="utf-8"), "{ not json")
 
         self.path.write_text("[1, 2", encoding="utf-8")
-        data, error = acp_settings.load_file(self.path)
-        self.assertEqual(error, "corrupt")
+        acp_settings.save(self.path, {"fits_roots": ["/b"]})
         self.assertEqual(bak.read_text(encoding="utf-8"), "{ not json")
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["fits_roots"], ["/b"])
+
+    def test_s4_a_failed_backup_refuses_the_write_and_keeps_the_corrupt_file(self):
+        self.path.parent.mkdir()
+        self.path.write_text('{"fits_roots": ["/a"],', encoding="utf-8")
+        with mock.patch.object(acp_settings.shutil, "copyfile", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                acp_settings.save(self.path, {"fits_roots": ["/b"]})
+        self.assertEqual(self.path.read_text(encoding="utf-8"), '{"fits_roots": ["/a"],')
 
     def test_s4_a_json_value_that_is_not_an_object_counts_as_corrupt(self):
         self.path.parent.mkdir()
@@ -363,6 +380,14 @@ class TestImportTimePaths(unittest.TestCase):
                          ["data/target_overrides.json", "data/hidden.json"])
         self.assertEqual(out["port"], 5555)
         self.assertFalse((self.tmp / "empty").exists(), "reading settings must not create a folder")
+
+    def test_s6_holds_with_no_acp_home_and_an_empty_profile(self):
+        # The same check through the real config-folder lookup, not ACP_HOME.
+        out = json.loads(run_python(PATHS_SNIPPET, {"HOME": str(self.tmp)}))
+        self.assertEqual(self.rel(out["app"]["MANIFEST_PATH"]), "data/manifest.json")
+        self.assertEqual(self.rel(out["builder"]["SCAN_CACHE_PATH"]), "data/scan_cache.json")
+        self.assertEqual(out["port"], 5555)
+        self.assertEqual(list(self.tmp.iterdir()), [], "reading settings must create nothing")
 
     def test_s10_acp_data_dir_moves_every_user_written_file(self):
         data_dir = self.tmp / "userdata"
@@ -684,9 +709,6 @@ class TestAdoptEnv(EnvCase):
 # Who may call the restricted routes (spec section 7, C7 to C9)
 # --------------------------------------------------------------------------
 
-REMOTE = {"REMOTE_ADDR": "203.0.113.9"}
-
-
 class TestRestrictedRoutes(EnvCase):
 
     def calls(self):
@@ -769,6 +791,54 @@ class TestRestrictedRoutes(EnvCase):
     def test_c9_with_a_token_a_request_with_neither_gets_401_on_get_too(self):
         os.environ["ACP_API_TOKEN"] = "t" * 24
         self.assertEqual(self.client.get("/api/settings").status_code, 401)
+
+
+class TestReviewFindings(EnvCase):
+    """Independent review of 1a: the claim race, writes on read, and a corrupt
+    file that must not be replaced without a backup."""
+
+    def test_no_claim_when_roots_are_cleared_before_it_takes_the_lock(self):
+        acp_settings.save(acp_settings.settings_file(), {"fits_roots": ["/images"]})
+        acp_settings.save(acp_settings.settings_file(), {"fits_roots": []})
+        self.assertEqual(app_module.claim_scan("page"), "no_roots")
+        self.assertFalse(app_module.scan_status()["running"])
+
+    def test_the_roots_are_read_while_the_scan_lock_is_held(self):
+        acp_settings.save(acp_settings.settings_file(), {"fits_roots": ["/images"]})
+        real = acp_settings.effective
+        seen = {}
+
+        def effective(key, env=None):
+            if key == "fits_roots":
+                seen["locked"] = app_module.SCAN_STATE_LOCK.locked()
+            return real(key, env)
+
+        with mock.patch.object(app_module.acp_settings, "effective", effective):
+            app_module.claim_scan("page")
+        self.assertTrue(seen["locked"], "claim_scan read fits_roots outside SCAN_STATE_LOCK")
+
+    def test_a_get_never_writes_even_for_a_corrupt_file(self):
+        self.write_settings("{ bad")
+        for environ in ({}, REMOTE):
+            self.client.get("/api/settings", environ_base=environ)
+        self.assertEqual([p.name for p in self.settings_file.parent.iterdir()], ["settings.json"])
+
+    def test_put_does_not_destroy_a_corrupt_file_whose_backup_failed(self):
+        original = '{"fits_roots": ["/a"], "future": 1,'
+        self.write_settings(original)
+        with mock.patch.object(acp_settings.shutil, "copyfile", side_effect=OSError("disk full")):
+            resp = self.put({"fits_roots": [self.folder()]})
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.get_json()["error"], "write_failed")
+        self.assertEqual(self.settings_file.read_text(encoding="utf-8"), original)
+
+    def test_a_uid_with_no_passwd_entry_reads_as_not_writable(self):
+        # Docker sets HOME=/ for a uid with no passwd entry (Brutix runs as 99:100).
+        os.environ.pop("ACP_HOME")
+        os.environ["HOME"] = "/"
+        with mock.patch.object(acp_settings.sys, "platform", "linux"):
+            body = self.client.get("/api/settings").get_json()
+        self.assertFalse(body["writable"])
 
 
 if __name__ == "__main__":
