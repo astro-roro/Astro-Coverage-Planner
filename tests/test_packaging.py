@@ -128,6 +128,12 @@ class TestStartFiles(unittest.TestCase):
         self.assertIn("xisf==0.9.7", listed)
         self.assertTrue(set(listed) <= pins, "each source-only package must match its constraint")
 
+    def test_the_start_check_reads_the_listener_port_from_its_endpoint(self):
+        # TcpListener has no LocalPort property; under strict mode that throws.
+        ps1 = (REPO / "packaging" / "windows" / "smoke-start.ps1").read_text(encoding="utf-8")
+        self.assertNotIn(".LocalPort", ps1)
+        self.assertIn("$listener.LocalEndpoint.Port", ps1)
+
     def test_the_readme_covers_the_points_the_spec_lists(self):
         text = (REPO / "packaging" / "windows" / "README.txt").read_text(encoding="utf-8")
         for needle in ("C:\\ACP", "Unblock", "Run anyway", "notification area", "Quit ACP",

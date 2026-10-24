@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 function Get-FreePort {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
     $listener.Start()
-    $port = $listener.LocalPort
+    $port = $listener.LocalEndpoint.Port
     $listener.Stop()
     return $port
 }
