@@ -2,7 +2,7 @@
 
 This guide picks up where the [Quickstart](../README.md#get-it-running) left off. By now ACP should be running with the demo data, we'll swap that out for a manifest built from your real FITS/XISF library.
 
-- [Build the manifest](#build-the-manifest)
+- [Build the manifest](#build-the-manifest), with [the setup page](#the-setup-page) and [the command line](#from-the-command-line)
 - [Configuration variables](#configuration-variables)
 - [Optional: sub-exposure hours from a pipeline DB](#optional-sub-exposure-hours-from-a-pipeline-db)
 - [Optional: download catalogue overlays](#optional-download-catalogue-overlays)
@@ -13,7 +13,26 @@ This guide picks up where the [Quickstart](../README.md#get-it-running) left off
 
 The manifest is the JSON file at `data/manifest.json` that ACP reads on startup. It contains every field of view in your archive, clustered by sky position, with per-filter integration hours and the gear used.
 
-To build it, point `FITS_ROOTS` at one or more folders of stacked FITS/XISF masters and run the build script:
+### The setup page
+
+The easiest way is the setup page. Start ACP, open <http://127.0.0.1:5555/setup> (a fresh install sends you there by itself), and then:
+
+1. Paste the full path of the folder that holds your FITS/XISF files into the box and press **Add**. Add as many folders as you like. ACP checks each one and says what is wrong if it cannot use it.
+2. Press **Scan my images**. The page shows the stage, the number of files seen and the time elapsed. A big library takes a while, and you can leave the page open.
+3. When the scan finishes the page shows how many targets it found and opens the map.
+
+On Windows 11 you get a folder's path by right-clicking it and choosing **Copy as path**. On Windows 10, hold Shift while you right-click. On a Mac, right-click in Finder, hold Option and choose **Copy as Pathname**. ACP strips the quotes Windows adds.
+
+The folders are saved to the [settings file](#the-settings-file). The **Settings** link in the map's header opens the same page later. It also shows the data folder, the manifest path, the port and the version, and has a **Download catalogues** button for the overlays (see [below](#optional-download-catalogue-overlays)).
+
+Two cases look different:
+
+- If `FITS_ROOTS` is set in your environment, the page lists the folders and locks them, because the variable wins. A **Copy to settings file** button saves the same list to `settings.json`. Remove the variable afterwards (on Windows: Settings, then "Edit environment variables for your account") and the file takes over.
+- In Docker, ACP has no writable settings folder, so the page is read-only. It lists the folders and offers no buttons. Set `FITS_ROOTS` in your compose file, restart the container, and start scans with `docker exec` or `ACP_SCAN_CRON`.
+
+### From the command line
+
+To build it without the page, point `FITS_ROOTS` at one or more folders of stacked FITS/XISF masters and run the build script. A builder run by hand also reads `fits_roots` from the settings file:
 
 **macOS / Linux:**
 
@@ -138,11 +157,11 @@ Point `PIPELINE_DB` at it before running the manifest builder and the per-target
 
 ## Optional: download catalogue overlays
 
-To enable the Green SNR, WISE HII, SMGPS, Messier, Sharpless, and ESO PNe overlays in the right rail:
+To enable the Green SNR, WISE HII, SMGPS, Messier, Sharpless, and ESO PNe overlays in the right rail, press **Download catalogues** on the [Settings page](#the-setup-page), or run:
 
     python scripts/fetch_catalogs.py
 
-This writes `data/catalogs.json` by querying VizieR via `astroquery` (already in `requirements.txt`). First run takes around 30 seconds; the result is cached so subsequent runs are instant.
+This writes `catalogs.json` in the data folder by querying VizieR via `astroquery` (already in `requirements.txt`). First run takes around 30 seconds; the result is cached so subsequent runs are instant. ACP does not ship these lists. The button makes ACP connect to the internet, and the page says so before you press it. If no VizieR table can be reached the script exits with code 3 and the page reports that it could not reach the catalogue service.
 
 ## What gets scanned vs skipped
 

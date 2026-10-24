@@ -55,6 +55,12 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/settings` | Where each setting came from, whether the environment locks it, `first_run`, `writable` and the version. Folder and manifest paths go to an authorised client only |
 | `PUT /api/settings` | Save `fits_roots` (and `shortcuts` where available). Authorised client only, JSON body |
 | `POST /api/settings/adopt-env` | Copy the folders in `FITS_ROOTS` into the settings file. Authorised client only |
+| `POST /api/settings/check-path` | Body `{"path": "..."}`. Checks one folder against the saved list and writes nothing. Returns `{code, warnings}`. Authorised client only |
+| `GET /setup` | The first-run and settings page |
+| `POST /api/scan/start` | Start one scan now. 202, or 409 `scan_running`, or 400 `no_archive_roots`. Authorised client only |
+| `GET /api/scan/status` | Scan state, with `progress` (`{stage, files_seen}`, never a path) and `elapsed_seconds` while running |
+| `POST /api/catalogues/fetch` | Download the catalogue overlays in the background. 202, or 409 `fetch_running`. Authorised client only |
+| `GET /api/catalogues/status` | `{running, finished, error_kind, last_finish, present}` |
 
 The API is unauthenticated by default and binds to `127.0.0.1`, see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network, and [Optional bearer-token auth](#optional-bearer-token-auth) below if you do.
 
@@ -88,6 +94,7 @@ An authorised client is one that passed the access gate with the bearer token or
 |---|---|---|
 | 400 | `unknown_key` | The body has a key other than `fits_roots` or `shortcuts`. `port`, `manifest_path` and `scan_cron` are edited in the file. |
 | 400 | `not_absolute`, `invalid`, `duplicate`, `too_many` | A folder failed the syntax check. Nothing is saved. |
+| 400 | `not_found`, `not_a_directory`, `not_readable`, `timed_out` | A folder failed the disk check. The reply also has `index`, the position of the folder in the list. Nothing is saved. A folder that does not answer within 5 seconds gives `timed_out`. |
 | 400 | `unavailable` | `shortcuts` where shortcuts are not supported. |
 | 400 | `nothing_to_adopt` | `adopt-env` with no `FITS_ROOTS` set. |
 | 400 | `bad_host` | The `Host` header does not name this machine. |
@@ -96,6 +103,12 @@ An authorised client is one that passed the access gate with the bearer token or
 | 409 | `scan_running` | `fits_roots` cannot change during a scan. |
 | 409 | `not_writable` | There is no writable settings folder. |
 | 415 | `unsupported_media_type` | Not a JSON body. |
+
+A successful `PUT` of `fits_roots` returns the settings view plus `warnings`, a list of `{index, code}` where `code` is `overlaps`, `very_large` (the top of a drive) or `no_images_seen`. Warnings never block a save.
+
+`POST /api/settings/check-path` answers 200 with `{"code": "ok" | <blocking code>, "warnings": [...]}` for any string, using the codes above plus `duplicate` and `too_many` measured against the saved list. It judges the path's syntax before it touches the disk, and it never returns the path or an operating system message.
+
+`POST /api/scan/start` and `POST /api/catalogues/fetch` follow the same rules as `PUT`: an authorised client, a JSON body (`{}` will do) and a matching `Origin`. The scan claims its slot before it answers, so two quick requests give one 202 and one 409. Scan failures show up in `GET /api/scan/status` as `last_error_kind` with a fixed message.
 
 ## Manifest schema
 

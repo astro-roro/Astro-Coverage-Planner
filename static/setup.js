@@ -136,13 +136,15 @@
     show($("readonlyCard"), readOnly);
     show($("remoteCard"), !readOnly && !known);
 
+    // A read-only install (Docker) lists its folders and changes nothing: no
+    // Add, Remove, Scan or catalogue buttons.
     const canEdit = !readOnly && known;
-    show($("foldersCard"), canEdit);
+    show($("foldersCard"), known);
     show($("scanCard"), canEdit);
     show($("catalogCard"), canEdit);
     show($("infoCard"), !setupMode && known);
 
-    if (!canEdit && !(readOnly && known)) return;
+    if (!known) return;
 
     state.folders = known ? roots.value.slice() : [];
     renderFolders(roots);
@@ -168,7 +170,7 @@
       span.className = "folder-path";
       span.textContent = folder;
       li.appendChild(span);
-      if (!locked) {
+      if (!locked && state.settings.writable !== false) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.textContent = "Remove";
@@ -178,10 +180,12 @@
       list.appendChild(li);
     });
     show($("folderEmpty"), state.folders.length === 0);
-    show($("lockedBox"), locked);
-    show($("adoptBox"), locked && state.settings.writable !== false);
-    show($("addForm"), !locked);
-    show($("pathHelp"), !locked);
+    const readOnly = state.settings.writable === false;
+    show($("lockedBox"), locked && !readOnly);
+    show($("adoptBox"), locked && !readOnly);
+    show($("addForm"), !locked && !readOnly);
+    show($("pathHelp"), !locked && !readOnly);
+    show($("folderEmpty"), state.folders.length === 0 && !readOnly);
   }
 
   async function loadSettings() {
