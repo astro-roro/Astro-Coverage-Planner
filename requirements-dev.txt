@@ -1,3 +1,5 @@
 # Test-only dependencies. Not installed in the Docker image (see Dockerfile).
 # The suite is a mix of unittest classes and pytest-style functions (tests/ts_sync), so CI runs it with pytest.
 pytest>=9.1.1
+# Draws the package icons in tests/test_icons.py; the test skips without it.
+pillow>=12.3.0
