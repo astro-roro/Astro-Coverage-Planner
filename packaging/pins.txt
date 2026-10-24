@@ -10,4 +10,4 @@
 # Then cross-check it against the file's entry on the python.org 3.12.10 release page.
 # build.ps1 refuses to build while this is TODO, and prints the hash it computed.
 PYTHON_VERSION=3.12.10
-PYTHON_WINDOWS_EMBED_SHA256=TODO
+PYTHON_WINDOWS_EMBED_SHA256=4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3
