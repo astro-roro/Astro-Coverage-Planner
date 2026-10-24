@@ -883,7 +883,14 @@ class TestReviewFindings(EnvCase):
         # Docker sets HOME=/ for a uid with no passwd entry (Brutix runs as 99:100).
         os.environ.pop("ACP_HOME")
         os.environ["HOME"] = "/"
-        with mock.patch.object(acp_settings.sys, "platform", "linux"):
+        # A CI runner may export XDG_CONFIG_HOME, which would point the settings
+        # folder somewhere writable and hide the HOME=/ case.
+        os.environ.pop("XDG_CONFIG_HOME", None)
+        # The uid in question cannot write to "/". Say so outright, because a
+        # runner that is root (or has a writable "/") would otherwise differ
+        # from the developer machine this was written on.
+        with mock.patch.object(acp_settings.sys, "platform", "linux"), \
+                mock.patch.object(acp_settings.os, "access", return_value=False):
             body = self.client.get("/api/settings").get_json()
         self.assertFalse(body["writable"])
 
