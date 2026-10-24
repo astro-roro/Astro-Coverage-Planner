@@ -67,6 +67,10 @@
     <section class="setup-card" id="scanCard" hidden>
       <h2>Scan</h2>
       <p class="setup-hint">ACP reads the headers of your image files to work out what you have photographed. A big library can take a while. You can leave this page open or come back later.</p>
+      <label id="shortcutsOffer" class="shortcuts-offer" hidden>
+        <input type="checkbox" id="shortcutsBox" checked />
+        <span id="shortcutsLabel"></span>
+      </label>
       <div class="scan-actions">
         <button type="button" id="scanBtn" class="primary" disabled>Scan my images</button>
         <a id="skipLink" class="setup-skip" href="/?setup=skip">Skip for now</a>
@@ -107,8 +111,24 @@
         <dt>Port</dt><dd id="infoPort"></dd>
         <dt>Version</dt><dd><span id="infoVersion"></span>
           <a href="https://github.com/astro-roro/Astro-Coverage-Planner/releases" target="_blank" rel="noopener">See new releases</a></dd>
+        <dt id="shortcutsDt" hidden>Shortcuts</dt>
+        <dd id="shortcutsDd" hidden>
+          <span id="shortcutsState"></span>
+          <button type="button" id="shortcutsCreate">Create</button>
+          <button type="button" id="shortcutsRemove">Remove</button>
+          <span id="shortcutsMsg" class="setup-hint" role="status"></span>
+        </dd>
       </dl>
       <p class="setup-hint">The port and manifest path are changed in the settings file, then ACP needs a restart.</p>
+    </section>
+
+    <section class="setup-card" id="quitCard" hidden>
+      <h2>Stop ACP</h2>
+      <p class="setup-hint">ACP keeps running after you close this tab. The icon in the notification area (or the menu bar) also has a Quit ACP item, but Windows can hide new icons behind the ^ arrow, so this button is always here.</p>
+      <div class="scan-actions">
+        <button type="button" id="quitBtn">Quit ACP</button>
+        <span id="quitMsg" class="setup-hint" role="status"></span>
+      </div>
     </section>
   </main>
 

@@ -23,6 +23,12 @@
     forbidden: "Folders can only be changed from the computer ACP runs on.",
     bad_host: "Open this page as localhost or 127.0.0.1 to change settings.",
     unauthorized: "Sign in again, then retry.",
+    shortcuts_failed: "ACP could not make the shortcuts. The log has the reason.",
+    unavailable: "Shortcuts are not available on this install.",
+  };
+  const SHORTCUT_LABELS = {
+    windows: "Add ACP to the Start menu and desktop",
+    linux: "Add ACP to the applications menu",
   };
   const MAC_PRIVACY = " On a Mac, open System Settings, then Privacy & Security, and allow ACP (or your terminal) to use Files and Folders or Full Disk Access.";
 
@@ -153,12 +159,69 @@
     $("pathHelp").textContent = pathHelpText();
     show($("skipLink"), setupMode);
 
+    renderShortcuts(canEdit, setupMode);
+    show($("quitCard"), !!s.packaged);
+
     if (known) {
       $("infoData").textContent = s.data_dir || "";
       $("infoManifest").textContent = (keys.manifest_path || {}).value || "";
       $("infoPort").textContent = String((keys.port || {}).value || "");
       $("infoVersion").textContent = s.version || "";
     }
+  }
+
+  // --- Shortcuts and quitting (packaged builds) ---------------------------
+
+  function shortcutsInfo() {
+    return (state.settings && state.settings.shortcuts) || { available: false, value: null };
+  }
+
+  // The tick box shows while the user has not answered. Pressing Scan or Skip
+  // sends its value, and either value ends the offer.
+  function offerShown() {
+    const sc = shortcutsInfo();
+    return sc.available && sc.value === null && !$("scanCard").hidden;
+  }
+
+  function renderShortcuts(canEdit, setupMode) {
+    const sc = shortcutsInfo();
+    $("shortcutsLabel").textContent = SHORTCUT_LABELS[os] || SHORTCUT_LABELS.linux;
+    show($("shortcutsOffer"), sc.available && sc.value === null && canEdit);
+    const row = sc.available && canEdit && !setupMode;
+    show($("shortcutsDt"), row);
+    show($("shortcutsDd"), row);
+    $("shortcutsState").textContent = sc.value === true ? "On" : (sc.value === false ? "Off" : "Not set up");
+    show($("shortcutsCreate"), sc.value !== true);
+    show($("shortcutsRemove"), sc.value === true);
+  }
+
+  async function saveShortcuts(value) {
+    const r = await api("PUT", "/api/settings", { shortcuts: value });
+    if (r.status !== 200) {
+      return PATH_ERRORS[r.body.error] || PATH_ERRORS.shortcuts_failed;
+    }
+    state.settings = r.body;
+    return null;
+  }
+
+  async function changeShortcuts(value) {
+    $("shortcutsMsg").textContent = "";
+    const failed = await saveShortcuts(value);
+    if (failed) $("shortcutsMsg").textContent = failed;
+    render();
+  }
+
+  async function quitAcp() {
+    $("quitBtn").disabled = true;
+    const r = await api("POST", "/api/quit", {});
+    if (r.status === 200) {
+      $("quitMsg").textContent = "ACP has stopped. You can close this tab.";
+      return;
+    }
+    $("quitBtn").disabled = false;
+    $("quitMsg").textContent = r.body.error === "scan_running"
+      ? "A scan is running. Wait for it to finish, then quit."
+      : "ACP could not stop. The log has the reason.";
   }
 
   function renderFolders(rootsKey) {
@@ -276,10 +339,23 @@
     return m > 0 ? `${m} min ${s} s` : `${s} s`;
   }
 
+  async function skipSetup(event) {
+    if (!offerShown()) return;
+    event.preventDefault();
+    await saveShortcuts($("shortcutsBox").checked);
+    window.location.href = "/?setup=skip";
+  }
+
   async function startScan() {
     resetResult();
     setMsg("", "");
     $("scanBtn").disabled = true;
+    if (offerShown()) {
+      const failed = await saveShortcuts($("shortcutsBox").checked);
+      if (failed) setMsg(failed, "bad");
+      render();
+      $("scanBtn").disabled = true;
+    }
     const r = await api("POST", "/api/scan/start", {});
     if (r.status === 202 || r.status === 409) {
       watchScan();
@@ -399,6 +475,10 @@
     $("adoptBtn").addEventListener("click", adoptEnv);
     $("changeFoldersBtn").addEventListener("click", changeFolders);
     $("catalogBtn").addEventListener("click", fetchCatalogues);
+    $("skipLink").addEventListener("click", skipSetup);
+    $("shortcutsCreate").addEventListener("click", () => changeShortcuts(true));
+    $("shortcutsRemove").addEventListener("click", () => changeShortcuts(false));
+    $("quitBtn").addEventListener("click", quitAcp);
 
     const s = await loadSettings();
     if (!s) return;
