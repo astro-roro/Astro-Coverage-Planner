@@ -367,17 +367,31 @@ def main() -> None:
         print(f"  eso_pne FAILED: {e}")
         cats["eso_pne"] = []
 
+    # Messier is built in, so the file would always have something. When every
+    # VizieR table came back empty the machine most likely has no internet. Say
+    # so and leave any existing file alone: writing now would replace good
+    # catalogues with the Messier list alone.
+    if not any(cats.get(k) for k in NETWORK_SOURCES):
+        print("\nNo VizieR table could be fetched; check the internet connection. "
+              "The existing catalogue file, if any, was left as it is.")
+        sys.exit(EXIT_NO_NETWORK)
+
+    # A table that failed on its own keeps whatever the last good run fetched.
+    try:
+        old = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        old = {}
+    if isinstance(old, dict):
+        for k in (*NETWORK_SOURCES, "smgps_candidates"):
+            if not cats.get(k) and isinstance(old.get(k), list) and old[k]:
+                print(f"  {k}: fetch failed, keeping {len(old[k])} entries from the last run")
+                cats[k] = old[k]
+
     CACHE_PATH.write_text(json.dumps(cats, indent=1), encoding="utf-8")
     total = sum(len(v) for v in cats.values())
     print(f"\nWrote {CACHE_PATH} — {total} entries total in {time.time()-t0:.1f}s")
     for k, v in cats.items():
         print(f"  {k:24s} {len(v):6d}")
-    # Messier is built in, so the file always has something. When every VizieR
-    # table came back empty the machine most likely has no internet, and the
-    # app wants to tell the user that rather than call it a success.
-    if not any(cats.get(k) for k in NETWORK_SOURCES):
-        print("\nNo VizieR table could be fetched; check the internet connection.")
-        sys.exit(EXIT_NO_NETWORK)
 
 
 if __name__ == "__main__":

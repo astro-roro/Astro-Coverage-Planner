@@ -316,6 +316,9 @@ def validate_roots(raw: list) -> tuple[list[str], str | None]:
         if (not text or len(text) > MAX_PATH_CHARS
                 or any(ord(ch) < 32 or ord(ch) == 127 for ch in text)):
             return [], "invalid"
+        if text.startswith(("\\\\.\\", "\\\\?\\", "//./", "//?/")):
+            # Windows device and extended paths (pipes, raw disks). Not folders.
+            return [], "invalid"
         if not _is_absolute(text):
             return [], "not_absolute"
         key = _compare_key(text)

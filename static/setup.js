@@ -52,6 +52,7 @@
   const CATALOGUE_ERRORS = {
     network: "Could not reach the catalogue service. Check the internet connection and try again.",
     crashed: "The download failed. The log has the reason.",
+    timed_out: "The download took too long and was stopped. Try again.",
     could_not_start: "The download could not be started. The log has the reason.",
   };
 

@@ -272,7 +272,6 @@ view = c.get("/api/settings", headers=h).get_json()
 page = c.get("/setup", headers=h)
 print(json.dumps({"writable": view["writable"], "first_run": view["first_run"],
                   "roots": view["keys"]["fits_roots"], "page": page.status_code,
-                  "banner": "Settings are fixed on this install" in page.get_data(as_text=True),
                   "put": c.put("/api/settings", json={"fits_roots": []}, headers=h).status_code}))
 """
 
@@ -285,7 +284,9 @@ print(json.dumps({"writable": view["writable"], "first_run": view["first_run"],
         self.assertEqual(out["roots"]["source"], "env")
         self.assertTrue(out["roots"]["locked"])
         self.assertEqual(out["page"], 200)
-        self.assertTrue(out["banner"])
+        # The page itself switches on writable:false in its script, so the
+        # HTML says nothing either way. What the install does is the PUT
+        # refusal and the flag.
         self.assertEqual(out["put"], 409)
 
 

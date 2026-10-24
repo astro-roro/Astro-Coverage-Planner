@@ -7054,6 +7054,8 @@ def claim_scan(trigger: str = "cron") -> str:
             logging.warning("no image folders set; skipping %s scan", trigger)
             return "no_roots"
         _scan_started_at = time.monotonic()
+        # Before the answer goes out, so a poll never sees the last scan's figures.
+        _clear_scan_progress()
         _scan_state["running"] = True
         _scan_state["last_start"] = datetime.now().isoformat(timespec="seconds")
         _scan_state["last_finish"] = None
@@ -7080,7 +7082,6 @@ def run_claimed_scan() -> None:
     before = None
     try:
         before = _manifest_snapshot() if activity.enabled() else None
-        _clear_scan_progress()
         code = _run_scan_subprocess([sys.executable, str(SCAN_SCRIPT_PATH)])
     except Exception as e:
         logging.error("scheduled scan could not start: %s: %s", type(e).__name__, e)
@@ -7441,19 +7442,26 @@ def api_put_settings():
 def _check_roots_on_disk(roots: list[str]):
     """The disk checks for a whole list, run side by side so one sleeping NAS
     costs five seconds and not five per folder. Returns the warnings, the first
-    blocking code (or None) and the index of the folder it belongs to. A folder
-    that is already saved is not walked for images again, which keeps a Remove
-    click quick."""
+    blocking code (or None) and the index of the folder it belongs to. Only
+    folders new in this request touch the disk. A folder that is already saved
+    is kept as it is, so Remove and Add stay quick while a NAS is off."""
     saved = {acp_settings._compare_key(p) for p in acp_settings.effective("fits_roots")}
     results: list = [None] * len(roots)
 
     def check(i: int, text: str) -> None:
         fresh = acp_settings._compare_key(text) not in saved
+        if not fresh:
+            # Checked when it was added. An unplugged drive or a sleeping NAS
+            # must not stop the user changing the other folders, and a save
+            # must not wait five seconds on it either.
+            results[i] = {"code": "ok",
+                          "warnings": acp_settings.path_warnings(text, roots[:i] + roots[i + 1:])}
+            return
         code = acp_settings.check_directory(text)
         out = {"code": code, "warnings": []}
         if code == "ok":
             out["warnings"] = acp_settings.path_warnings(text, roots[:i] + roots[i + 1:])
-            if fresh and acp_settings.has_images(text) is False:
+            if acp_settings.has_images(text) is False:
                 out["warnings"].append("no_images_seen")
         results[i] = out
 
@@ -7586,6 +7594,9 @@ def _run_catalogue_fetch() -> None:
             kind = "network"
         elif code != 0:
             kind = "crashed"
+    except subprocess.TimeoutExpired:
+        logging.error("catalogue download ran past its time limit")
+        kind = "timed_out"
     except Exception as e:
         logging.error("catalogue download could not run: %s: %s", type(e).__name__, e)
         kind = "could_not_start"
