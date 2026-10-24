@@ -27,7 +27,12 @@ Endpoints:
 - GET /api/export/priority       CSV of gap-mode candidates
 - GET /api/gaps                  multi-source gap-finder (JSON)
 - GET /api/gaps/moc.fits         gap MOC as raw FITS bytes
-- GET /api/scan/status           state of the scheduled archive rescan
+- GET /api/scan/status           state of the archive rescan, with stage progress
+- POST /api/scan/start           start one scan now (the setup page's Scan button)
+- GET /setup                     first-run and settings page
+- POST /api/settings/check-path  check one image folder, write nothing
+- POST /api/catalogues/fetch     download the catalogue overlays in the background
+- GET /api/catalogues/status     state of that download
 - GET/PUT /api/settings           settings file: folders, sources, locks (docs/api.md)
 - POST /api/settings/adopt-env    copy FITS_ROOTS into the settings file
 - GET /api/version               app version + plans/manifest mtimes, for the NINA plugin's poll loop
@@ -60,6 +65,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -2115,6 +2121,8 @@ def index():
     # targets list, and shows the onboarding banner directing them at the
     # archive setup guide. Erroring out here would just give them a
     # white-screen 500 with no path forward.
+    if _wants_html() and request.args.get("setup") != "skip" and _first_run():
+        return redirect("/setup")
     m = load_manifest() or {}
     return render_template(
         "index.html",
@@ -6879,6 +6887,7 @@ _scan_state = {
     "last_error": None,
     "last_error_kind": None,
 }
+_scan_started_at: float | None = None
 _scan_scheduler_thread: threading.Thread | None = None
 _scan_scheduler_stop = threading.Event()
 _scan_cron_expr: str | None = None
@@ -6888,9 +6897,46 @@ def scan_status() -> dict:
     """Snapshot of the rescan state, safe to hand to jsonify."""
     with SCAN_STATE_LOCK:
         state = dict(_scan_state)
+        started = _scan_started_at
     state["cron"] = _scan_cron_expr
     state["scheduled"] = _scan_scheduler_thread is not None
+    state["progress"] = _read_scan_progress()
+    state["elapsed_seconds"] = (int(time.monotonic() - started)
+                                if state["running"] and started is not None else None)
     return state
+
+
+_SCAN_STAGES = ("listing", "reading", "matching", "writing")
+
+
+def _scan_progress_path() -> Path:
+    return MANIFEST_PATH.with_name("scan_progress.json")
+
+
+def _read_scan_progress() -> dict | None:
+    """The builder's progress file reduced to a stage and a count. A missing,
+    half-written or odd file gives None, because the status route must stay
+    valid whatever is on disk. Only the two fields cross the wire, so a path
+    in a hand-edited file could not leak."""
+    try:
+        doc = json.loads(_scan_progress_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("stage") not in _SCAN_STAGES:
+        return None
+    seen = doc.get("files_seen")
+    if isinstance(seen, bool) or not isinstance(seen, int) or seen < 0:
+        return None
+    return {"stage": doc["stage"], "files_seen": seen}
+
+
+def _clear_scan_progress() -> None:
+    """A new scan starts with no progress, so the last scan's final figures do
+    not show while the builder is still starting."""
+    try:
+        _scan_progress_path().unlink()
+    except OSError:
+        pass
 
 
 # What a failed scan is told to the caller as. The scanner's own stderr goes
@@ -6905,7 +6951,7 @@ _SCAN_ERROR_KINDS = (
     ("no space left", "disk_full"),
 )
 _SCAN_ERROR_MESSAGES = {
-    "no_archive_roots": "the scan found no archive roots to read; check FITS_ROOTS",
+    "no_archive_roots": "the scan found no archive roots to read; check the image folders in Settings",
     "permission_denied": "the scan could not read part of the archive",
     "path_not_found": "the scan could not find part of the archive",
     "out_of_memory": "the scan ran out of memory",
@@ -6995,6 +7041,7 @@ def claim_scan(trigger: str = "cron") -> str:
     maintainer's machine and must never be scanned by accident. Source and
     Docker scheduled scans behave as before.
     """
+    global _scan_started_at
     must_have_roots = trigger == "page" or _packaged()
     has_roots = bool(acp_settings.effective("fits_roots"))
     with SCAN_STATE_LOCK:
@@ -7004,6 +7051,7 @@ def claim_scan(trigger: str = "cron") -> str:
         if must_have_roots and not has_roots:
             logging.warning("no image folders set; skipping %s scan", trigger)
             return "no_roots"
+        _scan_started_at = time.monotonic()
         _scan_state["running"] = True
         _scan_state["last_start"] = datetime.now().isoformat(timespec="seconds")
         _scan_state["last_finish"] = None
@@ -7027,8 +7075,10 @@ def run_claimed_scan() -> None:
     """Run the scan whose slot claim_scan took. The route claims first so it
     can answer 202 or 409 at once, then hands this to a worker thread."""
     code = None
-    before = _manifest_snapshot() if activity.enabled() else None
+    before = None
     try:
+        before = _manifest_snapshot() if activity.enabled() else None
+        _clear_scan_progress()
         code = _run_scan_subprocess([sys.executable, str(SCAN_SCRIPT_PATH)])
     except Exception as e:
         logging.error("scheduled scan could not start: %s: %s", type(e).__name__, e)
@@ -7279,6 +7329,13 @@ def _restricted_refusal():
     return _origin_refused()
 
 
+def _first_run(resolved: dict | None = None) -> bool:
+    """No image folders anywhere and no manifest file: nothing to show yet.
+    A manifest with no folders is a user who built it by hand, not first run."""
+    resolved = resolved or acp_settings.resolve_all()
+    return not resolved["fits_roots"]["value"] and not MANIFEST_PATH.exists()
+
+
 def _settings_state():
     """The settings file, its path and any load error, read fresh."""
     path = acp_settings.settings_file()
@@ -7301,7 +7358,8 @@ def _settings_view(authorised: bool) -> dict:
         keys["manifest_path"]["value"] = str(MANIFEST_PATH)
     view = {
         "version": VERSION,
-        "first_run": not resolved["fits_roots"]["value"] and not MANIFEST_PATH.exists(),
+        "first_run": _first_run(resolved),
+        "targets": (load_manifest() or {}).get("total_targets", 0),
         "writable": acp_settings.is_writable(path),
         "error": "settings_file_corrupt" if error == "corrupt" else error,
         "shortcuts": {"available": _shortcuts_available(),
@@ -7364,12 +7422,70 @@ def api_put_settings():
         roots, code = acp_settings.validate_roots(raw)
         if code:
             return jsonify({"error": code}), 400
+        warnings, code, index = _check_roots_on_disk(roots)
+        if code:
+            return jsonify({"error": code, "index": index}), 400
         updates["fits_roots"] = roots
 
     failed = _save_settings(path, updates)
     if failed:
         return failed
-    return jsonify(_settings_view(True))
+    view = _settings_view(True)
+    if "fits_roots" in updates:
+        view["warnings"] = warnings
+    return jsonify(view)
+
+
+def _check_roots_on_disk(roots: list[str]):
+    """The disk checks for a whole list, run side by side so one sleeping NAS
+    costs five seconds and not five per folder. Returns the warnings, the first
+    blocking code (or None) and the index of the folder it belongs to. A folder
+    that is already saved is not walked for images again, which keeps a Remove
+    click quick."""
+    saved = {acp_settings._compare_key(p) for p in acp_settings.effective("fits_roots")}
+    results: list = [None] * len(roots)
+
+    def check(i: int, text: str) -> None:
+        fresh = acp_settings._compare_key(text) not in saved
+        code = acp_settings.check_directory(text)
+        out = {"code": code, "warnings": []}
+        if code == "ok":
+            out["warnings"] = acp_settings.path_warnings(text, roots[:i] + roots[i + 1:])
+            if fresh and acp_settings.has_images(text) is False:
+                out["warnings"].append("no_images_seen")
+        results[i] = out
+
+    threads = [threading.Thread(target=check, args=(i, text), daemon=True)
+               for i, text in enumerate(roots)]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + acp_settings.READ_TIMEOUT + acp_settings.IMAGE_WALK_SECONDS + 1
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    warnings = []
+    for i, out in enumerate(results):
+        if out is None:
+            return warnings, "timed_out", i
+        if out["code"] != "ok":
+            return warnings, out["code"], i
+        warnings.extend({"index": i, "code": w} for w in out["warnings"])
+    return warnings, None, None
+
+
+@app.route("/api/settings/check-path", methods=["POST"])
+def api_settings_check_path():
+    """Judge one folder against the saved list and write nothing. The
+    restricted-route test comes first and the syntax test comes before any
+    disk access: on Windows a UNC path makes this machine open an SMB
+    connection and offer its login hash."""
+    refused = _restricted_refusal()
+    if refused:
+        return refused
+    body = request.get_json(silent=True)
+    raw = body.get("path") if isinstance(body, dict) else None
+    if not isinstance(raw, str):
+        return jsonify({"error": "bad_request"}), 400
+    return jsonify(acp_settings.check_path(raw, acp_settings.effective("fits_roots")))
 
 
 @app.route("/api/settings/adopt-env", methods=["POST"])
@@ -7393,6 +7509,113 @@ def api_settings_adopt_env():
     if failed:
         return failed
     return jsonify(_settings_view(True))
+
+
+@app.route("/setup")
+def setup_page():
+    """The first-run and settings page. It carries no local path: the script
+    asks /api/settings, which hides paths from anyone not authorised."""
+    return render_template("setup.html", version=VERSION)
+
+
+@app.route("/api/scan/start", methods=["POST"])
+def api_scan_start():
+    """Start one scan from the setup page. The slot is claimed before the
+    answer, so two quick clicks cannot both get 202, then a worker thread runs
+    it. If the thread cannot start the slot is given back, or running would
+    stay true for good."""
+    refused = _restricted_refusal()
+    if refused:
+        return refused
+    claim = claim_scan("page")
+    if claim == "running":
+        return jsonify({"error": "scan_running"}), 409
+    if claim == "no_roots":
+        return jsonify({"error": "no_archive_roots"}), 400
+    try:
+        threading.Thread(target=run_claimed_scan, name="acp-scan-page", daemon=True).start()
+    except Exception:
+        logging.exception("could not start the scan thread")
+        with SCAN_STATE_LOCK:
+            _scan_state["running"] = False
+        _record_scan_error(None, kind="could_not_start")
+        return jsonify({"error": "could_not_start"}), 500
+    return jsonify({"status": "started"}), 202
+
+
+# --- Catalogue overlays (spec 2.6) ----------------------------------------------
+#
+# data/catalogs.json is made from VizieR tables by scripts/fetch_catalogs.py and
+# is not shipped, because the licence terms were not checked. The button runs
+# that script the way a scan runs: one at a time, as a subprocess, with a status
+# that carries a kind and never a path or the script's own words.
+
+CATALOGUE_SCRIPT_PATH = REPO_ROOT / "scripts" / "fetch_catalogs.py"
+_CATALOGUE_NO_NETWORK = 3
+_catalogue_state = {"running": False, "finished": False, "error_kind": None,
+                    "last_finish": None}
+
+
+def catalogue_status() -> dict:
+    with SCAN_STATE_LOCK:
+        state = dict(_catalogue_state)
+    state["present"] = CATALOGS_PATH.exists()
+    return state
+
+
+def _run_catalogue_subprocess(args: list[str]) -> int:
+    """Run the fetch script and return its exit code. Overridden in tests."""
+    env = dict(os.environ)
+    env["CATALOGS_PATH"] = str(CATALOGS_PATH)
+    proc = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env, timeout=1800)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+        logging.error("catalogue download failed (exit %s):\n%s",
+                      proc.returncode, "\n".join(tail))
+    return proc.returncode
+
+
+def _run_catalogue_fetch() -> None:
+    kind = None
+    try:
+        code = _run_catalogue_subprocess([sys.executable, str(CATALOGUE_SCRIPT_PATH)])
+        if code == _CATALOGUE_NO_NETWORK:
+            kind = "network"
+        elif code != 0:
+            kind = "crashed"
+    except Exception as e:
+        logging.error("catalogue download could not run: %s: %s", type(e).__name__, e)
+        kind = "could_not_start"
+    finally:
+        with SCAN_STATE_LOCK:
+            _catalogue_state.update(running=False, finished=kind is None, error_kind=kind,
+                                    last_finish=datetime.now().isoformat(timespec="seconds"))
+
+
+@app.route("/api/catalogues/fetch", methods=["POST"])
+def api_catalogues_fetch():
+    refused = _restricted_refusal()
+    if refused:
+        return refused
+    with SCAN_STATE_LOCK:
+        if _catalogue_state["running"]:
+            return jsonify({"error": "fetch_running"}), 409
+        _catalogue_state.update(running=True, finished=False, error_kind=None)
+    try:
+        threading.Thread(target=_run_catalogue_fetch, name="acp-catalogue-fetch",
+                         daemon=True).start()
+    except Exception:
+        logging.exception("could not start the catalogue download thread")
+        with SCAN_STATE_LOCK:
+            _catalogue_state.update(running=False, error_kind="could_not_start")
+        return jsonify({"error": "could_not_start"}), 500
+    return jsonify({"status": "started"}), 202
+
+
+@app.route("/api/catalogues/status")
+def api_catalogues_status():
+    return jsonify(catalogue_status())
 
 
 

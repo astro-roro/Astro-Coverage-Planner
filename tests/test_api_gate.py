@@ -151,7 +151,7 @@ class TestSigningIn(TokenCase):
         self.assertEqual(self.client.get("/api/manifest").status_code, 200)
         self.assertEqual(self.client.get("/static/app.js").status_code, 200)
         self.assertEqual(
-            self.client.get("/", headers={"Accept": "text/html"}).status_code, 200)
+            self.client.get("/?setup=skip", headers={"Accept": "text/html"}).status_code, 200)
 
     def test_the_cookie_is_httponly_and_samesite_strict(self):
         r = self.sign_in()
