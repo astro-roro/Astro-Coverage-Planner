@@ -3822,6 +3822,152 @@ def rejected_copy_hours(block: dict) -> float:
     return frames * float(block.get("exptime") or 0.0) / 3600.0
 
 
+_CALIBRATED_FOLDER_NAMES = {"calibrated", "calibrated_pretty", "cal"}
+_REGISTERED_FOLDER_NAMES = {"registered", "reg", "aligned"}
+
+
+def copy_stage_rank(bucket: str) -> int:
+    """How far down the pipeline a folder sits, 0 being the camera's own frames.
+
+    Read from the folder path alone, because a ``calibrated/<job hash>`` folder
+    is not a stage folder as far as ``session_root_and_stage`` is concerned (see
+    its docstring) and its block is tagged ``root``. Raw, ``jobs/`` and
+    ``pixpipe_state`` folders all hold the original frames and rank 0.
+    """
+    names = {seg.casefold() for seg in re.split(r"[\\/]+", str(bucket)) if seg}
+    if names & _REGISTERED_FOLDER_NAMES:
+        return 2
+    if names & _CALIBRATED_FOLDER_NAMES:
+        return 1
+    return 0
+
+
+# A shared capture time on one rig is one frame, so overlap is evidence of a
+# copy. These floors only guard against a stray match: a rig that is wrongly
+# identified, or two exposures that round to the same second.
+TRIM_MIN_SHARED_FRAMES = 5
+TRIM_MIN_SHARED_FRACTION = 0.10
+
+
+def _copy_candidate_groups(blocks: list[dict]) -> dict[tuple, list[dict]]:
+    """Blocks whose capture times can be compared, grouped by (rig, filter, exposure)."""
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for b in blocks:
+        rig = rig_key(b.get("telescope"), b.get("camera"))
+        if "?" in rig.split("|"):
+            continue
+        if not capture_times_are_trustworthy(b):
+            continue
+        groups[(rig, b.get("filter"), round(float(b.get("exptime") or 0), 1))].append(b)
+    return groups
+
+
+def trim_partially_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[dict], list[dict]]:
+    """Take frames off a folder when another folder already holds the same frames.
+
+    ``collapse_copied_sub_blocks`` drops a folder only when every frame in it is
+    in a bigger folder. A pipeline that processed one night in several jobs
+    leaves folders that each hold a different slice of it, so none sits inside
+    another and every slice is counted in full. The Christmas Tree Cluster's red
+    light is three such folders: 70 raw subs and two ``calibrated/<hash>`` job
+    folders of 94 and 156.
+
+    Within a (rig, filter, exposure) group the folders are taken in order of
+    pipeline stage, raw first, rejected folders last, then larger folders, then
+    shorter paths. Each capture time is credited to the first folder holding it;
+    a later folder loses the frames already credited, at most as many as it
+    holds. A folder that shares fewer than ``TRIM_MIN_SHARED_FRAMES`` frames, or
+    less than ``TRIM_MIN_SHARED_FRACTION`` of its own, is left whole, and
+    still credits its frames.
+
+    The same exclusions as the whole-folder collapse apply: an unknown rig, or
+    times that cannot tell one frame from another, leave a folder alone. A
+    rejection is sticky here too: frames taken from a rejected folder are
+    recorded on the folder that keeps them in ``_rejected_copy_times``.
+
+    Returns ``(blocks, trimmed_rows)``. Input blocks are never mutated; a block
+    that changes is replaced by a copy with ``n_subs``, ``total_hours``,
+    ``_capture_times`` and the first and last capture dates rederived from the
+    frames that remain. Its filename set is dropped, since it no longer
+    describes the block.
+    """
+    work: dict[int, dict] = {}
+
+    def editable(b: dict) -> dict:
+        got = work.get(id(b))
+        if got is None:
+            got = dict(b)
+            got["_capture_times"] = Counter(b["_capture_times"])
+            if b.get("_rejected_copy_times"):
+                got["_rejected_copy_times"] = Counter(b["_rejected_copy_times"])
+            work[id(b)] = got
+        return got
+
+    gone: set[int] = set()
+    rows: list[dict] = []
+    for (rig, filt, _), group in _copy_candidate_groups(blocks).items():
+        if len(group) < 2:
+            continue
+        ordered = sorted(group, key=lambda b: (
+            is_rejected_bucket(b["bucket"]), copy_stage_rank(b["bucket"]),
+            -(b.get("n_subs") or 0), len(b["bucket"]), b["bucket"]))
+        credited: Counter = Counter()
+        earlier: list[dict] = []
+        for b in ordered:
+            times = b["_capture_times"]
+            shared = Counter({t: min(n, credited[t]) for t, n in times.items() if credited[t]})
+            shared_n = sum(shared.values())
+            n = b.get("n_subs") or 0
+            if shared_n >= TRIM_MIN_SHARED_FRAMES and shared_n >= TRIM_MIN_SHARED_FRACTION * n:
+                keeper = max(
+                    (e for e in earlier if id(e) not in gone),
+                    key=lambda e: sum((e["_capture_times"] & shared).values()),
+                    default=None)
+                carried = bool(
+                    keeper is not None and is_rejected_bucket(b["bucket"])
+                    and not is_rejected_bucket(keeper["bucket"]))
+                if carried:
+                    kept = editable(keeper)
+                    kept["_rejected_copy_times"] = (
+                        kept.get("_rejected_copy_times", Counter())
+                        | (kept["_capture_times"] & shared))
+                hours_before = b.get("total_hours") or 0.0
+                remaining = times - shared
+                left = sum(remaining.values())
+                if left == 0:
+                    gone.add(id(b))
+                else:
+                    t = editable(b)
+                    t["n_subs"] = left
+                    t["total_hours"] = hours_before * left / n
+                    t["_capture_times"] = remaining
+                    t["first_date_obs"] = min(remaining)
+                    t["last_date_obs"] = max(remaining)
+                    t["_trimmed_frames"] = (b.get("_trimmed_frames") or 0) + shared_n
+                    t.pop("_basenames", None)
+                rows.append({
+                    "filter": filt,
+                    "exptime": b.get("exptime"),
+                    "n_subs": shared_n,
+                    "hours": round(hours_before * shared_n / n, 3),
+                    "bucket": b["bucket"],
+                    "kept": keeper["bucket"] if keeper is not None else None,
+                    "n_subs_remaining": left,
+                    "rejection_carried": carried,
+                    "action": ("dropped (every frame held by other folders)" if left == 0
+                               else "trimmed (frames also held by another folder)"),
+                })
+            credited |= times
+            earlier.append(b)
+
+    out = [work.get(id(b), b) for b in blocks if id(b) not in gone]
+    if rows and log:
+        hours = sum(r["hours"] for r in rows)
+        log(f" Trimmed {len(rows)} sub folder(s) of frames held elsewhere, "
+            f"{hours:.1f}h double counted")
+    return out, rows
+
+
 def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[dict], list[dict]]:
     """Drop folder-sub blocks whose frames are copies of another folder's.
 
@@ -3860,14 +4006,7 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
       different telescopes look like one rig, and that is the only way genuinely
       concurrent frames could be mistaken for copies.
     """
-    groups: dict[tuple, list[dict]] = defaultdict(list)
-    for b in blocks:
-        rig = rig_key(b.get("telescope"), b.get("camera"))
-        if "?" in rig.split("|"):
-            continue
-        if not capture_times_are_trustworthy(b):
-            continue
-        groups[(rig, b.get("filter"), round(float(b.get("exptime") or 0), 1))].append(b)
+    groups = _copy_candidate_groups(blocks)
 
     dropped_ids: set[int] = set()
     dropped_rows: list[dict] = []
@@ -3877,8 +4016,11 @@ def collapse_copied_sub_blocks(blocks: list[dict], *, log=None) -> tuple[list[di
         # Largest first, then solved, then shortest path: the block that keeps
         # the whole session wins, and the order is stable so the choice is
         # deterministic.
+        # Between equal copies the earlier stage wins, so the raw folder keeps
+        # the hours rather than a calibrated copy that happens to sort first.
         ranked = sorted(group, key=lambda b: (
-            -(b.get("n_subs") or 0), not b.get("has_wcs"), len(b["bucket"]), b["bucket"]))
+            -(b.get("n_subs") or 0), not b.get("has_wcs"), copy_stage_rank(b["bucket"]),
+            len(b["bucket"]), b["bucket"]))
         for i, dup in enumerate(ranked):
             if id(dup) in dropped_ids:
                 continue
@@ -4546,6 +4688,17 @@ def main():
     print(f"[{time.time()-t0:6.1f}s] After capture-time dedup: {len(folder_subs)} blocks "
           f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h")
 
+    # Folders that each hold a different slice of the same night are not copies
+    # of one another as a whole, so the collapse above leaves them. Take the
+    # frames another folder already holds off the later one.
+    folder_subs, capture_trim_log = trim_partially_copied_sub_blocks(
+        folder_subs, log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"))
+    capture_trim_hours = total_sub_hours - sum(fs["total_hours"] for fs in folder_subs)
+    total_sub_hours = sum(fs["total_hours"] for fs in folder_subs)
+    n_fs_wcs = sum(1 for f in folder_subs if f["has_wcs"])
+    print(f"[{time.time()-t0:6.1f}s] After partial-copy trim: {len(folder_subs)} blocks "
+          f"({n_fs_wcs} with WCS) representing {total_sub_hours:.1f}h")
+
     # Computed here, after content-signature dedup, not inside
     # prepare_sub_blocks: a backup copy of an uncoordinated folder would be
     # double-counted if this ran before that dedup collapses it.
@@ -4912,6 +5065,8 @@ def main():
             "capture_dedup_drops": capture_dedup_log,
             "capture_dedup_hours_dropped": round(capture_dropped_hours, 2),
             "capture_dedup_buckets_dropped": len(capture_dedup_log),
+            "capture_trim_rows": capture_trim_log,
+            "capture_trim_hours_removed": round(capture_trim_hours, 2),
             "unrecognised_filter_names": [
                 {"name": name, "frames": count}
                 for name, count in sorted(
