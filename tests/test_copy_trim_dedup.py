@@ -163,6 +163,72 @@ class TestFromFileHeaders(unittest.TestCase):
         self.assertEqual((raw["first_date_obs"], raw["last_date_obs"]), (night[0], night[69]))
 
 
+class TestRepeatsInsideOneFolder(unittest.TestCase):
+    """A calibrated job folder holds each exposure three or four times over.
+
+    Measured on the NAS for the Christmas Tree Cluster: Images/calibrated/
+    7084edf06536 holds 156 red 60 s files carrying only 40 DATE-OBS values, each
+    value repeated 3 or 4 times to the millisecond with identical file sizes.
+    One camera cannot start two exposures in the same millisecond, so the
+    repeats are the same frame.
+    """
+
+    @staticmethod
+    def _meta(stamp):
+        return {"ok": True, "filter": "R", "exptime": 60.0, "date_obs": stamp[:19],
+                "date_obs_ms": stamp[:23], "telescope": RIG["telescope"],
+                "camera": RIG["camera"]}
+
+    def test_a_millisecond_stamp_repeated_in_one_folder_counts_once(self):
+        stamps = [f"2024-12-28T15:{i:02d}:22.774000" for i in range(10)]
+        meta, paths = {}, []
+        for copy in range(4):
+            for i, s in enumerate(stamps):
+                p = f"{CAL_B}/R_pp_lights_seq_{copy * 50 + i:05d}.fits"
+                meta[p] = self._meta(s)
+                paths.append(p)
+        (block,) = build_folder_sub_blocks(CAL_B, paths, meta)
+        self.assertEqual(block["n_subs"], 10)
+        self.assertAlmostEqual(block["total_hours"], 10 * 60.0 / 3600.0)
+
+    def test_a_whole_second_stamp_repeated_in_one_folder_is_kept(self):
+        """A tool that stamps a batch with one time leaves no fraction to trust."""
+        meta, paths = {}, []
+        for i in range(6):
+            p = f"/x/R_{i}.fits"
+            m = self._meta("2024-09-01T11:51:08.000000")
+            m["date_obs_ms"] = None
+            meta[p] = m
+            paths.append(p)
+        (block,) = build_folder_sub_blocks("/x", paths, meta)
+        self.assertEqual(block["n_subs"], 6)
+
+    def test_the_christmas_tree_numbers(self):
+        """Raw 70 (two nights), job folders 156 and 94 at 3 to 4 repeats each."""
+        night1 = [f"2024-12-28T15:{i // 60 + 10:02d}:{i % 60:02d}.{i:03d}000" for i in range(40)]
+        night2 = [f"2025-01-04T14:{i // 60 + 45:02d}:{i % 60:02d}.{i:03d}000" for i in range(30)]
+        meta, folders = {}, {}
+
+        def add(bucket, stamps, repeats, fmt):
+            paths = []
+            for r in range(repeats):
+                for i, s in enumerate(stamps):
+                    p = bucket + "/" + fmt.format(r * 100 + i)
+                    meta[p] = self._meta(s)
+                    paths.append(p)
+            folders[bucket] = paths
+
+        add(RAW, night1 + night2, 1, "LIGHT_R_60.00_{:04d}.fits")
+        add(CAL_B, night1, 4, "R_pp_lights_seq_{:05d}.fits")
+        add(CAL_A, night2, 3, "R_pp_lights_seq_{:05d}.fits")
+        blocks = []
+        for bucket, paths in folders.items():
+            blocks.extend(build_folder_sub_blocks(bucket, paths, meta))
+        self.assertEqual(sum(b["n_subs"] for b in blocks), 70 + 40 + 30)
+        survivors, _ = _run(blocks)
+        self.assertEqual([(b["bucket"], b["n_subs"]) for b in survivors], [(RAW, 70)])
+
+
 class TestGuards(unittest.TestCase):
     def test_exact_copies_still_collapse_to_the_raw(self):
         times = _night(28, 70)
