@@ -551,6 +551,24 @@ def filter_label(filt: str | None, colour: bool) -> str:
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def millisecond_stamp(value):
+    """DATE-OBS to the millisecond, or None when it carries no real fraction.
+
+    A camera stamps each exposure with its own start instant, so a non-zero
+    fraction identifies one frame. A whole-second value, or one whose fraction is
+    all zeros, is what a batch tool writes over many frames, and says nothing
+    about which frame is which. Digits past the third are dropped so a 3-digit
+    raw stamp and a 6-digit stamp rewritten by a calibration tool compare equal.
+    """
+    s = str(value or "").strip()
+    if len(s) <= 20 or s[19] != ".":
+        return None
+    frac = s[20:]
+    if not frac.isdigit() or not frac.strip("0"):
+        return None
+    return s[:19] + "." + frac[:3].ljust(3, "0")
+
+
 def _date_only(date_obs):
     """First 10 characters of a date_obs string when they look like a date.
 
@@ -1431,6 +1449,7 @@ def read_fits_meta(path: Path) -> dict:
         "rotation_deg": None,
         "wcs_error": None,
         "date_obs": None,
+        "date_obs_ms": None,
         "object": None,
         "telescope": None,
         "imagetyp": None,
@@ -1463,6 +1482,7 @@ def read_fits_meta(path: Path) -> dict:
             out["naxis1"] = int(h.get("NAXIS1") or 0) or None
             out["naxis2"] = int(h.get("NAXIS2") or 0) or None
             out["date_obs"] = (h.get("DATE-OBS") or "")[:19] or None
+            out["date_obs_ms"] = millisecond_stamp(h.get("DATE-OBS"))
             out["object"] = str(h.get("OBJECT") or "").strip() or None
             if out["object"] is None:
                 out["object"] = object_from_filename(Path(path).stem)
@@ -1791,6 +1811,7 @@ def read_xisf_meta(path: Path) -> dict:
         "rotation_deg": None,
         "wcs_error": None,
         "date_obs": None,
+        "date_obs_ms": None,
         "object": None,
         "telescope": None,
         "imagetyp": None,
@@ -1853,6 +1874,7 @@ def read_xisf_meta(path: Path) -> dict:
                 _xisf_prop(img.get("XISFProperties") or {},
                            "PixInsight:ProcessingHistory"))
         out["date_obs"] = str(fk("DATE-OBS") or "")[:19] or None
+        out["date_obs_ms"] = millisecond_stamp(fk("DATE-OBS"))
         out["object"] = str(fk("OBJECT") or "").strip() or None
         if out["object"] is None:
             out["object"] = object_from_filename(Path(path).stem)
@@ -3708,6 +3730,22 @@ def build_folder_sub_blocks(parent: str, paths: list[str], meta_by_path: dict) -
         if filt is None or exp <= 0:
             continue
         groups[(filt, round(float(exp), 1))].append((p, meta))
+
+    # One camera cannot start two exposures in the same millisecond, so files in
+    # one folder sharing a millisecond stamp are one frame saved repeatedly. A
+    # Siril job folder on the maintainer's NAS holds each red 60 s frame 3 or 4
+    # times (156 files, 40 stamps). Whole-second stamps are not trusted this way.
+    for key, members in groups.items():
+        seen: set[str] = set()
+        unique = []
+        for p, meta in members:
+            stamp = meta.get("date_obs_ms")
+            if stamp:
+                if stamp in seen:
+                    continue
+                seen.add(stamp)
+            unique.append((p, meta))
+        groups[key] = unique
 
     blocks: list[dict] = []
     for (filt, _exp_r), members in groups.items():
