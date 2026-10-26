@@ -209,6 +209,14 @@ Hygiene for the supply chain is automated end-to-end:
 
 ## License
 
-GNU General Public License v3, see `LICENSE`. The bundled Target Scheduler sync extension (`bundled_extensions/nina_ts_sync`) is by the same owner under the same licence.
+GNU General Public License v3 or later.
+
+Copyright (C) 2026 Rohan
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See `LICENSE` for the version 3 text.
+
+The screenshots, GIFs and video in `docs/images` are not covered by the GPL. They keep their own terms.
+
+The bundled Target Scheduler sync extension (`bundled_extensions/nina_ts_sync`) is by the same owner under the same licence.
 
 ACP moved from MIT to GPL v3 because the Windows download bundles every dependency, including xisf (GPL v3), which reads PixInsight XISF files. Releases published before the change keep their MIT terms.
