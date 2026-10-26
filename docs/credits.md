@@ -1,6 +1,6 @@
 # Credits
 
-ACP is MIT licensed (see `LICENSE`). It stands on other people's software, sky surveys and catalogues. This page lists each one, how ACP uses it, its licence, and the credit its authors ask for.
+ACP is licensed under the GNU General Public License v3 (see `LICENSE`). It stands on other people's software, sky surveys and catalogues. This page lists each one, how ACP uses it, its licence, and the credit its authors ask for.
 
 Licences were read from the package metadata and licence files of the Python environment used for development (Python 3.14). The Windows download pins versions for Python 3.12, so a licence could differ in a later release. Where a licence or citation could not be read from a file in this repository or from package metadata, the entry says "to confirm" instead of guessing.
 
@@ -97,11 +97,11 @@ Everything below installs with `pip` from `requirements.txt`. The Docker image a
 | SciPy | sky matching for the priority export | BSD (licence text in the wheel, plus bundled OpenBLAS under BSD) | none stated |
 | Astroquery | VizieR downloads in `fetch_catalogs.py` | BSD | Cite Ginsburg et al. 2019, AJ 157, 98 (named in the package README). |
 | MOCpy | survey footprints (optional) | BSD License | none stated |
-| xisf | reads `.xisf` image headers in the archive scan (optional) | GNU GPL v3 | none stated. See the licence finding in `REPORT.md`. |
+| xisf | reads `.xisf` image headers in the archive scan (optional) | GNU GPL v3 | none stated. ACP is GPL v3 too, so xisf ships inside the Windows download. |
 | Waitress | production web server | ZPL 2.1 | none stated |
 | croniter | scheduled rescan | MIT | none stated |
 | Paramiko | SFTP upload for the live page | LGPL-2.1 | none stated |
-| tzdata | time zone data on Windows | not installed in the development environment, licence to confirm | to confirm |
+| tzdata | time zone data on Windows | Apache-2.0 (PyPI metadata, tzdata 2026.5) | none stated |
 
 ### Packages installed alongside
 
@@ -151,10 +151,10 @@ The Windows download (on the `packaging/windows-download` branch, not yet merged
 | Item | Use | Licence |
 |---|---|---|
 | Python 3.12.10 embeddable package | runs ACP without an install | PSF licence, to confirm against the `LICENSE.txt` inside the python.org zip |
-| pystray | the notification-area icon | to confirm |
-| Pillow | draws the tray and shortcut icons | to confirm |
-| colorama (Windows only) | pulled in by other packages | to confirm |
-| pywin32-ctypes (Windows only) | pulled in by keyring | to confirm |
+| pystray | the notification-area icon | LGPL-3.0 (PyPI metadata, 0.19.5) |
+| Pillow | draws the tray and shortcut icons | MIT-CMU (PyPI metadata, 13.0.0) |
+| colorama (Windows only) | pulled in by other packages | BSD-3-Clause (PyPI classifier, 0.4.6) |
+| pywin32-ctypes (Windows only) | pulled in by keyring | BSD-3-Clause (PyPI metadata, 0.2.3) |
 
 ## Interoperating with other projects
 
