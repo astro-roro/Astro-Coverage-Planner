@@ -1,6 +1,6 @@
 # Credits
 
-ACP is licensed under the GNU General Public License v3 (see `LICENSE`). It stands on other people's software, sky surveys and catalogues. This page lists each one, how ACP uses it, its licence, and the credit its authors ask for.
+ACP is licensed under the GNU General Public License v3 or later (see `LICENSE`). It stands on other people's software, sky surveys and catalogues. This page lists each one, how ACP uses it, its licence, and the credit its authors ask for.
 
 Licences were read from the package metadata and licence files of the Python environment used for development (Python 3.14). The Windows download pins versions for Python 3.12, so a licence could differ in a later release. Where a licence or citation could not be read from a file in this repository or from package metadata, the entry says "to confirm" instead of guessing.
 
