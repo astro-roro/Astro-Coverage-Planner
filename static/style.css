@@ -2595,6 +2595,15 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   border-top: 1px solid #192130;
 }
 .activity .ev:first-child { border-top: 0; }
+.activity .ev.ev-group { display: block; }
+.activity .ev-grp > summary {
+  display: grid; grid-template-columns: 46px 22px minmax(0, 1fr); column-gap: 8px;
+  cursor: pointer; list-style: none;
+}
+.activity .ev-grp > summary::-webkit-details-marker { display: none; }
+.activity .ev-grp > summary .what::after { content: " \25B8"; color: #8d99ad; }
+.activity .ev-grp[open] > summary .what::after { content: " \25BE"; }
+.activity .ev-grp > .events.inner { padding: 6px 0 0 0; }
 .activity .ev.is-new { box-shadow: inset 2px 0 0 #4da6ff; background: rgba(77, 166, 255, 0.05); }
 .activity .ev time { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: #8d99ad; padding-top: 1px; }
 .activity .ev .ico { width: 22px; height: 22px; border-radius: 5px; display: flex; align-items: center; justify-content: center; }
