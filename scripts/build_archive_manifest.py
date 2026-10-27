@@ -625,8 +625,9 @@ STALE_ABSOLUTE_CAP_HOURS = 2.0
 
 # Integration-anomaly rule: integrated hours may exceed captured hours by up
 # to 5 percent plus a 0.1 h floor (for tiny stacks) before it is flagged.
-# Gated off whenever masters_without_subs is True, so a tidied archive with
-# deleted subs reports missing subs rather than an integrity failure.
+# Judged only when the master that sets integrated hours has its subs in the
+# archive, so a tidied archive with deleted subs reports missing subs rather
+# than an integrity failure. When it fires, the headline uses captured hours.
 INTEGRATION_ANOMALY_RELATIVE_TOLERANCE = 0.05
 INTEGRATION_ANOMALY_FLOOR_HOURS = 0.1
 
@@ -661,6 +662,36 @@ def _is_nested_bucket(child_parts, parent_parts):
         return False
     return (len(child_parts) > len(parent_parts)
             and child_parts[:len(parent_parts)] == parent_parts)
+
+
+def absorbed_session_roots(before: list[dict], after: list[dict]) -> dict:
+    """Session roots of captured folders the copy checks dropped outright.
+
+    A folder removed as a copy of another folder was scanned: its frames are
+    counted, once, in the folder that kept them. A master stacked from that
+    folder therefore has its subs in the archive, and must not read as having
+    none. Maps ``(casefolded rig key, filter)`` to the set of those roots, so a
+    root is only offered to masters of the same rig and filter.
+
+    Folders are matched by bucket, filter and exposure rather than by object,
+    because the trim replaces an edited block with a copy. A folder that merely
+    lost some frames is still in ``after`` and keeps its own root.
+    """
+    def ident(b):
+        return (b.get("bucket"), b.get("filter"), b.get("exptime"))
+
+    kept = {ident(b) for b in after}
+    out: dict = defaultdict(set)
+    for b in before:
+        if ident(b) in kept or not b.get("_counts_captured"):
+            continue
+        root = b.get("_session_root")
+        if root is None:
+            continue
+        key = (rig_key(b.get("telescope"), b.get("camera")).casefold(),
+               b.get("filter"))
+        out[key].add(root)
+    return dict(out)
 
 
 def pick_integration_master(masters: list[dict]) -> dict | None:
@@ -733,6 +764,7 @@ def build_filters_data(members: list[dict]) -> dict:
                 "last": _date_only(fs.get("last_date_obs") or m.get("date_obs")),
                 "label": label,
                 "session_root": session_root_of(m),
+                "absorbed_roots": set(m.get("_absorbed_session_roots") or ()),
                 "bucket": fs.get("bucket"),
                 "rejected_copy_hours": rejected_copy_hours(fs),
             }
@@ -827,27 +859,24 @@ def build_filters_data(members: list[dict]) -> dict:
             else:
                 accepted_basis = None
 
-            if (integration_master and integration_master["depth_known"]
-                    and integrated_hours > 0):
-                headline_basis, headline_hours = "integrated", integrated_hours
-            elif captured_hours > 0:
-                headline_basis, headline_hours = "captured", captured_hours
-            else:
-                headline_basis, headline_hours = "none", 0.0
-
             first_dates = [x["first"] for x in rd["captured_blocks"] if x["first"]]
             last_dates = [x["last"] for x in rd["captured_blocks"] if x["last"]]
             master_dates = [x["date"] for x in rd["masters"] if x["date"]]
 
+            # A root is covered when a captured folder sits there, or when the
+            # copy checks dropped one there and its frames live on in another.
             captured_session_roots = {
                 x["session_root"] for x in rd["captured_blocks"]
                 if x["session_root"] is not None
             }
-            masters_without_subs = any(
-                x["session_root"] is None
-                or x["session_root"] not in captured_session_roots
-                for x in rd["masters"]
-            )
+            for x in rd["captured_blocks"]:
+                captured_session_roots |= x["absorbed_roots"]
+
+            def has_subs(master):
+                return (master["session_root"] is not None
+                        and master["session_root"] in captured_session_roots)
+
+            masters_without_subs = any(not has_subs(x) for x in rd["masters"])
             multi_master = len(rd["masters"]) > 1
 
             stale_threshold = min(
@@ -864,14 +893,29 @@ def build_filters_data(members: list[dict]) -> dict:
             )
             stale_basis = "accepted" if stale_master else None
 
+            # Only the master that sets integrated hours is judged, and only
+            # when its own subs were scanned. A stray master elsewhere with no
+            # subs (a library copy, say) says nothing about this one.
             integration_anomaly = (
                 captured_hours > 0
-                and not masters_without_subs
+                and integration_master is not None
+                and has_subs(integration_master)
                 and integrated_hours > (
                     captured_hours * (1 + INTEGRATION_ANOMALY_RELATIVE_TOLERANCE)
                     + INTEGRATION_ANOMALY_FLOOR_HOURS
                 )
             )
+
+            # A stack deeper than the unique subs that cover it was built from
+            # repeated frames, so its depth is not trusted: the headline falls
+            # back to captured hours and the flag stays on the row.
+            if (integration_master and integration_master["depth_known"]
+                    and integrated_hours > 0 and not integration_anomaly):
+                headline_basis, headline_hours = "integrated", integrated_hours
+            elif captured_hours > 0:
+                headline_basis, headline_hours = "captured", captured_hours
+            else:
+                headline_basis, headline_hours = "none", 0.0
 
             rig_rows[emitted_key] = {
                 "telescope": telescope,
@@ -4165,8 +4209,9 @@ def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None
     that snapshot rather than from whatever a previous call already wrote
     into ``ra_deg``/``dec_deg``.
 
-    Returns ``{blocks, session_masters, master_rig_hint, dedup_log,
-    dropped_hours}``. ``uncoordinated_captured_hours`` is deliberately not
+    Returns ``{blocks, session_masters, master_rig_hint, master_plain_roots,
+    dedup_log, dropped_hours}``. ``master_plain_roots`` maps a master's path to
+    its own folder when that folder is not a pipeline stage. ``uncoordinated_captured_hours`` is deliberately not
     part of this return; see the module-level helper of that name.
     """
     log = log or (lambda *a, **k: None)
@@ -4303,10 +4348,16 @@ def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None
                 rig_key(fs.get("telescope"), fs.get("camera")))
 
     master_rig_hint: dict[str, str] = {}
+    master_plain_roots: dict[str, str] = {}
     for m in masters:
         mparent = parent_dir(m["path"])
         sr, stage = session_root_and_stage(
             mparent, wbpp_session_roots, originals_session_roots)
+        if stage == "root":
+            # A master in a folder that is not a pipeline stage (a job folder
+            # such as calibrated/<hash>) is its own session: the folder is the
+            # root, the same way a sub block in that folder resolves.
+            master_plain_roots[m["path"]] = sr
         filt = m.get("filter")
         rigs = captured_rigs.get((sr, filt), set())
         if len(rigs) != 1:
@@ -4321,6 +4372,7 @@ def prepare_sub_blocks(folder_subs: list[dict], masters: list[dict], *, log=None
         "blocks": blocks_out,
         "session_masters": session_masters,
         "master_rig_hint": master_rig_hint,
+        "master_plain_roots": master_plain_roots,
         "dedup_log": dedup_log,
         "dropped_hours": dropped_hours,
     }
@@ -4656,6 +4708,8 @@ def main():
     for (sr, _filt), paths in session_masters.items():
         for p in paths:
             master_session_root.setdefault(p, sr)
+    for p, sr in prepared["master_plain_roots"].items():
+        master_session_root.setdefault(p, sr)
     for m in masters:
         if m["path"] in master_session_root:
             m["_session_root"] = master_session_root[m["path"]]
@@ -4670,6 +4724,7 @@ def main():
     # survivor is chosen by capture/acceptance status first (so a duplicate
     # copy never demotes a real capture), then by shorter path, and takes
     # the OR of both flags plus the more informative acceptance basis.
+    blocks_before_copy_drops = list(folder_subs)
     content_dedup_log = []
     content_groups: dict[tuple, list] = defaultdict(list)
     for fs in folder_subs:
@@ -4732,6 +4787,7 @@ def main():
     folder_subs, capture_trim_log = trim_partially_copied_sub_blocks(
         folder_subs, log=lambda s: print(f"[{time.time()-t0:6.1f}s]{s}"))
     capture_trim_hours = total_sub_hours - sum(fs["total_hours"] for fs in folder_subs)
+    absorbed_roots = absorbed_session_roots(blocks_before_copy_drops, folder_subs)
     total_sub_hours = sum(fs["total_hours"] for fs in folder_subs)
     n_fs_wcs = sum(1 for f in folder_subs if f["has_wcs"])
     print(f"[{time.time()-t0:6.1f}s] After partial-copy trim: {len(folder_subs)} blocks "
@@ -4783,6 +4839,9 @@ def main():
         "ncombine": fs["n_subs"],
         "has_wcs": bool(fs.get("has_wcs")),
         "_session_root": fs.get("_session_root"),
+        "_absorbed_session_roots": absorbed_roots.get(
+            (rig_key(fs.get("telescope"), fs.get("camera")).casefold(),
+             fs.get("filter")), ()),
         "_folder_sub": fs,
     } for fs in folder_subs
       if fs.get("ra_deg") is not None and fs.get("dec_deg") is not None]
