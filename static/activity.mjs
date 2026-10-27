@@ -126,7 +126,20 @@ function masterBlockHtml(master) {
     `${loc("Windows", win, "Windows folder path")}${loc("File", file, "file name")}</div>`;
 }
 
-export function renderRowHtml(row, { lastSeen = undefined } = {}) {
+function groupHtml(row, opts) {
+  const open = opts.openGroups && opts.openGroups.has(row.id) ? " open" : "";
+  const inner = row.rows.map(r => renderRowHtml(r, { lastSeen: opts.lastSeen })).join("");
+  const isNew = opts.lastSeen !== undefined && row.rows.some(r => isNewRow(r, opts.lastSeen));
+  return `<li class="ev t-imaging ev-group${isNew ? " is-new" : ""}" data-id="${esc(row.id)}">` +
+    `<details class="ev-grp" data-group="${esc(row.id)}"${open}>` +
+    `<summary><time>${esc(clockOf(row.at))}</time><span class="ico">${iconHtml("imaging")}</span>` +
+    `<span class="what">${esc(row.title)}</span></summary>` +
+    `<ol class="events inner">${inner}</ol></details></li>`;
+}
+
+export function renderRowHtml(row, opts = {}) {
+  if (row.type === "progress_group") return groupHtml(row, opts);
+  const { lastSeen = undefined } = opts;
   const chip = chipOf(row.type);
   const classes = ["ev", `t-${chip}`];
   if (row.severity === "error") classes.push("sev-error");
@@ -150,9 +163,45 @@ function changesKey(row) {
   return JSON.stringify(Object.keys(changes).sort().map(k => [k, changes[k].from, changes[k].to]));
 }
 
+// A progress report that added no hours, judged from the per-filter deltas
+// and not the title. A report with no readable deltas is not treated as empty.
+export function isQuietProgress(row) {
+  if (row.type !== "progress_report") return false;
+  const filters = row.data && row.data.filters;
+  if (!filters || typeof filters !== "object") return false;
+  const deltas = Object.values(filters).map(f => Number(f && f.delta_h));
+  if (!deltas.length || deltas.some(d => !Number.isFinite(d))) return false;
+  return deltas.reduce((a, b) => a + b, 0) <= 0.005;
+}
+
+// Consecutive quiet progress reports become one group row, which the page
+// draws as a closed list. A row with hours, or any other event, ends the run.
+function groupQuietProgress(rows) {
+  const out = [];
+  let run = [];
+  const flush = () => {
+    if (run.length > 1) {
+      out.push({ type: "progress_group", id: `pg-${run[0].id}`, at: run[0].at, night: run[0].night,
+        severity: "info", rows: run, collapsed: run.length,
+        title: `${run.length} plans reported progress, no new hours` });
+    } else out.push(...run);
+    run = [];
+  };
+  for (const row of rows) {
+    if (isQuietProgress(row)) run.push(row);
+    else { flush(); out.push(row); }
+  }
+  flush();
+  return out;
+}
+
 // Consecutive edits that made the same change across one project read as one
 // line: "46 PNe Survey plans: min altitude 20 to 30".
 export function collapseRows(rows) {
+  return groupQuietProgress(collapseEdits(rows));
+}
+
+function collapseEdits(rows) {
   const out = [];
   for (const row of rows) {
     const prev = out[out.length - 1];

@@ -6,6 +6,7 @@ import {
   chipOf,
   collapseRows,
   isNewRow,
+  isQuietProgress,
   lastNightHtml,
   masterRowStrings,
   mergeNights,
@@ -148,6 +149,58 @@ describe("collapseRows", () => {
     const different = { ...edit(5, "e"), data: { changes: { priority: { from: "low", to: "high" } } } };
     const out = collapseRows([edit(1, "a"), other, different, row({ id: 6, type: "scan_finished" })]);
     assert.equal(out.length, 4);
+  });
+});
+
+describe("quiet progress grouping", () => {
+  const prog = (id, plan, delta) => row({
+    id, type: "progress_report", title: `${plan}: whatever`, refs: { plan_id: plan, ra_deg: 1, dec_deg: 2 },
+    data: { filters: { Ha: { hours: 1, goal: 5, delta_h: delta }, OIII: { hours: 1, goal: 5, delta_h: 0 } } },
+  });
+
+  it("decides quiet from the deltas, not the title", () => {
+    assert.equal(isQuietProgress(prog(1, "a", 0)), true);
+    assert.equal(isQuietProgress({ ...prog(1, "a", 0), title: "a: +9.00 h reported" }), true);
+    assert.equal(isQuietProgress({ ...prog(1, "a", 0.5), title: "a: progress reported, no new hours" }), false);
+    assert.equal(isQuietProgress(row({ type: "progress_report", data: {} })), false);
+    assert.equal(isQuietProgress(row({ type: "plan_edited" })), false);
+  });
+
+  it("folds a run of quiet reports into one group and keeps every plan inside it", () => {
+    const out = collapseRows([prog(1, "a", 0), prog(2, "b", 0), prog(3, "c", 0)]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].type, "progress_group");
+    assert.equal(out[0].title, "3 plans reported progress, no new hours");
+    assert.deepEqual(out[0].rows.map(r => r.id), [1, 2, 3]);
+  });
+
+  it("a report with hours or another event ends the run", () => {
+    const out = collapseRows([prog(1, "a", 0), prog(2, "b", 0), prog(3, "c", 0.4),
+      prog(4, "d", 0), row({ id: 5, type: "scan_finished" }), prog(6, "e", 0), prog(7, "f", 0)]);
+    assert.deepEqual(out.map(r => r.type),
+      ["progress_group", "progress_report", "progress_report", "scan_finished", "progress_group"]);
+    assert.equal(out[2].id, 4);
+  });
+
+  it("a lone quiet report stays a plain row", () => {
+    const out = collapseRows([prog(1, "a", 0)]);
+    assert.equal(out[0].type, "progress_report");
+  });
+
+  it("draws the group closed by default, with each plan's links inside, and open on request", () => {
+    const g = collapseRows([prog(1, "a", 0), prog(2, "b", 0)])[0];
+    const closed = renderRowHtml(g);
+    assert.ok(closed.includes("2 plans reported progress, no new hours"));
+    assert.ok(!/<details[^>]* open/.test(closed));
+    assert.equal((closed.match(/data-act="plan"/g) || []).length, 2);
+    assert.equal((closed.match(/data-act="map"/g) || []).length, 2);
+    assert.ok(/<details[^>]* open/.test(renderRowHtml(g, { openGroups: new Set([g.id]) })));
+  });
+
+  it("counts real events, not group rows", () => {
+    const events = [prog(1, "a", 0), prog(2, "b", 0), prog(3, "c", 0)];
+    assert.equal(visibleRows(events, DEFAULT_CHIPS).length, 3);
+    assert.equal(collapseRows(visibleRows(events, DEFAULT_CHIPS)).length, 1);
   });
 });
 
