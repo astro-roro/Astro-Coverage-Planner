@@ -57,6 +57,7 @@ export function setupActivity({ openPlan, showOnMap }) {
     highlightSince: undefined, // last_seen as it was when the tab was opened
     seenMax: null,          // max_updated_at the loaded nights already include
     openNights: new Map(),  // night -> open, once the user or a default chose
+    openGroups: new Set(),  // ids of quiet-progress groups the user expanded
     prefsTimer: null,
     pollTimer: null,
     observer: null,
@@ -79,7 +80,7 @@ export function setupActivity({ openPlan, showOnMap }) {
   function nightHtml(n, index) {
     const isOpen = st.openNights.has(n.night) ? st.openNights.get(n.night) : defaultOpen(n, index);
     const rows = collapseRows(visibleRows(n.events, st.chips));
-    const lines = rows.map(r => renderRowHtml(r, { lastSeen: st.highlightSince })).join("");
+    const lines = rows.map(r => renderRowHtml(r, { lastSeen: st.highlightSince, openGroups: st.openGroups })).join("");
     const hidden = n.events.length - visibleRows(n.events, st.chips).length;
     const more = n.more > 0
       ? `<li class="ev-more"><button type="button" class="btn" data-act="night-more" data-night="${esc(n.night)}">${esc(n.more)} more</button></li>`
@@ -284,7 +285,12 @@ export function setupActivity({ openPlan, showOnMap }) {
 
   body.addEventListener("toggle", ev => {
     const d = ev.target;
-    if (d && d.matches && d.matches("details.night")) st.openNights.set(d.dataset.night, d.open);
+    if (!d || !d.matches) return;
+    if (d.matches("details.night")) st.openNights.set(d.dataset.night, d.open);
+    else if (d.matches("details.ev-grp")) {
+      if (d.open) st.openGroups.add(d.dataset.group);
+      else st.openGroups.delete(d.dataset.group);
+    }
   }, true);
 
   document.addEventListener("visibilitychange", () => {
