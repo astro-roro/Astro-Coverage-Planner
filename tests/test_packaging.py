@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO / "packaging"))
 
 import app as app_module  # noqa: E402
 import check_tree  # noqa: E402
+import make_notices  # noqa: E402
 import smoke  # noqa: E402
 import zip_tree  # noqa: E402
 from test_settings import EnvCase  # noqa: E402
@@ -141,6 +142,10 @@ class TestStartFiles(unittest.TestCase):
             self.assertIn(needle, text)
 
 
+GOOD_NOTICES = (make_notices.HEADER + "\n[This is the first released version of the Lesser GPL.]\n"
+                "Mozilla Public License, v. 2.0\n")
+
+
 class TestCheckTree(unittest.TestCase):
     """K5."""
 
@@ -152,6 +157,8 @@ class TestCheckTree(unittest.TestCase):
             path = self.tree / rel
             if rel.endswith("nina_ts_sync"):
                 path.mkdir(parents=True)
+            elif rel == check_tree.NOTICES:
+                path.write_text(GOOD_NOTICES)
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("x")
@@ -194,6 +201,28 @@ class TestCheckTree(unittest.TestCase):
         self.assertTrue(any("launcher.py" in p for p in problems))
         self.assertTrue(any("nina_ts_sync" in p for p in problems))
 
+    def test_the_licence_and_notices_files_are_required(self):
+        (self.tree / "LICENSE").unlink()
+        (self.tree / check_tree.NOTICES).unlink()
+        problems = self.run_check()
+        self.assertTrue(any("LICENSE" in p for p in problems), problems)
+        self.assertTrue(any(check_tree.NOTICES in p for p in problems), problems)
+
+    def test_credits_are_required(self):
+        (self.tree / "CREDITS.md").unlink()
+        self.assertTrue(any("CREDITS.md" in p for p in self.run_check()))
+
+    def test_a_notices_file_without_the_licence_texts_fails(self):
+        (self.tree / check_tree.NOTICES).write_text(make_notices.HEADER)
+        problems = self.run_check()
+        self.assertTrue(any("lesser general public license" in p for p in problems), problems)
+        self.assertTrue(any("mozilla public license" in p for p in problems), problems)
+        (self.tree / check_tree.NOTICES).write_text(
+            "first released version of the Lesser GPL. Mozilla Public License")
+        problems = self.run_check()
+        self.assertTrue(any("astro-coverage-planner" in p for p in problems), problems)
+        self.assertTrue(any("version 3 or later" in p for p in problems), problems)
+
     def test_folders_that_must_be_left_out_fail(self):
         (self.tree / "app" / "tests").mkdir()
         self.assertTrue(any("app/tests/" in p for p in self.run_check()))
@@ -207,6 +236,81 @@ class TestCheckTree(unittest.TestCase):
         self.assertEqual(check_tree.main(["--tree", str(self.tree), "--zip", str(self.zip),
                                           "--platform", "windows", "--tag",
                                           "v" + app_module.VERSION]), 0)
+
+
+class TestMakeNotices(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="acp-notices-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.site = self.tmp / "site-packages"
+        self.py_licence = self.tmp / "LICENSE.txt"
+        self.py_licence.write_text("PSF LICENSE TEXT\r\nline two\r\n")
+        for name, licence in (("paramiko", "LGPL 2.1 text. This is the first released version of the Lesser GPL."),
+                              ("pystray", "LGPL 2.1 text. This is the first released version of the Lesser GPL."),
+                              ("certifi", "Mozilla Public License Version 2.0"),
+                              ("astropy", "BSD 3")):
+            self.add_package(name, licence)
+        wcs = self.site / "astropy-1.0.dist-info" / "licenses" / "licenses"
+        wcs.mkdir(parents=True)
+        (wcs / "WCSLIB_LICENSE.rst").write_text("WCSLIB is LGPL")
+
+    def add_package(self, name, licence, folder="LICENSE"):
+        info = self.site / f"{name}-1.0.dist-info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n"
+                                       "License: Some Licence\n")
+        (info / "RECORD").write_text("not a licence")
+        if licence:
+            (info / folder).write_text(licence)
+
+    def test_it_writes_every_licence_text_and_the_header(self):
+        text, problems = make_notices.build(self.site, self.py_licence)
+        self.assertEqual(problems, [])
+        for needle in ("GNU General Public License version 3 or later", make_notices.SOURCE_URL,
+                       "PSF LICENSE TEXT", "paramiko 1.0", "pystray 1.0", "certifi 1.0",
+                       "Mozilla Public License Version 2.0", "WCSLIB is LGPL"):
+            self.assertIn(needle, text)
+        self.assertNotIn("not a licence", text)
+        self.assertNotIn("\r", text)
+
+    def test_a_shared_text_is_printed_once(self):
+        text, _ = make_notices.build(self.site, self.py_licence)
+        self.assertEqual(text.count("LGPL 2.1 text. This is the first released version of the Lesser GPL."), 1)
+        self.assertIn("the same text as paramiko 1.0", text)
+
+    def test_the_output_passes_the_tree_check(self):
+        text, _ = make_notices.build(self.site, self.py_licence)
+        lowered = text.lower()
+        for marker in check_tree.NOTICE_MARKERS:
+            options = (marker,) if isinstance(marker, str) else marker
+            self.assertTrue(any(option in lowered for option in options), marker)
+
+    def test_a_required_package_without_a_licence_file_fails(self):
+        (self.site / "pystray-1.0.dist-info" / "LICENSE").unlink()
+        _, problems = make_notices.build(self.site, self.py_licence)
+        self.assertTrue(any("pystray" in p for p in problems), problems)
+
+    def test_a_missing_required_package_fails(self):
+        shutil.rmtree(self.site / "certifi-1.0.dist-info")
+        _, problems = make_notices.build(self.site, self.py_licence)
+        self.assertTrue(any("certifi" in p for p in problems), problems)
+
+    def test_a_missing_python_licence_fails(self):
+        _, problems = make_notices.build(self.site, self.tmp / "nope.txt")
+        self.assertTrue(any("Python" in p for p in problems), problems)
+
+    def test_the_command_line_writes_crlf_and_exits_0(self):
+        out = self.tmp / "THIRD-PARTY-NOTICES.txt"
+        self.assertEqual(make_notices.main(["--site", str(self.site), "--python-license",
+                                            str(self.py_licence), "--out", str(out)]), 0)
+        self.assertIn(b"\r\n", out.read_bytes())
+
+    def test_the_build_writes_the_licence_files_into_the_zip(self):
+        ps1 = (REPO / "packaging" / "windows" / "build.ps1").read_text(encoding="utf-8")
+        for needle in ("make_notices.py", "THIRD-PARTY-NOTICES.txt", "'LICENSE'",
+                       "docs\\credits.md", "CREDITS.md", "python\\LICENSE.txt"):
+            self.assertIn(needle, ps1)
 
 
 class TestZipTree(unittest.TestCase):

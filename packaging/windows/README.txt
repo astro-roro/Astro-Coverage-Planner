@@ -24,5 +24,8 @@ Quit ACP, delete this folder, extract the new zip. Your data stays in %APPDATA%\
 USING IT WITH NINA
 Set the ACP address in the NINA plugin to http://127.0.0.1:5555 . This copy of ACP can only be reached from this computer. If NINA runs on a different computer, install ACP from source or Docker instead and set an access token.
 
+LICENCES
+ACP is free software under the GNU General Public License version 3 or later (LICENSE). THIRD-PARTY-NOTICES.txt has the licences of the software that comes with it, and CREDITS.md lists the sky surveys and catalogues ACP uses.
+
 MORE
 https://github.com/astro-roro/Astro-Coverage-Planner

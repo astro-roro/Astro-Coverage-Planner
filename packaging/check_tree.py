@@ -19,11 +19,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # The folders the spec removes from app/ (section 3.2). A trailing slash marks a folder.
 EXCLUDED_FROM_APP = ("tests/", "docs/", ".github/", "notes/", "packaging/")
 
+NOTICES = "THIRD-PARTY-NOTICES.txt"
+
 REQUIRED = {
-    "windows": ("Start ACP.bat", "README.txt", "VERSION.txt", "python/pythonw.exe",
-                "python/python.exe", "app/launcher.py", "app/app.py",
+    "windows": ("Start ACP.bat", "README.txt", "VERSION.txt", "LICENSE", NOTICES, "CREDITS.md",
+                "python/pythonw.exe", "python/python.exe", "app/launcher.py", "app/app.py",
                 "app/bundled_extensions/nina_ts_sync"),
 }
+
+# What the notices file must say, whatever else it holds (lower case, for a case-blind
+# match). A tuple means any one of them will do. The LGPL entry looks for wording that
+# only the licence texts contain, because the file's own header names the licence too.
+NOTICE_MARKERS = (
+    "gnu general public license version 3 or later",
+    "https://github.com/astro-roro/astro-coverage-planner",
+    ("first released version of the lesser gpl",
+     "this version of the gnu lesser general public license incorporates"),
+    "mozilla public license",
+)
 
 
 def app_version(repo_root: Path = REPO_ROOT) -> str:
@@ -62,6 +75,13 @@ def check(tree: Path, zip_path: Path | None, platform: str, tag: str | None = No
     for required in REQUIRED[platform]:
         if not (tree / required).exists():
             problems.append(f"missing from the package: {required}")
+    notices = tree / NOTICES
+    if notices.is_file():
+        text = notices.read_text(encoding="utf-8", errors="replace").lower()
+        for marker in NOTICE_MARKERS:
+            options = (marker,) if isinstance(marker, str) else marker
+            if not any(option in text for option in options):
+                problems.append(f"{NOTICES} does not contain: {' or '.join(options)}")
     for folder in EXCLUDED_FROM_APP:
         if (tree / "app" / folder.rstrip("/")).exists():
             problems.append(f"app/{folder} should not be in the package")

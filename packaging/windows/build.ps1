@@ -124,6 +124,16 @@ Write-Crlf (Join-Path $stage 'Start ACP.bat') (Get-Content -Raw (Join-Path $PSSc
 Write-Crlf (Join-Path $stage 'README.txt') ((Get-Content -Raw (Join-Path $PSScriptRoot 'README.txt')) -replace '\{\{VERSION\}\}', $version)
 Write-Crlf (Join-Path $stage 'VERSION.txt') $version
 
+Step 'Writing the licence files'
+# ACP is GPL v3 or later. The notices file carries the licence text of everything
+# else in the zip (read from each wheel's .dist-info folder and from Python's own
+# LICENSE.txt), including the LGPL texts for paramiko, pystray and WCSLIB.
+Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination (Join-Path $stage 'LICENSE')
+Copy-Item -LiteralPath (Join-Path $repo 'docs\credits.md') -Destination (Join-Path $stage 'CREDITS.md')
+Run-Native 'python' @((Join-Path $repo 'packaging\make_notices.py'), '--site', $site,
+    '--python-license', (Join-Path $stage 'python\LICENSE.txt'),
+    '--out', (Join-Path $stage 'THIRD-PARTY-NOTICES.txt'))
+
 # --- 6. Bytecode -------------------------------------------------------------------
 # checked-hash, not unchecked-hash as the spec first said: a timestamp-based .pyc
 # goes stale when zip's two-second resolution shifts the source time, and a hash
