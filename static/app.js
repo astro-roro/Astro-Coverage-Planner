@@ -625,7 +625,7 @@ import {
 } from "./surveys.mjs";
 import {
   ALADIN_INIT_TIMEOUT_MS,
-  ALADIN_URLS,
+  ALADIN_SOURCES,
   describeInitError,
   describeMapError,
   loadFirstScript,
@@ -6907,7 +6907,7 @@ async function init() {
   // A.init simply never settles. The script comes from CDS, or from the
   // jsDelivr copy when CDS does not answer.
   async function startMap() {
-    await loadFirstScript(ALADIN_URLS);
+    await loadFirstScript(ALADIN_SOURCES);
     if (typeof A === "undefined" || !A || !A.init) return startupError("aladin-missing");
     if (!webgl2Available()) return startupError("webgl2-missing");
     try {

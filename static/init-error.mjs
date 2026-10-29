@@ -12,7 +12,16 @@
 // exactly which addresses to allow.
 export const ALADIN_URL = "https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.2/aladin.js";
 export const ALADIN_FALLBACK_URL = "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js";
-export const ALADIN_URLS = [ALADIN_URL, ALADIN_FALLBACK_URL];
+
+// The two copies are packaged differently. CDS serves a classic script that
+// sets the global `A`. npm's dist/aladin.js is an ES module: it ends in
+// `export { P as default }` and sets no global, and as a classic <script> it
+// fails to parse on that export. So the fallback is imported, and its
+// default export becomes `A`.
+export const ALADIN_SOURCES = [
+  { url: ALADIN_URL, kind: "script" },
+  { url: ALADIN_FALLBACK_URL, kind: "module" },
+];
 
 // How long to wait on one script address before trying the next. When CDS
 // is down its hosts hang rather than refuse, and the browser's own connection
@@ -25,32 +34,50 @@ export function aladinLoaded(scope = globalThis) {
   return !!(scope && scope.A && scope.A.init);
 }
 
-// Add a <script> for each address in turn until one runs and `isLoaded()`
-// turns true. Resolves with the address that worked, or null when none did.
-// Never rejects: the caller decides what a missing library means.
+// Load each source in turn until `isLoaded()` turns true. A "script" source
+// is added as a classic <script> and must set the global itself. A "module"
+// source is imported, and its default export is stored as `A` on `scope`.
+// Resolves with the URL that worked, or null when none did. Never rejects:
+// the caller decides what a missing library means.
 //
 // A script given up on for slowness can still arrive later and run. Removing
 // its element does not reliably stop that, so a late CDS copy may redefine
 // `A` after the fallback copy. Both are the same version, which keeps that
 // rare case harmless in practice.
-export async function loadFirstScript(urls, {
+export async function loadFirstScript(sources, {
   doc = globalThis.document,
-  isLoaded = aladinLoaded,
+  scope = globalThis,
+  isLoaded = () => aladinLoaded(scope),
+  importModule = url => import(url),
   timeoutMs = ALADIN_SCRIPT_TIMEOUT_MS,
 } = {}) {
   if (isLoaded()) return null;
-  for (let i = 0; i < urls.length; i++) {
-    const last = i === urls.length - 1;
+  for (let i = 0; i < sources.length; i++) {
+    const { url, kind } = sources[i];
+    const limit = i === sources.length - 1 ? 0 : timeoutMs;
     try {
-      await addScript(doc, urls[i], last ? 0 : timeoutMs);
+      if (kind === "module") {
+        const mod = await withLimit(importModule(url), limit);
+        if (mod?.default) scope.A = mod.default;
+      } else {
+        await addScript(doc, url, limit);
+      }
     } catch (err) {
-      console.warn(`Aladin Lite did not load from ${urls[i]}:`, err?.message || err);
+      console.warn(`Aladin Lite did not load from ${url}:`, err?.message || err);
       continue;
     }
-    if (isLoaded()) return urls[i];
-    console.warn(`Aladin Lite script from ${urls[i]} ran but did not define A`);
+    if (isLoaded()) return url;
+    console.warn(`Aladin Lite from ${url} loaded but did not provide A`);
   }
   return null;
+}
+
+function noResponse(ms) {
+  return new Error(`no response within ${Math.round(ms / 1000)} seconds`);
+}
+
+function withLimit(promise, ms) {
+  return ms > 0 ? withTimeout(promise, ms, noResponse(ms)) : promise;
 }
 
 function addScript(doc, src, timeoutMs) {
@@ -70,7 +97,7 @@ function addScript(doc, src, timeoutMs) {
     if (timeoutMs > 0) {
       timer = setTimeout(done(() => {
         el.remove?.();
-        reject(new Error(`no response within ${Math.round(timeoutMs / 1000)} seconds`));
+        reject(noResponse(timeoutMs));
       }), timeoutMs);
     }
     el.src = src;
