@@ -10,7 +10,7 @@ ACP does not store any survey image. The browser loads tiles straight from CDS (
 
 ### Aladin Lite and CDS
 
-- What it is: the sky viewer that draws the map. Version 3.8.2, loaded from `aladin.cds.unistra.fr` (`templates/index.html`, `static/init-error.mjs`). It is not copied into this repository.
+- What it is: the sky viewer that draws the map. Version 3.8.2, loaded from `aladin.cds.unistra.fr`, or from the npm copy on `cdn.jsdelivr.net` when CDS does not answer (`static/init-error.mjs`, called from `static/app.js`). It is not copied into this repository.
 - How ACP uses it: every sky background and the HiPS browser come from it.
 - Licence: to confirm. No licence file for it exists in this repository.
 - Credit requested: citation to confirm. Check the Aladin Lite documentation at CDS for the paper and wording before publishing.
