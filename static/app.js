@@ -625,7 +625,9 @@ import {
 } from "./surveys.mjs";
 import {
   ALADIN_INIT_TIMEOUT_MS,
+  ALADIN_URLS,
   describeInitError,
+  loadFirstScript,
   startupError,
   webgl2Available,
   withTimeout,
@@ -6833,7 +6835,7 @@ function setupHelp() {
   });
 }
 
-function init() {
+async function init() {
   activityUi = setupActivity({ openPlan: activityOpenPlan, showOnMap: activityShowOnMap });
   setupSidePanel();
   setupSkySearchButton();
@@ -6856,7 +6858,9 @@ function init() {
   // Everything below hangs off Aladin Lite. Name the two ways it fails to
   // even begin, because neither produces an exception on its own: the CDN
   // script never arrived (A is undefined), or the browser has no WebGL2 and
-  // A.init simply never settles.
+  // A.init simply never settles. The script comes from CDS, or from the
+  // jsDelivr copy when CDS does not answer.
+  await loadFirstScript(ALADIN_URLS);
   if (typeof A === "undefined" || !A || !A.init) {
     showInitError(startupError("aladin-missing"));
     return;

@@ -5,9 +5,78 @@
 // script throwing) left the "Loading targets…" placeholder on screen
 // forever with no visible explanation (reported in GitHub issue #46).
 
-// Where templates/index.html loads Aladin Lite from. Named in the error so a
-// user behind an ad blocker or firewall knows exactly which address to allow.
+// Where app.js loads Aladin Lite from, in order. CDS publishes the library,
+// so it comes first; jsDelivr serves the same 3.8.2 build from npm and keeps
+// the map working when every CDS host is down (as on 2026-10-29). Both are
+// named in the error so a user behind an ad blocker or firewall knows
+// exactly which addresses to allow.
 export const ALADIN_URL = "https://aladin.cds.unistra.fr/AladinLite/api/v3/3.8.2/aladin.js";
+export const ALADIN_FALLBACK_URL = "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js";
+export const ALADIN_URLS = [ALADIN_URL, ALADIN_FALLBACK_URL];
+
+// How long to wait on one script address before trying the next. When CDS
+// is down its hosts hang rather than refuse, and the browser's own connection
+// timeout runs past a minute. The last address gets no limit of ours, since
+// there is nothing left to fall back to.
+export const ALADIN_SCRIPT_TIMEOUT_MS = 15_000;
+
+// True once Aladin Lite's script has run and defined its global `A`.
+export function aladinLoaded(scope = globalThis) {
+  return !!(scope && scope.A && scope.A.init);
+}
+
+// Add a <script> for each address in turn until one runs and `isLoaded()`
+// turns true. Resolves with the address that worked, or null when none did.
+// Never rejects: the caller decides what a missing library means.
+//
+// A script given up on for slowness can still arrive later and run. Removing
+// its element does not reliably stop that, so a late CDS copy may redefine
+// `A` after the fallback copy. Both are the same version, which keeps that
+// rare case harmless in practice.
+export async function loadFirstScript(urls, {
+  doc = globalThis.document,
+  isLoaded = aladinLoaded,
+  timeoutMs = ALADIN_SCRIPT_TIMEOUT_MS,
+} = {}) {
+  if (isLoaded()) return null;
+  for (let i = 0; i < urls.length; i++) {
+    const last = i === urls.length - 1;
+    try {
+      await addScript(doc, urls[i], last ? 0 : timeoutMs);
+    } catch (err) {
+      console.warn(`Aladin Lite did not load from ${urls[i]}:`, err?.message || err);
+      continue;
+    }
+    if (isLoaded()) return urls[i];
+    console.warn(`Aladin Lite script from ${urls[i]} ran but did not define A`);
+  }
+  return null;
+}
+
+function addScript(doc, src, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const el = doc.createElement("script");
+    let timer;
+    const done = fn => arg => {
+      clearTimeout(timer);
+      el.onload = el.onerror = null;
+      fn(arg);
+    };
+    el.onload = done(resolve);
+    el.onerror = done(() => {
+      el.remove?.();
+      reject(new Error("network error"));
+    });
+    if (timeoutMs > 0) {
+      timer = setTimeout(done(() => {
+        el.remove?.();
+        reject(new Error(`no response within ${Math.round(timeoutMs / 1000)} seconds`));
+      }), timeoutMs);
+    }
+    el.src = src;
+    doc.head.appendChild(el);
+  });
+}
 
 // How long init() waits for Aladin Lite's own `A.init` promise before giving
 // up. The library fetches a WebAssembly bundle on first use, so allow for a
@@ -46,9 +115,10 @@ export function webgl2Available(doc = globalThis.document) {
 
 export function describeInitError(err) {
   if (err && err.code === "aladin-missing") {
-    return `The sky map library (Aladin Lite) did not load from ${ALADIN_URL}. ` +
+    return `The sky map library (Aladin Lite) did not load from ${ALADIN_URL} ` +
+      `or from the backup copy at ${ALADIN_FALLBACK_URL}. ` +
       "An ad blocker, firewall, or offline network is the usual cause. " +
-      "Allow that address and reload.";
+      "Allow those addresses and reload.";
   }
   if (err && err.code === "webgl2-missing") {
     return "This browser has no WebGL2, which the sky map (Aladin Lite) needs. " +
