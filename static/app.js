@@ -627,11 +627,13 @@ import {
   ALADIN_INIT_TIMEOUT_MS,
   ALADIN_URLS,
   describeInitError,
+  describeMapError,
   loadFirstScript,
   startupError,
   webgl2Available,
   withTimeout,
 } from "./init-error.mjs";
+import { disableMapControls, noMapLibrary, noMapStub } from "./no-map.mjs";
 import {
   filterHiddenCount,
   filterHiddenNoteText,
@@ -6855,24 +6857,10 @@ async function init() {
     if (panel) panel.innerHTML = `<div class="panel-error">${esc(describeInitError(err))}</div>`;
   };
 
-  // Everything below hangs off Aladin Lite. Name the two ways it fails to
-  // even begin, because neither produces an exception on its own: the CDN
-  // script never arrived (A is undefined), or the browser has no WebGL2 and
-  // A.init simply never settles. The script comes from CDS, or from the
-  // jsDelivr copy when CDS does not answer.
-  await loadFirstScript(ALADIN_URLS);
-  if (typeof A === "undefined" || !A || !A.init) {
-    showInitError(startupError("aladin-missing"));
-    return;
-  }
-  if (!webgl2Available()) {
-    showInitError(startupError("webgl2-missing"));
-    return;
-  }
-
-  // The manifest does not need the map, so fetch it while Aladin starts
-  // and await it below. The no-op catch stops an unhandled-rejection
-  // warning if Aladin fails first; the await still throws the real error.
+  // The manifest does not need the map, so fetch it while Aladin loads
+  // and starts, and await it below. The no-op catch stops an
+  // unhandled-rejection warning before the await; the await still throws
+  // the real error.
   const manifestReady = (async () => {
     const r = await fetch("/api/manifest");
     if (!r.ok) {
@@ -6884,13 +6872,58 @@ async function init() {
   })();
   manifestReady.catch(() => {});
 
-  const aladinReady = withTimeout(
-    A.init,
-    ALADIN_INIT_TIMEOUT_MS,
-    startupError("aladin-timeout", { ms: ALADIN_INIT_TIMEOUT_MS }),
-  );
+  // The map and the panels start separately. When the map cannot start,
+  // its area shows why and the Targets and Plans panels still load, so
+  // targets and plans can be read and edited while the sky is down.
+  const mapError = await startMap();
+  if (mapError) startWithoutMap(mapError);
 
-  aladinReady.then(async () => {
+  // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
+  // Skip if focus is in a form control, Esc should keep its native blur/clear
+  // behaviour there. The dirty-edit modal handles its own Esc → cancel.
+  document.addEventListener("keydown", ev => {
+    if (ev.key !== "Escape") return;
+    if (isModalOpen()) {
+      document.querySelector(".dirty-modal-backdrop")?.remove();
+      ev.preventDefault();
+      return;
+    }
+    const ae = document.activeElement;
+    const tag = ae?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae?.isContentEditable) return;
+    goUpOneLevel();
+  });
+
+  try {
+    await startPanels();
+  } catch (err) {
+    showInitError(err);
+  }
+
+  // Load Aladin Lite and build the map. Resolves with the startup error, or
+  // null when the map is up. Never rejects. Name the two ways Aladin fails
+  // to even begin, because neither produces an exception on its own: the
+  // script never arrived (A is undefined), or the browser has no WebGL2 and
+  // A.init simply never settles. The script comes from CDS, or from the
+  // jsDelivr copy when CDS does not answer.
+  async function startMap() {
+    await loadFirstScript(ALADIN_URLS);
+    if (typeof A === "undefined" || !A || !A.init) return startupError("aladin-missing");
+    if (!webgl2Available()) return startupError("webgl2-missing");
+    try {
+      await withTimeout(
+        A.init,
+        ALADIN_INIT_TIMEOUT_MS,
+        startupError("aladin-timeout", { ms: ALADIN_INIT_TIMEOUT_MS }),
+      );
+      buildMap();
+      return null;
+    } catch (err) {
+      return err;
+    }
+  }
+
+  function buildMap() {
     aladin = A.aladin("#aladin-lite-div", {
       fov: 180,
       projection: "AIT",
@@ -7066,24 +7099,11 @@ async function init() {
       // right-click that opened one of ours.
       mapEl.addEventListener("contextmenu", onMapContextMenu, true);
     }
+  }
 
-    // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
-    // Skip if focus is in a form control, Esc should keep its native blur/clear
-    // behaviour there. The dirty-edit modal handles its own Esc → cancel.
-    document.addEventListener("keydown", ev => {
-      if (ev.key !== "Escape") return;
-      if (isModalOpen()) {
-        document.querySelector(".dirty-modal-backdrop")?.remove();
-        ev.preventDefault();
-        return;
-      }
-      const ae = document.activeElement;
-      const tag = ae?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae?.isContentEditable) return;
-      goUpOneLevel();
-    });
-
-    // Load manifest
+  // Everything that does not need the map: targets, plans, gear, filters.
+  // Runs after startMap, with the real map or with the stand-ins.
+  async function startPanels() {
     manifest = await manifestReady;
 
     // Show the onboarding banner if the manifest is empty (fresh install).
@@ -7139,7 +7159,31 @@ async function init() {
     if (planningMode) setPlanningMode(true);
 
     tour.maybeAutoStart();
-  }).catch(showInitError);
+  }
+}
+
+// The sky map did not start. Say why in the map area, turn off the
+// map-only toolbar controls, and put stand-ins where the map objects would
+// be so the panels' calls into the map do nothing instead of throwing.
+// See static/no-map.mjs.
+function startWithoutMap(err) {
+  console.error("Sky map failed to start:", err);
+  const mapEl = document.getElementById("aladin-lite-div");
+  if (mapEl) mapEl.innerHTML = `<div class="panel-error map-error">${esc(describeMapError(err))}</div>`;
+  disableMapControls();
+  aladin = noMapStub();
+  overlay = noMapStub();
+  filterBadgeCat = noMapStub();
+  planOverlay = noMapStub();
+  planOverlayDashed = noMapStub();
+  planCenterCat = noMapStub();
+  hoverOverlay = noMapStub();
+  skyResultsOverlay = noMapStub();
+  skyResultsCat = noMapStub();
+  skyPickOverlay = noMapStub();
+  // Shapes are built with A.polygon and A.source before being added to an
+  // overlay. With no library at all, give A the same do-nothing shape.
+  if (typeof A === "undefined" || !A) globalThis.A = noMapLibrary();
 }
 
 function renderTelescopeLegend(telescopes) {

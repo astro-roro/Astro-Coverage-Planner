@@ -449,6 +449,13 @@ body.panel-resizing { cursor: col-resize; user-select: none; }
   line-height: 1.5;
 }
 
+/* The sky map's own startup error, shown in the map area. Kept narrow so
+   the side panel floating over the map's right edge never covers it. */
+.map-error {
+  padding: 24px;
+  max-width: 36em;
+}
+
 .panel-list h3 {
   display: flex;
   align-items: baseline;

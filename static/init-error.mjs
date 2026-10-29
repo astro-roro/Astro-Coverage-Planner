@@ -113,6 +113,17 @@ export function webgl2Available(doc = globalThis.document) {
   }
 }
 
+const MAP_ERROR_CODES = new Set(["aladin-missing", "webgl2-missing", "aladin-timeout"]);
+
+// The message shown in the map area when the sky map cannot start. The
+// panels still load in that case (see static/no-map.mjs), so say so.
+export function describeMapError(err) {
+  const why = err && MAP_ERROR_CODES.has(err.code)
+    ? describeInitError(err)
+    : `The sky map (Aladin Lite) failed to start (${(err && err.message) || String(err)}). Reload to try again.`;
+  return `${why} Your targets and plans still work in the side panel.`;
+}
+
 export function describeInitError(err) {
   if (err && err.code === "aladin-missing") {
     return `The sky map library (Aladin Lite) did not load from ${ALADIN_URL} ` +
