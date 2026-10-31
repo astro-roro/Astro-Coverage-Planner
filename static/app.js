@@ -293,7 +293,7 @@ function applyUiStatePreManifest() {
   }
 
   if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
-    try { aladin.setImageSurvey(surveyLayerFor(s.imageSurvey)); } catch { /* unknown id, keep default */ }
+    showSurvey(s.imageSurvey);
     syncSkyControl(s.imageSurvey);
   }
 
@@ -474,6 +474,22 @@ function surveyLayerFor(id) {
   return id;
 }
 
+// Show survey `id` on the map. A CDS survey is swapped for DSS2 colour from
+// IRSA (or ESASky) when the CDS tile host does not answer in a few seconds, and
+// stays swapped for the browser session (cds-fallback.mjs). The caption says so.
+let backgroundRun = 0;
+function showSurvey(id) {
+  const run = ++backgroundRun;
+  const setLayer = layer => { try { aladin.setImageSurvey(layer); } catch (err) { console.warn("setImageSurvey failed", id, err); } };
+  return applyBackground(id, {
+    setLayer,
+    layerFor: surveyLayerFor,
+    makeFallbackLayer: f => A.imageHiPS(f.url, { name: f.name }),
+    stillWanted: () => run === backgroundRun,
+  }).then(choice => { if (run === backgroundRun) syncSkyControl(id); return choice; })
+    .catch(err => { console.warn("background fallback failed", err); });
+}
+
 // Open Aladin's HiPS browser (search plus a folder tree of every survey)
 // so a pick there replaces the sky. Aladin has no public call for this.
 // The browser object is created lazily by Aladin's own stack panel, so on
@@ -542,7 +558,10 @@ function syncSkyControl(id) {
     chip.classList.toggle("full", cap.chipFull);
     chip.classList.toggle("partial", !cap.chipFull);
   }
-  if (text) text.textContent = cap.text;
+  if (text) {
+    const via = isCdsSurvey(surveyId) ? rememberedFallback() : null;
+    text.textContent = via ? `${cap.text} Showing DSS2 colour via ${via.credit} while CDS is unreachable.` : cap.text;
+  }
 }
 
 function saveUiState() {
@@ -764,6 +783,7 @@ import {
   STATUS_LABEL,
 } from "./gear-editor.mjs";
 import { setupSkySearch } from "./sky-search-ui.mjs";
+import { applyBackground, rememberedFallback, isCdsSurvey } from "./cds-fallback.mjs";
 import { outlinePoints } from "./sky-search.mjs";
 
 function deepestFilter(filters, minH = 0) {
@@ -5861,7 +5881,7 @@ function setupFilterUI() {
   document.getElementById("skySel").addEventListener("change", e => {
     const id = e.target.value;
     if (id === CUSTOM_SURVEY_VALUE) return;
-    try { aladin.setImageSurvey(surveyLayerFor(id)); } catch (err) { console.warn("setImageSurvey failed", id, err); }
+    showSurvey(id);
     // Aladin swaps the base layer asynchronously, so caption from the chosen
     // id rather than from getBaseImageLayer(), which may still be the old one.
     syncSkyControl(id);
@@ -6950,7 +6970,11 @@ async function init() {
     installAladinIdleThrottle(aladin);
     guardAladinPix2world(aladin);
 
-    overlay = A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
+    // Check the CDS tile host now, so a dead one is noticed on first load
+    // and not only after the user picks a survey.
+    showSurvey(DEFAULT_SURVEY_ID);
+
+    overlay =A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
     aladin.addOverlay(overlay);
 
     // One catalog for filter-coverage badges (custom shape draws a pill of 7 dots).
