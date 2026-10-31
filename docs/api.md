@@ -61,6 +61,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/scan/status` | Scan state, with `progress` (`{stage, files_seen}`, never a path) and `elapsed_seconds` while running |
 | `POST /api/catalogues/fetch` | Download the catalogue overlays in the background. 202, or 409 `fetch_running`. Authorised client only |
 | `GET /api/catalogues/status` | `{running, finished, error_kind, last_finish, present}` |
+| `POST /api/quit` | Stop a packaged ACP. 200 `{status: "stopping"}`, 409 `scan_running`, 503 `unavailable` if no launcher registered. Answers 404 unless the launcher set `ACP_PACKAGED=1`. Authorised client only |
 
 The API is unauthenticated by default and binds to `127.0.0.1`, see the [security notes in the archive setup guide](setup-archive.md#security-and-deployment-notes) before exposing it on a network, and [Optional bearer-token auth](#optional-bearer-token-auth) below if you do.
 
@@ -84,7 +85,7 @@ Nothing needs it. The NINA plugin is a desktop HTTP client and never sees CORS, 
 
 The routes behind the settings file described in [the archive setup guide](setup-archive.md#the-settings-file).
 
-`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to, and always false inside a container), `error` (`null`, or `settings_file_corrupt`), `shortcuts` (`{available, value}`) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
+`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to, and always false inside a container), `error` (`null`, or `settings_file_corrupt`), `packaged` (true when a launcher started ACP), `shortcuts` (`{available, value}`) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
 
 An authorised client is one that passed the access gate with the bearer token or session cookie, or, when `ACP_API_TOKEN` is not set, one connecting from the same machine (`127.0.0.1`, `::1`) with no `X-Forwarded-For` header and a `Host` of `localhost`, `127.0.0.1` or `[::1]`. The `Host` rule stops a web page on another site from reaching ACP through a DNS name it has pointed at your machine.
 
@@ -107,6 +108,10 @@ An authorised client is one that passed the access gate with the bearer token or
 A successful `PUT` of `fits_roots` returns the settings view plus `warnings`, a list of `{index, code}` where `code` is `overlaps`, `very_large` (the top of a drive) or `no_images_seen`. Warnings never block a save.
 
 `POST /api/settings/check-path` answers 200 with `{"code": "ok" | <blocking code>, "warnings": [...]}` for any string, using the codes above plus `duplicate` and `too_many` measured against the saved list. It judges the path's syntax before it touches the disk, and it never returns the path or an operating system message.
+
+`PUT /api/settings` with `{"shortcuts": true}` makes the Start menu and desktop links (Windows) or the applications-menu entry (Linux), and `false` deletes the files ACP made. It answers 400 `unavailable` where shortcuts are not supported (a source install, Docker, Mac) and 500 `shortcuts_failed` if the files could not be made, in which case the answer is not recorded. The file also records `shortcuts_app_dir`, the folder the links point into, so the launcher can repoint them if the folder is moved.
+
+In a packaged build every route, not only the restricted ones, answers 400 `bad_host` to a request whose `Host` is not a loopback name, unless the request carries the access token. This stops DNS rebinding. `POST /api/quit` stops the server, the tray icon and the single-instance lock together, the same as the tray's Quit ACP item, and is refused with 409 while a scan runs.
 
 `POST /api/scan/start` and `POST /api/catalogues/fetch` follow the same rules as `PUT`: an authorised client, a JSON body (`{}` will do) and a matching `Origin`. The scan claims its slot before it answers, so two quick requests give one 202 and one 409. Scan failures show up in `GET /api/scan/status` as `last_error_kind` with a fixed message.
 

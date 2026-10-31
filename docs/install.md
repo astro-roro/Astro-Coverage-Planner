@@ -4,7 +4,8 @@ Pick your operating system below and follow along. Each section starts from "I h
 
 If you already have **Python 3.10 or newer** and **git** installed, you can skip this guide and head straight to the [Quickstart in the README](../README.md#get-it-running).
 
-- [Windows](#windows)
+- [Windows: download and run](#windows-download-and-run)
+- [Windows: install from source](#windows-install-from-source)
 - [macOS](#macos)
 - [Linux](#linux)
 - [What happens after ACP starts](#what-happens-after-acp-starts)
@@ -13,7 +14,30 @@ If you already have **Python 3.10 or newer** and **git** installed, you can skip
 
 ---
 
-## Windows
+## Windows: download and run
+
+This is the easiest way on Windows. You do not need Python, git or a terminal.
+
+1. **Pick a short place to extract to.** `C:\` works: the zip holds one folder called `ACP`, so you end up with `C:\ACP\Start ACP.bat`. Windows stops working with very long file paths and ACP's files go deep, so avoid extracting into Downloads or Documents.
+2. **Download** [ACP-windows-x64.zip](https://github.com/astro-roro/Astro-Coverage-Planner/releases/latest/download/ACP-windows-x64.zip). The release page also lists "Source code (zip)" and "Source code (tar.gz)". Those are not the app. You want `ACP-windows-x64.zip`.
+3. **Unblock the zip.** Right-click the downloaded zip, choose **Properties**, tick **Unblock** at the bottom and press OK. This stops Windows warning about every file inside.
+4. **Extract the whole zip** (right-click, Extract All, and type `C:\` as the destination). Extraction takes several minutes, because Windows scans each of the tens of thousands of files. Do not run ACP from inside the zip.
+5. **Double-click `Start ACP.bat`.** If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**. ACP is not signed with a paid certificate.
+6. Your browser opens ACP. The first time, paste the full path of your image folder and press **Scan my images**. On this page ACP also offers to add a Start menu and desktop shortcut. Leave the box ticked and use the shortcut from then on.
+
+ACP has no window of its own. It lives in the notification area by the clock. Windows 11 may hide new icons behind the **^** arrow: drag ACP's icon out to keep it visible. Click the icon to open ACP. Right-click it and choose **Quit ACP** to stop. The **Settings** page has a **Quit ACP** button too, for when the icon is hidden. ACP will not quit while a scan is running.
+
+**Your data** is kept in `%APPDATA%\ACP`, not in the extracted folder. To update, quit ACP, delete the old folder, extract the new zip and start it again. Your settings and scan results carry over. Going back to an older version is not supported, so copy `%APPDATA%\ACP` somewhere safe first if you want to try one.
+
+**The NINA plugin** talks to ACP at `http://127.0.0.1:5555`. A downloaded ACP can only be reached from the computer it runs on. If NINA runs on a different computer, install from source or use Docker, and set an access token.
+
+**If it will not start**, look at `%APPDATA%\ACP\logs\acp.log`. A message box also appears for the common problems, such as another program using port 5555.
+
+The Mac and Linux downloads are not available yet.
+
+---
+
+## Windows: install from source
 
 ### 1. Install Python
 
