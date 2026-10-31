@@ -25,3 +25,18 @@ os.environ["ACP_ACTIVITY_DB"] = os.path.join(_dir, "activity.sqlite")
 # Keep the settings file out of the developer's real profile. Tests that need a
 # settings file point ACP_HOME at their own folder.
 os.environ.setdefault("ACP_HOME", os.path.join(_dir, "acp-home"))
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_live_thumbnail_network(monkeypatch):
+    """The publisher fetches survey thumbnails from CDS. No test may reach the
+    network, so the fetch fails by default; tests that want an image patch it."""
+    import shooting_publish
+
+    def refuse(url):
+        raise OSError("network disabled in tests")
+
+    monkeypatch.setattr(shooting_publish, "_fetch_thumb", refuse)
