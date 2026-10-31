@@ -57,6 +57,11 @@
       <span id="skyCaptionText"></span>
       <button type="button" id="skyMore" class="link-btn sky-more" title="Search and browse every survey Aladin can show. Picking one there replaces the sky.">More surveys</button>
     </div>
+    <!-- Shown by static/sky-banner.mjs only after every sky source has failed. -->
+    <div id="skyBanner" class="sky-banner" role="status" hidden>
+      <span id="skyBannerText"></span>
+      <button type="button" id="skyBannerRetry" class="link-btn">Retry</button>
+    </div>
 
     <!-- Filled by loadTsSyncBanner() in app.js from the nina-ts-sync
          extension's /api/ext/nina-ts-sync/import/uploads/pending route.
