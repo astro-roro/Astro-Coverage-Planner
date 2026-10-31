@@ -45,6 +45,7 @@ def main(argv=None) -> int:
 
     plans = app_module.load_plans().get("plans", [])
     doc = sp.build_shooting_document(plans, app_module.load_manifest(), app_module.load_gear())
+    sp.attach_thumbs(doc, app_module.LIVE_OUT_DIR, fetch=not args.dry_run)
     path = sp.write_document(doc, app_module.LIVE_OUT_DIR)
     print(f"wrote {path} ({len(doc['projects'])} public project(s))")
     if args.dry_run:

@@ -15,7 +15,7 @@ One page with a short list of project cards, most recent activity first. Each ca
 - a "current" badge on the project he has marked as current
 - per-filter progress, as hours done of hours planned, with a simple bar
 - "last imaged N nights ago" (or "not started yet")
-- a thumbnail of the field, fetched by the browser from the CDS hips2fits service using the plan's centre and field of view, so no images are stored or pushed
+- a thumbnail of the field. The publisher fetches it from the CDS hips2fits service (DSS2 colour, 480 by 270, the plan's centre and field of view), keeps it in `data/live/thumbs/<key>.jpg` and uploads it beside `shooting.json`, so a CDS outage does not blank the page. `<key>` is a 12 character hash of the published centre and field, so a changed pointing gets a new file. Each project carries `thumb` (`thumbs/<key>.jpg`) when the file exists and omits it otherwise. A file is fetched only when missing (10 second timeout, 2 attempts), a failed fetch never fails the publish and never deletes an existing file, and after one target fails both attempts the rest are skipped for that run. Only new or changed files are uploaded, tracked in `thumbs/.pushed.json`, and they go up before `shooting.json` moves into place. A dry run lists existing thumbnails and fetches none.
 
 Above the cards, one line: "Updated <date>, from a scan on <date>". The page is called live because that is as live as astrophotography gets, but it never claims more than its dates show. Below the cards, one line linking back to the ACP GitHub repo.
 
