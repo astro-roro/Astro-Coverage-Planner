@@ -6115,6 +6115,7 @@ def api_publish_shooting():
         logging.warning("live publish refused: %s", _safe_log(str(e)))
         return jsonify({"error": "ACP_PUBLISH_DEST is not set on the server"}), 400
     doc = _build_live_document()
+    sp.attach_thumbs(doc, LIVE_OUT_DIR)
     path = sp.write_document(doc, LIVE_OUT_DIR)
     result = sp.push_document(path, dest, os.environ.get("ACP_PUBLISH_SSH_KEY") or None)
     ok = result.returncode == 0
