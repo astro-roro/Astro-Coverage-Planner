@@ -110,16 +110,45 @@ describe("sky banner", () => {
     assert.ok(t.layers.some(l => l.fallback === "offline"));
   });
 
-  it("credits the Gaia sky in the caption only while it is showing", () => {
+  it("notes a remote fallback in the caption, and leaves the Gaia sky to its own caption", () => {
     const mem = createDownMemory({ now: () => 1, storage: null });
     assert.equal(fallbackCaptionNote(rememberedFallback(mem)), "");
-    mem.markDown("hips"); mem.markDown("hips-irsa"); mem.markDown("hips-esasky");
-    const note = fallbackCaptionNote(rememberedFallback(mem));
-    assert.match(note, /built-in Gaia sky/);
-    assert.ok(note.includes("ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho"));
-    const m2 = createDownMemory({ now: () => 1, storage: null });
-    m2.markDown("hips");
-    assert.match(fallbackCaptionNote(rememberedFallback(m2)), /via IRSA/);
+    mem.markDown("hips");
+    assert.match(fallbackCaptionNote(rememberedFallback(mem)), /via IRSA/);
+    mem.markDown("hips-irsa"); mem.markDown("hips-esasky");
+    assert.equal(rememberedFallback(mem).key, "offline");
+    assert.equal(fallbackCaptionNote(rememberedFallback(mem)), "", "the Gaia caption comes from skyControlFor");
+  });
+
+  it("tells the Sky control when the Gaia sky is up, and which survey the user asked for", async () => {
+    const t = setup();
+    assert.equal(t.bg.current, null);
+    await t.bg.show("CDS/P/Mellinger/color");
+    assert.equal(t.bg.current, "offline");
+    assert.equal(t.bg.requestedId, "CDS/P/Mellinger/color", "the fallback is not the user's choice");
+    t.p.set(CDS_PROBE, "up");
+    await t.bg.retry();
+    assert.equal(t.bg.current, "cds");
+    assert.equal(t.bg.requestedId, "CDS/P/Mellinger/color");
+  });
+
+  it("calls onChange once the choice settles, never before", async () => {
+    const seen = [];
+    const t = setup();
+    t.p.set(CDS_PROBE, "pending");
+    const els = fakeEls();
+    const banner = createSkyBanner(els);
+    const bg = createSkyBackground({
+      setLayer: () => {}, layerFor: id => ({ survey: id }), makeFallbackLayer: f => ({ fallback: f.key }),
+      banner, memory: createDownMemory({ now: () => 1, storage: null }), probe: t.p.probe,
+      onChange: choice => seen.push(choice),
+    });
+    const run = bg.show(CDS);
+    await tick();
+    assert.deepEqual(seen, []);
+    t.p.settle(CDS_PROBE, true);
+    await run;
+    assert.deepEqual(seen, ["cds"]);
   });
 
   it("stays hidden when CDS answers, and when only a mirror answers", async () => {

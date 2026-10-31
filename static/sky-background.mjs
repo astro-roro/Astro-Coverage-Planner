@@ -35,6 +35,7 @@ export function createSkyBackground({
   let currentId = null;
   let timer = null;
   let pickedUrl = null;
+  let current = null;       // the settled choice for currentId: "cds", "irsa", "esasky", "offline", or null while unknown
 
   const probeFn = probe || (url => cdsTilesAnswer({ url: url.endsWith("/properties") ? url : url + "properties" }));
 
@@ -46,6 +47,7 @@ export function createSkyBackground({
   };
 
   function conclude(choice) {
+    current = choice;
     if (choice === "offline") {
       banner.show("cds");
       startWatching();
@@ -62,6 +64,7 @@ export function createSkyBackground({
     const mine = ++run;
     currentId = id;
     pickedUrl = null;
+    current = null;
     banner.hide();
     stopWatching();
     let final;
@@ -105,6 +108,7 @@ export function createSkyBackground({
     if (!url) return undefined;
     const mine = ++run;
     currentId = null;
+    current = null;
     pickedUrl = url;
     if (!quiet) { stopWatching(); banner.hide(); }
     const ok = await probeFn(url);
@@ -119,5 +123,12 @@ export function createSkyBackground({
     return ok;
   }
 
-  return { show, retry, recheck, checkPicked, dispose: stopWatching };
+  return {
+    show, retry, recheck, checkPicked, dispose: stopWatching,
+    // The settled choice, so the Sky control can say when the Gaia sky is up.
+    get current() { return current; },
+    // The survey the user asked for. The fallback never replaces it, so this
+    // is what gets saved as their sky. Null after a pick from Aladin's picker.
+    get requestedId() { return currentId; },
+  };
 }

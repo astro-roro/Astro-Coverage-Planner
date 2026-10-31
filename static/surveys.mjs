@@ -148,6 +148,30 @@ export function surveySelectValue(idOrUrl) {
   return findSurvey(idOrUrl)?.id ?? CUSTOM_SURVEY_VALUE;
 }
 
+/** Dropdown value while the bundled Gaia sky is on the map. It is never a user choice. */
+export const OFFLINE_SURVEY_VALUE = "__offline__";
+
+/** What the Sky dropdown and caption say while the bundled Gaia sky is showing. */
+export const OFFLINE_SURVEY = {
+  name: "Built-in Gaia sky (offline)",
+  caption: "A low-resolution Gaia map bundled with ACP, shown while the survey servers are down. ESA/Gaia/DPAC, CC BY-SA 3.0 IGO.",
+  coverage: "Full sky",
+  fullSky: true,
+};
+
+/**
+ * Everything the Sky control shows for a layer: { value, chip, chipFull, text }.
+ * With `offline` set the bundled Gaia sky is on the map, whatever `idOrUrl`
+ * says, and the control names it instead of reading "Custom".
+ */
+export function skyControlFor(idOrUrl, { offline = false } = {}) {
+  if (offline) {
+    return { value: OFFLINE_SURVEY_VALUE, chip: OFFLINE_SURVEY.coverage, chipFull: OFFLINE_SURVEY.fullSky, text: OFFLINE_SURVEY.caption };
+  }
+  const cap = surveyCaption(idOrUrl);
+  return { value: surveySelectValue(idOrUrl), chip: cap.chip, chipFull: cap.chipFull, text: cap.text };
+}
+
 /**
  * Text for the caption under the toolbar. Returns { chip, chipFull, text }.
  * `chip` is the coverage label, `chipFull` says whether to style it as full
