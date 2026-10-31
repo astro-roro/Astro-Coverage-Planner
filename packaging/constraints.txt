@@ -20,7 +20,7 @@ astropy==8.0.2
 numpy==2.5.4
 scipy==1.18.1
 astroquery==0.4.11
-mocpy==0.20.0
+mocpy==0.21.0
 xisf==0.9.7
 waitress==3.0.2
 croniter==6.2.4
