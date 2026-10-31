@@ -93,15 +93,26 @@ export const BACKGROUND_FALLBACKS = [
 ];
 const REMOTE_FALLBACKS = BACKGROUND_FALLBACKS;
 
-// THE HOOK FOR A BUNDLED OFFLINE SKY. Null means none ships, and the map stays
-// on its plain background when every remote source fails (the banner says so).
-// DSS images are copyrighted by the plate institutions, for non-commercial use,
-// and cannot be redistributed in the GPL zip or the Docker image without their
-// permission. If a sky that may be redistributed turns up, ship it as a HiPS
-// folder under static/ and set this to { url: "/static/<folder>/", name, credit }.
-// Nothing else needs to change: the chain below places it as the last fallback,
-// and the caption shows `credit` while it is in use.
-export const BUNDLED_OFFLINE_SKY = null;
+// The sky built into ACP, last in the chain: the map shows it only when CDS,
+// IRSA and ESASky have all failed. It is ESA's Gaia EDR3 colour sky, made into
+// a HiPS folder by scripts/make_gaia_hips.py and licensed CC BY-SA 3.0 IGO,
+// separately from ACP's GPL code (see static/offline-sky/LICENSE.txt). DSS
+// images are not bundled: the plate institutions do not allow redistribution.
+// Setting this to null leaves the map on its plain background instead. The
+// caption shows `credit` while the sky is in use.
+export const BUNDLED_OFFLINE_SKY = {
+  url: "/static/offline-sky/",
+  name: "Gaia sky (built in)",
+  credit: "ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho",
+};
+
+// The sentence added to the sky caption while a fallback is showing, or "".
+export function fallbackCaptionNote(via) {
+  if (!via?.credit) return "";
+  return via.remote
+    ? ` Showing DSS2 colour via ${via.credit} while CDS is unreachable.`
+    : ` Showing a built-in Gaia sky while CDS is unreachable. Credit: ${via.credit}.`;
+}
 
 const offlineEntry = (hook = BUNDLED_OFFLINE_SKY) =>
   ({ key: "offline", memoryKey: null, remote: false, bundled: !!hook, ...(hook || {}) });

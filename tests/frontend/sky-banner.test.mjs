@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createDownMemory, applyBackground, BUNDLED_OFFLINE_SKY, rememberedFallback } from "../../static/cds-fallback.mjs";
+import { createDownMemory, applyBackground, BUNDLED_OFFLINE_SKY, rememberedFallback, fallbackCaptionNote } from "../../static/cds-fallback.mjs";
 import { createSkyBanner, MESSAGES } from "../../static/sky-banner.mjs";
 import { createSkyBackground } from "../../static/sky-background.mjs";
 
@@ -83,13 +83,43 @@ describe("sky banner", () => {
     assert.equal(t.els.root.hidden, false);
   });
 
-  it("shows the plain CDS message after every source fails, and leaves the map's background alone", async () => {
+  it("shows the Gaia message after every source fails, with the bundled sky on the map", async () => {
     const t = setup();
     assert.equal(await t.bg.show(CDS), "offline");
     assert.equal(t.banner.kind, "cds");
     assert.equal(t.els.text.textContent, MESSAGES.cds);
-    assert.equal(t.els.text.textContent, "The sky survey servers (CDS) are not responding, so the map has no sky background right now. Your data and plans are fine. Try again later.");
-    assert.deepEqual(t.layers, [{ survey: CDS }], "no fallback layer was put on the map");
+    assert.equal(t.els.text.textContent, "The sky survey servers (CDS) are not responding, so the map is showing a built-in Gaia sky. Your data and plans are fine. ACP switches back to the full surveys by itself when CDS is back.");
+    assert.deepEqual(t.layers, [{ survey: CDS }, { fallback: "offline" }]);
+  });
+
+  it("reaches the bundled sky only after CDS, IRSA and ESASky have all failed", async () => {
+    for (const up of [CDS_PROBE, IRSA, ESASKY]) {
+      const t = setup();
+      t.p.set(up, "up");
+      const choice = await t.bg.show(CDS);
+      assert.notEqual(choice, "offline", `${up} answered, so the bundled sky must not be used`);
+      assert.ok(!t.layers.some(l => l.fallback === "offline"));
+    }
+    const t = setup();
+    t.p.set(ESASKY, "pending");
+    const run = t.bg.show(CDS);
+    await tick();
+    assert.ok(!t.layers.some(l => l.fallback === "offline"), "not while ESASky is still being asked");
+    t.p.settle(ESASKY, false);
+    assert.equal(await run, "offline");
+    assert.ok(t.layers.some(l => l.fallback === "offline"));
+  });
+
+  it("credits the Gaia sky in the caption only while it is showing", () => {
+    const mem = createDownMemory({ now: () => 1, storage: null });
+    assert.equal(fallbackCaptionNote(rememberedFallback(mem)), "");
+    mem.markDown("hips"); mem.markDown("hips-irsa"); mem.markDown("hips-esasky");
+    const note = fallbackCaptionNote(rememberedFallback(mem));
+    assert.match(note, /built-in Gaia sky/);
+    assert.ok(note.includes("ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho"));
+    const m2 = createDownMemory({ now: () => 1, storage: null });
+    m2.markDown("hips");
+    assert.match(fallbackCaptionNote(rememberedFallback(m2)), /via IRSA/);
   });
 
   it("stays hidden when CDS answers, and when only a mirror answers", async () => {
@@ -187,24 +217,19 @@ describe("sky banner", () => {
     assert.equal(t.els.root.hidden, true);
   });
 
-  it("ships no bundled sky, so the caption names no fallback when all sources are down", () => {
-    assert.equal(BUNDLED_OFFLINE_SKY, null);
-    const mem = createDownMemory({ now: () => 1, storage: null });
-    mem.markDown("hips"); mem.markDown("hips-irsa"); mem.markDown("hips-esasky");
-    assert.equal(rememberedFallback(mem).key, "offline");
-    assert.equal(rememberedFallback(mem).credit, undefined);
+  it("points the bundled sky at the static folder the script writes", () => {
+    assert.equal(BUNDLED_OFFLINE_SKY.url, "/static/offline-sky/");
   });
 
-  it("the offline hook puts a bundled sky on the map as the last fallback when one is set", async () => {
+  it("leaves the map on its plain background if the hook is set to null", async () => {
     const layers = [];
-    const mem = createDownMemory({ now: () => 1, storage: null });
     const choice = await applyBackground(CDS, {
       setLayer: l => layers.push(l), layerFor: id => ({ survey: id }),
-      makeFallbackLayer: f => ({ fallback: f.key, url: f.url }),
-      memory: mem, probe: async () => false,
-      offlineSky: { url: "/static/some-sky/", name: "Some sky", credit: "Someone" },
+      makeFallbackLayer: f => ({ fallback: f.key }),
+      memory: createDownMemory({ now: () => 1, storage: null }), probe: async () => false,
+      offlineSky: null,
     });
     assert.equal(choice, "offline");
-    assert.deepEqual(layers.at(-1), { fallback: "offline", url: "/static/some-sky/" });
+    assert.deepEqual(layers, [{ survey: CDS }]);
   });
 });

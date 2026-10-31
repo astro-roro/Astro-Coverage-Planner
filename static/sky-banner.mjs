@@ -4,8 +4,8 @@
 // source failed; callers never show it while a check is still running.
 
 export const MESSAGES = {
-  // Every remote source for the default sky failed; the map has no background.
-  cds: "The sky survey servers (CDS) are not responding, so the map has no sky background right now. Your data and plans are fine. Try again later.",
+  // Every remote source for the default sky failed; the built-in Gaia sky is showing.
+  cds: "The sky survey servers (CDS) are not responding, so the map is showing a built-in Gaia sky. Your data and plans are fine. ACP switches back to the full surveys by itself when CDS is back.",
   // Only the survey the user picked failed; their choice is kept.
   survey: "That survey's server is not responding. Your choice is kept, and the map will draw it when the server comes back. Try again later.",
 };
