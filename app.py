@@ -35,6 +35,7 @@ Endpoints:
 - GET /api/catalogues/status     state of that download
 - GET/PUT /api/settings           settings file: folders, sources, locks (docs/api.md)
 - POST /api/settings/adopt-env    copy FITS_ROOTS into the settings file
+- POST /api/quit                 stop a packaged ACP (404 unless ACP_PACKAGED=1)
 - GET /api/version               app version + plans/manifest mtimes, for the NINA plugin's poll loop
 
 Env:
@@ -101,6 +102,7 @@ except ImportError:
 
 import acp_settings
 import activity
+import shortcuts as acp_shortcuts
 import balancer
 import filter_rows as fr
 import gear_templates as gt
@@ -7028,6 +7030,21 @@ def _packaged() -> bool:
     return (os.environ.get("ACP_PACKAGED") or "").strip() == "1"
 
 
+def _interpreter_args() -> list[str]:
+    """The interpreter flags a child Python should repeat. The bundled Windows
+    Python reads a ._pth file, which makes it ignore PYTHONUTF8 and
+    PYTHONDONTWRITEBYTECODE, so a child started with just sys.executable would
+    lose -X utf8 and -B. Repeating the parent's flags keeps them. A normal
+    install has neither flag, or has them through the environment, and gets
+    the same child as before."""
+    args = []
+    if sys.flags.utf8_mode:
+        args += ["-X", "utf8"]
+    if sys.flags.dont_write_bytecode:
+        args.append("-B")
+    return args
+
+
 def claim_scan(trigger: str = "cron") -> str:
     """Take the one scan slot, under the same lock that guards the state.
 
@@ -7082,7 +7099,9 @@ def run_claimed_scan() -> None:
     before = None
     try:
         before = _manifest_snapshot() if activity.enabled() else None
-        code = _run_scan_subprocess([sys.executable, str(SCAN_SCRIPT_PATH)])
+        scan_args = [sys.executable, *_interpreter_args(), str(SCAN_SCRIPT_PATH)]
+        logging.info("starting the archive scan: %s", " ".join(scan_args))
+        code = _run_scan_subprocess(scan_args)
     except Exception as e:
         logging.error("scheduled scan could not start: %s: %s", type(e).__name__, e)
         _record_scan_error(f"{type(e).__name__}: {e}", kind="could_not_start")
@@ -7280,8 +7299,9 @@ _SETTINGS_WRITABLE_KEYS = ("fits_roots", "shortcuts")
 
 
 def _shortcuts_available() -> bool:
-    """Phase 2 turns this on for the packaged Windows and Linux builds."""
-    return False
+    """Only a packaged Windows or Linux build has an app folder to point a
+    shortcut at. A source install and Docker have none, and Mac has none."""
+    return _packaged() and acp_shortcuts.available()
 
 
 def _client_is_loopback() -> bool:
@@ -7312,6 +7332,21 @@ def _authorised_client() -> bool:
     if _api_auth_token():
         return True
     return _client_is_loopback() and _host_is_loopback()
+
+
+@app.before_request
+def _packaged_host_guard():
+    """DNS rebinding: in packaged mode, answer only to a loopback Host name.
+    A page on another site that rebinds its name to 127.0.0.1 still sends its
+    own name here. A packaged build has no reverse proxy, so the check is safe
+    on every route. With a token set, _api_gate has already demanded a bearer
+    header or the session cookie by the time this runs, so only the tokenless
+    case needs it. A source install checks the restricted routes only (see
+    _restricted_refusal), because a proxy with a hostname would lock out its
+    own users."""
+    if _packaged() and not _api_auth_token() and not _host_is_loopback():
+        return jsonify({"error": "bad_host"}), 400
+    return None
 
 
 def _restricted_refusal():
@@ -7367,6 +7402,7 @@ def _settings_view(authorised: bool) -> dict:
         "error": "settings_file_corrupt" if error == "corrupt" else error,
         "shortcuts": {"available": _shortcuts_available(),
                       "value": acp_settings.shortcuts_value(data)},
+        "packaged": _packaged(),
         "keys": keys,
     }
     if authorised:
@@ -7416,6 +7452,20 @@ def api_put_settings():
         if not _shortcuts_available():
             return jsonify({"error": "unavailable"}), 400
         updates["shortcuts"] = value
+        if value is not None:
+            # The files change first, so a failure leaves the offer open
+            # instead of recording an answer that did not happen.
+            root = acp_shortcuts.app_root(REPO_ROOT)
+            try:
+                if value:
+                    acp_shortcuts.create(root)
+                    updates["shortcuts_app_dir"] = str(root)
+                else:
+                    acp_shortcuts.remove()
+                    updates["shortcuts_app_dir"] = None
+            except acp_shortcuts.ShortcutError as exc:
+                logging.error("shortcuts: %s", exc)
+                return jsonify({"error": "shortcuts_failed"}), 500
     if "fits_roots" in body:
         raw = body["fits_roots"]
         if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
@@ -7589,7 +7639,8 @@ def _run_catalogue_subprocess(args: list[str]) -> int:
 def _run_catalogue_fetch() -> None:
     kind = None
     try:
-        code = _run_catalogue_subprocess([sys.executable, str(CATALOGUE_SCRIPT_PATH)])
+        code = _run_catalogue_subprocess([sys.executable, *_interpreter_args(),
+                                          str(CATALOGUE_SCRIPT_PATH)])
         if code == _CATALOGUE_NO_NETWORK:
             kind = "network"
         elif code != 0:
@@ -7629,6 +7680,37 @@ def api_catalogues_fetch():
 @app.route("/api/catalogues/status")
 def api_catalogues_status():
     return jsonify(catalogue_status())
+
+
+# --- Quitting a packaged ACP (spec 3.3) ---------------------------------------
+#
+# The launcher owns the server, the tray and the lock, so it registers a
+# shutdown function here. The tray's Quit item calls the same function. It
+# returns False while a scan runs, and the route answers 409 for that.
+
+_quit_hook = None
+
+
+def set_quit_hook(hook) -> None:
+    """Called by launcher.py with its shutdown function."""
+    global _quit_hook
+    _quit_hook = hook
+
+
+@app.route("/api/quit", methods=["POST"])
+def api_quit():
+    """Stop a packaged ACP. The route exists only when ACP_PACKAGED=1; anywhere
+    else it answers 404, as an unknown route does."""
+    if not _packaged():
+        return jsonify({"error": "not_found"}), 404
+    refused = _restricted_refusal()
+    if refused:
+        return refused
+    if _quit_hook is None:
+        return jsonify({"error": "unavailable"}), 503
+    if not _quit_hook():
+        return jsonify({"error": "scan_running"}), 409
+    return jsonify({"status": "stopping"})
 
 
 

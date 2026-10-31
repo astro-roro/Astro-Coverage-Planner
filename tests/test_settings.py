@@ -669,7 +669,9 @@ class TestPutSettings(EnvCase):
         self.assertFalse(self.settings_file.exists())
 
     def test_s15_shortcuts_round_trips_through_the_route_when_available(self):
-        with mock.patch.object(app_module, "_shortcuts_available", lambda: True):
+        with mock.patch.object(app_module, "_shortcuts_available", lambda: True), \
+                mock.patch.object(app_module.acp_shortcuts, "create"), \
+                mock.patch.object(app_module.acp_shortcuts, "remove"):
             for value in (True, False, None):
                 resp = self.put({"shortcuts": value})
                 self.assertEqual(resp.status_code, 200)
