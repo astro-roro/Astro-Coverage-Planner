@@ -475,18 +475,31 @@ function surveyLayerFor(id) {
 }
 
 // Show survey `id` on the map. A CDS survey is swapped for DSS2 colour from
-// IRSA (or ESASky) when the CDS tile host does not answer in a few seconds, and
-// stays swapped for the browser session (cds-fallback.mjs). The caption says so.
-let backgroundRun = 0;
-function showSurvey(id) {
-  const run = ++backgroundRun;
-  const setLayer = layer => { try { aladin.setImageSurvey(layer); } catch (err) { console.warn("setImageSurvey failed", id, err); } };
-  return applyBackground(id, {
-    setLayer,
+// IRSA, then ESASky, when the CDS tile host does not answer in a few seconds.
+// The swap lasts the browser session (cds-fallback.mjs). When none of them
+// answer the map keeps its plain background and sky-banner.mjs says so. Built
+// on first use, after Aladin is up.
+let skyBackground = null;
+function getSkyBackground() {
+  if (skyBackground) return skyBackground;
+  const els = {
+    root: document.getElementById("skyBanner"),
+    text: document.getElementById("skyBannerText"),
+    retry: document.getElementById("skyBannerRetry"),
+  };
+  const banner = createSkyBanner(els, () => { skyBackground?.retry(); });
+  skyBackground = createSkyBackground({
+    setLayer: layer => { try { aladin.setImageSurvey(layer); } catch (err) { console.warn("setImageSurvey failed", err); } },
     layerFor: surveyLayerFor,
-    makeFallbackLayer: f => A.imageHiPS(f.url, { name: f.name }),
-    stillWanted: () => run === backgroundRun,
-  }).then(choice => { if (run === backgroundRun) syncSkyControl(id); return choice; })
+    makeFallbackLayer: f => A.imageHiPS(new URL(f.url, document.baseURI).href, { name: f.name }),
+    banner,
+    onChange: () => syncSkyControl(),
+  });
+  return skyBackground;
+}
+function showSurvey(id) {
+  return getSkyBackground().show(id)
+    .then(choice => { syncSkyControl(id); return choice; })
     .catch(err => { console.warn("background fallback failed", err); });
 }
 
@@ -526,6 +539,10 @@ async function openAladinSurveyBrowser() {
     selected: hips => {
       try { aladin.setBaseImageLayer(hips); } catch (err) { console.warn("setBaseImageLayer failed", err); }
       syncSkyControl(hips?.id || hips?.url || "");
+      // A pick from outside CDS is asked once; if its server is silent the
+      // banner says so and the pick stays.
+      if (isCdsSurvey(hips?.id)) showSurvey(hips.id);
+      else if (hips?.url) getSkyBackground().checkPicked(hips.url);
       saveUiState();
     },
     position: { anchor: "center center" },
@@ -560,7 +577,9 @@ function syncSkyControl(id) {
   }
   if (text) {
     const via = isCdsSurvey(surveyId) ? rememberedFallback() : null;
-    text.textContent = via ? `${cap.text} Showing DSS2 colour via ${via.credit} while CDS is unreachable.` : cap.text;
+    // No credit means no fallback sky is on the map; the banner explains.
+    const note = via?.credit ? ` Showing DSS2 colour via ${via.credit} while CDS is unreachable.` : "";
+    text.textContent = cap.text + note;
   }
 }
 
@@ -783,7 +802,9 @@ import {
   STATUS_LABEL,
 } from "./gear-editor.mjs";
 import { setupSkySearch } from "./sky-search-ui.mjs";
-import { applyBackground, rememberedFallback, isCdsSurvey } from "./cds-fallback.mjs";
+import { rememberedFallback, isCdsSurvey } from "./cds-fallback.mjs";
+import { createSkyBanner } from "./sky-banner.mjs";
+import { createSkyBackground } from "./sky-background.mjs";
 import { outlinePoints } from "./sky-search.mjs";
 
 function deepestFilter(filters, minH = 0) {

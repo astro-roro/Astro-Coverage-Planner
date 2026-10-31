@@ -226,7 +226,7 @@ describe("map background", () => {
   it("uses ESASky second, when IRSA does not answer either", async () => {
     const layers = [], mem = memoryAt(clock());
     const choice = await applyBackground(CDS, {
-      setLayer: l => layers.push(l), layerFor, makeFallbackLayer, memory: mem, probe: probeOnly(),
+      setLayer: l => layers.push(l), layerFor, makeFallbackLayer, memory: mem, probe: probeOnly(ESASKY_DSS2_COLOUR_URL),
     });
     assert.equal(choice, "esasky");
     assert.deepEqual(layers.at(-1), { fallback: "esasky", url: ESASKY_DSS2_COLOUR_URL });
