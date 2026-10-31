@@ -6,7 +6,7 @@ Licences were read from the package metadata and licence files of the Python env
 
 ## Sky surveys and CDS services
 
-ACP does not store any survey image. The browser loads tiles straight from CDS (Centre de Données astronomiques de Strasbourg), and the images belong to their authors.
+ACP stores one low-resolution sky, the Gaia map described below, and no other survey image. The browser loads tiles straight from CDS (Centre de Données astronomiques de Strasbourg), and the images belong to their authors.
 
 ### Aladin Lite and CDS
 
@@ -33,6 +33,15 @@ The Sky dropdown (`static/surveys.mjs`) offers these HiPS surveys, served by CDS
 | ROSAT X-ray | `CDS/P/RASS` | ROSAT All-Sky Survey. Credit wording to confirm. |
 
 Each survey's licence and acknowledgement text is listed in the HiPS properties file that CDS serves with the tiles. ACP does not read that file, so none of the wording above comes from it.
+
+### Built-in Gaia sky (offline fallback)
+
+- What it is: `static/offline-sky/`, a HiPS folder of JPEG tiles made by `scripts/make_gaia_hips.py` from ESA's picture "The colour of the sky from Gaia's Early Data Release 3". The Windows download and the Docker image both include it.
+- How ACP uses it: the map shows it only when CDS, IRSA and ESASky have all failed to answer, with a banner saying so. It switches back to the full surveys by itself when one of them answers. It is soft when zoomed in.
+- Credit: ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho. The map's caption shows this line while the sky is in use, and `THIRD-PARTY-NOTICES.txt` in the Windows download repeats it.
+- Licence: Creative Commons Attribution-ShareAlike 3.0 IGO, https://creativecommons.org/licenses/by-sa/3.0/igo/. The picture was resampled into HEALPix tiles and saved as JPEG, and that change is stated in `static/offline-sky/LICENSE.txt`.
+- This licence covers the `static/offline-sky` folder only. It is separate from ACP's own code, which stays under the GPL.
+- Digitized Sky Survey images are not bundled. The plate institutions do not allow redistribution, so DSS2 reaches the map only through CDS, IRSA and ESASky.
 
 ### Where the README images get their background
 

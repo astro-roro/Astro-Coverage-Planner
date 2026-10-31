@@ -58,6 +58,20 @@ class TestDockerignore(unittest.TestCase):
                         for ln in DOCKERIGNORE.read_text(encoding="utf-8").splitlines()
                         if ln.strip() and not ln.startswith("#")}
 
+    def test_the_bundled_sky_is_not_excluded(self):
+        # static/offline-sky is the map's last resort when every survey server
+        # is down. `COPY . .` takes it unless an ignore pattern covers it.
+        import fnmatch
+        for path in ("static/offline-sky/properties", "static/offline-sky/Norder0/Dir0/Npix0.jpg",
+                     "static/offline-sky/LICENSE.txt"):
+            for pattern in self.entries:
+                self.assertFalse(fnmatch.fnmatch(path, pattern) or path.startswith(pattern + "/"),
+                                 f"{pattern} would drop {path} from the image")
+
+    def test_the_image_copies_the_whole_tree(self):
+        body = DOCKERFILE.read_text(encoding="utf-8")
+        self.assertRegex(body, r"(?m)^COPY \. \.")
+
     def test_the_obvious_ones_are_excluded(self):
         for wanted in (".git", "data", "tests", "docs"):
             self.assertIn(wanted, self.entries, wanted)

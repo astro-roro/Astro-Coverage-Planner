@@ -477,8 +477,8 @@ function surveyLayerFor(id) {
 // Show survey `id` on the map. A CDS survey is swapped for DSS2 colour from
 // IRSA, then ESASky, when the CDS tile host does not answer in a few seconds.
 // The swap lasts the browser session (cds-fallback.mjs). When none of them
-// answer the map keeps its plain background and sky-banner.mjs says so. Built
-// on first use, after Aladin is up.
+// answer the map shows the Gaia sky bundled in static/offline-sky and
+// sky-banner.mjs says so. Built on first use, after Aladin is up.
 let skyBackground = null;
 function getSkyBackground() {
   if (skyBackground) return skyBackground;
@@ -577,9 +577,7 @@ function syncSkyControl(id) {
   }
   if (text) {
     const via = isCdsSurvey(surveyId) ? rememberedFallback() : null;
-    // No credit means no fallback sky is on the map; the banner explains.
-    const note = via?.credit ? ` Showing DSS2 colour via ${via.credit} while CDS is unreachable.` : "";
-    text.textContent = cap.text + note;
+    text.textContent = cap.text + fallbackCaptionNote(via);
   }
 }
 
@@ -802,7 +800,7 @@ import {
   STATUS_LABEL,
 } from "./gear-editor.mjs";
 import { setupSkySearch } from "./sky-search-ui.mjs";
-import { rememberedFallback, isCdsSurvey } from "./cds-fallback.mjs";
+import { rememberedFallback, isCdsSurvey, fallbackCaptionNote } from "./cds-fallback.mjs";
 import { createSkyBanner } from "./sky-banner.mjs";
 import { createSkyBackground } from "./sky-background.mjs";
 import { outlinePoints } from "./sky-search.mjs";

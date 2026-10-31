@@ -29,6 +29,20 @@ ACP ships with the software listed below. Each entry gives the package, its vers
 Three of these packages are licensed under the GNU Lesser General Public License: paramiko, pystray and WCSLIB (code inside astropy). Their files sit unchanged in the site-packages folder, so you can replace any of them with another version of the same library. The MPL 2.0 covers certifi. Packages that other people ask you to credit are listed in CREDITS.md.
 """
 
+# Data that ships in the zip as data, not as a package. No wheel carries a
+# notice for it, so it gets its own. It is licensed apart from ACP's GPL code.
+BUNDLED_DATA_NOTICE = """\
+BUNDLED SKY MAP (app/static/offline-sky)
+
+A low-resolution colour map of the sky, shown when the survey servers cannot be reached. It is made from ESA's picture "The colour of the sky from Gaia's Early Data Release 3".
+
+Credit: ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho
+Licence: Creative Commons Attribution-ShareAlike 3.0 IGO (CC BY-SA 3.0 IGO), https://creativecommons.org/licenses/by-sa/3.0/igo/
+Changes: resampled into HiPS tiles in equatorial coordinates and saved as JPEG.
+
+This licence covers the static/offline-sky folder only, which is separate from ACP's own code under the GPL. The same text is in static/offline-sky/LICENSE.txt.
+"""
+
 # A package whose licence we must reproduce; the build fails if no text is found.
 MUST_HAVE_TEXT = ("paramiko", "pystray", "astropy", "certifi")
 
@@ -72,7 +86,7 @@ def build(site: Path, python_license: Path | None) -> tuple[str, list[str]]:
     """Returns the notices text and a list of problems."""
     problems = []
     seen: dict[str, str] = {}       # text hash -> where it was printed first
-    parts = [HEADER]
+    parts = [HEADER, "\n" + BUNDLED_DATA_NOTICE.rstrip("\n")]
 
     def add_entry(title: str, declared: str, files: list[tuple[str, str]]):
         lines = ["", "=" * 78, title, f"Licence: {declared}", "=" * 78]

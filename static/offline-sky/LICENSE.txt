@@ -1,0 +1,13 @@
+This folder is a HiPS sky built from ESA's "The colour of the sky from Gaia's
+Early Data Release 3".
+
+Credit: ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho
+Source: https://www.esa.int/ESA_Multimedia/Images/2020/12/The_colour_of_the_sky_from_Gaia_s_Early_Data_Release_3
+Licence: CC BY-SA 3.0 IGO, https://creativecommons.org/licenses/by-sa/3.0/igo/
+Changes: the equirectangular picture was resampled into HEALPix (HiPS) tiles in
+equatorial coordinates, with the coarser orders averaged from the finer ones,
+and saved as JPEG. Made by scripts/make_gaia_hips.py.
+
+The licence applies to this folder (static/offline-sky) only. The rest of
+Astro Coverage Planner is licensed under the GNU General Public License v3 or
+later (see LICENSE at the top of the repository).
