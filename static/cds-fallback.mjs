@@ -106,12 +106,11 @@ export const BUNDLED_OFFLINE_SKY = {
   credit: "ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho",
 };
 
-// The sentence added to the sky caption while a fallback is showing, or "".
+// The sentence added to the sky caption while a remote fallback is showing, or
+// "". The bundled sky has its own caption (OFFLINE_SURVEY in surveys.mjs).
 export function fallbackCaptionNote(via) {
-  if (!via?.credit) return "";
-  return via.remote
-    ? ` Showing DSS2 colour via ${via.credit} while CDS is unreachable.`
-    : ` Showing a built-in Gaia sky while CDS is unreachable. Credit: ${via.credit}.`;
+  if (!via?.remote || !via.credit) return "";
+  return ` Showing DSS2 colour via ${via.credit} while CDS is unreachable.`;
 }
 
 const offlineEntry = (hook = BUNDLED_OFFLINE_SKY) =>
