@@ -1,0 +1,17 @@
+creator_did = ivo://acp/offline-sky/gaia-edr3
+obs_title = Gaia EDR3 sky in colour (ESA)
+obs_description = ESA's picture of the colour of the sky from Gaia's Early Data Release 3, resampled into HiPS tiles. Low resolution, built into ACP for use when the survey servers are down.
+obs_copyright = ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho
+obs_copyright_url = https://www.esa.int/ESA_Multimedia/Images/2020/12/The_colour_of_the_sky_from_Gaia_s_Early_Data_Release_3
+obs_ack = ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho
+hips_copyright = ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho
+hips_creator = Astro Coverage Planner (scripts/make_gaia_hips.py)
+hips_version = 1.4
+hips_release_date = 2020-12-03T00:00Z
+hips_status = public master clonableOnce
+hips_frame = equatorial
+hips_order = 2
+hips_tile_width = 512
+hips_tile_format = jpeg
+dataproduct_type = image
+client_category = Image/Optical/Colour

@@ -10,11 +10,18 @@
 // search was fine, which is why the cone search is used.
 
 import { tangentOffsetToRaDec } from "./sky-geometry.mjs";
+import { withMirror, CDS_PATIENCE_MS } from "./cds-fallback.mjs";
 
 const D2R = Math.PI / 180;
 
 export const SIMBAD_TAP = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync";
 export const VIZIER_ASU = "https://vizier.cds.unistra.fr/viz-bin/asu-tsv";
+
+// Harvard's copies of both services, tried when CDS does not answer (see
+// cds-fallback.mjs). These paths follow the CDS ones and were not checked
+// from the build machine, which could not reach Harvard.
+export const SIMBAD_TAP_MIRROR = "https://simbad.harvard.edu/simbad/sim-tap/sync";
+export const VIZIER_ASU_MIRROR = "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv";
 
 // Half the view's diagonal may not pass this. Wider than that and the answer
 // is a list of thousands, so the panel asks for a zoom instead.
@@ -275,7 +282,7 @@ export const VIZIER_CATALOGUES = [
   },
 ];
 
-export function buildVizierUrl(cat, ra, dec, radiusDeg, limit = VIZIER_LIMIT) {
+export function buildVizierUrl(cat, ra, dec, radiusDeg, limit = VIZIER_LIMIT, base = VIZIER_ASU) {
   const f = x => Number(x).toFixed(5);
   const q = [
     ["-source", cat.source],
@@ -286,7 +293,7 @@ export function buildVizierUrl(cat, ra, dec, radiusDeg, limit = VIZIER_LIMIT) {
     ["-out", cat.cols.join(",")],
     ...(cat.sort ? [["-sort", cat.sort]] : []),
   ];
-  return `${VIZIER_ASU}?${q.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
+  return `${base}?${q.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
 }
 
 export function normaliseVizier(cat, rows) {
@@ -352,11 +359,16 @@ export function applyIdents(items, reply) {
   return added;
 }
 
-export async function searchSimbad(cone, { fetchImpl = fetch, timeoutMs = 25000 } = {}) {
+export async function searchSimbad(cone, { fetchImpl = fetch, timeoutMs = 25000, memory, patienceMs } = {}) {
   const base = { label: "SIMBAD", items: [], truncated: false };
   const post = async query => {
     const body = new URLSearchParams({ request: "doQuery", lang: "adql", format: "json", query });
-    const r = await fetchWithTimeout(fetchImpl, SIMBAD_TAP, { method: "POST", body }, timeoutMs);
+    const r = await withMirror(
+      "simbad",
+      { cds: SIMBAD_TAP, mirror: SIMBAD_TAP_MIRROR },
+      (url, limit) => fetchWithTimeout(fetchImpl, url, { method: "POST", body }, limit),
+      { memory, patienceMs, timeoutMs },
+    );
     return r.json();
   };
   const ask = async sized => {
@@ -381,10 +393,20 @@ export async function searchSimbad(cone, { fetchImpl = fetch, timeoutMs = 25000 
   }
 }
 
-export async function searchVizier(cat, cone, { fetchImpl = fetch, timeoutMs = 25000 } = {}) {
+export async function searchVizier(cat, cone, { fetchImpl = fetch, timeoutMs = 25000, memory, patienceMs } = {}) {
   const base = { label: cat.label, items: [], truncated: false };
   try {
-    const r = await fetchWithTimeout(fetchImpl, buildVizierUrl(cat, cone.ra, cone.dec, cone.radiusDeg), {}, timeoutMs);
+    const r = await withMirror(
+      "vizier",
+      {
+        cds: buildVizierUrl(cat, cone.ra, cone.dec, cone.radiusDeg),
+        mirror: buildVizierUrl(cat, cone.ra, cone.dec, cone.radiusDeg, VIZIER_LIMIT, VIZIER_ASU_MIRROR),
+      },
+      (url, limit) => fetchWithTimeout(fetchImpl, url, {}, limit),
+      // Harvard's VizieR cone search timed out at 25 s on 2026-10-31, so it
+      // gets the same short limit as CDS and fails quietly into the old error.
+      { memory, patienceMs, timeoutMs, mirrorTimeoutMs: patienceMs ?? CDS_PATIENCE_MS },
+    );
     const rows = parseVizierTsv(await r.text());
     return { ...base, ok: true, items: normaliseVizier(cat, rows), truncated: rows.length >= VIZIER_LIMIT };
   } catch (e) {

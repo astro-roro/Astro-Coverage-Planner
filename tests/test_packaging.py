@@ -142,7 +142,7 @@ class TestStartFiles(unittest.TestCase):
             self.assertIn(needle, text)
 
 
-GOOD_NOTICES = (make_notices.HEADER + "\n[This is the first released version of the Lesser GPL.]\n"
+GOOD_NOTICES = (make_notices.HEADER + make_notices.BUNDLED_DATA_NOTICE + "\n[This is the first released version of the Lesser GPL.]\n"
                 "Mozilla Public License, v. 2.0\n")
 
 
@@ -207,6 +207,19 @@ class TestCheckTree(unittest.TestCase):
         problems = self.run_check()
         self.assertTrue(any("LICENSE" in p for p in problems), problems)
         self.assertTrue(any(check_tree.NOTICES in p for p in problems), problems)
+
+    def test_the_bundled_sky_is_required(self):
+        (self.tree / "app/static/offline-sky/properties").unlink()
+        self.assertTrue(any("offline-sky" in p for p in self.run_check()))
+
+    def test_a_notices_file_without_the_sky_licence_fails(self):
+        (self.tree / check_tree.NOTICES).write_text(GOOD_NOTICES.replace("CC BY-SA 3.0 IGO", "x"))
+        self.assertTrue(any("cc by-sa 3.0 igo" in p for p in self.run_check()))
+
+    def test_the_notices_text_credits_gaia_and_keeps_it_apart_from_the_gpl(self):
+        text = make_notices.BUNDLED_DATA_NOTICE
+        self.assertIn("ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho", text)
+        self.assertIn("separate from ACP's own code under the GPL", text)
 
     def test_credits_are_required(self):
         (self.tree / "CREDITS.md").unlink()

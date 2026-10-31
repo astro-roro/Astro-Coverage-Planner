@@ -293,7 +293,7 @@ function applyUiStatePreManifest() {
   }
 
   if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
-    try { aladin.setImageSurvey(surveyLayerFor(s.imageSurvey)); } catch { /* unknown id, keep default */ }
+    showSurvey(s.imageSurvey);
     syncSkyControl(s.imageSurvey);
   }
 
@@ -387,6 +387,12 @@ function buildSkyControl() {
   custom.textContent = "Custom (chosen in Aladin)";
   custom.hidden = true;
   sel.appendChild(custom);
+  // Shown, never chosen: it names the bundled Gaia sky while that is on the map.
+  const offline = document.createElement("option");
+  offline.value = OFFLINE_SURVEY_VALUE;
+  offline.textContent = OFFLINE_SURVEY.name;
+  offline.hidden = true;
+  sel.appendChild(offline);
   sel.value = DEFAULT_SURVEY_ID;
   syncSkyControl(DEFAULT_SURVEY_ID);
 }
@@ -474,6 +480,35 @@ function surveyLayerFor(id) {
   return id;
 }
 
+// Show survey `id` on the map. A CDS survey is swapped for DSS2 colour from
+// IRSA, then ESASky, when the CDS tile host does not answer in a few seconds.
+// The swap lasts the browser session (cds-fallback.mjs). When none of them
+// answer the map shows the Gaia sky bundled in static/offline-sky and
+// sky-banner.mjs says so. Built on first use, after Aladin is up.
+let skyBackground = null;
+function getSkyBackground() {
+  if (skyBackground) return skyBackground;
+  const els = {
+    root: document.getElementById("skyBanner"),
+    text: document.getElementById("skyBannerText"),
+    retry: document.getElementById("skyBannerRetry"),
+  };
+  const banner = createSkyBanner(els, () => { skyBackground?.retry(); });
+  skyBackground = createSkyBackground({
+    setLayer: layer => { try { aladin.setImageSurvey(layer); } catch (err) { console.warn("setImageSurvey failed", err); } },
+    layerFor: surveyLayerFor,
+    makeFallbackLayer: f => A.imageHiPS(new URL(f.url, document.baseURI).href, { name: f.name }),
+    banner,
+    onChange: () => syncSkyControl(skyBackground?.requestedId || undefined),
+  });
+  return skyBackground;
+}
+function showSurvey(id) {
+  return getSkyBackground().show(id)
+    .then(choice => { syncSkyControl(id); return choice; })
+    .catch(err => { console.warn("background fallback failed", err); });
+}
+
 // Open Aladin's HiPS browser (search plus a folder tree of every survey)
 // so a pick there replaces the sky. Aladin has no public call for this.
 // The browser object is created lazily by Aladin's own stack panel, so on
@@ -510,6 +545,10 @@ async function openAladinSurveyBrowser() {
     selected: hips => {
       try { aladin.setBaseImageLayer(hips); } catch (err) { console.warn("setBaseImageLayer failed", err); }
       syncSkyControl(hips?.id || hips?.url || "");
+      // A pick from outside CDS is asked once; if its server is silent the
+      // banner says so and the pick stays.
+      if (isCdsSurvey(hips?.id)) showSurvey(hips.id);
+      else if (hips?.url) getSkyBackground().checkPicked(hips.url);
       saveUiState();
     },
     position: { anchor: "center center" },
@@ -530,19 +569,26 @@ function syncSkyControl(id) {
   const chip = document.getElementById("skyCoverage");
   const text = document.getElementById("skyCaptionText");
   const surveyId = id || currentSurveyId();
+  // While the bundled Gaia sky is up, Aladin's base layer is that sky, so
+  // reading it back would call it "Custom". Name it instead.
+  const offline = skyBackground?.current === "offline";
+  const state = skyControlFor(surveyId, { offline });
   if (sel) {
-    const value = surveySelectValue(surveyId);
-    const customOpt = sel.querySelector(`option[value="${CUSTOM_SURVEY_VALUE}"]`);
-    if (customOpt) customOpt.hidden = value !== CUSTOM_SURVEY_VALUE;
-    sel.value = value;
+    for (const hidden of [CUSTOM_SURVEY_VALUE, OFFLINE_SURVEY_VALUE]) {
+      const opt = sel.querySelector(`option[value="${hidden}"]`);
+      if (opt) opt.hidden = state.value !== hidden;
+    }
+    sel.value = state.value;
   }
-  const cap = surveyCaption(surveyId);
   if (chip) {
-    chip.textContent = cap.chip;
-    chip.classList.toggle("full", cap.chipFull);
-    chip.classList.toggle("partial", !cap.chipFull);
+    chip.textContent = state.chip;
+    chip.classList.toggle("full", state.chipFull);
+    chip.classList.toggle("partial", !state.chipFull);
   }
-  if (text) text.textContent = cap.text;
+  if (text) {
+    const via = !offline && isCdsSurvey(surveyId) ? rememberedFallback() : null;
+    text.textContent = state.text + fallbackCaptionNote(via);
+  }
 }
 
 function saveUiState() {
@@ -554,7 +600,10 @@ function saveUiState() {
     // Aladin's own control, so fall through to what Aladin reports.
     let imageSurvey = "";
     const skySel = document.getElementById("skySel");
-    if (skySel && skySel.value && skySel.value !== CUSTOM_SURVEY_VALUE) {
+    if (skySel && skySel.value === OFFLINE_SURVEY_VALUE) {
+      // The Gaia sky is a stand-in, not the user's choice. Keep what they asked for.
+      imageSurvey = skyBackground?.requestedId || DEFAULT_SURVEY_ID;
+    } else if (skySel && skySel.value && skySel.value !== CUSTOM_SURVEY_VALUE) {
       imageSurvey = skySel.value;
     } else {
       imageSurvey = currentSurveyId();
@@ -618,10 +667,11 @@ import {
 import {
   CUSTOM_SURVEY_VALUE,
   DEFAULT_SURVEY_ID,
+  OFFLINE_SURVEY,
+  OFFLINE_SURVEY_VALUE,
   SURVEY_GROUPS,
-  surveyCaption,
+  skyControlFor,
   surveyRenderOptions,
-  surveySelectValue,
 } from "./surveys.mjs";
 import {
   ALADIN_INIT_TIMEOUT_MS,
@@ -764,6 +814,9 @@ import {
   STATUS_LABEL,
 } from "./gear-editor.mjs";
 import { setupSkySearch } from "./sky-search-ui.mjs";
+import { rememberedFallback, isCdsSurvey, fallbackCaptionNote } from "./cds-fallback.mjs";
+import { createSkyBanner } from "./sky-banner.mjs";
+import { createSkyBackground } from "./sky-background.mjs";
 import { outlinePoints } from "./sky-search.mjs";
 
 function deepestFilter(filters, minH = 0) {
@@ -5860,8 +5913,8 @@ function setupFilterUI() {
   document.getElementById("skyMore")?.addEventListener("click", () => { openAladinSurveyBrowser(); });
   document.getElementById("skySel").addEventListener("change", e => {
     const id = e.target.value;
-    if (id === CUSTOM_SURVEY_VALUE) return;
-    try { aladin.setImageSurvey(surveyLayerFor(id)); } catch (err) { console.warn("setImageSurvey failed", id, err); }
+    if (id === CUSTOM_SURVEY_VALUE || id === OFFLINE_SURVEY_VALUE) return;
+    showSurvey(id);
     // Aladin swaps the base layer asynchronously, so caption from the chosen
     // id rather than from getBaseImageLayer(), which may still be the old one.
     syncSkyControl(id);
@@ -6950,7 +7003,11 @@ async function init() {
     installAladinIdleThrottle(aladin);
     guardAladinPix2world(aladin);
 
-    overlay = A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
+    // Check the CDS tile host now, so a dead one is noticed on first load
+    // and not only after the user picks a survey.
+    showSurvey(DEFAULT_SURVEY_ID);
+
+    overlay =A.graphicOverlay({ color: "#ff4d4d", lineWidth: 2, name: "archive coverage" });
     aladin.addOverlay(overlay);
 
     // One catalog for filter-coverage badges (custom shape draws a pill of 7 dots).

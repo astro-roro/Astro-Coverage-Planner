@@ -24,7 +24,8 @@ NOTICES = "THIRD-PARTY-NOTICES.txt"
 REQUIRED = {
     "windows": ("Start ACP.bat", "README.txt", "VERSION.txt", "LICENSE", NOTICES, "CREDITS.md",
                 "python/pythonw.exe", "python/python.exe", "app/launcher.py", "app/app.py",
-                "app/bundled_extensions/nina_ts_sync"),
+                "app/bundled_extensions/nina_ts_sync", "app/static/offline-sky/properties",
+                "app/static/offline-sky/LICENSE.txt"),
 }
 
 # What the notices file must say, whatever else it holds (lower case, for a case-blind
@@ -36,6 +37,7 @@ NOTICE_MARKERS = (
     ("first released version of the lesser gpl",
      "this version of the gnu lesser general public license incorporates"),
     "mozilla public license",
+    "cc by-sa 3.0 igo",
 )
 
 
