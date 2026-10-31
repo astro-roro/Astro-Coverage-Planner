@@ -44,7 +44,7 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $tag = $env:GITHUB_REF_NAME }
           ./packaging/windows/build.ps1 -OutDir dist -Tag $tag
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: acp-windows
           path: dist/*
