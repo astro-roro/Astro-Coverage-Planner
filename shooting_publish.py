@@ -9,14 +9,16 @@ the app. app.py imports it lazily for the two live-page endpoints.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import math
 import os
 import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent
 _SCRIPTS = str(REPO_ROOT / "scripts")
@@ -464,6 +466,90 @@ def build_shooting_document(plans: list[dict], manifest: dict | None, gear: dict
     return doc
 
 
+# --- Thumbnails -------------------------------------------------------------
+# The page used to ask CDS for every thumbnail from the visitor's browser, so a
+# CDS outage blanked it. Now the publisher keeps a copy of each survey image in
+# data/live/thumbs/ and uploads it next to shooting.json.
+
+THUMB_DIR = "thumbs"
+THUMB_TIMEOUT_S = 10
+THUMB_ATTEMPTS = 2
+_HIPS2FITS = "https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
+_log = logging.getLogger(__name__)
+
+
+def thumb_key(entry: dict) -> str:
+    """Stable id for a thumbnail: a short hash of the published pointing and
+    field, so a changed pointing or field gets a new file name."""
+    fov = entry.get("fov_arcmin") or [0, 0]
+    raw = f"{entry.get('center_ra_deg')}|{entry.get('center_dec_deg')}|{fov[0]}|{fov[1]}"
+    return hashlib.sha1(raw.encode("ascii")).hexdigest()[:12]
+
+
+def thumb_url(entry: dict) -> str:
+    """The hips2fits URL live/shooting.js builds today, DSS2 colour only."""
+    fov = entry.get("fov_arcmin") or [0, 0]
+    w = float(fov[0] or 0) or 60.0
+    h = float(fov[1] or 0) or 60.0
+    fov_deg = (max(w, h) / 60) * 1.3
+    q = urlencode({
+        "hips": "CDS/P/DSS2/color",
+        "ra": entry.get("center_ra_deg") or 0, "dec": entry.get("center_dec_deg") or 0,
+        "fov": f"{fov_deg:.3f}", "width": 480, "height": 270,
+        "projection": "TAN", "format": "jpg",
+    })
+    return f"{_HIPS2FITS}?{q}"
+
+
+def _fetch_thumb(url: str) -> bytes:
+    """One GET with the short timeout. Raises on any failure or a non-JPEG body."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "AstroCoveragePlanner"})
+    with urllib.request.urlopen(req, timeout=THUMB_TIMEOUT_S) as resp:  # noqa: S310 (fixed https host)
+        data = resp.read(5_000_000)
+    if not data.startswith(b"\xff\xd8"):
+        raise ValueError("response is not a JPEG")
+    return data
+
+
+def attach_thumbs(doc: dict, out_dir: Path, fetch: bool = True) -> None:
+    """Add `thumb` to each project whose image exists in out_dir/thumbs,
+    fetching missing ones first (unless fetch is False, as in a dry run).
+    Never raises and never deletes a file.
+
+    The key hashes the pointing, so a missing file means new or changed. After
+    the first target that fails both attempts the rest are skipped, so an
+    outage costs one target's timeouts, not the whole list's.
+    """
+    folder = Path(out_dir) / THUMB_DIR
+    giving_up = not fetch
+    for entry in doc.get("projects", []):
+        name = f"{thumb_key(entry)}.jpg"
+        target = folder / name
+        if not target.exists() and not giving_up:
+            data = None
+            for _ in range(THUMB_ATTEMPTS):
+                try:
+                    data = _fetch_thumb(thumb_url(entry))
+                    break
+                except Exception as e:  # network, HTTP, timeout, bad body
+                    err = e
+            if data is None:
+                _log.warning("thumbnail fetch failed, publishing without thumbnails this run: %s: %s",
+                             type(err).__name__, err)
+                giving_up = True
+            else:
+                try:
+                    folder.mkdir(parents=True, exist_ok=True)
+                    tmp = target.with_suffix(".jpg.tmp")
+                    tmp.write_bytes(data)
+                    os.replace(tmp, target)
+                except OSError as e:
+                    _log.warning("could not save thumbnail: %s", e)
+        if target.exists():
+            entry["thumb"] = f"{THUMB_DIR}/{name}"
+
+
 # --- Write and push ---------------------------------------------------------
 
 def resolve_dest() -> str:
@@ -506,6 +592,51 @@ def parse_dest(dest: str) -> tuple[str | None, str, int, str]:
     return user, host, 22, remote_path
 
 
+_PUSHED_RECORD = ".pushed.json"
+
+
+def _push_thumbs(sftp, doc_path: Path, dest: str, remote_path: str) -> None:
+    """Upload the thumbnails the document refers to that are new or changed
+    since the last successful upload to this dest. A local record of content
+    hashes (thumbs/.pushed.json) says what the server already has. Runs before
+    shooting.json moves into place, so the page never points at a missing file."""
+    doc_path = Path(doc_path)
+    try:
+        refs = [p.get("thumb") for p in json.loads(doc_path.read_text(encoding="utf-8")).get("projects", [])]
+    except (OSError, ValueError, AttributeError):
+        return
+    names = sorted({Path(r).name for r in refs if isinstance(r, str) and r.startswith(THUMB_DIR + "/")})
+    if not names:
+        return
+    local_dir = doc_path.parent / THUMB_DIR
+    record_path = local_dir / _PUSHED_RECORD
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = {}
+    sent = record.setdefault(dest, {}) if isinstance(record, dict) else {}
+    remote_dir = remote_path.rsplit("/", 1)[0] + "/" + THUMB_DIR
+    made = False
+    for name in names:
+        f = local_dir / name
+        if not f.is_file():
+            continue
+        digest = hashlib.sha1(f.read_bytes()).hexdigest()
+        if sent.get(name) == digest:
+            continue
+        if not made:
+            try:
+                sftp.stat(remote_dir)
+            except IOError:
+                sftp.mkdir(remote_dir)
+            made = True
+        tmp_remote = f"{remote_dir}/{name}.tmp"
+        sftp.put(str(f), tmp_remote)
+        sftp.posix_rename(tmp_remote, f"{remote_dir}/{name}")
+        sent[name] = digest
+        record_path.write_text(json.dumps(record, indent=1), encoding="utf-8")
+
+
 def push_document(path: Path, dest: str, ssh_key: str | None = None) -> PushResult:
     """Upload one file to dest over SFTP. The push is always initiated from
     this machine. Uses paramiko rather than an ssh binary so it works inside
@@ -543,6 +674,7 @@ def push_document(path: Path, dest: str, ssh_key: str | None = None) -> PushResu
         client.save_host_keys(str(known))
         sftp = client.open_sftp()
         try:
+            _push_thumbs(sftp, path, dest, remote_path)
             tmp_remote = remote_path + ".tmp"
             sftp.put(str(path), tmp_remote)
             sftp.posix_rename(tmp_remote, remote_path)
