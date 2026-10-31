@@ -154,7 +154,9 @@ class TestLinuxEntry(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="acp-desktop-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.env = {"XDG_DATA_HOME": str(self.tmp / "share")}
-        self.root = str(self.tmp / "My Astro" / 'ACP "1"')
+        # A Linux path on every runner: on Windows a temp folder is a C:\ path,
+        # whose backslashes the Exec quoting would double.
+        self.root = '/home/astro/My Astro/ACP "1"'
 
     def entry(self) -> Path:
         return self.tmp / "share" / "applications" / "acp.desktop"
@@ -173,7 +175,8 @@ class TestLinuxEntry(unittest.TestCase):
         icon = next(l for l in lines if l.startswith("Icon="))
         self.assertEqual(icon, f"Icon={self.root}/app/static/acp.png")
         self.assertTrue(icon[5:].startswith("/"))
-        self.assertEqual(oct(self.entry().stat().st_mode & 0o777), "0o644")
+        if sys.platform != "win32":  # Windows has no group or other bits to set
+            self.assertEqual(oct(self.entry().stat().st_mode & 0o777), "0o644")
 
     def test_x1_special_characters_in_the_folder_are_escaped_in_exec(self):
         text = shortcuts.linux_entry_text("/home/a b/$HOME/`x`/100%/back\\slash")
