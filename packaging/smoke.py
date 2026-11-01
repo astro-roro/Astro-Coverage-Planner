@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -167,6 +168,47 @@ def interpreter_flags(python: Path) -> dict:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
+# Distribution name (normalised) to import name, where the two differ.
+IMPORT_NAMES = {"pillow": "PIL", "pyobjc-framework-quartz": "Quartz", "python-xlib": "Xlib"}
+
+
+def requirement_imports(files: list[Path], platform: str = "darwin") -> list[str]:
+    """The module to import for each line of the given requirements files. A line with
+    a ``sys_platform`` marker that excludes ``platform`` is skipped."""
+    modules = []
+    for path in files:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            spec, _, marker = line.split("#", 1)[0].partition(";")
+            spec = spec.strip()
+            if not spec:
+                continue
+            found = re.search(r"sys_platform\s*==\s*['\"]([a-z0-9]+)['\"]", marker)
+            if found and found.group(1) != platform:
+                continue
+            match = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", spec)
+            if not match:
+                continue
+            name = re.sub(r"[-_.]+", "-", match.group(0)).lower()
+            module = IMPORT_NAMES.get(name, name.replace("-", "_"))
+            if module not in modules:
+                modules.append(module)
+    return modules
+
+
+def failed_imports(python: Path, modules: list[str]) -> list[str]:
+    """Imports each module in a fresh interpreter, so one failure does not hide the
+    rest. A scan never loads mocpy, paramiko or cryptography, and a hardened-runtime
+    problem shows only when a compiled module loads (spec section 4.4)."""
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONDONTWRITEBYTECODE")}
+    failures = []
+    for module in modules:
+        out = subprocess.run([str(python), "-X", "utf8", "-B", "-c", f"import {module}"],
+                             capture_output=True, text=True, env=env, timeout=120)
+        if out.returncode != 0:
+            failures.append(f"{module}: {(out.stderr.strip().splitlines() or ['failed'])[-1]}")
+    return failures
+
+
 def start_launcher(python: Path, launcher: Path, home: Path, port: int, tray: bool):
     env = dict(os.environ)
     env.update({"ACP_HOME": str(home), "PORT": str(port), "HOST": "0.0.0.0",
@@ -216,6 +258,13 @@ def run(args) -> None:
         flags = interpreter_flags(python)
         check(flags == {"utf8": 1, "nobytecode": 1},
               f"the package's Python takes -X utf8 and -B from the command line ({flags})")
+
+        if args.import_requirements:
+            modules = requirement_imports([Path(f) for f in args.import_requirements],
+                                          sys.platform)
+            failures = failed_imports(python, modules)
+            check(not failures, f"every package in the requirements files imports ({failures})")
+            print(f"note: imported {len(modules)} packages")
 
         fixture = make_fixture(work / "archive")
         before = snapshot(package)
@@ -301,6 +350,9 @@ def main(argv=None) -> int:
     parser.add_argument("--tray", action="store_true", help="also start with the tray enabled (K8)")
     parser.add_argument("--windows-checks", action="store_true", help="run the Windows-only checks (W2)")
     parser.add_argument("--no-extension-check", action="store_true")
+    parser.add_argument("--import-requirements", nargs="+", metavar="FILE",
+                        help="import every package in these requirements files with the "
+                             "package's Python (M1, Mac)")
     args = parser.parse_args(argv)
     try:
         run(args)

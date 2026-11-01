@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime. Applied to the Python executable and the
+  launcher stub only; libraries ignore entitlements. See packaging/README.md,
+  "Entitlements", for why each key is here and how to remove one.
+
+  UNTESTED on a signed build: written from how other signed Python bundles behave,
+  because the spec starts with none and adds one only after a failing smoke test.
+  The first signed run decides which of these stay.
+-->
+<plist version="1.0">
+<dict>
+	<!-- Lets the bundled Python load extension modules (.so) that carry a different
+	     signature from the Python executable, such as wheels signed one by one. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- libffi (ctypes, and pyobjc for the menu bar icon) builds closures in writable,
+	     executable memory. Without this, importing ctypes callbacks can crash. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

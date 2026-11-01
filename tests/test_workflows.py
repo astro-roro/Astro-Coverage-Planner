@@ -16,7 +16,8 @@ except ImportError:                                    # PyYAML arrives with ast
     yaml = None
 
 REPO = Path(__file__).resolve().parent.parent
-WORKFLOWS = [REPO / ".github" / "workflows" / "release-windows.yml"]
+WORKFLOWS = [REPO / ".github" / "workflows" / "release-windows.yml",
+             REPO / ".github" / "workflows" / "release-macos.yml"]
 
 
 def load(path: Path) -> dict:

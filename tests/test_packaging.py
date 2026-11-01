@@ -29,7 +29,7 @@ import zip_tree  # noqa: E402
 from test_settings import EnvCase  # noqa: E402
 
 # Packages that the later phases pin when they first build for those platforms.
-PINNED_LATER = {"pyobjc-framework-quartz", "python-xlib"}
+PINNED_LATER = {"python-xlib"}
 
 
 def norm(name: str) -> str:

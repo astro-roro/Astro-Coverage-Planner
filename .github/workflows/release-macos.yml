@@ -1,0 +1,202 @@
+name: macOS download
+
+# Builds ACP-macos-arm64.zip (Apple Silicon only), signs and notarises it when the
+# Apple secrets exist, smoke-tests the unzipped result with the bundle's own Python,
+# and on a version tag attaches the SIGNED zip to the GitHub release. Spec:
+# docs/specs/windows-download-and-setup.md, sections 4.2 to 4.4.
+#
+# Release procedure: bump VERSION in app.py, commit, tag v<VERSION>, push the tag.
+# The tag must equal VERSION or the build fails. The Windows and Linux workflows
+# share the release, so whichever finishes first creates it and the others upload.
+#
+# Without the secrets the workflow still passes: it builds an UNSIGNED zip, uploads it
+# as a workflow artifact only, and attaches nothing to a release. The five secrets and
+# how to make them are in packaging/README.md, "Mac signing secrets".
+
+on:
+  push:
+    branches: [main, 'packaging/**']
+    tags: ['v*']
+  pull_request:
+    # A change to app.py or requirements.txt can break the bundle, so the filter
+    # names what is excluded and not what is included.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: release-macos-${{ github.ref }}
+  # Never cancel a tag run half way through a release.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # macos-14 is Apple Silicon.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the unsigned bundle
+        run: |
+          tag=''
+          if [ "$GITHUB_REF_TYPE" = 'tag' ]; then tag="$GITHUB_REF_NAME"; fi
+          ./packaging/macos/build.sh --out dist --tag "$tag"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acp-macos-unsigned
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  sign:
+    # Never on a pull request, and only on main or a version tag, which is where the
+    # GitHub Environment named "release" lets the secrets in. With no secrets the
+    # script says so, outputs signed=false and exits 0, so the run still passes.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: build
+    runs-on: macos-14
+    environment: release
+    outputs:
+      signed: ${{ steps.sign.outputs.signed }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: acp-macos-unsigned
+          path: dist-unsigned
+
+      - name: Sign with the Developer ID certificate, notarise and staple
+        id: sign
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          ./packaging/macos/sign.sh --zip dist-unsigned/ACP-macos-arm64-UNSIGNED.zip --out dist-signed
+
+      - uses: actions/upload-artifact@v4
+        if: steps.sign.outputs.signed == 'true'
+        with:
+          name: acp-macos-signed
+          path: dist-signed/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Say what happened to the signature
+        env:
+          SIGNED: ${{ steps.sign.outputs.signed }}
+        run: |
+          if [ "$SIGNED" = 'true' ]; then
+            echo '### macOS package signed and notarised' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::warning::The Apple signing secrets are not set, so this build is UNSIGNED. It stays a workflow artifact and is not attached to any release.'
+            printf '### macOS package NOT signed\n\nThe Apple signing secrets are missing. The unsigned zip is a workflow artifact only. It will not open on another Mac without right-click Open, and it is never attached to a release. The steps to add them are in packaging/README.md under Mac signing secrets\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  smoke:
+    # Runs on the signed zip when there is one, and on the unsigned zip otherwise
+    # (every pull request, and every fork).
+    needs: [build, sign]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.sign.result != 'failure' && needs.sign.result != 'cancelled' }}
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        if: needs.sign.outputs.signed == 'true'
+        with:
+          name: acp-macos-signed
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        if: needs.sign.outputs.signed != 'true'
+        with:
+          name: acp-macos-unsigned
+          path: dist
+
+      - name: Unzip to a different folder from the build
+        env:
+          SIGNED: ${{ needs.sign.outputs.signed }}
+        run: |
+          dest="$RUNNER_TEMP/smoke-extract"
+          mkdir -p "$dest"
+          if [ "$SIGNED" = 'true' ]; then zip=dist/ACP-macos-arm64.zip; else zip=dist/ACP-macos-arm64-UNSIGNED.zip; fi
+          # ditto keeps symlinks and permissions, which unzip would also do, but this is
+          # the tool the build used to make the zip.
+          ditto -x -k "$zip" "$dest"
+          echo "ACP_PACKAGE=$dest/ACP" >> "$GITHUB_ENV"
+          echo "ACP_VERSION=$(sed -n 's/^VERSION[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app.py | head -n 1)" >> "$GITHUB_ENV"
+
+      - name: Check the signature the way a downloaded app is checked (M2, signed builds only)
+        if: needs.sign.outputs.signed == 'true'
+        run: |
+          # A copy with the quarantine attribute, which a browser download carries, so
+          # spctl assesses it the way Gatekeeper will.
+          copy="$RUNNER_TEMP/quarantined"
+          mkdir -p "$copy"
+          ditto "$ACP_PACKAGE/ACP.app" "$copy/ACP.app"
+          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" "$copy/ACP.app"
+          codesign --verify --deep --strict --verbose=2 "$copy/ACP.app"
+          spctl --assess --type execute --verbose=4 "$copy/ACP.app"
+          xcrun stapler validate "$copy/ACP.app"
+
+      - name: Smoke test with the bundle's own Python (K1 to K4, K6, K8, M1)
+        run: |
+          app="$ACP_PACKAGE/ACP.app"
+          python="$app/Contents/Resources/python/bin/python3"
+          "$python" -X utf8 -B packaging/smoke.py \
+            --package "$app" \
+            --python "$python" \
+            --launcher "$app/Contents/Resources/app/launcher.py" \
+            --version "$ACP_VERSION" --tray \
+            --import-requirements requirements.txt requirements-packaged.txt
+
+      - name: The bundle is unchanged after a run (M1)
+        run: |
+          # A signed bundle must not change. This also holds for the ad hoc signature on
+          # an unsigned build, so it runs both ways.
+          codesign --verify --deep --strict --verbose=2 "$ACP_PACKAGE/ACP.app"
+
+      - name: Warn when a tag run has nothing to release
+        if: startsWith(github.ref, 'refs/tags/v') && needs.sign.outputs.signed != 'true'
+        run: |
+          echo '::warning::This tag has no signed Mac build, so no Mac file is attached to the release. Add the Apple secrets (packaging/README.md) and re-run this workflow.'
+
+  release:
+    # Only on a version tag, only after the smoke test passed, and only for a signed and
+    # notarised build. The one job that can write to the repository.
+    if: startsWith(github.ref, 'refs/tags/v') && needs.sign.outputs.signed == 'true'
+    needs: [sign, smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: acp-macos-signed
+          path: dist
+
+      - name: Create the release if it does not exist, then upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The Windows and Linux workflows do the same, so whichever finishes first
+          # creates the release and the others only upload.
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes || \
+              gh release view "$TAG" --repo "$REPO" >/dev/null
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            dist/ACP-macos-arm64.zip dist/SHA256SUMS-macos.txt
