@@ -226,6 +226,11 @@ class TestCheckTreeMac(unittest.TestCase):
         self.assertEqual(check_tree.APP_DIR["windows"], "app")
 
     def test_the_command_line_accepts_macos(self):
+        # main() reads VERSION from app.py, so the plist must carry whatever it is today.
+        plist_path = self.tree / "ACP.app/Contents/Info.plist"
+        plist = plistlib.loads(plist_path.read_bytes())
+        plist["CFBundleShortVersionString"] = check_tree.app_version()
+        plist_path.write_bytes(plistlib.dumps(plist))
         argv = ["--tree", str(self.tree), "--zip", str(self.zip), "--platform", "macos"]
         self.assertEqual(check_tree.main(argv), 0)
         (self.tree / "VERSION.txt").unlink()
