@@ -167,7 +167,18 @@ def interpreter_flags(python: Path) -> dict:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def start_launcher(python: Path, launcher: Path, home: Path, port: int, tray: bool):
+# The markers acp_settings.in_container() looks for. ACP keeps no settings file in a
+# container (a container is configured by environment variables), so inside one the
+# smoke test hands the image folder over as FITS_ROOTS instead of saving it.
+CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+
+def in_container() -> bool:
+    return any(os.path.exists(marker) for marker in CONTAINER_MARKERS)
+
+
+def start_launcher(python: Path, launcher: Path, home: Path, port: int, tray: bool,
+                   fits_roots: str | None = None):
     env = dict(os.environ)
     env.update({"ACP_HOME": str(home), "PORT": str(port), "HOST": "0.0.0.0",
                 "ACP_NO_BROWSER": "1", "ACP_NO_DIALOG": "1"})
@@ -178,6 +189,8 @@ def start_launcher(python: Path, launcher: Path, home: Path, port: int, tray: bo
     for name in ("FITS_ROOTS", "MANIFEST_PATH", "ACP_DATA_DIR", "ACP_API_TOKEN",
                  "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE"):
         env.pop(name, None)
+    if fits_roots:
+        env["FITS_ROOTS"] = fits_roots
     return subprocess.Popen([str(python), "-X", "utf8", "-B", str(launcher)], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -222,7 +235,12 @@ def run(args) -> None:
         port = free_port()
         # On Windows the launcher runs as pythonw.exe, as Start ACP.bat starts it.
         gui = python.with_name("pythonw.exe") if args.windows_checks else python
-        proc = start_launcher(gui, launcher, home, port, tray=False)
+        container = in_container()
+        if container:
+            print("note: running in a container, so the image folder is passed as FITS_ROOTS "
+                  "and the first-run and save checks are skipped (ACP keeps no settings file here)")
+        proc = start_launcher(gui, launcher, home, port, tray=False,
+                              fits_roots=str(fixture) if container else None)
         try:
             # K1
             started = wait_for(lambda: call(port, "GET", "/api/version")[0] == 200
@@ -233,11 +251,15 @@ def run(args) -> None:
                 check(version["version"] == args.version, f"the version is {args.version}")
 
             # K2
-            status, headers, _ = call(port, "GET", "/", accept="text/html")
-            check(status == 302 and headers.get("Location", "").endswith("/setup"),
-                  "GET / redirects to /setup on first run")
-            status, _, body = call(port, "PUT", "/api/settings", {"fits_roots": [str(fixture)]})
-            check(status == 200, f"saving the image folder works (HTTP {status})")
+            if container:
+                _, _, settings = call(port, "GET", "/api/settings")
+                check(settings["writable"] is False, "the settings are read-only in a container")
+            else:
+                status, headers, _ = call(port, "GET", "/", accept="text/html")
+                check(status == 302 and headers.get("Location", "").endswith("/setup"),
+                      "GET / redirects to /setup on first run")
+                status, _, body = call(port, "PUT", "/api/settings", {"fits_roots": [str(fixture)]})
+                check(status == 200, f"saving the image folder works (HTTP {status})")
             status, _, _ = call(port, "POST", "/api/scan/start", {})
             check(status == 202, "the scan starts")
 
@@ -257,8 +279,11 @@ def run(args) -> None:
             # K3
             after = snapshot(package)
             check(after == before, f"the package folder has no new files ({sorted(after - before)[:3]})")
-            check((home / "settings.json").exists() and (home / "data").is_dir(),
-                  "settings.json and data/ exist under ACP_HOME")
+            if container:
+                check((home / "data").is_dir(), "data/ exists under ACP_HOME")
+            else:
+                check((home / "settings.json").exists() and (home / "data").is_dir(),
+                      "settings.json and data/ exist under ACP_HOME")
 
             # W2
             if sys.platform == "win32" and args.windows_checks:
