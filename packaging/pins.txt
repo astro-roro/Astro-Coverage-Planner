@@ -20,3 +20,13 @@ PYTHON_WINDOWS_EMBED_SHA256=4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c80
 PYTHON_MACOS_VERSION=3.12.16
 PYTHON_MACOS_STANDALONE_TAG=20261026
 PYTHON_MACOS_ARM64_SHA256=fbf4afef53c2a6b72bb741bc06d5671a9dfaf87bd84e5aa73ac9b3d0d589f14e
+
+# Linux: python-build-standalone (gnu, install_only_stripped). Same 3.12 minor as
+# above, but the newest 3.12 build, since PBS ships every patch release as a binary.
+# The SHA-256 values come from the SHA256SUMS file attached to the PBS release
+#   https://github.com/astral-sh/python-build-standalone/releases/tag/20261026
+# and the x86_64 one was also recomputed from a download on 2026-11-01.
+PBS_RELEASE=20261026
+PBS_PYTHON_VERSION=3.12.16
+PBS_LINUX_X86_64_SHA256=ce4f6d0a6cfdb3bed6e44c2f9affd85943c76a42e25ad3a259002f31d6fb8a20
+PBS_LINUX_AARCH64_SHA256=bb4b6392670c5d3f93876996fcaa19858a4a413a0c7720144c18b0d6f1f0db2d

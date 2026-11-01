@@ -36,10 +36,17 @@ REQUIRED = {
               "ACP.app/Contents/Resources/app/static/acp-menubar.png",
               "ACP.app/Contents/Resources/app/static/offline-sky/properties",
               "ACP.app/Contents/Resources/app/static/offline-sky/LICENSE.txt"),
+    "linux": ("start-acp", "README.txt", "VERSION.txt", "LICENSE", NOTICES, "CREDITS.md",
+              "python/bin/python3", "python/lib/python3.12/LICENSE.txt", "app/launcher.py", "app/app.py",
+              "app/bundled_extensions/nina_ts_sync", "app/static/offline-sky/properties",
+              "app/static/offline-sky/LICENSE.txt"),
 }
 
 # Where the app files sit, relative to the folder that holds the package.
-APP_DIR = {"windows": "app", "macos": "ACP.app/Contents/Resources/app"}
+APP_DIR = {"windows": "app", "macos": "ACP.app/Contents/Resources/app", "linux": "app"}
+
+# Files a Linux user runs directly, so they must keep their executable bit.
+LINUX_EXECUTABLE = ("start-acp", "python/bin/python3")
 
 # What the notices file must say, whatever else it holds (lower case, for a case-blind
 # match). A tuple means any one of them will do. The LGPL entry looks for wording that
@@ -90,6 +97,14 @@ def check(tree: Path, zip_path: Path | None, platform: str, tag: str | None = No
     for required in REQUIRED[platform]:
         if not (tree / required).exists():
             problems.append(f"missing from the package: {required}")
+    if platform == "linux":
+        for name in LINUX_EXECUTABLE:
+            path = tree / name
+            if path.exists() and not os.access(path, os.X_OK):
+                problems.append(f"not executable: {name}")
+        script = tree / "start-acp"
+        if script.is_file() and not script.read_bytes().startswith(b"#!/bin/sh\n"):
+            problems.append("start-acp must begin with #!/bin/sh and use LF line endings")
     notices = tree / NOTICES
     if notices.is_file():
         text = notices.read_text(encoding="utf-8", errors="replace").lower()
