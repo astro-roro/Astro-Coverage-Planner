@@ -29,7 +29,7 @@ import zip_tree  # noqa: E402
 from test_settings import EnvCase  # noqa: E402
 
 # Packages that the later phases pin when they first build for those platforms.
-PINNED_LATER = {"pyobjc-framework-quartz", "python-xlib"}
+PINNED_LATER = {"pyobjc-framework-quartz"}
 
 
 def norm(name: str) -> str:
@@ -94,6 +94,16 @@ class TestPins(unittest.TestCase):
                     if re.match(r"^[A-Z0-9_]+=", line))
         self.assertRegex(pins["PYTHON_VERSION"], r"^3\.12\.\d+$")
         self.assertRegex(pins["PYTHON_WINDOWS_EMBED_SHA256"], r"^(TODO|[0-9a-f]{64})$")
+
+    def test_the_linux_pins_are_a_3_12_build_with_a_hash_for_each_architecture(self):
+        pins = dict(line.split("=", 1) for line in
+                    (REPO / "packaging" / "pins.txt").read_text().splitlines()
+                    if re.match(r"^[A-Z0-9_]+=", line))
+        self.assertRegex(pins["PBS_RELEASE"], r"^\d{8}$")
+        self.assertRegex(pins["PBS_PYTHON_VERSION"], r"^3\.12\.\d+$")
+        for key in ("PBS_LINUX_X86_64_SHA256", "PBS_LINUX_AARCH64_SHA256"):
+            self.assertRegex(pins[key], r"^[0-9a-f]{64}$", key)
+        self.assertNotEqual(pins["PBS_LINUX_X86_64_SHA256"], pins["PBS_LINUX_AARCH64_SHA256"])
 
     def test_the_audit_and_dependabot_cover_the_new_files(self):
         tests_yml = (REPO / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
