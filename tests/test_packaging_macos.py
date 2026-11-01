@@ -458,11 +458,11 @@ class TestMacWorkflow(unittest.TestCase):
         self.assertEqual(set(self.jobs["smoke"]["needs"]), {"build", "sign"})
         self.assertEqual(set(self.jobs["release"]["needs"]), {"sign", "smoke"})
 
-    def test_m3_signing_never_runs_on_a_pull_request(self):
+    def test_m3_signing_runs_only_on_a_version_tag(self):
         condition = " ".join(str(self.jobs["sign"]["if"]).split())
-        self.assertIn("github.event_name != 'pull_request'", condition)
-        self.assertIn("refs/heads/main", condition)
-        self.assertIn("refs/tags/v", condition)
+        self.assertEqual(condition, "startsWith(github.ref, 'refs/tags/v')")
+        self.assertNotIn("main", condition)
+        self.assertNotIn("pull_request", condition)
         for name, job in self.jobs.items():
             if name == "sign":
                 continue
@@ -519,9 +519,23 @@ class TestMacWorkflow(unittest.TestCase):
                          if s.get("with", {}).get("name") == "acp-macos-signed"][0]
         self.assertEqual(signed_upload["if"], "steps.sign.outputs.signed == 'true'")
 
-    def test_without_the_secrets_the_run_warns_but_does_not_fail(self):
-        self.assertIn("::warning::", self.text)
+    def test_a_tag_build_without_the_secrets_fails_loudly(self):
+        step = [s for s in self.jobs["sign"]["steps"] if "Fail the release" in str(s.get("name", ""))][0]
+        self.assertEqual(step["if"], "steps.sign.outputs.signed != 'true'")
+        self.assertIn("::error::", step["run"])
+        self.assertIn("exit 1", step["run"])
+        self.assertNotIn("::warning::", self.text)
+
+    def test_a_branch_build_is_never_signed_and_still_smoke_tests_the_unsigned_zip(self):
         self.assertIn("UNSIGNED", self.text)
+        smoke_if = " ".join(str(self.jobs["smoke"]["if"]).split())
+        self.assertIn("needs.sign.result != 'failure'", smoke_if)
+        self.assertNotIn("needs.sign.result == 'success'", smoke_if)
+
+    def test_the_release_uploads_the_signed_zip_and_never_the_unsigned_one(self):
+        downloads = [s["with"]["name"] for s in self.jobs["release"]["steps"]
+                     if str(s.get("uses", "")).startswith("actions/download-artifact")]
+        self.assertEqual(downloads, ["acp-macos-signed"])
 
     def test_the_smoke_job_unzips_elsewhere_and_uses_the_bundles_own_python(self):
         text = self.steps_text("smoke")

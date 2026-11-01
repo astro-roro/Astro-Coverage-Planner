@@ -9,8 +9,10 @@ name: macOS download
 # The tag must equal VERSION or the build fails. The Windows and Linux workflows
 # share the release, so whichever finishes first creates it and the others upload.
 #
-# Without the secrets the workflow still passes: it builds an UNSIGNED zip, uploads it
-# as a workflow artifact only, and attaches nothing to a release. The five secrets and
+# Signing and notarising run only on a v* tag, in the GitHub Environment named "release".
+# Branch pushes, pull requests and manual runs on a branch build and smoke-test the
+# UNSIGNED zip and upload it as a workflow artifact only. A tag run with the secrets
+# missing FAILS, so an unsigned build can never reach a release. The five secrets and
 # how to make them are in packaging/README.md, "Mac signing secrets".
 
 on:
@@ -54,12 +56,10 @@ jobs:
           retention-days: 14
 
   sign:
-    # Never on a pull request, and only on main or a version tag, which is where the
-    # GitHub Environment named "release" lets the secrets in. With no secrets the
-    # script says so, outputs signed=false and exits 0, so the run still passes.
-    if: >-
-      github.event_name != 'pull_request' &&
-      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    # Only on a version tag, which is the only ref the "release" environment lets in.
+    # sign.sh exits 0 with signed=false when a secret is missing, and the step after it
+    # turns that into a failure, so a tag build is signed or it does not release.
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: macos-14
     environment: release
@@ -92,16 +92,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Say what happened to the signature
-        env:
-          SIGNED: ${{ steps.sign.outputs.signed }}
+      - name: Fail the release if the build was not signed
+        if: steps.sign.outputs.signed != 'true'
         run: |
-          if [ "$SIGNED" = 'true' ]; then
-            echo '### macOS package signed and notarised' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '::warning::The Apple signing secrets are not set, so this build is UNSIGNED. It stays a workflow artifact and is not attached to any release.'
-            printf '### macOS package NOT signed\n\nThe Apple signing secrets are missing. The unsigned zip is a workflow artifact only. It will not open on another Mac without right-click Open, and it is never attached to a release. The steps to add them are in packaging/README.md under Mac signing secrets\n' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo '::error::This tag build was not signed and notarised, because an Apple signing secret is missing from the release environment. Nothing is released. Add all five secrets (packaging/README.md, Mac signing secrets) and re-run this workflow.'
+          printf '### macOS package NOT signed\n\nA tag build must be signed. One of the five Apple secrets is missing from the release environment, so nothing was released.\n' >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Say that the package is signed
+        if: steps.sign.outputs.signed == 'true'
+        run: |
+          echo '### macOS package signed and notarised' >> "$GITHUB_STEP_SUMMARY"
 
   smoke:
     # Runs on the signed zip when there is one, and on the unsigned zip otherwise
@@ -166,11 +167,6 @@ jobs:
           # A signed bundle must not change. This also holds for the ad hoc signature on
           # an unsigned build, so it runs both ways.
           codesign --verify --deep --strict --verbose=2 "$ACP_PACKAGE/ACP.app"
-
-      - name: Warn when a tag run has nothing to release
-        if: startsWith(github.ref, 'refs/tags/v') && needs.sign.outputs.signed != 'true'
-        run: |
-          echo '::warning::This tag has no signed Mac build, so no Mac file is attached to the release. Add the Apple secrets (packaging/README.md) and re-run this workflow.'
 
   release:
     # Only on a version tag, only after the smoke test passed, and only for a signed and

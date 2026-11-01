@@ -1,6 +1,6 @@
 # Packaging
 
-Everything that builds the downloads. The design is in [the spec](../docs/specs/windows-download-and-setup.md). Phase 2 is the Windows zip and phase 3 is the Mac app. Linux (phase 4) is not here yet.
+Everything that builds the downloads. The design is in [the spec](../docs/specs/windows-download-and-setup.md). Phase 2 is the Windows zip, phase 3 the Mac app and phase 4 the Linux tarballs.
 
 | Path | What it is |
 |---|---|
@@ -14,6 +14,8 @@ Everything that builds the downloads. The design is in [the spec](../docs/specs/
 | `macos/stub.c`, `macos/Info.plist.in`, `macos/entitlements.plist` | The launcher stub, the bundle's plist and the hardened-runtime entitlements |
 | `macos/macho.py` | Finds every Mach-O file by file magic (for signing) and the highest macOS version the bundle needs |
 | `macos/README.txt` | The `README.txt` at the top of the Mac zip |
+| `linux/build.sh` | Builds `ACP-linux-<arch>.tar.gz` and `SHA256SUMS-linux-<arch>.txt` on `ubuntu-22.04` (x86_64) or `ubuntu-22.04-arm` (aarch64). Uses the python-build-standalone Python pinned in `pins.txt` for pip, bytecode and checks |
+| `linux/start-acp`, `linux/README.txt` | The files at the top of the tarball |
 | `smoke.py` | The smoke test, run with the zip's own Python (stdlib only) |
 | `check_tree.py` | The build checks: tag equals `VERSION`, size, longest path, required files |
 | `zip_tree.py` | Zips a folder quickly with the folder as the top entry. Windows only: the Mac zip uses `ditto`, which keeps symlinks and permissions |
@@ -24,7 +26,7 @@ Everything that builds the downloads. The design is in [the spec](../docs/specs/
 1. Bump `VERSION` in `app.py` and commit.
 2. Tag `v<VERSION>` (the first release is `v1.0.0`) and push the tag.
 3. `release-windows.yml` builds, smoke-tests, then creates the GitHub release if it does not exist and uploads the zip and `SHA256SUMS-windows.txt`. The tag must equal `VERSION` or the build fails.
-4. `release-macos.yml` does the same for `ACP-macos-arm64.zip` and `SHA256SUMS-macos.txt`, but only when the Apple secrets are set (see below). Whichever workflow finishes first creates the release and the other only uploads. Without the secrets the tag run passes with a warning, and no Mac file is attached.
+4. `release-macos.yml` does the same for `ACP-macos-arm64.zip` and `SHA256SUMS-macos.txt`, signed and notarised in the `release` environment (see below). Whichever workflow finishes first creates the release and the other only uploads. If an Apple secret is missing the tag run fails, and no Mac file is attached.
 
 To try a build without releasing, push a branch named `packaging/<anything>` or run the workflow from the Actions tab. Both build and smoke-test, and neither publishes.
 
@@ -35,7 +37,7 @@ To try a build without releasing, push a branch named `packaging/<anything>` or 
 
 ## Mac signing secrets
 
-The Mac workflow signs and notarises only when five secrets exist. Without them it still builds and smoke-tests an unsigned zip, uploads it as a workflow artifact called `acp-macos-unsigned`, and never attaches it to a release. An unsigned app will not open on another Mac without right-click, Open.
+The Mac workflow signs and notarises on a `v*` tag, in the `release` environment, and needs five secrets for that. A tag run with a secret missing fails, so an unsigned build is never released. Every other run (branch pushes, pull requests, manual runs on a branch) builds and smoke-tests an unsigned zip, uploads it as a workflow artifact called `acp-macos-unsigned`, and never attaches it to a release. An unsigned app will not open on another Mac without right-click, Open.
 
 You need the paid Apple Developer Program membership. These are the steps, once.
 
@@ -44,7 +46,7 @@ You need the paid Apple Developer Program membership. These are the steps, once.
 3. Turn the file into text. In Terminal, run `base64 -i DeveloperID.p12 | pbcopy`. Your clipboard now holds the first secret. Delete the `.p12` file afterwards.
 4. Find your team id. At developer.apple.com, open Membership details. The Team ID is ten letters and digits.
 5. Make an app-specific password. At appleid.apple.com, open Sign-In and Security, then App-Specific Passwords, and make one called "ACP notarisation". It looks like `abcd-efgh-ijkl-mnop`. Your normal Apple password does not work here.
-6. Make the GitHub environment. In the repository, open Settings, Environments, New environment, and name it `release`. Under Deployment branches and tags choose Selected branches and tags, and add the branch `main` and the tag pattern `v*`. That is what stops a pull request from reading the secrets.
+6. Make the GitHub environment. In the repository, open Settings, Environments, New environment, and name it `release`. Under Deployment branches and tags choose Selected branches and tags, and add only the tag pattern `v*`. That is what stops a pull request or a branch from reading the secrets.
 7. Add the five secrets to that environment (Environment secrets, not Repository secrets):
 
 | Secret | Holds |
@@ -55,7 +57,7 @@ You need the paid Apple Developer Program membership. These are the steps, once.
 | `APPLE_ID` | The email address of your Apple ID |
 | `APPLE_APP_PASSWORD` | The app-specific password from step 5 |
 
-Then run the Mac workflow from the Actions tab on `main`. The sign job takes a few minutes, and notarisation can take longer while it waits for Apple. A good run ends with "Notarisation status: Accepted", and the smoke job then checks the app the way Gatekeeper does. Never paste any of these values into a chat, an issue or a commit.
+Then push a `v*` tag (or re-run the workflow for one). The sign job takes a few minutes, and notarisation can take longer while it waits for Apple. A good run ends with "Notarisation status: Accepted", and the smoke job then checks the app the way Gatekeeper does. Never paste any of these values into a chat, an issue or a commit.
 
 The certificate name appears in the macOS dialog that says the app was downloaded from the internet, so users see the name on your certificate.
 

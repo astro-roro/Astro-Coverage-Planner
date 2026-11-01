@@ -662,3 +662,18 @@ What the Windows build changed from this spec, and what it could not check.
 | Section 3.2: `python312._pth` | Written for the Python minor in `packaging/pins.txt` (3.12.10, the last 3.12 with a Windows embeddable package) | |
 
 Not checked, because the work was done on a Mac with no network route to python.org or PyPI: the real zip size (section 3.8 still shows estimates), the `._pth` behaviour, `msvcrt` locking, PowerShell shortcut creation, wheel availability for every pin on Python 3.12 Windows, and whether `pystray` shows an icon on a runner. The Windows workflow checks each of these.
+
+## Phase 4 build notes
+
+What the Linux build changed from this spec, and what it could not check.
+
+| Spec text | What phase 4 does | Why |
+|---|---|---|
+| Section 5.3: `pip install` into the bundled Python's site-packages | Runs pip with the bundled Python itself (`--target` its `purelib`), and runs `compileall` and the checks with it too | The wheels and the `.pyc` files then match the interpreter that ships, so the runner's Python does not matter. |
+| Python 3.12.10 from `pins.txt` | A separate pin: python-build-standalone release 20261026, Python 3.12.16, `install_only_stripped`, with a SHA-256 per architecture | The latest python-build-standalone release carries no 3.12.10. The minor version (3.12) is the same as Windows. |
+| Section 5.3: `compileall --invalidation-mode unchecked-hash` | `checked-hash` | Same reason as Windows. |
+| `python-xlib` "pinned when phase 4 first builds" | `python-xlib==0.33` added to `constraints.txt` | The Linux tray probe needs it. It is a pure-Python wheel and depends only on `six`, which is already pinned. |
+| Section 5.2: smoke runs in `ubuntu:20.04` | The container runs the extracted folder mounted read-only, with `ACP_NO_TRAY=1` as `smoke.py` sets it without `--tray` | Proves the glibc floor and that nothing writes into the folder. The runner itself also runs the tray check (K8) and starts through `start-acp`. |
+| Section 5.1: `exec .../python3 -X utf8 -B launcher.py` | Same, and passes `"$@"` on | Lets a user add launcher options. |
+
+Not checked, because the work was done on a Mac with no Docker access: a real build of either tarball (so the size in section 3.8 is still an estimate for Linux), wheel availability for every pin on Linux x86_64 and aarch64 (`mocpy` and `paramiko`'s cryptography are the assumption in section 5.3), whether `pystray` and the `.desktop` entry work on a real desktop, and K7 inside `ubuntu:20.04`. The Linux workflow checks the first three on its runners.
