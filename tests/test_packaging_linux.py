@@ -253,6 +253,43 @@ class TestLinuxCheckTree(unittest.TestCase):
         self.assertNotIn("start-acp", check_tree.REQUIRED["windows"])
 
 
+class TestSmokeInAContainer(unittest.TestCase):
+    """The ubuntu:20.04 smoke run is inside Docker, where ACP refuses to save settings
+    (HTTP 409 not_writable), so the smoke test must pass the image folder another way."""
+
+    def test_the_smoke_markers_match_the_ones_the_app_uses(self):
+        import acp_settings
+        import smoke
+        self.assertEqual(tuple(smoke.CONTAINER_MARKERS), tuple(acp_settings.CONTAINER_MARKERS))
+
+    def test_it_detects_a_container_by_the_marker_files(self):
+        import smoke
+        from unittest import mock
+        with mock.patch("smoke.os.path.exists", side_effect=lambda p: p == "/.dockerenv"):
+            self.assertTrue(smoke.in_container())
+        with mock.patch("smoke.os.path.exists", return_value=False):
+            self.assertFalse(smoke.in_container())
+
+    def test_the_launcher_gets_fits_roots_only_when_asked(self):
+        import smoke
+        from unittest import mock
+        with mock.patch("smoke.subprocess.Popen") as popen, \
+                mock.patch.dict(os.environ, {"FITS_ROOTS": "/stale"}):
+            smoke.start_launcher(Path("py"), Path("launcher.py"), Path("h"), 1234, tray=False)
+            self.assertNotIn("FITS_ROOTS", popen.call_args.kwargs["env"])
+            smoke.start_launcher(Path("py"), Path("launcher.py"), Path("h"), 1234, tray=False,
+                                 fits_roots="/images")
+            self.assertEqual(popen.call_args.kwargs["env"]["FITS_ROOTS"], "/images")
+
+    def test_the_app_really_refuses_the_save_in_a_container(self):
+        import acp_settings
+        from unittest import mock
+        with mock.patch("acp_settings.in_container", return_value=True):
+            self.assertFalse(acp_settings.is_writable(Path(tempfile.gettempdir()) / "settings.json"))
+        with mock.patch("acp_settings.in_container", return_value=False):
+            self.assertTrue(acp_settings.is_writable(Path(tempfile.gettempdir()) / "settings.json"))
+
+
 class TestLinuxWorkflow(unittest.TestCase):
 
     def setUp(self):
