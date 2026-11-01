@@ -1,6 +1,6 @@
 # Packaging
 
-Everything that builds the downloads. The design is in [the spec](../docs/specs/windows-download-and-setup.md). Phase 2 covers the Windows zip only.
+Everything that builds the downloads. The design is in [the spec](../docs/specs/windows-download-and-setup.md). Phase 2 covers the Windows zip, phase 4 the Linux tarballs.
 
 | Path | What it is |
 |---|---|
@@ -9,6 +9,8 @@ Everything that builds the downloads. The design is in [the spec](../docs/specs/
 | `windows/build.ps1` | Builds `ACP-windows-x64.zip` and `SHA256SUMS-windows.txt` on `windows-latest` |
 | `windows/Start ACP.bat`, `windows/README.txt` | The files at the top of the zip |
 | `windows/smoke-start.ps1`, `windows/make_test_links.py` | The CI check that ACP starts through the `.bat` and a shortcut with no console window |
+| `linux/build.sh` | Builds `ACP-linux-<arch>.tar.gz` and `SHA256SUMS-linux-<arch>.txt` on `ubuntu-22.04` (x86_64) or `ubuntu-22.04-arm` (aarch64). Uses the python-build-standalone Python pinned in `pins.txt` for pip, bytecode and checks |
+| `linux/start-acp`, `linux/README.txt` | The files at the top of the tarball |
 | `smoke.py` | The smoke test, run with the zip's own Python (stdlib only) |
 | `check_tree.py` | The build checks: tag equals `VERSION`, size, longest path, required files |
 | `zip_tree.py` | Zips a folder quickly with the folder as the top entry |
