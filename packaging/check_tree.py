@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import plistlib
 import re
 import sys
 from pathlib import Path
@@ -26,7 +27,19 @@ REQUIRED = {
                 "python/pythonw.exe", "python/python.exe", "app/launcher.py", "app/app.py",
                 "app/bundled_extensions/nina_ts_sync", "app/static/offline-sky/properties",
                 "app/static/offline-sky/LICENSE.txt"),
+    "macos": ("README.txt", "VERSION.txt", "LICENSE", NOTICES, "CREDITS.md",
+              "ACP.app/Contents/Info.plist", "ACP.app/Contents/MacOS/ACP",
+              "ACP.app/Contents/Resources/ACP.icns",
+              "ACP.app/Contents/Resources/python/bin/python3",
+              "ACP.app/Contents/Resources/app/launcher.py", "ACP.app/Contents/Resources/app/app.py",
+              "ACP.app/Contents/Resources/app/bundled_extensions/nina_ts_sync",
+              "ACP.app/Contents/Resources/app/static/acp-menubar.png",
+              "ACP.app/Contents/Resources/app/static/offline-sky/properties",
+              "ACP.app/Contents/Resources/app/static/offline-sky/LICENSE.txt"),
 }
+
+# Where the app files sit, relative to the folder that holds the package.
+APP_DIR = {"windows": "app", "macos": "ACP.app/Contents/Resources/app"}
 
 # What the notices file must say, whatever else it holds (lower case, for a case-blind
 # match). A tuple means any one of them will do. The LGPL entry looks for wording that
@@ -84,9 +97,49 @@ def check(tree: Path, zip_path: Path | None, platform: str, tag: str | None = No
             options = (marker,) if isinstance(marker, str) else marker
             if not any(option in text for option in options):
                 problems.append(f"{NOTICES} does not contain: {' or '.join(options)}")
+    app_dir = APP_DIR[platform]
     for folder in EXCLUDED_FROM_APP:
-        if (tree / "app" / folder.rstrip("/")).exists():
-            problems.append(f"app/{folder} should not be in the package")
+        if (tree / app_dir / folder.rstrip("/")).exists():
+            problems.append(f"{app_dir}/{folder} should not be in the package")
+    if platform == "macos":
+        problems.extend(check_macos_bundle(tree, version))
+    return problems
+
+
+def check_macos_bundle(tree: Path, version: str) -> list[str]:
+    """The Mac-only rules: the plist names the stub and carries the keys the spec lists,
+    and the stub is a Mach-O file (a script cannot take the hardened runtime)."""
+    problems = []
+    plist_path = tree / "ACP.app" / "Contents" / "Info.plist"
+    if plist_path.is_file():
+        try:
+            with open(plist_path, "rb") as handle:
+                plist = plistlib.load(handle)
+        except Exception as exc:                       # a malformed plist, whatever the parser says
+            problems.append(f"Info.plist cannot be read: {exc}")
+            plist = {}
+        if plist:
+            if plist.get("CFBundleExecutable") != "ACP":
+                problems.append("Info.plist: CFBundleExecutable is not ACP")
+            if plist.get("CFBundleShortVersionString") != version:
+                problems.append(f"Info.plist: CFBundleShortVersionString is "
+                                f"{plist.get('CFBundleShortVersionString')!r}, VERSION is {version}")
+            if plist.get("LSUIElement") is not True:
+                problems.append("Info.plist: LSUIElement must be true (no Dock icon)")
+            if plist.get("CFBundleIconFile") != "ACP":
+                problems.append("Info.plist: CFBundleIconFile is not ACP")
+            for key in ("CFBundleIdentifier", "LSMinimumSystemVersion",
+                        "NSDocumentsFolderUsageDescription", "NSDesktopFolderUsageDescription",
+                        "NSRemovableVolumesUsageDescription", "NSNetworkVolumesUsageDescription"):
+                if not plist.get(key):
+                    problems.append(f"Info.plist: {key} is missing")
+    stub = tree / "ACP.app" / "Contents" / "MacOS" / "ACP"
+    if stub.is_file():
+        with open(stub, "rb") as handle:
+            head = handle.read(4)
+        if head not in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+            problems.append("ACP.app/Contents/MacOS/ACP is not a Mach-O file, so it cannot take "
+                            "the hardened runtime")
     return problems
 
 

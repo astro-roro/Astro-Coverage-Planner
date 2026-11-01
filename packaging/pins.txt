@@ -11,3 +11,12 @@
 # build.ps1 refuses to build while this is TODO, and prints the hash it computed.
 PYTHON_VERSION=3.12.10
 PYTHON_WINDOWS_EMBED_SHA256=4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3
+
+# macOS (phase 3): python-build-standalone, Apple Silicon, "install_only" flavour.
+# The build runs the bundled Python itself, so the build and the app always share a
+# version. The SHA-256 is the one GitHub lists for the asset, and was checked against
+# a download on 1 November 2026:
+#   https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.12.16%2B20261026-aarch64-apple-darwin-install_only.tar.gz
+PYTHON_MACOS_VERSION=3.12.16
+PYTHON_MACOS_STANDALONE_TAG=20261026
+PYTHON_MACOS_ARM64_SHA256=fbf4afef53c2a6b72bb741bc06d5671a9dfaf87bd84e5aa73ac9b3d0d589f14e
