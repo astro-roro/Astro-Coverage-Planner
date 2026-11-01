@@ -4,8 +4,11 @@ import {
   ALL_SURVEYS,
   CUSTOM_SURVEY_VALUE,
   DEFAULT_SURVEY_ID,
+  OFFLINE_SURVEY,
+  OFFLINE_SURVEY_VALUE,
   SURVEY_GROUPS,
   findSurvey,
+  skyControlFor,
   surveyCaption,
   surveySelectValue,
 } from "../../static/surveys.mjs";
@@ -102,5 +105,35 @@ describe("surveyRenderOptions", () => {
   it("returns a fresh object each time", async () => {
     const { surveyRenderOptions } = await import("../../static/surveys.mjs");
     assert.notEqual(surveyRenderOptions("CDS/P/Finkbeiner"), surveyRenderOptions("CDS/P/Finkbeiner"));
+  });
+});
+
+describe("the Sky control while the bundled Gaia sky shows", () => {
+  const GAIA_URL = "http://localhost:5000/static/offline-sky";
+
+  it("names the Gaia sky instead of reading Custom", () => {
+    const s = skyControlFor(GAIA_URL, { offline: true });
+    assert.equal(s.value, OFFLINE_SURVEY_VALUE);
+    assert.notEqual(s.value, CUSTOM_SURVEY_VALUE);
+    assert.equal(OFFLINE_SURVEY.name, "Built-in Gaia sky (offline)");
+    assert.equal(s.text, "A low-resolution Gaia map bundled with ACP, shown while the survey servers are down. ESA/Gaia/DPAC, CC BY-SA 3.0 IGO.");
+    assert.doesNotMatch(s.text, /Coverage unknown|Aladin's own layers control/);
+  });
+
+  it("carries the credit in the line the map shows", () => {
+    assert.match(skyControlFor("x", { offline: true }).text, /ESA\/Gaia\/DPAC, CC BY-SA 3\.0 IGO/);
+  });
+
+  it("is not one of the surveys a user can pick or save", () => {
+    assert.equal(findSurvey(GAIA_URL), null);
+    assert.ok(!ALL_SURVEYS.some(s => s.id === OFFLINE_SURVEY_VALUE));
+    assert.ok(!SURVEY_GROUPS.some(g => g.surveys.some(s => s.name === OFFLINE_SURVEY.name)));
+  });
+
+  it("leaves a normal layer alone when the Gaia sky is not showing", () => {
+    const s = skyControlFor("CDS/P/DSS2/color");
+    assert.equal(s.value, "CDS/P/DSS2/color");
+    assert.equal(s.text, surveyCaption("CDS/P/DSS2/color").text);
+    assert.equal(skyControlFor(GAIA_URL).value, CUSTOM_SURVEY_VALUE);
   });
 });
