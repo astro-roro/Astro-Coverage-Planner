@@ -196,7 +196,8 @@ class TestLinuxCheckTree(unittest.TestCase):
                 if rel == check_tree.NOTICES:
                     path.write_text(GOOD_NOTICES)
                 else:
-                    path.write_text("#!/bin/sh\n" if rel == "start-acp" else "x")
+                    # newline="\n" keeps the sample LF on Windows, where text mode writes CRLF.
+                    path.write_text("#!/bin/sh\n" if rel == "start-acp" else "x", newline="\n")
         for rel in check_tree.LINUX_EXECUTABLE:
             (self.tree / rel).chmod(0o755)
         self.archive = self.tmp / "ACP-linux-x86_64.tar.gz"
