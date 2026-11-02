@@ -70,6 +70,8 @@ jobs:
           - arch: aarch64
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
+    # A normal run takes a few minutes. Anything past this is a hang, not slowness.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -94,21 +96,55 @@ jobs:
             --package "$ACP_PACKAGE" --version "$ACP_VERSION" --tray
 
       - name: Start through start-acp
+        timeout-minutes: 5
         run: |
           # The script is what users run, so go through it once: it must find its own
           # Python from any working directory and pass the flags.
+          #
+          # /api/quit refuses a POST without Content-Type: application/json (415), as
+          # every restricted route does. An earlier version of this step sent none, hid
+          # the refusal behind "|| true", and then waited on a process that was never
+          # asked to stop: the job hung for 5.5 hours. So the quit's status is checked,
+          # and the wait is bounded and ends in a kill.
           cd "$RUNNER_TEMP"
           export ACP_HOME="$RUNNER_TEMP/start-acp-home"
-          "$ACP_PACKAGE/start-acp" &
+          export ACP_NO_DIALOG=1
+          out="$RUNNER_TEMP/start-acp.out"
+          "$ACP_PACKAGE/start-acp" >"$out" 2>&1 &
           pid=$!
           ok=
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:5555/api/version >/dev/null 2>&1; then ok=1; break; fi
+            kill -0 "$pid" 2>/dev/null || break
             sleep 1
           done
-          curl -fsS -X POST http://127.0.0.1:5555/api/quit >/dev/null 2>&1 || true
-          wait "$pid" || true
+          echo "poll: answered=${ok:-no} after ${i} s"
+          # curl prints 000 itself when nothing answers.
+          quit=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -d '{}' \
+            http://127.0.0.1:5555/api/quit) || true
+          echo "POST /api/quit: HTTP $quit"
+          exited=
+          for i in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || { exited=1; break; }
+            sleep 1
+          done
+          if [ -z "$exited" ]; then
+            echo "start-acp (pid $pid) still running 30 s after quit; killing it"
+            kill "$pid" 2>/dev/null || true
+            sleep 2
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+          # The step's shell runs with -e, so catch wait's status rather than let it end the step.
+          status=0
+          wait "$pid" 2>/dev/null || status=$?
+          echo "start-acp exit status: $status"
+          echo '--- start-acp output ---'; cat "$out"
+          echo '--- acp.log ---'; cat "$ACP_HOME/logs/acp.log" 2>/dev/null || echo '(no log)'
           [ -n "$ok" ] || { echo 'start-acp did not answer on port 5555'; exit 1; }
+          [ "$quit" = 200 ] || { echo "POST /api/quit answered $quit, not 200"; exit 1; }
+          [ -n "$exited" ] || { echo 'start-acp did not exit after /api/quit'; exit 1; }
+          [ "$status" = 0 ] || { echo "start-acp exited with $status"; exit 1; }
 
       - name: Smoke test inside ubuntu:20.04 (the glibc 2.28 floor)
         run: |
