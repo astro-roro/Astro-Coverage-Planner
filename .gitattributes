@@ -1,0 +1,7 @@
+# Shell scripts must keep LF endings on every checkout. Windows git with
+# core.autocrlf=true would otherwise write CRLF, and sh and bash then fail on
+# the carriage returns (the packaging tests run bash -n on these files and check
+# start-acp's first line). The scripts run on Mac and Linux, so the checkout
+# endings only matter for the tests, but a CRLF start-acp in a release would not run.
+*.sh                       text eol=lf
+packaging/linux/start-acp  text eol=lf

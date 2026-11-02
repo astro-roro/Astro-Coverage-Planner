@@ -1,0 +1,186 @@
+name: Linux download
+
+# Builds ACP-linux-x86_64.tar.gz and ACP-linux-aarch64.tar.gz, smoke-tests each
+# extracted result with the bundle's own Python (and again inside ubuntu:20.04, which
+# proves the glibc floor), and on a version tag attaches them to the GitHub release.
+# Spec: docs/specs/windows-download-and-setup.md, section 5.
+#
+# Release procedure: bump VERSION in app.py, commit, tag v<VERSION>, push the tag.
+# The tag must equal VERSION or the build fails.
+
+on:
+  push:
+    branches: [main, 'packaging/**']
+    tags: ['v*']
+  pull_request:
+    # A change to app.py or requirements.txt can break the archive, so the filter
+    # names what is excluded and not what is included.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  # Never cancel a tag run half way through a release.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the archive
+        run: |
+          tag=''
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; fi
+          if [ -n "$tag" ]; then
+            sh packaging/linux/build.sh --out-dir dist --tag "$tag"
+          else
+            sh packaging/linux/build.sh --out-dir dist
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acp-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    # A normal run takes a few minutes. Anything past this is a hang, not slowness.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: acp-linux-${{ matrix.arch }}
+          path: dist
+
+      - name: Check the checksum and extract to a different folder from the build
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS-linux-${{ matrix.arch }}.txt)
+          dest="$RUNNER_TEMP/smoke-extract"
+          mkdir -p "$dest"
+          tar -xzf dist/ACP-linux-${{ matrix.arch }}.tar.gz -C "$dest"
+          echo "ACP_PACKAGE=$dest/ACP" >> "$GITHUB_ENV"
+          version=$(sed -n 's/^VERSION[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app.py | head -n 1)
+          echo "ACP_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Smoke test with the archive's own Python (K1 to K4, K6, K8)
+        run: |
+          "$ACP_PACKAGE/python/bin/python3" -X utf8 -B packaging/smoke.py \
+            --package "$ACP_PACKAGE" --version "$ACP_VERSION" --tray
+
+      - name: Start through start-acp
+        timeout-minutes: 5
+        run: |
+          # The script is what users run, so go through it once: it must find its own
+          # Python from any working directory and pass the flags.
+          #
+          # /api/quit refuses a POST without Content-Type: application/json (415), as
+          # every restricted route does. An earlier version of this step sent none, hid
+          # the refusal behind "|| true", and then waited on a process that was never
+          # asked to stop: the job hung for 5.5 hours. So the quit's status is checked,
+          # and the wait is bounded and ends in a kill.
+          cd "$RUNNER_TEMP"
+          export ACP_HOME="$RUNNER_TEMP/start-acp-home"
+          export ACP_NO_DIALOG=1
+          out="$RUNNER_TEMP/start-acp.out"
+          "$ACP_PACKAGE/start-acp" >"$out" 2>&1 &
+          pid=$!
+          ok=
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5555/api/version >/dev/null 2>&1; then ok=1; break; fi
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          echo "poll: answered=${ok:-no} after ${i} s"
+          # curl prints 000 itself when nothing answers.
+          quit=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -d '{}' \
+            http://127.0.0.1:5555/api/quit) || true
+          echo "POST /api/quit: HTTP $quit"
+          exited=
+          for i in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || { exited=1; break; }
+            sleep 1
+          done
+          if [ -z "$exited" ]; then
+            echo "start-acp (pid $pid) still running 30 s after quit; killing it"
+            kill "$pid" 2>/dev/null || true
+            sleep 2
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+          # The step's shell runs with -e, so catch wait's status rather than let it end the step.
+          status=0
+          wait "$pid" 2>/dev/null || status=$?
+          echo "start-acp exit status: $status"
+          echo '--- start-acp output ---'; cat "$out"
+          echo '--- acp.log ---'; cat "$ACP_HOME/logs/acp.log" 2>/dev/null || echo '(no log)'
+          [ -n "$ok" ] || { echo 'start-acp did not answer on port 5555'; exit 1; }
+          [ "$quit" = 200 ] || { echo "POST /api/quit answered $quit, not 200"; exit 1; }
+          [ -n "$exited" ] || { echo 'start-acp did not exit after /api/quit'; exit 1; }
+          [ "$status" = 0 ] || { echo "start-acp exited with $status"; exit 1; }
+
+      - name: Smoke test inside ubuntu:20.04 (the glibc 2.28 floor)
+        run: |
+          # The container runs the same extracted folder, so it uses the older libc.
+          # The folder is mounted read-only, which also proves nothing writes into it.
+          docker run --rm -v "$ACP_PACKAGE:/acp:ro" -v "$PWD/packaging:/packaging:ro" \
+            ubuntu:20.04 /acp/python/bin/python3 -X utf8 -B /packaging/smoke.py \
+            --package /acp --version "$ACP_VERSION"
+
+  release:
+    # Only on a version tag, and only after both smoke tests passed. The one job
+    # that can write to the repository.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: acp-linux-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create the release if it does not exist, then upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The Windows and Mac workflows do the same, so whichever finishes first
+          # creates the release and the others only upload.
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes || \
+              gh release view "$TAG" --repo "$REPO" >/dev/null
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            dist/ACP-linux-x86_64.tar.gz dist/SHA256SUMS-linux-x86_64.txt \
+            dist/ACP-linux-aarch64.tar.gz dist/SHA256SUMS-linux-aarch64.txt

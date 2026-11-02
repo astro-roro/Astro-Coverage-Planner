@@ -1,0 +1,25 @@
+#!/bin/sh
+# Starts Astro Coverage Planner from the folder this script lives in.
+# Run it as ./ACP/start-acp from a terminal, or from the applications menu entry
+# that ACP offers on first run.
+
+dir=$(cd "$(dirname "$0")" && pwd) || exit 1
+
+case "$(uname -m)" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *)
+        echo "ACP needs a 64-bit system, and this one reports '$(uname -m)'." >&2
+        echo "The download supports x86_64 and 64-bit ARM (aarch64). On a Raspberry Pi," >&2
+        echo "install the 64-bit version of Raspberry Pi OS, Astroberry or StellarMate OS." >&2
+        exit 1
+        ;;
+esac
+
+if [ ! -x "$dir/python/bin/python3" ]; then
+    echo "Cannot find python/bin/python3 beside this script." >&2
+    echo "Extract the whole archive first (tar -xzf ACP-linux-<arch>.tar.gz), then run ACP/start-acp." >&2
+    echo "The download for the other kind of processor will not run here, so check you chose the right one." >&2
+    exit 1
+fi
+
+exec "$dir/python/bin/python3" -X utf8 -B "$dir/app/launcher.py" "$@"
