@@ -39,6 +39,10 @@ WORKFLOW = REPO / ".github" / "workflows" / "release-macos.yml"
 SECRETS = {"MACOS_CERT_P12_BASE64", "MACOS_CERT_PASSWORD", "APPLE_TEAM_ID", "APPLE_ID",
            "APPLE_APP_PASSWORD"}
 
+# The Mac scripts only ever run on macOS. On a Windows runner `bash` is WSL's bash.exe,
+# which cannot open a D:\ path, so the tests that run them are skipped there.
+MAC_SHELL = unittest.skipIf(sys.platform == "win32", "the Mac scripts only run on macOS")
+
 MACHO_ARM64 = struct.pack("<I", 0xFEEDFACF) + b"\x0c\x00\x00\x01" + b"\x00" * 32
 JAVA_CLASS = b"\xca\xfe\xba\xbe" + struct.pack(">HH", 0, 65) + b"\x00" * 16
 
@@ -307,10 +311,13 @@ class TestBuildScript(unittest.TestCase):
     def setUp(self):
         self.text = (MACOS / "build.sh").read_text()
 
-    def test_it_stops_on_the_first_error_and_is_valid_bash(self):
+    def test_it_stops_on_the_first_error(self):
         self.assertIn("set -euo pipefail", self.text)
-        if shutil.which("bash"):
-            subprocess.run(["bash", "-n", str(MACOS / "build.sh")], check=True)
+
+    @MAC_SHELL
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_it_is_valid_bash(self):
+        subprocess.run(["bash", "-n", str(MACOS / "build.sh")], check=True)
 
     def test_it_follows_the_spec(self):
         for needle in ("PYTHON_MACOS_ARM64_SHA256", "shasum -a 256", "python-build-standalone",
@@ -353,6 +360,7 @@ class TestSignScript(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="acp-sign-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
+    @MAC_SHELL
     def test_m4_with_no_secrets_it_skips_says_so_and_exits_zero(self):
         proc, output = self.run_sign({}, self.tmp)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -362,6 +370,7 @@ class TestSignScript(unittest.TestCase):
             self.assertIn(name, proc.stdout)               # all five are named as missing
         self.assertFalse((self.tmp / "out").exists(), "nothing is written when it skips")
 
+    @MAC_SHELL
     def test_one_missing_secret_is_enough_to_skip_and_only_that_one_is_named(self):
         env = {name: "x" for name in SECRETS if name != "APPLE_APP_PASSWORD"}
         proc, output = self.run_sign(env, self.tmp)
@@ -370,6 +379,7 @@ class TestSignScript(unittest.TestCase):
         self.assertIn("APPLE_APP_PASSWORD", proc.stdout)
         self.assertNotIn("MACOS_CERT_PASSWORD", proc.stdout)
 
+    @MAC_SHELL
     def test_it_never_prints_a_secret_value(self):
         env = {name: f"SECRET-VALUE-{name}" for name in SECRETS if name != "APPLE_ID"}
         proc, _ = self.run_sign(env, self.tmp)
@@ -393,6 +403,7 @@ class TestSignScript(unittest.TestCase):
         names = set(re.findall(r"\b((?:MACOS|APPLE|NOTARY)_[A-Z0-9_]+)\b", text))
         self.assertEqual(names, SECRETS)
 
+    @MAC_SHELL
     def test_it_is_valid_bash(self):
         subprocess.run(["bash", "-n", str(MACOS / "sign.sh")], check=True)
 
