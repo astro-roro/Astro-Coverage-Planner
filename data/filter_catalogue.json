@@ -26003,7 +26003,7 @@
       ],
       "bandwidth_nm": null,
       "resolution": "maker_page",
-      "evidence": "https://www.svbony.com/blog/difference-sv220-sv260-sv240 (SV240 combines SV220 + UHC passbands: Ha, OIII, Hb)"
+      "evidence": "https://www.svbony.com/blog/difference-sv220-sv260-sv240 (SV240 combines SV220 + UHC passbands: Ha, OIII, Hb; wide bands, OIII about 24 nm, Ha about 20 nm, plus a 115 nm near-infrared pass, so not narrowband in the 7 nm sense; ACP credits Ha and OIII)"
     },
     {
       "brand": "SVBony",

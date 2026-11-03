@@ -306,6 +306,9 @@ FILTER_CANON = {
     # camera it is RGB at once (issue #63).
     "NOFILTER": "NoFilter", "NO FILTER": "NoFilter", "NO_FILTER": "NoFilter",
     "NONE": "NoFilter", "EMPTY": "NoFilter", "OPEN": "NoFilter",
+    # A truncated "none" seen in a user's archive (issue #158, 178 frames from a
+    # colour camera). Exact match only, so other short strings stay unrecognised.
+    "NON": "NoFilter",
 }
 
 # Dual and multi band filters used on colour cameras. The canonical spelling
@@ -318,6 +321,31 @@ OSC_BAND_FILTERS = {
     "duo-narrowband": "Duo-Narrowband", "quad-band": "Quad-Band",
     "hao3": "HaO3", "ha/o3": "HaO3", "svbony sv220": "SV220", "sv220": "SV220",
 }
+
+
+# Svbony dual and multi band filters, written as SV220_Ha-Oiii_3nm or
+# SV240 by capture software (issue #158). The SV220 comes in 3 nm and 7 nm
+# Ha+OIII and 7 nm SII+OIII versions; the SV240 is a wide multi-narrowband
+# filter (OIII about 24 nm, Ha about 20 nm, plus a 115 nm near-infrared pass),
+# so it must not be treated as 7 nm or narrower anywhere.
+_SV_SERIES_RE = re.compile(r"^(?:svbony )?sv ?(220|240)(?: (.*))?$")
+
+
+def _svbony_series(raw: str) -> str | None:
+    """Canonical name for an Svbony SV220 or SV240 spelled in any
+    underscore, hyphen or space style, or None when raw is neither."""
+    m = _SV_SERIES_RE.match(_normalise_filter_key(raw))
+    if not m:
+        return None
+    if m.group(1) == "240":
+        return "SV240"
+    rest = (m.group(2) or "").split()
+    nm = next((w for w in rest if re.fullmatch(r"\d+nm", w)), None)
+    if "sii" in rest:
+        return "SV220 SII-OIII " + (nm or "7nm")
+    if nm and ("ha" in rest or "oiii" in rest):
+        return "SV220 Ha-OIII " + nm
+    return "SV220"
 
 
 _FILTER_BRANDS = {"ANTLIA", "ASTRONOMIK", "ASTRODON", "BAADER", "CHROMA", "OPTOLONG",
@@ -474,6 +502,9 @@ def canon_filter(raw: str | None) -> str | None:
     band = OSC_BAND_FILTERS.get(s.lower())
     if band is not None:
         return band
+    sv = _svbony_series(str(raw))
+    if sv is not None:
+        return sv
     # "Antlia Ha", "Astronomik OIII" and the like: drop the maker's name and
     # try again on what is left.
     words = [w for w in re.split(r"[\s_]+", s) if w]
@@ -511,6 +542,9 @@ _MULTI_BAND = {
     "NBZ": ["Ha", "OIII"], "NBZ UHS": ["Ha", "OIII"], "ALP-T": ["Ha", "OIII"],
     "Duo-Band": ["Ha", "OIII"], "Duo-Narrowband": ["Ha", "OIII"], "HaO3": ["Ha", "OIII"],
     "SV220": ["Ha", "OIII"],
+    "SV220 Ha-OIII 3nm": ["Ha", "OIII"], "SV220 Ha-OIII 7nm": ["Ha", "OIII"],
+    "SV220 SII-OIII 7nm": ["SII", "OIII"],
+    "SV240": ["Ha", "OIII"],
     "Quad-Band": ["Ha", "OIII", "SII"],
 }
 
