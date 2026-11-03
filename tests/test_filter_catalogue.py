@@ -130,5 +130,50 @@ class TestRealCatalogueFile(unittest.TestCase):
         self.assertEqual(bam.bands_for(canon, colour=True), sample["bands"])
 
 
+class TestSvbonyNamesIssue158(unittest.TestCase):
+    """Names from a user's archive that the report listed as unrecognised."""
+
+    def setUp(self):
+        bam.UNRECOGNISED_FILTER_COUNTS.clear()
+
+    def _bands(self, raw, colour=True):
+        return bam.bands_for(bam.canon_filter(raw), colour=colour)
+
+    def test_sv220_ha_oiii_3nm(self):
+        self.assertEqual(bam.canon_filter("SV220_Ha-Oiii_3nm"), "SV220 Ha-OIII 3nm")
+        self.assertEqual(self._bands("SV220_Ha-Oiii_3nm"), ["Ha", "OIII"])
+
+    def test_sv220_sii_oiii_7nm(self):
+        self.assertEqual(bam.canon_filter("SV220_Sii-Oiii_7nm"), "SV220 SII-OIII 7nm")
+        self.assertEqual(self._bands("SV220_Sii-Oiii_7nm"), ["SII", "OIII"])
+
+    def test_sv220_7nm_ha_oiii_in_any_style(self):
+        for raw in ("SV220_Ha-Oiii_7nm", "sv220 ha oiii 7nm", "SVBONY SV220 Ha-OIII 7nm"):
+            self.assertEqual(bam.canon_filter(raw), "SV220 Ha-OIII 7nm", raw)
+
+    def test_sv240_is_ha_oiii(self):
+        self.assertEqual(bam.canon_filter("SV240"), "SV240")
+        self.assertEqual(self._bands("SV240"), ["Ha", "OIII"])
+
+    def test_non_is_no_filter(self):
+        self.assertEqual(bam.canon_filter("non"), "NoFilter")
+        self.assertEqual(self._bands("non"), ["R", "G", "B"])
+        self.assertEqual(self._bands("non", colour=False), ["L"])
+
+    def test_other_short_strings_are_not_no_filter(self):
+        for raw in ("no", "nope", "nonsense"):
+            self.assertNotEqual(bam.canon_filter(raw), "NoFilter", raw)
+
+    def test_none_of_the_four_are_reported_unrecognised(self):
+        for raw in ("SV220_Ha-Oiii_3nm", "SV220_Sii-Oiii_7nm", "non", "SV240"):
+            bam.canon_filter(raw)
+        self.assertEqual(dict(bam.UNRECOGNISED_FILTER_COUNTS), {})
+
+    def test_existing_sv220_spellings_unchanged(self):
+        for raw in ("SV220", "Svbony SV220", "sv220"):
+            self.assertEqual(bam.canon_filter(raw), "SV220", raw)
+            self.assertEqual(self._bands(raw), ["Ha", "OIII"])
+
+
 if __name__ == "__main__":
     unittest.main()
