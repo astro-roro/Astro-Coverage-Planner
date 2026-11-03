@@ -27,7 +27,7 @@ xisf==0.9.7
 waitress==3.0.2
 croniter==6.2.4
 paramiko==5.1.0
-tzdata==2026.5; sys_platform == "win32"
+tzdata==2026.6; sys_platform == "win32"
 
 # Direct dependencies (requirements-packaged.txt)
 python-xlib==0.33
