@@ -149,10 +149,12 @@ The key file must be readable by the container user and no one else, or ssh refu
 
 ### When it publishes
 
-Nothing publishes by itself inside ACP. There are two ways to trigger it.
+With `ACP_PUBLISH_DEST` set, ACP publishes the page itself after every scan that finishes cleanly, whether the scan was scheduled with `ACP_SCAN_CRON` or started from the page. A failed upload is written to the log and is not retried; the scan still counts as finished, and the next scan or the button tries again. A scan that fails publishes nothing, so the page keeps the last good data.
 
-- A scheduled run on the machine that runs ACP, normally once a morning.
+You can also publish by hand or from your own schedule:
+
 - The **Publish now** button in the plan editor, or `POST /api/publish/shooting`. Neither rescans the archive.
+- A scheduled run of the script below on the machine that runs ACP. You only need this if ACP is not scanning on a schedule itself.
 
 ```bash
 python scripts/publish_shooting.py --rescan    # rebuild the manifest, then publish

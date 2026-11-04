@@ -340,6 +340,8 @@ class TestScheduled(ScanCase):
 
     def test_c10_scan_cron_from_the_file_starts_the_scheduler(self):
         self.addCleanup(app_module.stop_scan_scheduler)
+        # No manifest here, so starting the scheduler runs a catch-up scan.
+        app_module._run_scan_subprocess = lambda args: 0
         self.write_settings({"fits_roots": [self.root], "scan_cron": "0 3 * * *"})
         self.assertTrue(app_module.start_scan_scheduler())
         self.assertEqual(app_module.scan_status()["cron"], "0 3 * * *")
