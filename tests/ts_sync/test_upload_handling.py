@@ -50,10 +50,10 @@ def test_a_two_profile_database_uploads_and_previews_the_named_profile(host, tmp
     assert status["state"] == "ready"
     preview = status["preview"]
     assert preview["profile_id"] == P
-    assert preview["profile_name"] == "main profile"
+    assert preview["profile_name"] == "Main profile"
     assert {p["profile_id"]: p["project_count"] for p in status["profiles"]} == {P: 2, Q: 1}
     names = {p["profile_id"]: p["name"] for p in status["profiles"]}
-    assert names == {P: "main profile", Q: "Travel rig"}
+    assert names == {P: "Main profile", Q: "Travel rig"}
     # Nothing in ACP yet, so both of P's plans are new and Q's is not listed.
     assert sorted(n["project_name"] for n in preview["new"]) == ["M31", "M33"]
 

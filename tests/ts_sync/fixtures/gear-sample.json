@@ -1,0 +1,44 @@
+{
+  "telescopes": [
+    {"id": "refractor-550", "name": "Refractor 550", "focal_length_mm": 550.0, "aperture_mm": 0, "observed_pix_arcsec": 1.41, "observed_fov_arcmin": 225.0},
+    {"id": "newtonian-1000", "name": "Newtonian 1000", "focal_length_mm": 1000.0, "aperture_mm": 0, "observed_pix_arcsec": 0.78, "observed_fov_arcmin": 81.0},
+    {"id": "fast-astrograph-500", "name": "Fast Astrograph 500", "focal_length_mm": 500.0, "aperture_mm": 0, "observed_pix_arcsec": 1.55, "observed_fov_arcmin": 150.0},
+    {"id": "small-refractor-250", "name": "Small Refractor 250", "focal_length_mm": 250.0, "aperture_mm": 0, "observed_pix_arcsec": 1.92, "observed_fov_arcmin": 320.0},
+    {"id": "cassegrain", "name": "Cassegrain", "focal_length_mm": 0, "aperture_mm": 0},
+    {"id": "quad-refractor", "name": "Quad Refractor", "focal_length_mm": 0, "aperture_mm": 0}
+  ],
+  "cameras": [
+    {"id": "mono-aps-c", "name": "Mono APS-C Camera", "pixel_size_um": 3.76, "sensor_px": [6248, 4176], "sensor_width_px": 6248, "sensor_height_px": 4176,
+     "filters": {
+       "L": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "R": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "G": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "B": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "Ha": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1},
+       "OIII": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1},
+       "SII": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1}
+     }},
+    {"id": "mono-aps-c-cropped", "name": "Mono APS-C Camera (cropped)", "pixel_size_um": 3.76, "sensor_px": [5400, 3600], "sensor_width_px": 5400, "sensor_height_px": 3600,
+     "filters": {
+       "L": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "R": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "G": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "B": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "IR": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "Ha": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1},
+       "OIII": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1},
+       "SII": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1}
+     }},
+    {"id": "colour-camera", "name": "Colour Camera", "pixel_size_um": 4.63, "sensor_px": [4144, 2822], "sensor_width_px": 4144, "sensor_height_px": 2822,
+     "filters": {
+       "NoFilter": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 120, "gain": -1, "offset": -1, "bin": 1},
+       "Ha": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1}
+     }},
+    {"id": "mono-full-frame", "name": "Mono Full Frame Camera", "pixel_size_um": 3.76, "sensor_px": [9576, 6388], "sensor_width_px": 9576, "sensor_height_px": 6388,
+     "filters": {
+       "Ha": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1},
+       "OIII": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1},
+       "SII": {"ts_template_id": null, "ts_template_name": null, "default_sub_s": 300, "gain": -1, "offset": -1, "bin": 1}
+     }}
+  ]
+}

@@ -1,7 +1,8 @@
 """The TS import has to carry every row across, or say what it could not.
 
-The fixture is the core of Voyager's Target Scheduler database on 2026-09-24:
-16 projects made by hand in TS, 79 targets and 244 exposure plans. The import
+The fixture is a made-up Target Scheduler profile built by
+fixtures/make_sample_snapshot.py: 8 projects made by hand in TS, 21 targets and
+94 exposure plans. The import
 turns it into ACP plans with ts_refs naming the rows each plan came from. The
 plugin's writer then updates those rows by Id, so anything the import gets
 wrong here is written back over the user's own TS data on the next push.
@@ -25,19 +26,19 @@ from nina_ts_sync.state import build_base_snapshot_from_ids, build_ts_refs_from_
 from .make_db import make_db
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-PROFILE = "00000000-0000-0000-0000-000000000000"
-GEAR = json.loads((FIXTURES / "gear-voyager.json").read_text(encoding="utf-8"))
+PROFILE = "00000000-0000-4000-8000-000000000002"
+GEAR = json.loads((FIXTURES / "gear-sample.json").read_text(encoding="utf-8"))
 
-WITCH_HEAD = 1
-SCULPTOR = 11
+NEBULA_MOSAIC = 1
+GALAXY = 6
 PARKED = 2
 
 
 def _load_snapshot(tmp_path) -> sqlite3.Connection:
-    path = make_db(23, tmp_path / "voyager.sqlite")
+    path = make_db(23, tmp_path / "sample.sqlite")
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.executescript((FIXTURES / "ts-snapshot-voyager.sql").read_text(encoding="utf-8"))
+    conn.executescript((FIXTURES / "ts-snapshot-sample.sql").read_text(encoding="utf-8"))
     conn.commit()
     return conn
 
@@ -54,7 +55,7 @@ def _import(conn, gear=GEAR, profile=PROFILE):
 
 
 @pytest.fixture
-def voyager(tmp_path):
+def sample(tmp_path):
     conn = _load_snapshot(tmp_path)
     try:
         plans, notes = _import(conn)
@@ -84,8 +85,8 @@ def _row_ids(plan) -> set[str]:
     return {r["id"] for r in plan["filter_rows"]}
 
 
-def test_every_exposure_plan_is_named_by_exactly_one_row(voyager):
-    conn, plans, _ = voyager
+def test_every_exposure_plan_is_named_by_exactly_one_row(sample):
+    conn, plans, _ = sample
     named: dict[int, list[str]] = {}
     for plan in plans:
         refs = plan["ts_refs"]
@@ -99,13 +100,13 @@ def test_every_exposure_plan_is_named_by_exactly_one_row(voyager):
     assert {i: n for i, n in named.items() if len(n) > 1} == {}
 
 
-def test_sculptor_keeps_its_star_frames(voyager):
-    """Sculptor's "R Stars", "G Stars" and "B Stars" rows hold 54 accepted
+def test_the_galaxy_keeps_its_star_frames(sample):
+    """The galaxy's "R Stars", "G Stars" and "B Stars" rows hold 54 accepted
     frames between them. Keyed by filter, the empty R, G and B rows replaced
     them and ACP showed none. As filter rows they are rows of R, G and B."""
-    _, plans, _ = voyager
-    (sculptor,) = [p for p in plans if p["ts_refs"]["project_id"] == SCULPTOR]
-    rows = {r["template"]: r for r in sculptor["filter_rows"]}
+    _, plans, _ = sample
+    (galaxy,) = [p for p in plans if p["ts_refs"]["project_id"] == GALAXY]
+    rows = {r["template"]: r for r in galaxy["filter_rows"]}
 
     assert {"R", "G", "B", "R Stars", "G Stars", "B Stars"} <= set(rows)
     for name in ("R", "G", "B"):
@@ -116,16 +117,16 @@ def test_sculptor_keeps_its_star_frames(voyager):
         assert row["filter"] == name.split()[0]
         assert (row["template_sub_s"], row["unit"]) == (10, "fr")
         assert row["actual_hours"] == pytest.approx(18 * 10 / 3600)
-    ids = sculptor["ts_refs"]["exposure_plan_ids"]
-    assert {ids[f"21_{rows[n]['id']}"] for n in ("R Stars", "G Stars", "B Stars")} == {120, 121, 122}
-    assert sculptor["ts_refs"]["template_ids_by_filter"][rows["R Stars"]["id"]] == 5
+    ids = galaxy["ts_refs"]["exposure_plan_ids"]
+    assert {ids[f"16_{rows[n]['id']}"] for n in ("R Stars", "G Stars", "B Stars")} == {76, 77, 78}
+    assert galaxy["ts_refs"]["template_ids_by_filter"][rows["R Stars"]["id"]] == 5
 
 
 # -- 3: desired comes back exactly -----------------------------------------
 
 
-def test_a_push_writes_back_the_desired_count_ts_has(voyager):
-    conn, plans, _ = voyager
+def test_a_push_writes_back_the_desired_count_ts_has(sample):
+    conn, plans, _ = sample
     eps = _rows(conn, "exposureplan")
     payload, targets = _payload_targets(plans)
     plan_by_target = {}
@@ -160,11 +161,11 @@ def test_a_push_writes_back_the_desired_count_ts_has(voyager):
 # -- 4: a mosaic ACP did not make keeps its panels ---------------------------
 
 
-def test_witch_head_panels_keep_their_names_and_centres(voyager):
-    conn, plans, notes = voyager
+def test_mosaic_panels_keep_their_names_and_centres(sample):
+    conn, plans, notes = sample
     ts_targets = {
-        r["name"]: r for r in _rows(conn, "target").values() if r["projectid"] == WITCH_HEAD}
-    _, targets = _payload_targets([p for p in plans if p["ts_refs"]["project_id"] == WITCH_HEAD])
+        r["name"]: r for r in _rows(conn, "target").values() if r["projectid"] == NEBULA_MOSAIC}
+    _, targets = _payload_targets([p for p in plans if p["ts_refs"]["project_id"] == NEBULA_MOSAIC])
 
     written = {t.name: t for _, t in targets}
     assert set(written) == set(ts_targets)
@@ -175,8 +176,8 @@ def test_witch_head_panels_keep_their_names_and_centres(voyager):
         assert t.dec == ts_targets[name]["dec"], name
         assert t.rotation == ts_targets[name]["rotation"], name
 
-    witch = [n for n in notes if n.project == "Witch Head (Dark Skies)" and n.level == "loss"]
-    assert any("mosaic" in n.message for n in witch)
+    mosaic = [n for n in notes if n.project == "Example Nebula Mosaic" and n.level == "loss"]
+    assert any("mosaic" in n.message for n in mosaic)
 
 
 def test_an_acp_mosaic_is_rebuilt_with_the_gear_that_made_it(tmp_path):
@@ -227,13 +228,13 @@ def test_an_acp_mosaic_is_rebuilt_with_the_gear_that_made_it(tmp_path):
 # -- 5: project state --------------------------------------------------------
 
 
-def test_a_parked_project_arrives_as_an_inactive_plan(voyager):
+def test_a_parked_project_arrives_as_an_inactive_plan(sample):
     """A TS project that's inactive becomes an ACP plan with state:
     "inactive". State is always written explicitly, for every project,
     and none of the four states raises a loss note."""
-    conn, plans, notes = voyager
+    conn, plans, notes = sample
     parked = {r["Id"]: r["name"] for r in _rows(conn, "project").values() if r["state"] == PARKED}
-    assert SCULPTOR in parked
+    assert GALAXY in parked
 
     for plan in plans:
         pid = plan["ts_refs"]["project_id"]
@@ -278,8 +279,8 @@ def test_import_maps_all_four_states_priority_zero_and_minimum_time(tmp_path):
 # -- 2: everything the import cannot carry exactly is reported ---------------
 
 
-def test_loss_notes_name_the_project_and_target(voyager):
-    _, _, notes = voyager
+def test_loss_notes_name_the_project_and_target(sample):
+    _, _, notes = sample
     losses = [n for n in notes if n.level == "loss"]
     assert losses
     for n in losses:
@@ -288,11 +289,11 @@ def test_loss_notes_name_the_project_and_target(voyager):
             assert n.target in n.message
 
 
-def test_a_plan_on_its_template_default_takes_that_sub(voyager):
-    """184 exposure plans use their template's default length (-1). Their
+def test_a_plan_on_its_template_default_takes_that_sub(sample):
+    """83 exposure plans use their template's default length (-1). Their
     rows carry the template's default as `template_sub_s`, the sub TS uses,
     and nothing is reported: ACP no longer writes a sub length."""
-    conn, plans, notes = voyager
+    conn, plans, notes = sample
     templates = _rows(conn, "exposuretemplate")
     eps = _rows(conn, "exposureplan")
     checked = 0
@@ -316,23 +317,23 @@ def test_an_exposure_plan_without_its_template_is_reported(tmp_path):
         plans, notes = _import(conn)
     finally:
         conn.close()
-    (sculptor,) = [p for p in plans if p["ts_refs"]["project_id"] == SCULPTOR]
-    assert "R Stars" not in {r["template"] for r in sculptor["filter_rows"]}
+    (galaxy,) = [p for p in plans if p["ts_refs"]["project_id"] == GALAXY]
+    assert "R Stars" not in {r["template"] for r in galaxy["filter_rows"]}
     assert any(
-        n.level == "loss" and n.project == "Sculptor Galaxy (Any Skies)"
-        and n.target == "Sculptor Galaxy" and "120" in n.message
+        n.level == "loss" and n.project == "Example Galaxy"
+        and n.target == "Example Galaxy" and "76" in n.message
         for n in notes)
 
 
-def test_every_plan_is_imported(voyager):
-    """No project with targets drops out: 76 plans from before, plus three
-    more Witch Head panels now that its mosaic is kept as four targets."""
-    _, plans, _ = voyager
-    assert len(plans) == 79
+def test_every_plan_is_imported(sample):
+    """No project with targets drops out: one plan per target, 21 in all,
+    with the four mosaic panels kept as four targets."""
+    _, plans, _ = sample
+    assert len(plans) == 21
     assert len({p["id"] for p in plans}) == len(plans)
-    assert len({(p["project_name"], p["target"]["name"]) for p in plans}) == 79
+    assert len({(p["project_name"], p["target"]["name"]) for p in plans}) == 21
 
 
-def test_the_payload_builds_without_a_name_clash(voyager):
-    _, plans, _ = voyager
+def test_the_payload_builds_without_a_name_clash(sample):
+    _, plans, _ = sample
     convert.build_payload(plans, GEAR, profile_id=PROFILE)
