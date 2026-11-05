@@ -1768,6 +1768,10 @@ _add_ext_hook(app, "activity_types")
 # (docs/extensions.md, "Scan finished").
 app.scan_hooks: list = []
 _add_ext_hook(app, "scan_hooks")
+# Jobs extensions want run on a cron schedule (docs/extensions.md, "Scheduled
+# jobs"): {"id", "cron", "run"}. Read once, after the extensions load.
+app.scheduled_jobs: list[dict] = []
+_add_ext_hook(app, "scheduled_jobs")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -7062,6 +7066,7 @@ def scan_status() -> dict:
     state["progress"] = _read_scan_progress()
     state["elapsed_seconds"] = (int(time.monotonic() - started)
                                 if state["running"] and started is not None else None)
+    state["jobs"] = _jobs_runner.status() if _jobs_runner is not None else []
     return state
 
 
@@ -7515,6 +7520,42 @@ def stop_scan_scheduler() -> None:
     # Leave the module startable again: a set stop event would make the next
     # start_scan_scheduler() spawn a thread that returns immediately.
     _scan_scheduler_stop.clear()
+
+
+_jobs_runner = None
+_jobs_thread: threading.Thread | None = None
+_jobs_stop = threading.Event()
+
+
+def start_jobs_scheduler() -> bool:
+    """Start the thread that runs extensions' scheduled jobs. Does nothing when
+    no extension registered one, or when ACP_DISABLE_JOBS is set."""
+    global _jobs_runner, _jobs_thread
+    import scheduled_jobs
+    if scheduled_jobs.disabled():
+        if app.scheduled_jobs:
+            logging.info("extension jobs not started: %s is set", scheduled_jobs.DISABLE_ENV)
+        return False
+    jobs = scheduled_jobs.valid_jobs(app.scheduled_jobs)
+    if not jobs or (_jobs_thread is not None and _jobs_thread.is_alive()):
+        return False
+    _jobs_runner = scheduled_jobs.Runner(jobs, datetime.now())
+    _jobs_stop.clear()
+    _jobs_thread = threading.Thread(target=scheduled_jobs.loop, args=(_jobs_runner, _jobs_stop),
+                                    name="acp-extension-jobs", daemon=True)
+    _jobs_thread.start()
+    logging.info("extension jobs scheduled: %s", ", ".join(j["id"] for j in jobs))
+    return True
+
+
+def stop_jobs_scheduler() -> None:
+    global _jobs_runner, _jobs_thread
+    _jobs_stop.set()
+    if _jobs_thread is not None:
+        _jobs_thread.join(timeout=5)
+    _jobs_thread = None
+    _jobs_runner = None
+    _jobs_stop.clear()
 
 
 @app.route("/api/scan/status")
@@ -8423,6 +8464,7 @@ migrate_gear_at_startup()
 clear_dead_scan_progress()
 start_scan_scheduler()
 start_balancer_scheduler()
+start_jobs_scheduler()
 
 
 def effective_port(env=None) -> int:
