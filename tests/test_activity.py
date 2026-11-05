@@ -199,7 +199,7 @@ class TestPosting(ActivityCase):
         self.assertEqual(out["rejected"][0]["key"], "a")
 
     def test_11_the_same_key_from_two_sources_is_two_events(self):
-        self.post(ev("k1", source="plugin"), ev("k1", source="aac"))
+        self.post(ev("k1", source="plugin"), ev("k1", source="processing"))
         self.assertEqual(len(self.all_events()), 2)
 
     def test_12_a_lower_seq_is_stale(self):
@@ -216,10 +216,10 @@ class TestPosting(ActivityCase):
 class TestResolving(ActivityCase):
     def queued(self, **kw):
         return ev("q", type="master_queued", needs_you=True, title="Dolphin OIII queued",
-                  resolve_key="master:Dolphin:110GTX:OIII", source="aac", **kw)
+                  resolve_key="master:Dolphin:110GTX:OIII", source="processing", **kw)
 
     def built(self, **kw):
-        return ev("b", type="master_built", title="Dolphin OIII built", source="aac",
+        return ev("b", type="master_built", title="Dolphin OIII built", source="processing",
                   resolves=["master:Dolphin:110GTX:OIII"], **kw)
 
     def test_13_a_build_closes_the_queued_item(self):
@@ -241,7 +241,7 @@ class TestResolving(ActivityCase):
         self.assertEqual(self.summary()["needs_you"], 0)
 
     def test_14_posted_needs_you_and_resolves_must_carry_at(self):
-        for source in ("plugin", "aac"):
+        for source in ("plugin", "processing"):
             out = self.post(
                 {"source": source, "key": "a", "title": "t", "needs_you": True, "resolve_key": "r"},
                 {"source": source, "key": "b", "title": "t", "resolves": ["r"]}).get_json()
@@ -267,7 +267,7 @@ class TestResolving(ActivityCase):
 
     def ready(self, frames=45):
         return ev("r", type="master_ready", needs_you=True, title="Dolphin Ha ready",
-                  resolve_key="edit:/m/full_master_Ha.fit", source="aac",
+                  resolve_key="edit:/m/full_master_Ha.fit", source="processing",
                   data={"frames": frames})
 
     def test_15_changed_content_reopens_and_identical_content_does_not(self):
@@ -685,7 +685,7 @@ class TestStoreRules(ActivityCase):
 
     def test_32_a_posted_master_gets_its_folders(self):
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
-        self.post(ev(source="aac", type="master_built",
+        self.post(ev(source="processing", type="master_built",
                      refs={"master": {"path": DOLPHIN_HA, "frames": 45, "hours": 3.75, "filter": "Ha"}}))
         master = self.all_events()[0]["refs"]["master"]
         self.assertEqual(master["file_name"], "full_master_Ha.fit")

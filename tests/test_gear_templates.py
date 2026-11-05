@@ -1238,7 +1238,7 @@ class TestPlanRows(Base):
                       "seen_seconds": 3600, "accepted_frames": 12, "seen_frames": 12, "complete": False}]})
         self.assertEqual(r.status_code, 200, r.get_json())
         self.assertEqual(r.get_json()["unknown_rows"], [])
-        self.assertEqual(read_plans()[0]["filter_rows"][0]["aac"]["accepted_frames"], 12)
+        self.assertEqual(read_plans()[0]["filter_rows"][0]["grader"]["accepted_frames"], 12)
 
     def test_a_name_that_is_not_an_alias_is_still_unknown(self):
         doc = self.seed_v3()

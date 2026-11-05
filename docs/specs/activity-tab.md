@@ -2,13 +2,13 @@
 
 This spec adds a fourth side-panel tab to Astro Coverage Planner (ACP) that shows what happened, night by night: plans changed, syncs, imaging, data landing, processing, and masters built. It also flags the few things that need a person to act. The user approved the design in the mockup at https://claude.ai/artifact/3hLxXU4WbX5i7VCEAe9nLG (version 2).
 
-The work is built in three phases, and each ships on its own. Phase 1 is ACP plus the Target Scheduler sync extension (`acp-nina-ts-sync`), because the TS upload and rig-link routes live in the extension. Phase 2 adds events from the NINA plugin (`ACP.NINA.Plugin`). Phase 3 adds events from Astro Auto Calibration (AAC).
+The work is built in three phases, and each ships on its own. Phase 1 is ACP plus the Target Scheduler sync extension (`acp-nina-ts-sync`), because the TS upload and rig-link routes live in the extension. Phase 2 adds events from the NINA plugin (`ACP.NINA.Plugin`). Phase 3 adds events from processing tools: calibration, stacking, grading and the like.
 
 ## Terms
 
 - **Event**: one record of something that happened, stored by ACP and shown as one row in the timeline.
 - **Night**: the observing night an event belongs to, written as the date the evening started, `YYYY-MM-DD`. The cut-over is local noon in `ACP_ACTIVITY_TZ`, so 10:00 on 14 Oct belongs to night `2026-10-13`.
-- **Source**: who reported the event. ACP's own events are `acp`. Posted events must be `plugin`, `aac` or `external`.
+- **Source**: who reported the event. ACP's own events are `acp`. Posted events must be `plugin`, `processing` or `external`, or a source an extension registered. Older source names are handled as described under Phase 3.
 - **Needs you**: an event that asks a person to act. It is open until it is resolved, dismissed or expires.
 - **Badge**: the count on the Activity rail button. It counts open needs-you events and nothing else.
 - **Dot**: a small marker on the rail button with no number. It shows when events have arrived or changed since the tab was last opened.
@@ -20,16 +20,16 @@ ACP fills the fields marked "server".
 | Field | Type | Notes |
 |---|---|---|
 | `id` | int | server. Row id, stable across updates. |
-| `source` | string | `acp` for ACP's own events. POST accepts only `plugin`, `aac`, `external`. |
+| `source` | string | `acp` for ACP's own events. POST accepts only `plugin`, `processing`, `external`, plus any source an extension registers. |
 | `key` | string, max 200 | Idempotency key. Unique together with `source`. |
 | `seq` | int | Optional. A sender's counter for this key. An update carrying a lower `seq` than the stored one is ignored. |
 | `type` | string | One of the types in the chip table. Unknown types are stored as `other`. |
 | `at` | ISO 8601 with offset | When it happened. Missing means the time ACP received it. |
-| `night` | `YYYY-MM-DD` | The plugin and AAC always send it. ACP derives it from `at` only when it is absent. |
+| `night` | `YYYY-MM-DD` | The plugin and processing tools always send it. ACP derives it from `at` only when it is absent. |
 | `title` | string, max 200 | One plain-text line. Longer is rejected. |
 | `detail` | string | Optional plain text, cut to 2000 characters. |
 | `severity` | `info`, `warn`, `error` | Default `info`. Anything else is rejected. |
-| `refs` | object | Optional. Allowed keys only: `plan_id`, `project`, `target`, `bucket`, `filter`, `ra_deg`, `dec_deg`, `aac_job`, `upload_id`, `profile`, `master`. Others are dropped. |
+| `refs` | object | Optional. Allowed keys only: `plan_id`, `project`, `target`, `bucket`, `filter`, `ra_deg`, `dec_deg`, `job`, `upload_id`, `profile`, `master`. Others are dropped. |
 | `data` | object | Optional numbers for the UI. Over 8 KB serialised is rejected. |
 | `needs_you` | bool | Default false. |
 | `resolve_key` | string | Required when `needs_you` is true. |
@@ -61,7 +61,7 @@ A needs-you event is open while it has no qualifying resolution, no `dismissed_a
 | `imaging` | Imaging | `imaging_target`, `goal_reached`, `progress_report`, `progress_unknown`, `session_start`, `session_end` |
 | `site` | Site and focus | `safety`, `meridian_flip`, `autofocus_summary`, `park` |
 | `data` | Data landed | `transfer_landed`, `ingest` |
-| `processing` | Processing | `calibration`, `threshold_decision`, `master_queued`, `accepted_counts`, `darks_built`, `aac_alert`, `aac_recovered` |
+| `processing` | Processing | `calibration`, `threshold_decision`, `master_queued`, `accepted_counts`, `darks_built`, `processing_alert`, `processing_recovered` |
 | `masters` | Masters | `master_built`, `master_ready` |
 | `coverage` | Coverage | `scan_finished`, `scan_error`, `coverage_changed` |
 
@@ -75,7 +75,7 @@ A needs-you event is open while it has no qualifying resolution, no `dismissed_a
 | `master_queued` | `master:<target>:<bucket>:<filter>` | `master_built` for the same target, bucket and filter | no |
 | `master_ready` | `edit:<master path>` | dismiss | 7 days after posting. A rebuild of the same master changes its content, which reopens it. |
 | `scan_error` | `scan` | the next successful `scan_finished` | no |
-| `aac_alert` | the AAC alert key | `aac_recovered` for the same key | no |
+| `processing_alert` | the tool's alert key | `processing_recovered` for the same key | no |
 | `progress_unknown` | `progress:<plan_id>` | a later report for that plan with no unknown filters | no |
 | `counts_corrected` | `counts:<night>` | dismiss | no |
 
@@ -95,7 +95,7 @@ History is kept forever by default, at well under 1 KB an event. `ACP_ACTIVITY_K
 
 ## Master paths
 
-A browser cannot open Finder or Explorer, so master rows show copyable text. AAC reports the path it sees in its container. `ACP_ACTIVITY_PATH_MAP` is a JSON list of `{ "from", "mac", "windows" }` entries, and the first entry whose `from` matches wins. A match must end on a path segment boundary, so `/mnt/a` matches `/mnt/a/x.fit` but not `/mnt/ab/x.fit`.
+A browser cannot open Finder or Explorer, so master rows show copyable text. A processing tool reports the path it sees, which may be inside a container. `ACP_ACTIVITY_PATH_MAP` is a JSON list of `{ "from", "mac", "windows" }` entries, and the first entry whose `from` matches wins. A match must end on a path segment boundary, so `/mnt/a` matches `/mnt/a/x.fit` but not `/mnt/ab/x.fit`.
 
 For `/mnt/remotes/NAS/Astro/Library/Example_Target/RIG_CAMERA/masters/full_master_Ha.fit` with the map `/mnt/remotes/NAS` to `/Volumes/NAS` and `\\NAS\share`, ACP produces:
 
@@ -111,7 +111,7 @@ A path matching no entry is shown as `(unmapped) <basename>` in both folder fiel
 
 ## API
 
-All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or the session cookie. GET routes follow the same gate as every other `/api` GET. One shared token for the plugin, AAC and the browser is an accepted risk on a home LAN. Browser POSTs (`seen`, `dismiss`, `restore`, `prefs`) also check that `Origin`, when present, matches the request's `Host` or `X-Forwarded-Host`, since production sits behind a reverse proxy. ACP had no such guard before this feature; this check is new.
+All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or the session cookie. GET routes follow the same gate as every other `/api` GET. One shared token for the plugin, processing tools and the browser is an accepted risk on a home LAN. Browser POSTs (`seen`, `dismiss`, `restore`, `prefs`) also check that `Origin`, when present, matches the request's `Host` or `X-Forwarded-Host`, since production sits behind a reverse proxy. ACP had no such guard before this feature; this check is new.
 
 - `POST /api/activity/events` with `{ "events": [ ... ] }`. The route's body limit is 2 MiB and the batch limit is 100 events; either over is 413 and stores nothing. It answers `{ "stored", "updated", "unchanged", "stale", "rejected": [ { "key", "error" } ] }`. A bad event is rejected alone and the rest are stored. Clients never retry rejected events. The route answers 403 while `ACP_API_TOKEN` is unset, and rejects `source: "acp"`.
 - `GET /api/activity?nights=5&before=<night>` answers `{ "nights": [ { "night", "events": [...], "more": n } ], "next_before", "total_nights", "last_seen" }`. Nights are newest first and skip nights with no events. `nights` defaults to 5, is capped at 30, and a non-integer is 400. Within a night, events are newest first, by `(at, id)` descending, and capped at 200, with `more` counting the rest.
@@ -134,7 +134,7 @@ ACP exposes `app.record_activity(**fields)`, which calls `record()` with `source
 - **Rig synced** (extension, the `/links` route): `rig_synced`, key `rig_synced:<profile>:<night>`, one row per rig per night.
 - **Progress reports**: `progress_report`, key `progress_report:<plan_id>:<night>`, updated with hours per filter. Unknown filters in a report post a separate `progress_unknown`, key `progress_unknown:<plan_id>:<night>`, resolve key `progress:<plan_id>`. A later report with none unknown resolves it.
 - **Goal reached**: when a progress report or `POST /api/plans/<id>/accepted` takes a row to its goal, ACP records `goal_reached`, key `goal:<plan_id>:<row_id>:<target_hours as %g>`, so two rows of the same filter each record. Raising the goal later makes a new key, so reaching the new goal records again.
-- **AAC accepted counts**: `accepted_counts`, key `accepted_counts:<plan_id>:<night>`.
+- **Accepted counts from a frame grader**: `accepted_counts`, key `accepted_counts:<plan_id>:<night>`.
 - **Manifest scan**: on success, `scan_finished` (key `scan_finished:<night>`) with targets added and removed, resolving `scan`. Each target and filter whose hours moved by more than 0.01 h updates `coverage_changed`, key `coverage:<target id>:<filter>:<night>` (the manifest target id; `refs.target` carries the name), whose `data.delta_h` accumulates over the night, so two scans of +0.25 h read as one row of "+0.50 h". On failure, `scan_error` (key `scan_error:<night>`, needs you, resolve key `scan`) carries the error kind ACP already classifies.
 
 The tab, its API, storage and UI all ship in phase 1. Before phase 2, "Last night" builds its hours from `progress_report` events.
@@ -150,39 +150,24 @@ The plugin posts with `source: "plugin"`, an explicit `night`, and a `seq` that 
 - `autofocus_summary`: one per night, updated per run, with run count, first and last focuser position, and temperature range.
 - `park`, and `safety` changes to safe or unsafe.
 
-## Phase 3: AAC
+## Phase 3: processing tools
 
-AAC gets a client, `auto_pix/acp_activity.py`, that posts with `source: "aac"`, explicit `night`, and `seq`. A failed post is logged and dropped after three tries. After the first 404 or 403 the client disables itself for the process with one log line.
+A processing tool posts with `source: "processing"`, an explicit `night`, and `seq`. It should log and drop a post that fails three times, and stop posting for the run after the first 404 or 403, since that means the tab is off or the token is wrong.
 
-`target` is the AAC Library target folder name (`Example_Target`) and `bucket` is the Library bucket folder name (`RIG_CAMERA`), both sent as-is. ACP maps them to a plan with the matching it already uses for AAC's accepted reports.
+`target` and `bucket` are the tool's own names for the target and the rig and camera combination, sent as-is. ACP maps them to a plan with the same matching it uses for accepted counts.
 
-- `transfer_landed`: night id, file count, bytes, start and finish from `ingest_result.json`.
-- `ingest`: lights, flats and darks promoted.
+- `transfer_landed`: night id, file count, bytes, start and finish.
+- `ingest`: lights, flats and darks taken in.
 - `calibration`: per job, frames calibrated, accepted and rejected.
 - `threshold_decision`: only rows that crossed their goal.
 - `master_queued` and `master_built`. A build posts `master_built` with `refs.master` and `resolves: ["master:<target>:<bucket>:<filter>"]`, plus `master_ready` (needs you, resolve key `edit:<path>`).
 - `darks_built`: master darks made from a darks night.
-- `aac_alert`: every `notify_failure` call also posts an `aac_alert` (severity error, needs you) whose resolve key is its alert key.
-- `aac_recovered`: posted on the first success after a failure for a key, resolving it. `FailureStreakTracker.record` gains a return value that says "recovered" when a success ends a streak.
+- `processing_alert`: a failure the user should look at (severity error, needs you), whose resolve key is the tool's own alert key.
+- `processing_recovered`: posted on the first success after a failure for a key, resolving it.
 
-Alert keys take the form `aac:<component>:<check or job class>`:
+Alert keys are the tool's to choose. A form such as `<tool>:<component>:<check or job>` keeps them unique and readable.
 
-| Call site | Alert key |
-|---|---|
-| `nightwatch.run_cycle`, pre-flight check failed | `aac:nightwatch:<check name>` (`siril_container`, `job_queue`, disk) |
-| `nightwatch`, master dark refresh failed or darks failed to build | `aac:nightwatch:master_darks` |
-| `nightwatch`, interrupted jobs requeued at start | `aac:nightwatch:requeue` (informational, severity warn, not needs you) |
-| `watcher.run_scanner_iteration` | `aac:watcher:scanner` |
-| `night_marker`, night ingest failed | `aac:ingest:<night_id>` |
-| `orchestrator`, calibration failed | `aac:calibration:<job_id>` |
-| `orchestrator`, library filing failed | `aac:filing:<job_id>` |
-| `orchestrator`, no matching flats | `aac:flats:<job_id>` |
-| `orchestrator`, tile export held | `aac:tiles:<target>` |
-| `master_thresholds`, master build failed | `aac:master:<target>:<bucket>:<filter>` |
-| `master_thresholds`, master gates failed or WCS not confirmed | `aac:master_gates:<target>:<bucket>:<filter>` |
-| `master_thresholds`, tile export failed | `aac:tiles:<target>` |
-| `survey_worker`, permanent failure | `aac:survey:<job_id>` |
-| `pixinsight_runner`, job failed | `aac:pixinsight:<job_id>` |
+These source, type and ref names replaced older ones. A name ACP finds in stored events but does not know is accepted as it is from then on, with a warning in the log, so a tool nobody has updated keeps working. An extension can register old names as aliases (`activity.register_alias`, docs/extensions.md, "Old names"); stored events are then renamed and old posts are stored under the new names.
 
 ## The tab
 
@@ -193,7 +178,7 @@ The layout follows the mockup. The rendering logic lives in `static/activity.mjs
 - **Last night**: one line per target with hours per filter against goal, a finished mark from `goal_reached`, and a link to the plan.
 - **Needs you**: open items, oldest first, each with its link and a × to dismiss. Beyond 50, a line says how many more.
 - **Timeline**: nights newest first, five on first load. Scrolling near the end loads five more, and a "Load older nights" button does the same. `pageState` gives the "Showing 5 of 7 nights" text and whether the button shows. A night with more than 200 events shows "N more" that fetches the rest of that night.
-- **Rows**: icon by chip, time, title, and links to the plan, the target on the map, the AAC job or the upload review page. Rows whose `max(received_at, updated_at)` is after the previous `last_seen` are highlighted.
+- **Rows**: icon by chip, time, title, and links to the plan, the target on the map, the processing job or the upload review page. Rows whose `max(received_at, updated_at)` is after the previous `last_seen` are highlighted.
 - **Live updates**: the client polls the summary every 60 s. When `max_updated_at` moves, it refetches the loaded nights and merges events by `id`, so late events and updates appear in nights already on screen.
 - **Master rows**: `masterRowStrings` gives the Mac folder, Windows folder and file name, each with a Copy button. If the clipboard call fails, the text is selected instead.
 - **Chips**: `visibleRows` filters the timeline at once. Changes save to `PUT /api/activity/prefs` after a 500 ms pause.
@@ -214,7 +199,7 @@ Phase 1, ACP (pytest, in `tests/test_activity.py` unless named):
 8. A batch of 101 events is refused with 413 and stores nothing, and so is a body over 2 MiB.
 9. `POST /api/activity/events` answers 403 while `ACP_API_TOKEN` is unset, and 401 without the token when it is set.
 10. `needs_you: true` without `resolve_key` is rejected.
-11. Events with `(plugin, k1)` and `(aac, k1)` are stored as two events.
+11. Events with `(plugin, k1)` and `(processing, k1)` are stored as two events.
 12. An update with `seq: 3` after one with `seq: 5` for the same `(source, key)` is ignored and reported as `stale`.
 13. A `master_built` posted with `resolves: ["master:Dolphin:110GTX:OIII"]` closes the open `master_queued` with that key and sets `resolved_by`. The summary's `needs_you` drops by one.
 14. Out of order: a `master_built` resolving a key, then the `master_queued` with that key, leaves the item closed.
@@ -262,20 +247,20 @@ Phase 2, plugin (xunit on blakphoenix):
 45. A failed batch is retried with the same keys, and a 404 or 403 stops posting for the session after one log line.
 46. Sync for tonight posts one `sync_for_tonight` with the plan count and the backup file's basename, not its full path.
 
-Phase 3, AAC (pytest):
+Phase 3, in the processing tool's own suite:
 
 47. An ingest result for night `2026-10-13` posts `transfer_landed` with that night, the file count and the byte total.
 48. A master build posts `master_built` with `refs.master.path` and `resolves: ["master:<target>:<bucket>:<filter>"]`, and a `master_ready` with `needs_you: true` and resolve key `edit:<path>`.
-49. A calibration failure posts `aac_alert` keyed `aac:calibration:<job_id>`. For a streak key, `FailureStreakTracker.record` reports "recovered" on the first success after failure, and the client posts `aac_recovered` resolving it.
+49. A calibration failure posts `processing_alert` with the tool's alert key, and the first success after it posts `processing_recovered` resolving it.
 50. With ACP unreachable, processing finishes normally and the client logs one warning per event after three tries. After a 404 it posts nothing more for the process.
 
 ## Rollback
 
-The feature only adds things. `ACP_ACTIVITY=off` makes every activity route answer 404, hides the rail button and turns `record()` into a no-op. The plugin and AAC clients disable themselves after the first 404 or 403. Deleting `activity.sqlite` removes the history and nothing else. Phases 2 and 3 roll back by reverting their own repos.
+The feature only adds things. `ACP_ACTIVITY=off` makes every activity route answer 404, hides the rail button and turns `record()` into a no-op. The plugin and processing tools stop posting after the first 404 or 403. Deleting `activity.sqlite` removes the history and nothing else. Phases 2 and 3 roll back by reverting their own repos.
 
 ## Open questions, with defaults
 
-- **Master previews.** Default: none in any phase of this spec. AAC writing a small stretched JPEG for ACP to serve would be a separate spec.
+- **Master previews.** Default: none in any phase of this spec. A processing tool writing a small stretched JPEG for ACP to serve would be a separate spec.
 - **Where failures appear.** Default: inline in the timeline as error rows that ignore the chips, and in the Needs you box until resolved, dismissed or expired. No separate failures panel.
 - **Windows share name.** Default: `\\NAS\share\`, to confirm in Explorer on IMAGING-PC before phase 3.
 

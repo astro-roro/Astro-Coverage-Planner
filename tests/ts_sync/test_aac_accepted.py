@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -100,9 +101,12 @@ def test_a3_to_a5_the_shared_cases(case, tmp_path):
     assert {r["Id"]: r["acquired"] for r in conn.execute("SELECT Id, acquired FROM exposureplan")} == acquired_before
     warning = case["expected"]["warning"]
     if warning:
+        # The shared case file predates the rename and is never edited in a
+        # copy; ACP's notes now say "grader" where the file names the old tool.
+        warning = re.sub(r"\S+ figures yet", "grader figures yet", warning)
         assert any(warning in n for n in report.notes), report.notes
     else:
-        assert not any("AAC" in n for n in report.notes), report.notes
+        assert not any("grader" in n for n in report.notes), report.notes
     assert bool(report.aac_written_projects) == case["expected"]["written"]
 
 

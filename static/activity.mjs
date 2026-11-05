@@ -17,7 +17,7 @@ export let CHIPS = [
   { id: "site", label: "Site and focus", types: ["safety", "meridian_flip", "autofocus_summary", "park"] },
   { id: "data", label: "Data landed", types: ["transfer_landed", "ingest", "upload_finished", "upload_failed"] },
   { id: "processing", label: "Processing", types: ["calibration", "threshold_decision",
-    "master_queued", "accepted_counts", "darks_built", "aac_alert", "aac_recovered"] },
+    "master_queued", "accepted_counts", "darks_built", "processing_alert", "processing_recovered"] },
   { id: "masters", label: "Masters", types: ["master_built", "master_ready"] },
   { id: "coverage", label: "Coverage", types: ["scan_finished", "scan_error", "coverage_changed"] },
 ];
@@ -131,7 +131,7 @@ function linksHtml(refs) {
   if (finite(r.ra_deg) && finite(r.dec_deg)) {
     out.push(`<a href="#" data-act="map" data-ra="${esc(r.ra_deg)}" data-dec="${esc(r.dec_deg)}">Show on map</a>`);
   }
-  if (r.aac_job) out.push(`<span class="pill dim">AAC job ${esc(r.aac_job)}</span>`);
+  if (r.job) out.push(`<span class="pill dim">Job ${esc(r.job)}</span>`);
   if (r.upload_id) {
     const href = `/ext/nina-ts-sync/import/uploads/${encodeURIComponent(r.upload_id)}`;
     out.push(`<a href="${esc(href)}" target="_blank" rel="noopener">Review</a>`);

@@ -4164,8 +4164,8 @@ function updatePlanEditorActuals() {
     if (typeof freshRow.actual_hours === "number") row.actual_hours = freshRow.actual_hours;
     if (freshRow.panels) row.panels = freshRow.panels;
     else delete row.panels;
-    if (freshRow.aac) row.aac = freshRow.aac;
-    else delete row.aac;
+    if (freshRow.grader) row.grader = freshRow.grader;
+    else delete row.grader;
     const card = document.querySelector(
       `.fr-card[data-row-id="${(typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(row.id) : row.id}"]`
     );

@@ -44,13 +44,13 @@ describe("renderRowHtml", () => {
     assert.ok(renderRowHtml(row()).includes(">19:10<"));
   });
 
-  it("links a plan, the map, the AAC job and the upload review page", () => {
+  it("links a plan, the map, the processing job and the upload review page", () => {
     const html = renderRowHtml(row({
-      refs: { plan_id: "M42", ra_deg: 83.8, dec_deg: -5.4, aac_job: "f17d6737", upload_id: "abc123" },
+      refs: { plan_id: "M42", ra_deg: 83.8, dec_deg: -5.4, job: "f17d6737", upload_id: "abc123" },
     }));
     assert.ok(html.includes('data-act="plan"'));
     assert.ok(html.includes('data-ra="83.8"'));
-    assert.ok(html.includes("AAC job f17d6737"));
+    assert.ok(html.includes("Job f17d6737"));
     assert.ok(html.includes('href="/ext/nina-ts-sync/import/uploads/abc123"'));
   });
 

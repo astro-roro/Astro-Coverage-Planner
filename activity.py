@@ -1,7 +1,7 @@
 """The Activity tab's storage and rules (docs/specs/activity-tab.md).
 
 Events live in SQLite beside plans.json. ACP records its own events through
-``record()``, the NINA plugin and AAC post theirs through ``ingest()``, and
+``record()``, the NINA plugin and processing tools post theirs through ``ingest()``, and
 the tab reads them through the query functions at the bottom. This module
 knows nothing about Flask; the routes in app.py are thin wrappers.
 
@@ -27,7 +27,7 @@ logger = logging.getLogger("acp.activity")
 
 SCHEMA_VERSION = 1
 
-POSTABLE_SOURCES = ("plugin", "aac", "external")
+POSTABLE_SOURCES = ("plugin", "processing", "external")
 SEVERITIES = ("info", "warn", "error")
 MAX_KEY = 200
 MAX_TITLE = 200
@@ -43,7 +43,7 @@ EXPIRY_DAYS = 7
 MOVED_H = 0.01
 
 REF_KEYS = ("plan_id", "project", "target", "bucket", "filter", "ra_deg", "dec_deg",
-            "aac_job", "upload_id", "profile", "master")
+            "job", "upload_id", "profile", "master")
 
 # Chip id, label, and the event types it shows. Mirrored in static/activity.mjs.
 CHIPS = (
@@ -56,8 +56,8 @@ CHIPS = (
     ("site", "Site and focus", ("safety", "meridian_flip", "autofocus_summary", "park")),
     ("data", "Data landed", ("transfer_landed", "ingest", "upload_finished", "upload_failed")),
     ("processing", "Processing", ("calibration", "threshold_decision", "master_queued",
-                                  "accepted_counts", "darks_built", "aac_alert",
-                                  "aac_recovered")),
+                                  "accepted_counts", "darks_built", "processing_alert",
+                                  "processing_recovered")),
     ("masters", "Masters", ("master_built", "master_ready")),
     ("coverage", "Coverage", ("scan_finished", "scan_error", "coverage_changed")),
 )
@@ -118,6 +118,8 @@ def reset_registrations() -> None:
     POSTABLE_SOURCES = CORE_SOURCES
     for table in _ALIASES.values():
         table.clear()
+    for names in _ADOPTED.values():
+        names.clear()
 
 
 # Old names a sender may still use, mapped to the names ACP uses now
@@ -155,6 +157,40 @@ def _alias_target(kind: str, name, valid) -> str | None:
     """The new name for *name* when an alias maps it to a name *valid* accepts."""
     new = _ALIASES[kind].get(name) if isinstance(name, str) else None
     return new if new is not None and valid(new) else None
+
+
+# Sources, types and ref keys found in stored events that this ACP does not
+# know and no alias covers: names a sender used before a rename. They keep
+# being accepted as they are, with a warning, so a sender nobody has updated
+# is not refused or quietly stripped (docs/extensions.md, "Old names").
+_ADOPTED: dict[str, set[str]] = {"source": set(), "type": set(), "ref": set()}
+
+
+def _adopt_stored_names(conn) -> None:
+    sources = {r[0] for r in conn.execute("SELECT DISTINCT source FROM events")}
+    types = {r[0] for r in conn.execute("SELECT DISTINCT type FROM events")}
+    ref_keys: set[str] = set()
+    for (refs,) in conn.execute("SELECT DISTINCT refs FROM events WHERE refs != '{}'"):
+        try:
+            ref_keys.update(json.loads(refs))
+        except (ValueError, TypeError):
+            continue
+    found = {
+        "source": {x for x in sources if x != "acp" and x not in POSTABLE_SOURCES},
+        "type": {x for x in types if x != "other" and x not in KNOWN_TYPES},
+        "ref": {x for x in ref_keys if x not in REF_KEYS},
+    }
+    for kind, names in found.items():
+        # Anything an effective alias covered was renamed just before this.
+        for name in sorted(names - _ADOPTED[kind]):
+            if not isinstance(name, str) or not name:
+                continue
+            _ADOPTED[kind].add(name)
+            logger.warning(
+                "stored activity events use the %s %r, which this ACP does not know and no "
+                "extension has registered as an old name. ACP keeps accepting it as it is. "
+                "Register it with activity.register_alias(%r, %r, <new name>) to rename it "
+                "(docs/extensions.md, \"Old names\").", kind, name, kind, name)
 
 
 def _rename_aliased(conn) -> None:
@@ -357,7 +393,7 @@ def _path_map() -> list[dict]:
 
 
 def map_master_path(path: str) -> dict:
-    """The Mac folder, Windows folder and file name for a path as AAC sees it.
+    """The Mac folder, Windows folder and file name for a path as the sender sees it.
 
     The first map entry that matches on a whole path segment wins. A path no
     entry matches comes back as ``(unmapped) <file>`` in both folders.
@@ -466,10 +502,20 @@ def _open(path: Path) -> sqlite3.Connection:
                 conn.execute("ROLLBACK")
                 raise
         _rename_aliased(conn)
+        _adopt_stored_names(conn)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def open_now() -> None:
+    """Open the store, which renames aliased names and reports unknown ones.
+    app.py calls it at startup, after extensions have registered aliases."""
+    if not enabled():
+        return
+    with _lock:
+        _connect()
 
 
 def _connect() -> sqlite3.Connection:
@@ -547,7 +593,7 @@ def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
     source = _alias_target("source", source, lambda n: n in POSTABLE_SOURCES) or source
     if allow_acp:
         source = "acp"
-    elif source not in POSTABLE_SOURCES:
+    elif source not in POSTABLE_SOURCES and source not in _ADOPTED["source"]:
         raise ValueError("source must be one of " + ", ".join(POSTABLE_SOURCES))
 
     key = raw.get("key")
@@ -577,7 +623,7 @@ def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
 
     etype = raw.get("type")
     etype = _alias_target("type", etype, lambda n: n in KNOWN_TYPES) or etype
-    if not isinstance(etype, str) or etype not in KNOWN_TYPES:
+    if not isinstance(etype, str) or (etype not in KNOWN_TYPES and etype not in _ADOPTED["type"]):
         etype = "other"
 
     seq = raw.get("seq")
@@ -605,7 +651,7 @@ def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
         refs_in = {(_alias_target("ref", k, lambda n: n in REF_KEYS and n not in refs_in) or k): v
                    for k, v in refs_in.items()}
     refs = {}
-    for k in REF_KEYS:
+    for k in (*REF_KEYS, *sorted(_ADOPTED["ref"])):
         if k not in refs_in:
             continue
         refs[k] = _clean_master(refs_in[k]) if k == "master" else scrub_value(refs_in[k])
@@ -854,6 +900,9 @@ _PLAN_IGNORED = frozenset({
     "ts_links", "ts_refs", "ts_base_snapshot", "aac", "filter_goals",
 })
 _ROW_IGNORED = frozenset({"aac", "panels"})
+# A frame grader's figures, under their current name.
+_PLAN_IGNORED = _PLAN_IGNORED | {"grader"}
+_ROW_IGNORED = _ROW_IGNORED | {"grader"}
 
 _LABELS = {
     "min_altitude_deg": "min altitude",

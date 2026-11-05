@@ -164,11 +164,103 @@ def desired(row: dict) -> int:
     return max(1, math.ceil(hours * 3600.0 / sub_s(row)))
 
 
-def plan_aac(plan: dict | None) -> dict | None:
-    """The plan's `aac` block when it has a usable watermark and floor, else
+# A frame grader's figures (docs/api.md, "Accepted counts") sit in a block
+# called `grader` on the plan and on each row. Plans saved before the rename
+# hold the block under an older name. ACP finds such a block by its fields,
+# whatever it is called. A name an extension registered with
+# register_block_alias is moved to `grader` when plans load. Any other name is
+# left where it is, kept current beside `grader`, and reported in the log, so
+# nothing is lost while no alias is registered.
+GRADER_KEY = "grader"
+_PLAN_MARKS = frozenset({"filed_through_night", "min_total_frames"})
+_ROW_MARKS = frozenset({"accepted_seconds", "accepted_frames", "seen_seconds", "seen_frames",
+                        "goal_at_send"})
+_GRADER_MARKS = _PLAN_MARKS | _ROW_MARKS
+_NOT_GRADER = frozenset({GRADER_KEY, "target", "panels", "filter_goals", "ts_links", "ts_refs",
+                         "ts_base_snapshot"})
+
+
+def other_grader_keys(obj) -> list[str]:
+    """Keys on a plan or a row, other than `grader`, whose value is a grader
+    block by its fields: a block stored under a name from before the rename."""
+    if not isinstance(obj, dict):
+        return []
+    return [k for k, v in obj.items()
+            if k not in _NOT_GRADER and isinstance(v, dict) and not _GRADER_MARKS.isdisjoint(v)]
+
+
+def grader_block(obj: dict | None) -> dict | None:
+    """The grader's block on a plan or a row, under `grader` or an older name,
+    or None."""
+    if not isinstance(obj, dict):
+        return None
+    if isinstance(obj.get(GRADER_KEY), dict):
+        return obj[GRADER_KEY]
+    for k in other_grader_keys(obj):
+        return obj[k]
+    return None
+
+
+def _grader_owners(plan) -> list[dict]:
+    if not isinstance(plan, dict):
+        return []
+    return [plan, *(r for r in (plan.get("filter_rows") or []) if isinstance(r, dict))]
+
+
+def migrate_grader_names(plan: dict) -> set[str]:
+    """Move blocks stored under a registered old name to `grader`. A block
+    under a name nobody registered stays where it is and gets a `grader`
+    copy. Returns the unregistered names found, for the log."""
+    unregistered: set[str] = set()
+    for obj in _grader_owners(plan):
+        for k in other_grader_keys(obj):
+            if BLOCK_ALIASES.get(k) == GRADER_KEY:
+                old = obj.pop(k)
+                obj.setdefault(GRADER_KEY, old)
+            else:
+                unregistered.add(k)
+                obj.setdefault(GRADER_KEY, copy.deepcopy(obj[k]))
+    return unregistered
+
+
+def with_old_block_names(plan: dict) -> dict:
+    """A copy of *plan* that also carries each `grader` block under every
+    old name registered for it, for clients written before the rename.
+    Never stored."""
+    olds = [o for o, n in BLOCK_ALIASES.items() if n == GRADER_KEY]
+    if not isinstance(plan, dict) or not olds:
+        return plan
+    out = dict(plan)
+    if isinstance(out.get(GRADER_KEY), dict):
+        out.update({o: out[GRADER_KEY] for o in olds if o not in out})
+    rows = out.get("filter_rows")
+    if isinstance(rows, list):
+        out["filter_rows"] = [
+            {**r, **{o: r[GRADER_KEY] for o in olds if o not in r}}
+            if isinstance(r, dict) and isinstance(r.get(GRADER_KEY), dict) else r
+            for r in rows]
+    return out
+
+
+def _set_grader(obj: dict, block: dict) -> None:
+    """Store *block* as `grader`, and under any older name the object still
+    carries, so a client reading that name sees the same figures."""
+    for k in other_grader_keys(obj):
+        obj[k] = copy.deepcopy(block)
+    obj[GRADER_KEY] = block
+
+
+def _drop_grader(obj: dict) -> None:
+    for k in other_grader_keys(obj):
+        obj.pop(k, None)
+    obj.pop(GRADER_KEY, None)
+
+
+def plan_grader(plan: dict | None) -> dict | None:
+    """The plan's grader block when it has a usable watermark and floor, else
     None. `filed_through_night` has to be an ISO date and `min_total_frames` a
     whole number of at least 0 (section 6)."""
-    b = (plan or {}).get("aac")
+    b = grader_block(plan)
     if not isinstance(b, dict):
         return None
     night, floor = b.get("filed_through_night"), b.get("min_total_frames")
@@ -184,14 +276,14 @@ def plan_aac(plan: dict | None) -> dict | None:
 
 
 def desired_for(row: dict, plan: dict | None) -> int:
-    """`desired` with AAC's floor (section 6): a row that has an `aac` block
-    on a plan with one never sits below `min_total_frames`. A row with a goal
-    of 0 still pushes no plan. The TS sync writers compute the same number
+    """`desired` with the grader's floor (section 6): a row that has a grader
+    block on a plan with one never sits below `min_total_frames`. A row with a
+    goal of 0 still pushes no plan. The TS sync writers compute the same number
     (tests/fixtures/aac_accepted_cases.json)."""
     d = desired(row)
-    if d <= 0 or not isinstance(row.get("aac"), dict):
+    if d <= 0 or grader_block(row) is None:
         return d
-    block = plan_aac(plan)
+    block = plan_grader(plan)
     return max(d, int(block["min_total_frames"])) if block else d
 
 
@@ -617,8 +709,8 @@ def _row_from_goal(filt: str, template: str, goal: dict) -> dict:
         row["target_hours"] = hours
     if "actual_hours" in goal:
         row["actual_hours"] = goal["actual_hours"]
-    if isinstance(goal.get("aac"), dict):
-        row["aac"] = copy.deepcopy(goal["aac"])
+    if grader_block(goal) is not None:
+        row[GRADER_KEY] = copy.deepcopy(grader_block(goal))
     return row
 
 
@@ -760,7 +852,7 @@ def rekey_links(plan: dict, id_by_key: dict[str, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# What AAC needs from ACP (section 6)
+# What a frame grader needs from ACP (section 6)
 # ---------------------------------------------------------------------------
 
 # Old names for a block another tool writes on plans and their rows, mapped
@@ -782,33 +874,37 @@ def register_block_alias(old: str, new: str) -> None:
     BLOCK_ALIASES[old] = new
 
 
-def keep_aac(payload: dict, existing: dict | None) -> None:
-    """Put AAC's figures back on a plan a client is saving.
+def keep_grader(payload: dict, existing: dict | None) -> None:
+    """Put the grader's figures back on a plan a client is saving.
 
-    AAC is the only writer of a row's `aac` block and of the plan's `aac`
-    block, so whatever a client echoes is replaced by what is stored, matched
-    by row id. A row the client added has none, and a row whose filter or
-    template differs from the stored row's loses its block: AAC reported it
-    for the old pair (section 6).
+    Only POST /api/plans/<id>/accepted writes a row's grader block and the
+    plan's, so whatever a client echoes, under either name, is replaced by
+    what is stored, matched by row id. A row the client added has none, and a
+    row whose filter or template differs from the stored row's loses its
+    block: the grader reported it for the old pair (section 6).
     """
-    stored = {r.get("id"): r for r in rows_of(existing) if isinstance(r.get("aac"), dict)}
+    def stored_blocks(obj) -> dict:
+        return {k: copy.deepcopy(obj[k]) for k in [GRADER_KEY, *other_grader_keys(obj)]
+                if isinstance(obj.get(k), dict)}
+
+    stored = {r.get("id"): r for r in rows_of(existing) if grader_block(r) is not None}
     rows = payload.get("filter_rows")
     if isinstance(rows, list):
         for r in rows:
             if not isinstance(r, dict):
                 continue
-            r.pop("aac", None)
+            _drop_grader(r)
             old = stored.get(r.get("id"))
             if old is not None and same_identity(old, r):
-                r["aac"] = copy.deepcopy(old["aac"])
-    payload.pop("aac", None)
-    if isinstance(existing, dict) and isinstance(existing.get("aac"), dict):
-        payload["aac"] = copy.deepcopy(existing["aac"])
+                r.update(stored_blocks(old))
+    _drop_grader(payload)
+    if isinstance(existing, dict):
+        payload.update(stored_blocks(existing))
 
 
 def same_identity(a: dict, b: dict) -> bool:
-    """Whether two rows name the same filter and template, the pair AAC's
-    figures are reported against."""
+    """Whether two rows name the same filter and template, the pair the
+    grader's figures are reported against."""
     return row_filter(a.get("filter")) == row_filter(b.get("filter")) \
         and a.get("template") == b.get("template")
 
@@ -880,17 +976,17 @@ def validate_accepted(body) -> str | None:
 def apply_accepted(plan: dict, body: dict, received_at: str,
                    canon_filter: Callable[[str], str | None],
                    names_for_row: Callable[[dict], set[str]] | None = None) -> list[dict]:
-    """Store AAC's figures on *plan* and return the `unknown_rows`.
+    """Store the grader's figures on *plan* and return the `unknown_rows`.
 
     A row is stored only when its id is on the plan, its echoed filter reaches
-    the row's filter, and its echoed template equals the row's. A row AAC sent
+    the row's filter, and its echoed template equals the row's. A row the grader sent
     that comes back unknown loses its stored block, which was reported for a
     filter and template the row no longer has. Each stored block also records
     `goal_at_send`, the row's goal in its own unit at that moment, so a
     `complete` flag stops counting once the goal is raised. Values may go
     down. `actual_hours` is never touched. The caller has run
     `validate_accepted`. *names_for_row* gives the earlier names a row's
-    template went by, so a rename between AAC reading the plans and writing
+    template went by, so a rename between the grader reading the plans and writing
     back does not drop the block (gear templates spec section 7).
     """
     by_id = {r.get("id"): r for r in rows_of(plan)}
@@ -906,11 +1002,11 @@ def apply_accepted(plan: dict, body: dict, received_at: str,
         template_ok = entry["template"] == row.get("template") or (
             names_for_row is not None and entry["template"] in names_for_row(row))
         if not filter_ok or not template_ok:
-            row.pop("aac", None)
+            _drop_grader(row)
             unknown.append({"id": entry["id"], "reason":
                             f"row now has filter {row.get('filter')} and template {row.get('template')}"})
             continue
-        row["aac"] = {
+        _set_grader(row, {
             "accepted_seconds": float(entry["accepted_seconds"]),
             "accepted_frames": int(entry["accepted_frames"]),
             "seen_seconds": float(entry["seen_seconds"]),
@@ -919,10 +1015,10 @@ def apply_accepted(plan: dict, body: dict, received_at: str,
             "estimated_hours": entry.get("estimated_hours"),
             "measurement": entry.get("measurement"),
             "goal_at_send": goal_of(row),
-        }
-    plan["aac"] = {
+        })
+    _set_grader(plan, {
         "filed_through_night": body["filed_through_night"],
         "min_total_frames": body["min_total_frames"],
         "received_at": received_at,
-    }
+    })
     return unknown
