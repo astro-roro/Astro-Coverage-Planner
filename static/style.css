@@ -468,6 +468,13 @@ body.panel-resizing { cursor: col-resize; user-select: none; }
   max-width: 36em;
 }
 
+/* Placeholder in the map area while Aladin Lite loads. */
+.map-loading {
+  padding: 24px;
+  color: #8a93a6;
+  font-size: 14px;
+}
+
 .panel-list h3 {
   display: flex;
   align-items: baseline;

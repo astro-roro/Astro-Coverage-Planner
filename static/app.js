@@ -244,6 +244,22 @@ function loadUiState() {
   catch { return {}; }
 }
 
+// Resolves the moment the sky map is up, so the interface can start first.
+// Work that needs the map goes through mapGate.whenReady(). See
+// static/map-ready.mjs and init().
+const mapGate = createMapGate();
+
+// Put the saved projection, survey and frame onto the real map.
+function applySavedMapView() {
+  const s = loadUiState();
+  if (typeof s.projection === "string" && s.projection) aladin.setProjection(s.projection);
+  if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
+    showSurvey(s.imageSurvey);
+    syncSkyControl(s.imageSurvey);
+  }
+  if (typeof s.frame === "string" && s.frame) aladin.setFrame(s.frame);
+}
+
 function applyUiStatePreManifest() {
   const s = loadUiState();
 
@@ -286,22 +302,17 @@ function applyUiStatePreManifest() {
     // `enabled` is handled after the manifest loads (see init()).
   }
 
+  // The saved projection, survey and frame also need the map. The controls
+  // show the saved values at once; the map itself gets them when it is ready.
   if (typeof s.projection === "string" && s.projection) {
     const proj = document.getElementById("projSel");
     if (proj) proj.value = s.projection;
-    if (aladin) aladin.setProjection(s.projection);
   }
-
-  if (typeof s.imageSurvey === "string" && s.imageSurvey && aladin?.setImageSurvey) {
-    showSurvey(s.imageSurvey);
-    syncSkyControl(s.imageSurvey);
-  }
-
   if (typeof s.frame === "string" && s.frame) {
     const fr = document.getElementById("frameSel");
     if (fr) fr.value = s.frame;
-    if (aladin) aladin.setFrame(s.frame);
   }
+  mapGate.whenReady(applySavedMapView);
 
   // Active site is loaded from localStorage in initSites() once /api/sites
   // resolves; legacy `s.site` payloads from older builds are ignored.
@@ -683,7 +694,8 @@ import {
   webgl2Available,
   withTimeout,
 } from "./init-error.mjs";
-import { disableMapControls, noMapLibrary, noMapStub } from "./no-map.mjs";
+import { disableMapControls, enableMapControls, noMapLibrary, noMapStub, pauseMapControls } from "./no-map.mjs";
+import { createMapGate } from "./map-ready.mjs";
 import {
   filterHiddenCount,
   filterHiddenNoteText,
@@ -2268,6 +2280,7 @@ let extToggleState = (() => {
 // Live MOC overlays keyed by source_id. Populated by mocToggleOn / cleared by
 // mocToggleOff.
 const mocLayers = {};
+const mocColors = {}; // source_id -> colour, so a MOC can be drawn again once the map is ready
 
 function mocToggleOn(sourceId, color, checkbox) {
   const url = `/api/moc/${encodeURIComponent(sourceId)}`;
@@ -2477,6 +2490,7 @@ async function loadSources() {
     sourcesEnabled[s.id] = enabled;
     const color = s.color || SOURCE_PALETTE[i % SOURCE_PALETTE.length];
     colorById[s.id] = color;
+    mocColors[s.id] = color;
     const row = document.createElement("label");
     row.className = "fchip src-row";
     if (s.attribution) row.title = s.attribution;
@@ -6955,11 +6969,13 @@ async function init() {
   })();
   manifestReady.catch(() => {});
 
-  // The map and the panels start separately. When the map cannot start,
-  // its area shows why and the Targets and Plans panels still load, so
+  // The panels start first and never wait for the map. Until the map is up
+  // the stand-ins from no-map.mjs take its place, so panel code can call into
+  // it freely, and anything that must really reach the map is queued with
+  // mapGate.whenReady(). The map area shows a placeholder meanwhile. When
+  // the map cannot start, its area says why and the panels carry on, so
   // targets and plans can be read and edited while the sky is down.
-  const mapError = await startMap();
-  if (mapError) startWithoutMap(mapError);
+  showMapLoading();
 
   // Document-level Esc: navigate up one panel level (mirrors empty-sky click).
   // Skip if focus is in a form control, Esc should keep its native blur/clear
@@ -6976,6 +6992,19 @@ async function init() {
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || ae?.isContentEditable) return;
     goUpOneLevel();
   });
+
+  // Let the browser paint the interface before Aladin's script and WebGL
+  // setup begin, then start the map without awaiting it.
+  setTimeout(() => {
+    startMap().then(mapError => {
+      if (mapError) {
+        mapGate.markFailed();
+        startWithoutMap(mapError);
+      } else {
+        mapIsUp();
+      }
+    });
+  }, 0);
 
   try {
     await startPanels();
@@ -7006,7 +7035,17 @@ async function init() {
     }
   }
 
+  // The real map exists. Swap it in for the stand-ins, give the map-only
+  // controls back, and run everything that was waiting for it.
+  function mapIsUp() {
+    enableMapControls();
+    mapGate.whenReady(redrawMapContent);
+    mapGate.markReady();
+  }
+
   function buildMap() {
+    const loadingEl = document.querySelector("#aladin-lite-div .map-loading");
+    if (loadingEl) loadingEl.remove();
     aladin = A.aladin("#aladin-lite-div", {
       fov: 180,
       projection: "AIT",
@@ -7247,6 +7286,45 @@ async function init() {
 
     tour.maybeAutoStart();
   }
+}
+
+// Shown in the map area while Aladin Lite loads. buildMap removes it.
+// The map-only controls are off until the map is up.
+function showMapLoading() {
+  const mapEl = document.getElementById("aladin-lite-div");
+  if (mapEl) mapEl.innerHTML = '<div class="map-loading" role="status">Loading the sky map\u2026</div>';
+  pauseMapControls();
+  aladin = noMapStub();
+  overlay = noMapStub();
+  filterBadgeCat = noMapStub();
+  planOverlay = noMapStub();
+  planOverlayDashed = noMapStub();
+  planCenterCat = noMapStub();
+  hoverOverlay = noMapStub();
+  skyResultsOverlay = noMapStub();
+  skyResultsCat = noMapStub();
+  skyPickOverlay = noMapStub();
+  if (typeof A === "undefined" || !A) globalThis.A = noMapLibrary();
+}
+
+// Draw again everything the panels asked the map for while it was loading.
+// Anything drawn onto a stand-in went nowhere, so it is made afresh on the
+// real map. Safe to run before or after the panels have finished loading.
+function redrawMapContent() {
+  for (const name of Object.keys(catOverlays)) delete catOverlays[name];
+  const mocIds = Object.keys(mocLayers);
+  for (const id of mocIds) delete mocLayers[id];
+  for (const id of mocIds) {
+    const cb = document.querySelector(`input[data-source="${CSS.escape(id)}"]`);
+    if (cb?.checked) mocToggleOn(id, mocColors[id], cb);
+  }
+  redrawFootprints();
+  redrawPlanFootprints();
+  for (const id of catalogDomIds()) {
+    const cb = document.getElementById(id);
+    if (cb && cb.checked) cb.dispatchEvent(new Event("change"));
+  }
+  if (gapEnabled) loadGaps();
 }
 
 // The sky map did not start. Say why in the map area, turn off the
