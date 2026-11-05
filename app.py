@@ -1730,6 +1730,57 @@ app.catalog_sources: list = []
 # panel. Entries may declare ``replaces: "<core-button-id>"`` to swap a core
 # button in place (handler/label come from the extension). See docs/extensions.md.
 app.extensions_manifest: list[dict] = []
+# The extension interface's version and the hooks this build offers
+# (docs/extensions.md, "Versions and hooks"). Set before any extension loads,
+# so register(app) can check them and refuse a version it does not know.
+from extensions import set_api_version as _set_ext_api_version  # noqa: E402
+_set_ext_api_version(app)
+
+# Plan reads and writes for extensions, under PLANS_LOCK (docs/extensions.md,
+# "Plan reads and writes"). The lambdas look the functions up when called,
+# since several are defined further down this file.
+import plans_api  # noqa: E402
+plans_api.bind(
+    load=lambda: load_plans(),
+    save=lambda doc: save_plans(doc),
+    lock=PLANS_LOCK,
+    apply_project_settings=lambda *a: apply_project_settings(*a),
+    project_key=lambda plan: balancer.project_key(plan),
+    now=lambda: datetime.now(timezone.utc).isoformat(),
+)
+app.plans_api = plans_api
+from extensions import add_hook as _add_ext_hook  # noqa: E402
+_add_ext_hook(app, "plans_api")
+
+# Plan fields an extension owns (docs/extensions.md, "Plan fields owned by an
+# extension"). Each entry is {"extension", "keys", "validate", "keep", "view"};
+# the three callables are optional. Core calls validate and keep on every plan
+# save and view on every plan GET. Keys nobody registers pass through as sent.
+app.plan_fields: list[dict] = []
+_add_ext_hook(app, "plan_fields")
+# A plan_fields entry may list "project_keys": keys the project settings route
+# spreads across every plan in a project, like state and priority.
+_add_ext_hook(app, "project_keys")
+# activity.register_types and activity.register_source (docs/extensions.md,
+# "Activity types and sources").
+_add_ext_hook(app, "activity_types")
+# Callables run after each clean archive scan with a summary dict
+# (docs/extensions.md, "Scan finished").
+app.scan_hooks: list = []
+_add_ext_hook(app, "scan_hooks")
+# Jobs extensions want run on a cron schedule (docs/extensions.md, "Scheduled
+# jobs"): {"id", "cron", "run"}. Read once, after the extensions load.
+app.scheduled_jobs: list[dict] = []
+_add_ext_hook(app, "scheduled_jobs")
+# Manifest key editor_sections: pages shown under the plan editor
+# (docs/extensions.md, "Plan editor sections").
+_add_ext_hook(app, "editor_sections")
+# Manifest key activity_cards: pages shown at the top of the Activity tab
+# (docs/extensions.md, "Activity cards").
+_add_ext_hook(app, "activity_cards")
+# activity.register_alias and filter_rows.register_block_alias: old names a
+# sender or a stored plan may still use (docs/extensions.md, "Old names").
+_add_ext_hook(app, "name_aliases")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -2843,8 +2894,10 @@ def api_extensions_manifest():
     warning, see ``extensions.sanitise_rail_tabs``); everything else passes
     through verbatim.
     """
-    from extensions import sanitise_rail_tabs
-    return jsonify([sanitise_rail_tabs(e) for e in app.extensions_manifest])
+    from extensions import sanitise_pages, sanitise_rail_tabs
+    return jsonify([sanitise_pages(sanitise_pages(sanitise_rail_tabs(e), "editor_sections", needs_label=True),
+                                   "activity_cards", needs_label=False)
+                    for e in app.extensions_manifest])
 
 
 @app.route("/api/sources")
@@ -4842,11 +4895,59 @@ def _commitment_progress(plan: dict) -> list[dict]:
     return out
 
 
+def _ext_plan_field_entries():
+    for entry in getattr(app, "plan_fields", None) or []:
+        if isinstance(entry, dict):
+            yield entry
+
+
+def _ext_plan_fields_on_save(payload: dict, existing: dict | None) -> str | None:
+    """Run each extension's ``validate`` then ``keep`` on a plan being saved.
+    Returns the first error text a ``validate`` gives. A callable that raises
+    is logged and skipped, so a broken extension never blocks a save."""
+    for entry in _ext_plan_field_entries():
+        fn = entry.get("validate")
+        if callable(fn):
+            try:
+                err = fn(payload)
+            except Exception:
+                logging.exception("extension %s: plan field validate raised", _safe_log(entry.get("extension")))
+                err = None
+            if err:
+                return str(err)
+    for entry in _ext_plan_field_entries():
+        fn = entry.get("keep")
+        if callable(fn):
+            try:
+                fn(payload, copy.deepcopy(existing) if existing is not None else None)
+            except Exception:
+                logging.exception("extension %s: plan field keep raised", _safe_log(entry.get("extension")))
+    return None
+
+
+def _ext_plan_view(plan: dict) -> dict:
+    """Each extension's ``view`` on a plan about to be returned. ``view`` gets
+    a copy and returns the plan to send (or None to leave it unchanged)."""
+    for entry in _ext_plan_field_entries():
+        fn = entry.get("view")
+        if not callable(fn):
+            continue
+        try:
+            out = fn(copy.deepcopy(plan))
+        except Exception:
+            logging.exception("extension %s: plan field view raised", _safe_log(entry.get("extension")))
+            continue
+        if isinstance(out, dict):
+            plan = out
+    return plan
+
+
 def _with_goals_view(plan):
     """A copy of *plan* carrying the derived `filter_goals` older plugins
     read (filter_rows.filter_goals_view). Never stored."""
     if not isinstance(plan, dict):
         return plan
+    plan = _ext_plan_view(plan)
     # A plan with no target_class reads as survey (section 6), for AAC.
     plan = {**plan, "target_class": fr.target_class_of(plan)}
     if plan.get("commitments"):
@@ -4890,6 +4991,9 @@ def api_plans():
     previous = next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None)
     before = copy.deepcopy(previous) if previous is not None and activity.enabled() else None
     err = _keep_balancer_fields(payload, previous)
+    if err:
+        return jsonify({"error": err}), 400
+    err = _ext_plan_fields_on_save(payload, previous)
     if err:
         return jsonify({"error": err}), 400
     fr.keep_aac(payload, previous)
@@ -4985,6 +5089,9 @@ def api_plan(plan_id: str):
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     _keep_rows_from_old_page(payload, existing)
     err = _keep_balancer_fields(payload, existing)
+    if err:
+        return jsonify({"error": err}), 400
+    err = _ext_plan_fields_on_save(payload, existing)
     if err:
         return jsonify({"error": err}), 400
     fr.keep_aac(payload, existing)
@@ -5115,6 +5222,10 @@ def api_project_settings(project_name: str):
         wanted["balance_role"] = role
     if has_hold:
         wanted["balance_hold"] = hold
+    ext_wanted, err = _ext_project_settings(payload, wanted)
+    if err:
+        return jsonify({"error": err}), 400
+    wanted.update(ext_wanted)
     now = datetime.now(timezone.utc).isoformat()
     changes = apply_project_settings(plans, project_name, wanted, now)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -5134,7 +5245,38 @@ def api_project_settings(project_name: str):
         **{key: order_settings.get(key) for key in ORDER_SETTING_KEYS},
         "balance_role": role if has_role else None,
         "balance_hold": hold if has_hold else None,
+        **ext_wanted,
     })
+
+
+def _ext_project_settings(payload: dict, core_wanted: dict) -> tuple[dict, str | None]:
+    """The project-wide keys extensions declared (``project_keys`` on a
+    ``plan_fields`` entry) that this request sets. Each entry's ``validate``
+    sees only its own keys. Core's own keys are never handed to an extension.
+    Returns (values to spread, error text or None)."""
+    out: dict = {}
+    for entry in _ext_plan_field_entries():
+        keys = [k for k in (entry.get("project_keys") or [])
+                if isinstance(k, str) and k in payload and k not in core_wanted
+                and k not in _CORE_PROJECT_KEYS]
+        if not keys:
+            continue
+        values = {k: copy.deepcopy(payload[k]) for k in keys}
+        fn = entry.get("validate")
+        if callable(fn):
+            try:
+                err = fn(dict(values))
+            except Exception:
+                logging.exception("extension %s: plan field validate raised", _safe_log(entry.get("extension")))
+                err = None
+            if err:
+                return {}, str(err)
+        out.update(values)
+    return out, None
+
+
+_CORE_PROJECT_KEYS = frozenset({"state", "priority", "minimum_time_min", "balance_role",
+                                "balance_hold", *ORDER_SETTING_KEYS})
 
 
 def apply_project_settings(plans: list[dict], project_name: str, wanted: dict, now: str) -> dict:
@@ -6103,6 +6245,53 @@ def api_activity_prefs():
     return jsonify(activity.set_prefs(chips))
 
 
+@app.route("/api/uploads/<transfer_id>/progress", methods=["POST"])
+def api_upload_progress(transfer_id: str):
+    """Progress figures for a named file transfer, from whatever tool moves
+    the files (docs/api.md, "Upload progress"). Kept in memory for a short
+    while for the Activity tab's card. The first post that says the transfer
+    finished or failed also records one Activity event."""
+    import upload_progress
+    body = request.get_json(silent=True)
+    try:
+        rec, ended = upload_progress.report(transfer_id, body)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except OverflowError as exc:
+        return jsonify({"error": str(exc)}), 429
+    if ended:
+        _run_activity(lambda: _record_upload_ended(rec))
+    return jsonify({"transfer": rec, "event_recorded": ended})
+
+
+@app.route("/api/uploads")
+def api_uploads():
+    """Transfers ACP is holding: running and paused first, then any that
+    ended in the last few minutes."""
+    import upload_progress
+    return jsonify({"transfers": upload_progress.listing()})
+
+
+def _record_upload_ended(rec: dict) -> None:
+    import upload_progress
+    failed = rec["state"] == "failed"
+    run = rec.get("started_at") or rec.get("updated_at")
+    activity.record(
+        type="upload_failed" if failed else "upload_finished",
+        key=f"upload:{rec['id']}:{run}", title=upload_progress.event_title(rec),
+        severity="error" if failed else "info",
+        data={"transfer_id": rec["id"], **{k: rec.get(k) for k in (
+            "files_done", "files_total", "bytes_done", "bytes_total", "started_at", "cutoff")}})
+
+
+@app.route("/api/activity/types")
+@_activity_route
+def api_activity_types():
+    """The filter chips and the event types under each, core's and any an
+    extension registered, so the tab can file every event."""
+    return jsonify({"chips": activity.chip_defs(), "sources": list(activity.POSTABLE_SOURCES)})
+
+
 def _build_live_document() -> dict:
     import shooting_publish as sp
     plans = load_plans().get("plans", [])
@@ -6927,6 +7116,7 @@ def scan_status() -> dict:
     state["progress"] = _read_scan_progress()
     state["elapsed_seconds"] = (int(time.monotonic() - started)
                                 if state["running"] and started is not None else None)
+    state["jobs"] = _jobs_runner.status() if _jobs_runner is not None else []
     return state
 
 
@@ -7132,8 +7322,33 @@ def run_claimed_scan() -> None:
             _scan_state["running"] = False
             _scan_state["last_finish"] = datetime.now().isoformat(timespec="seconds")
             _scan_state["last_exit_code"] = code
+            summary = {"trigger": _scan_state.get("last_trigger"),
+                       "started_at": _scan_state.get("last_start"),
+                       "finished_at": _scan_state["last_finish"], "exit_code": code}
     logging.info("archive scan finished (exit %s)", code)
     _run_activity(lambda: _record_scan_activity(before, code == 0))
+    if code == 0:
+        _run_scan_hooks(summary)
+
+
+def _run_scan_hooks(summary: dict) -> None:
+    """Call each extension's scan hook after a clean scan (docs/extensions.md,
+    "Scan finished"). Each gets its own copy of the summary and its own try,
+    so one that raises is logged and never touches the scan's result or the
+    other hooks."""
+    try:
+        doc = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        targets = doc.get("targets") if isinstance(doc, dict) else None
+        summary = {**summary, "targets": len(targets) if isinstance(targets, list) else None}
+    except (OSError, ValueError):
+        summary = {**summary, "targets": None}
+    for hook in list(getattr(app, "scan_hooks", None) or []):
+        if not callable(hook):
+            continue
+        try:
+            hook(dict(summary))
+        except Exception:
+            logging.exception("scan hook %s raised", _safe_log(getattr(hook, "__qualname__", repr(hook))))
 
 
 def _manifest_snapshot() -> dict | None:
@@ -7355,6 +7570,42 @@ def stop_scan_scheduler() -> None:
     # Leave the module startable again: a set stop event would make the next
     # start_scan_scheduler() spawn a thread that returns immediately.
     _scan_scheduler_stop.clear()
+
+
+_jobs_runner = None
+_jobs_thread: threading.Thread | None = None
+_jobs_stop = threading.Event()
+
+
+def start_jobs_scheduler() -> bool:
+    """Start the thread that runs extensions' scheduled jobs. Does nothing when
+    no extension registered one, or when ACP_DISABLE_JOBS is set."""
+    global _jobs_runner, _jobs_thread
+    import scheduled_jobs
+    if scheduled_jobs.disabled():
+        if app.scheduled_jobs:
+            logging.info("extension jobs not started: %s is set", scheduled_jobs.DISABLE_ENV)
+        return False
+    jobs = scheduled_jobs.valid_jobs(app.scheduled_jobs)
+    if not jobs or (_jobs_thread is not None and _jobs_thread.is_alive()):
+        return False
+    _jobs_runner = scheduled_jobs.Runner(jobs, datetime.now())
+    _jobs_stop.clear()
+    _jobs_thread = threading.Thread(target=scheduled_jobs.loop, args=(_jobs_runner, _jobs_stop),
+                                    name="acp-extension-jobs", daemon=True)
+    _jobs_thread.start()
+    logging.info("extension jobs scheduled: %s", ", ".join(j["id"] for j in jobs))
+    return True
+
+
+def stop_jobs_scheduler() -> None:
+    global _jobs_runner, _jobs_thread
+    _jobs_stop.set()
+    if _jobs_thread is not None:
+        _jobs_thread.join(timeout=5)
+    _jobs_thread = None
+    _jobs_runner = None
+    _jobs_stop.clear()
 
 
 @app.route("/api/scan/status")
@@ -8263,6 +8514,7 @@ migrate_gear_at_startup()
 clear_dead_scan_progress()
 start_scan_scheduler()
 start_balancer_scheduler()
+start_jobs_scheduler()
 
 
 def effective_port(env=None) -> int:

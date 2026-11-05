@@ -252,6 +252,9 @@
         <!-- The Activity tab: what happened night by night, and what needs a
              person. Built by static/activity-ui.mjs from /api/activity. -->
         <section class="side-tab" data-tab="activity" hidden>
+          <!-- Cards: ACP's own (upload progress) and any an extension adds
+               through the manifest's activity_cards. Filled by app.js. -->
+          <div id="activityCards" class="activity-cards"></div>
           <div id="activityBody" class="activity" aria-live="polite">
             <div class="panel-loading">Loading activity…</div>
           </div>

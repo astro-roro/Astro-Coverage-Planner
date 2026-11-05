@@ -763,6 +763,25 @@ def rekey_links(plan: dict, id_by_key: dict[str, str]) -> None:
 # What AAC needs from ACP (section 6)
 # ---------------------------------------------------------------------------
 
+# Old names for a block another tool writes on plans and their rows, mapped
+# to the name ACP uses now (docs/extensions.md, "Old names"). Core ships none;
+# an extension registers them, so plans saved under an old name keep working.
+BLOCK_ALIASES: dict[str, str] = {}
+_BLOCK_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+
+def register_block_alias(old: str, new: str) -> None:
+    """Record that a block stored under *old* on a plan or row is the block
+    ACP now calls *new*. Names are short lowercase slugs. Raises ValueError
+    on a bad argument."""
+    for name in (old, new):
+        if not isinstance(name, str) or not _BLOCK_NAME_RE.match(name):
+            raise ValueError("block names are short lowercase slugs")
+    if old == new:
+        raise ValueError("an alias must map one name to another")
+    BLOCK_ALIASES[old] = new
+
+
 TARGET_CLASSES = ("survey", "deep", "pretty")
 DEFAULT_TARGET_CLASS = "survey"
 

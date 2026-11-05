@@ -13,6 +13,7 @@ There are three ways an extension can plug in:
 - [Flask-route example](#flask-route-example-friends-fov-list-as-csv)
 - [Plugin protocols](#plugin-protocols)
 - [UI manifest](#ui-manifest)
+- [Extension hooks](#extension-hooks)
 - [What kinds of things make sense as extensions](#what-kinds-of-things-make-sense-as-extensions)
 - [Trust, failures, debugging](#trust-failures-debugging)
 
@@ -34,6 +35,32 @@ ACP also loads the extensions in its own `bundled_extensions/` folder, currently
 Each extension defines a top-level `register(app)` callable that receives the Flask app. From there you can register blueprints, append to the registries, read `app.config`, attach teardown hooks — anything Flask supports plus the plugin registries below.
 
 Extensions are loaded once at startup; failures in one are logged and don't block the others or the app itself.
+
+### Versions and hooks
+
+Before any extension loads, ACP sets two attributes on the app:
+
+- `app.acp_extension_api` is the version of the extension interface, currently `1`. It goes up only when something an extension relies on changes in a way that would break it.
+- `app.acp_extension_hooks` is a set naming the hooks this build offers, such as `"plan_fields"` or `"scan_hooks"`. New hooks add a name here and leave the version alone.
+
+An extension that lives outside ACP should check both first, and refuse to register when it sees a version it does not know. Log why, so the reason shows in the server log:
+
+```python
+import logging
+log = logging.getLogger("acp.extensions.my_workflow")
+
+def register(app):
+    if getattr(app, "acp_extension_api", None) != 1:
+        log.warning("my_workflow: unknown extension API %r, not registering",
+                    getattr(app, "acp_extension_api", None))
+        return
+    if "plan_fields" not in getattr(app, "acp_extension_hooks", set()):
+        log.warning("my_workflow: this ACP has no plan_fields hook, not registering")
+        return
+    ...
+```
+
+The hooks are described under [Extension hooks](#extension-hooks).
 
 ## Flask-route example: friend's FOV list as CSV
 
@@ -323,6 +350,213 @@ The `acp-nina-ts-sync` extension uses all of the above:
 - Both actions declare `needs: ["profile_id"]`; the config + profiles endpoints drive the first-time picker.
 
 Source: <https://github.com/astro-roro/Astro-Coverage-Planner> (the extension itself is a separate repo).
+
+## Extension hooks
+
+These let an extension take part in what core does, rather than only add routes beside it. Each hook's name is in `app.acp_extension_hooks` when the build offers it (see [Versions and hooks](#versions-and-hooks)). Core does not use them for its own features. Each one has a small working example under `tests/dummy_extensions/`.
+
+### Plan reads and writes (`plans_api`)
+
+Every core route that changes `plans.json` holds one lock while it reads, changes and writes the file. An extension that writes plans some other way can lose a save from the editor, or have its own change overwritten. `app.plans_api` is the supported way in:
+
+- `read()` returns a deep copy of the plans document, `{"version": ..., "plans": [...]}`.
+- `transact(fn)` takes the lock, hands `fn` a deep copy of the plans list, and saves the list afterwards if it changed. Change the list in place: edit plans, append or remove them. Whatever `fn` returns, `transact` returns. If `fn` raises, nothing is saved and the exception comes back to you.
+- `apply_project_settings(plans, project_name, wanted)` sets each key in `wanted` on every plan in a project, the way the project settings route does, and returns `{key: {"from": ..., "to": ...}}` for the keys that changed. Call it inside `transact` on the list you were given.
+- `project_key(plan)` is the project a plan belongs to: its project name, else its target's name, else its id.
+
+```python
+def register(app):
+    api = app.plans_api
+
+    def mark_project(plans):
+        for p in plans:
+            if api.project_key(p) == "M31 mosaic":
+                p["my_tool_note"] = "checked"
+        return api.apply_project_settings(plans, "M31 mosaic", {"priority": "high"})
+
+    changed = api.transact(mark_project)
+```
+
+Core does not validate what `transact` writes. Keep to fields your extension owns (see [Plan fields](#plan-fields-owned-by-an-extension) once that hook is present) or core's documented fields. Do not call core routes over HTTP from inside `fn`: they take the same lock from another thread and would wait for ever.
+
+### Plan fields owned by an extension
+
+A plan can carry fields core knows nothing about. Core stores any key it does not recognise exactly as the client sent it, and sends it back on every GET, so the editor's save round-trips it. That is enough for a field the user sets freely. When a field needs checking, must not be set by the client, or has a derived value to show, register it in `app.plan_fields`:
+
+```python
+def validate(payload):
+    r = payload.get("rating")
+    if r is not None and r not in (1, 2, 3, 4, 5):
+        return "rating must be a whole number from 1 to 5"
+    return None
+
+def keep(payload, existing):
+    payload.pop("rating_label", None)          # derived, never stored
+    if existing and "rated_at" in existing:     # server-owned
+        payload["rated_at"] = existing["rated_at"]
+    else:
+        payload.pop("rated_at", None)
+
+def view(plan):
+    if plan.get("rating"):
+        plan["rating_label"] = ["", "poor", "fair", "good", "very good", "excellent"][plan["rating"]]
+    return plan
+
+def register(app):
+    app.plan_fields.append({"extension": "my_ratings",
+                            "keys": ["rating", "rated_at"],
+                            "validate": validate, "keep": keep, "view": view})
+```
+
+- `validate(payload)` runs on every create (`POST /api/plans`) and update (`PUT /api/plans/<id>`). Return an error text to refuse the save with a 400, or `None` to accept it. Check only the keys you own, and only when they are present.
+- `keep(payload, existing)` runs next, after every `validate` has passed. Change `payload` in place: copy server-owned values from `existing` (a copy of the stored plan, or `None` for a new one) and drop derived ones. Its return value is ignored.
+- `view(plan)` runs on every plan `GET /api/plans` and `GET /api/plans/<id>` return. It gets a copy and returns the plan to send. Add derived values here; they are never stored unless `keep` lets them through.
+- All three are optional. `keys` and `extension` are for people reading the code and the log.
+
+When a callable raises, ACP logs it on the root logger with the extension's name and carries on as though that callable were absent. A broken extension never blocks a save or a read. Without the extension loaded, its fields stay in `plans.json` untouched and nothing checks them.
+
+#### Project-wide keys
+
+Some settings belong to a whole project rather than one plan, the way state and priority do: every plan sharing a `project_name` carries the same value. A `plan_fields` entry can name such keys in `project_keys` (hook name `project_keys`):
+
+```python
+app.plan_fields.append({"extension": "my_ratings", "keys": ["rating", "rating_group"],
+                        "project_keys": ["rating_group"], "validate": validate})
+```
+
+`PUT /api/projects/<project_name>/settings` then accepts those keys in its body beside core's. The entry's `validate` is called with a dict holding only its own project keys from the request, and an error text refuses the whole request with a 400. Accepted values are set on every plan in the project in the same write as core's settings, they appear in the route's response, and they show in the Activity entry for the change. A key left out of the body is left alone. An extension cannot claim one of core's own project keys.
+
+### Activity types and sources
+
+The Activity tab files every event under a filter chip by its type, and `POST /api/activity/events` accepts only known sources. An event with a type ACP does not know is stored as `other`. An extension can add both (hook name `activity_types`):
+
+```python
+import activity
+
+def register(app):
+    activity.register_types("backups", ["backup_done", "backup_failed"], label="Backups")
+    activity.register_types("processing", ["frames_rejected"])   # add to an existing chip
+    activity.register_source("backup")
+```
+
+- `register_types(group, types, label=None)` adds event types under a chip. `group` is an existing chip id (`plans`, `syncs`, `imaging`, `site`, `data`, `processing`, `masters`, `coverage`) or a new one, which needs a `label` and starts switched on. A type ACP already knows stays where it is.
+- `register_source(name)` lets senders post with `source: name`. `acp` is ACP's own and cannot be registered. Posting still needs the access token, as for every source.
+- Ids are short lowercase slugs: a letter, then letters, digits or `_`, 40 characters at most. A bad argument raises `ValueError`.
+
+The extension can record its own events with `activity.record(type=..., key=..., title=...)` once its types are registered. `GET /api/activity/types` returns every chip with its types and the accepted sources, and the tab reads it on opening.
+
+If the extension is later removed, events already stored keep their type and show under Plans, which is where unknown types go. New posts of those types are stored as `other`.
+
+### Scan finished
+
+`app.scan_hooks` is a list of callables ACP calls after each archive scan that finishes cleanly, whether it was started by the schedule, the Scan button or the API (hook name `scan_hooks`). A failed scan calls none of them.
+
+```python
+import json, logging, urllib.request
+
+def post_summary(summary):
+    req = urllib.request.Request("http://127.0.0.1:9000/scan-done",
+                                 data=json.dumps(summary).encode(),
+                                 headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=10)
+
+def register(app):
+    app.scan_hooks.append(post_summary)
+```
+
+Each hook gets its own copy of a summary:
+
+| Key | Meaning |
+|---|---|
+| `trigger` | What started the scan, such as `cron` or `page`. |
+| `started_at`, `finished_at` | Local times, `YYYY-MM-DDTHH:MM:SS`. |
+| `exit_code` | Always `0`, since only clean scans call hooks. |
+| `targets` | How many targets the new manifest holds, or `null` if it could not be read. |
+
+Hooks run one after another in the scan's own thread, after the scan's state and Activity entry are written. Each runs in its own `try`: one that raises is logged and never changes the scan's result or stops the hooks after it. Keep a hook quick, or start a thread of your own for slow work, because the next scheduled scan waits until the hooks return.
+
+### Scheduled jobs
+
+`app.scheduled_jobs` takes jobs ACP runs on a cron schedule, in the server's local time, the same way it schedules the archive rescan (hook name `scheduled_jobs`):
+
+```python
+def register(app):
+    def tidy():
+        plans = app.plans_api.read()["plans"]
+        ...
+    app.scheduled_jobs.append({"id": "my_tidy", "cron": "30 9 * * *", "run": tidy})
+```
+
+- `id` is a short name, unique across extensions: letters, digits, `_`, `-` and `.`, up to 60 characters.
+- `cron` is a five-field cron expression.
+- `run` is called with no arguments.
+
+ACP reads the list once, after every extension has registered, and starts one thread for all jobs. Append jobs inside `register(app)`; a job added later never runs. A bad entry is logged and skipped. Jobs run one at a time, so a slow one delays the others; start your own thread for long work. A job that raises is logged on the `acp.jobs` logger and runs again at its next time.
+
+Set `ACP_DISABLE_JOBS=1` to keep the thread from starting, for example in tests or while debugging. `GET /api/scan/status` lists each job under `jobs` with its `id`, `cron`, `next_at`, `last_run` and `last_ok`. Error text stays in the log, since that route can be read without a token.
+
+### Plan editor sections
+
+A manifest entry can add sections under the plan editor with `editor_sections` (hook name `editor_sections`). Each is a page of yours, shown in a same-origin iframe inside its own titled box, just above the Save button:
+
+```python
+app.extensions_manifest.append({
+    "extension": "my_tool",
+    "name": "My tool",
+    "editor_sections": [
+        {"id": "checklist", "label": "Checklist", "page": "/api/ext/my-tool/checklist", "height": 160},
+    ],
+})
+```
+
+- `id`, `label` and `page` follow the rail tab rules: a short slug, a non-empty label, and a path under `/api/ext/<your extension>`. Bad sections are dropped with one warning on the `acp.extensions` logger.
+- `height` is optional, in pixels from 40 to 1200. The default is 180.
+- ACP adds `plan_id=<id>` to the page's query string. A plan that has not been saved yet shows no sections, since there is nothing to look up.
+
+When the page has changed the plan on the server (through your own route, which should use [`plans_api`](#plan-reads-and-writes-plans_api)), tell ACP:
+
+```js
+window.parent.postMessage({type: "acp:plan:reload", plan_id: planId}, location.origin);
+```
+
+ACP fetches the plan again and copies every top-level field the server changed into the open editor, so the user's unsaved edits to other fields stay and the next Save does not overwrite your change. It also refreshes the plan list. Fields the core editor shows are not redrawn, so a section should change only fields it owns. The layer messages under [Rail tab width and the layer bridge](#rail-tab-width-and-the-layer-bridge) work from editor sections too.
+
+### Activity cards
+
+A manifest entry can add cards to the top of the Activity tab with `activity_cards` (hook name `activity_cards`). Each card is a page of yours in a same-origin iframe, above the night-by-night list, and stays put while the list below it refreshes:
+
+```python
+app.extensions_manifest.append({
+    "extension": "my_tool",
+    "name": "My tool",
+    "activity_cards": [{"id": "status", "label": "My tool status",
+                        "page": "/api/ext/my-tool/card", "height": 80}],
+})
+```
+
+- `id` and `page` follow the rail tab rules. `label` is optional and becomes the iframe's title for screen readers.
+- `height` is optional, in pixels from 40 to 1200. The default is 120.
+- The iframe is created the first time the Activity tab opens, so a card nobody looks at costs no request. It is kept afterwards, so a card that shows live figures should poll for them itself.
+
+A card can send `acp:plan:reload` and the layer messages, as rail tabs and editor sections do. To put an entry in the night-by-night list instead, record an event (see [Activity types and sources](#activity-types-and-sources)).
+
+### Old names
+
+When ACP renames something a sender or a stored plan uses, an extension can keep the old name working (hook name `name_aliases`). Core ships no aliases, so the old names live with whoever used them.
+
+```python
+import activity, filter_rows
+
+def register(app):
+    activity.register_alias("source", "my_old_tool", "processing")
+    activity.register_alias("type", "my_old_alert", "processing_alert")
+    activity.register_alias("ref", "my_old_job", "job")
+    filter_rows.register_block_alias("my_old_block", "grader")
+```
+
+- `activity.register_alias(kind, old, new)` takes `kind` of `source`, `type` or `ref` (a key in an event's `refs`). A post that uses `old` is stored as `new`, and events already stored under `old` are renamed in place, so a sender still on the old name updates its stored events instead of adding copies. An alias takes effect only once `new` is a valid name on the running ACP, so it can be registered before the rename ships. `acp` can be neither side of an alias.
+- `filter_rows.register_block_alias(old, new)` records that a block stored under `old` on a plan or its rows is the block ACP now calls `new`. What ACP does with a registered block name is described where the block is documented (for the frame grader's block, `docs/api.md`, "Accepted counts").
+- `activity.aliases(kind)` and `filter_rows.BLOCK_ALIASES` show what is registered. A bad argument raises `ValueError`.
 
 ## What kinds of things make sense as extensions
 
