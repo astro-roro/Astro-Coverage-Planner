@@ -6,7 +6,7 @@ This spec changes how a plan's exposure goals are edited in Astro Coverage Plann
 - The sub length comes from the TS exposure template and is no longer edited in ACP.
 - The list order is the shooting order, and it is written to TS.
 - The filter switch frequency and smart exposure order become editable in ACP.
-- The ACP side of the Astro Auto Calibration (AAC) incremental masters spec: `target_class`, AAC's figures per row, and the accepted write to TS.
+- The ACP side of a frame grader's incremental masters spec: the grader's figures per row, and the accepted write to TS.
 
 The user approved the panel design in the mockup at https://claude.ai/artifact/QnU2KhRiAPtQpviLGAbGNS (artboards "Proposed", "New plan" and "Today"). The side panel stays 380 px wide. Section "What TS does with an order" explains, from TS's source, how the order has to be written.
 
@@ -444,10 +444,6 @@ The migration in section 3 does not count as an ACP change to the order. A base 
 
 AAC's incremental masters spec (`Astro-Auto-Calibration/docs/specs/incremental-master-builds.md`, section 7) defines the storage contract this section implements. The AAC spec is being amended to the `filter_rows` names used here.
 
-### `target_class`
-
-A plan gains `target_class`, one of `survey`, `deep` and `pretty`. Absent, or any other value, means `survey`. The plan editor shows it as a select in the Target fieldset. `_validate_plan_payload` rejects other strings. AAC reads it with the rows through `GET /api/plans`.
-
 ### `POST /api/plans/<plan_id>/accepted`
 
 AAC is the only caller. It authenticates as the plugin does on `/progress`, with an `Authorization: Bearer <token>` header that ACP checks against `ACP_API_TOKEN`. A missing or wrong token gets 401, and an unknown plan id gets 404. The body carries `source`, `at`, `filed_through_night`, `min_total_frames` and a list of `rows`. AAC sends every row of the plan. Each row names its target by `id`, the row id, and echoes `filter` and `template` for checking. Each carries these fields:
@@ -597,7 +593,6 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | F1 | Python | O1's database, base switch frequency 0, ACP 3, TS 0 | The push writes 3 and deletes the cadence rows of every target in the project. The override rows change from OIII x4, Ha x4 to OIII x3, Ha x3. |
 | F2 | Python | Base 0, ACP 0, TS 3 | The push leaves 3. The base stays 0. |
 | F3 | C# | F1 and F2 as golden scenarios | The plugin's rows equal the Python rows. |
-| A1 | ACP | Save `target_class` "deep", then "giant" | "deep" saves. "giant" returns 400. A plan with none reads as survey in `GET /api/plans`. |
 | A2 | ACP | `POST /api/plans/M42/accepted` with the Ha row's id, filter "Antlia Ha", template "Ha", 22320 s, complete false. Then 21240 s. A row with the R Stars row's id, filter R, template "R Stars". A row whose id exists but now has template "G Stars". The request has `filed_through_night` 2026-10-11 and `min_total_frames` 10. Also one request with no token. | The Ha values are stored on the Ha row and the second lowers them. The R Stars values are stored on its row. The changed row comes back in `unknown_rows` with its reason. `aac.filed_through_night`, `aac.min_total_frames` and `aac.received_at` are stored. `actual_hours` is unchanged. The request with no token is refused as `/progress` refuses it. |
 | A3 | Python | Every case in `tests/fixtures/aac_accepted_cases.json`, which includes a frame row with `target_frames` 8 and floor 10 | Each case writes exactly the expected `accepted`, `desired` and `enablegrader`. The frame row gets `desired` 10. `acquired` never changes. |
 | A4 | Python | Two exposure plans in one project, one with an `aac` block and one without. Then both with blocks, but `filed_through_night` two nights old. | Neither push writes `accepted` or `enablegrader` in that project. |
@@ -617,7 +612,7 @@ Each phase ends with its tests passing in every repo it touches.
 | 3 | `filter_rows`: model, validation, the migration, the card list without dragging, both writers, the exposure rule, template lookup, plan identity, the importer, progress, the `filter_goals` view for older plugins. Tests U1 to U5, U9 to U12, V1, V2, M1 to M4, S1 to S8, R1, R3, R4. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 | 4 | Switch frequency and smart order: the switch, settings route, column rules, base fields, cadence deletion. Tests F1 to F3. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 | 5 | Filter order: dragging, the drop line, arrow keys, the oracle, the override writer, the nightly cadence reset, the importer's order. Tests U6 to U8, O1 to O11, R2. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
-| 6 | AAC dependencies. Tests A1 to A6. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
+| 6 | Frame grader dependencies. Tests A2 to A6. | ACP, acp-nina-ts-sync, ACP.NINA.Plugin |
 
 Phase 3 ships the migration and the importer change together, so no push can run between them. Within phase 3 the plugin goes onto IMAGING-PC before ACP core merges, as in `ts-project-settings.md` section 8. ACP deploys on merge, and the migration is the step that is hard to undo.
 

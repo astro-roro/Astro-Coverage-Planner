@@ -861,7 +861,6 @@ _LABELS = {
     "meridian_window_min": "meridian window",
     "filter_switch_frequency": "filter switch frequency",
     "smart_exposure_order": "smart exposure order",
-    "target_class": "target class",
     "telescope_id": "telescope",
     "camera_id": "camera",
     "destination_id": "destination",
@@ -875,7 +874,7 @@ _ROW_LABELS = {
     "target_hours": "goal", "target_frames": "goal frames", "actual_hours": "hours shot",
     "template": "template", "template_sub_s": "sub length", "unit": "unit", "filter": "filter",
 }
-_CAPITALISED = frozenset({"priority", "state", "target_class"})
+_CAPITALISED = frozenset({"priority", "state"})
 
 
 def _blank(v) -> bool:
@@ -911,11 +910,7 @@ def diff_plans(before: dict | None, after: dict | None) -> dict:
         for k, v in src.items():
             if k in _PLAN_IGNORED or k == "filter_rows":
                 continue
-            if k == "target_class":
-                continue
             _flatten(k, v, dst)
-        tc = src.get("target_class")
-        dst["target_class"] = tc if tc is not None else _default_target_class(src)
         rows = src.get("filter_rows")
         if isinstance(rows, list):
             seen: dict = {}
@@ -969,14 +964,6 @@ def diff_gear(before: dict | None, after: dict | None) -> dict:
                 if not _same(fb.get(field), fa.get(field)):
                     changes[f"{label}:{name}.{field}"] = {"from": fb.get(field), "to": fa.get(field)}
     return changes
-
-
-def _default_target_class(plan: dict) -> str:
-    try:
-        import filter_rows as fr
-        return fr.target_class_of(plan)
-    except Exception:
-        return "survey"
 
 
 def same_value(a, b) -> bool:
