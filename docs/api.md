@@ -443,3 +443,29 @@ The legacy `/api/export/priority` CSV route stays for backwards compatibility, s
 ## Activity: `/api/activity`
 
 The Activity tab's events, in `docs/specs/activity-tab.md`. `POST /api/activity/events` takes `{"events": [...]}` (up to 100, 2 MiB) from the plugin, a processing tool or anything else with the token, and answers `{stored, updated, unchanged, stale, rejected}`; it answers 403 while `ACP_API_TOKEN` is unset. `GET /api/activity?nights=5&before=<night>`, `GET /api/activity/night/<night>?offset=200`, `GET /api/activity/summary`, `POST /api/activity/seen`, `POST /api/activity/events/<id>/dismiss` and `/restore`, `GET`/`PUT /api/activity/prefs`, and `GET /api/activity/types` (the filter chips with their event types, and the accepted sources, including any an extension registered) serve the tab. With `ACP_ACTIVITY=off` all of them answer 404.
+
+## Upload progress: `/api/uploads`
+
+For a tool that moves files somewhere, such as image files from the imaging PC to an archive, and wants its progress shown in ACP. ACP only receives the figures and shows them. It knows nothing about how or where the files move.
+
+`POST /api/uploads/<transfer_id>/progress` takes a JSON body. `transfer_id` is a name you choose, 1 to 80 letters, digits, `.`, `_` or `-`, starting with a letter or digit. Post again with the same id as the transfer moves on; each post replaces the last.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `state` | yes | `running`, `paused`, `finished` or `failed`. |
+| `files_done`, `files_total` | no | Whole numbers of 0 or more. `files_done` may not be larger than `files_total`. |
+| `bytes_done`, `bytes_total` | no | The same, in bytes. |
+| `started_at` | no | When this run of the transfer began, ISO 8601 with a time zone offset. |
+| `eta` | no | When you expect it to finish, in the same form. |
+| `cutoff` | no | When it must finish by, in the same form. |
+| `label` | no | A short name to show instead of the id, up to 80 characters. |
+
+The answer is `{"transfer": {...}, "event_recorded": true | false}`, or a 400 saying what was wrong. ACP holds up to 50 transfers at once and answers 429 for a new one beyond that.
+
+The figures live in memory only. A running or paused transfer with no post for 30 minutes is dropped, and so is a finished or failed one after 10 minutes. A restart forgets them all.
+
+The first post that says a run `finished` or `failed` records one Activity event under Data landed, of type `upload_finished` or `upload_failed`, titled with the label (or id) and the final figures. Saying it again records nothing more. A post with a different `started_at` counts as a new run of the same id.
+
+`GET /api/uploads` returns `{"transfers": [...]}`, running and paused first, then any that ended in the last few minutes. The Activity tab shows running and paused transfers on a card at its top, refreshed every 15 seconds while the tab is open.
+
+Both routes sit behind `ACP_API_TOKEN` like every other route, so a sender on another machine needs the token.

@@ -55,7 +55,7 @@ CHIPS = (
     ("imaging", "Imaging", ("imaging_target", "goal_reached", "progress_report",
                             "progress_unknown", "session_start", "session_end")),
     ("site", "Site and focus", ("safety", "meridian_flip", "autofocus_summary", "park")),
-    ("data", "Data landed", ("transfer_landed", "ingest")),
+    ("data", "Data landed", ("transfer_landed", "ingest", "upload_finished", "upload_failed")),
     ("processing", "Processing", ("calibration", "threshold_decision", "master_queued",
                                   "accepted_counts", "darks_built", "aac_alert",
                                   "aac_recovered")),

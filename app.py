@@ -6242,6 +6242,45 @@ def api_activity_prefs():
     return jsonify(activity.set_prefs(chips))
 
 
+@app.route("/api/uploads/<transfer_id>/progress", methods=["POST"])
+def api_upload_progress(transfer_id: str):
+    """Progress figures for a named file transfer, from whatever tool moves
+    the files (docs/api.md, "Upload progress"). Kept in memory for a short
+    while for the Activity tab's card. The first post that says the transfer
+    finished or failed also records one Activity event."""
+    import upload_progress
+    body = request.get_json(silent=True)
+    try:
+        rec, ended = upload_progress.report(transfer_id, body)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except OverflowError as exc:
+        return jsonify({"error": str(exc)}), 429
+    if ended:
+        _run_activity(lambda: _record_upload_ended(rec))
+    return jsonify({"transfer": rec, "event_recorded": ended})
+
+
+@app.route("/api/uploads")
+def api_uploads():
+    """Transfers ACP is holding: running and paused first, then any that
+    ended in the last few minutes."""
+    import upload_progress
+    return jsonify({"transfers": upload_progress.listing()})
+
+
+def _record_upload_ended(rec: dict) -> None:
+    import upload_progress
+    failed = rec["state"] == "failed"
+    run = rec.get("started_at") or rec.get("updated_at")
+    activity.record(
+        type="upload_failed" if failed else "upload_finished",
+        key=f"upload:{rec['id']}:{run}", title=upload_progress.event_title(rec),
+        severity="error" if failed else "info",
+        data={"transfer_id": rec["id"], **{k: rec.get(k) for k in (
+            "files_done", "files_total", "bytes_done", "bytes_total", "started_at", "cutoff")}})
+
+
 @app.route("/api/activity/types")
 @_activity_route
 def api_activity_types():
