@@ -1758,6 +1758,9 @@ _add_ext_hook(app, "plans_api")
 # save and view on every plan GET. Keys nobody registers pass through as sent.
 app.plan_fields: list[dict] = []
 _add_ext_hook(app, "plan_fields")
+# A plan_fields entry may list "project_keys": keys the project settings route
+# spreads across every plan in a project, like state and priority.
+_add_ext_hook(app, "project_keys")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -5197,6 +5200,10 @@ def api_project_settings(project_name: str):
         wanted["balance_role"] = role
     if has_hold:
         wanted["balance_hold"] = hold
+    ext_wanted, err = _ext_project_settings(payload, wanted)
+    if err:
+        return jsonify({"error": err}), 400
+    wanted.update(ext_wanted)
     now = datetime.now(timezone.utc).isoformat()
     changes = apply_project_settings(plans, project_name, wanted, now)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -5216,7 +5223,38 @@ def api_project_settings(project_name: str):
         **{key: order_settings.get(key) for key in ORDER_SETTING_KEYS},
         "balance_role": role if has_role else None,
         "balance_hold": hold if has_hold else None,
+        **ext_wanted,
     })
+
+
+def _ext_project_settings(payload: dict, core_wanted: dict) -> tuple[dict, str | None]:
+    """The project-wide keys extensions declared (``project_keys`` on a
+    ``plan_fields`` entry) that this request sets. Each entry's ``validate``
+    sees only its own keys. Core's own keys are never handed to an extension.
+    Returns (values to spread, error text or None)."""
+    out: dict = {}
+    for entry in _ext_plan_field_entries():
+        keys = [k for k in (entry.get("project_keys") or [])
+                if isinstance(k, str) and k in payload and k not in core_wanted
+                and k not in _CORE_PROJECT_KEYS]
+        if not keys:
+            continue
+        values = {k: copy.deepcopy(payload[k]) for k in keys}
+        fn = entry.get("validate")
+        if callable(fn):
+            try:
+                err = fn(dict(values))
+            except Exception:
+                logging.exception("extension %s: plan field validate raised", _safe_log(entry.get("extension")))
+                err = None
+            if err:
+                return {}, str(err)
+        out.update(values)
+    return out, None
+
+
+_CORE_PROJECT_KEYS = frozenset({"state", "priority", "minimum_time_min", "balance_role",
+                                "balance_hold", *ORDER_SETTING_KEYS})
 
 
 def apply_project_settings(plans: list[dict], project_name: str, wanted: dict, now: str) -> dict:

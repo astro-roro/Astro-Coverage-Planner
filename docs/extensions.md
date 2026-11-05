@@ -415,6 +415,17 @@ def register(app):
 
 When a callable raises, ACP logs it on the root logger with the extension's name and carries on as though that callable were absent. A broken extension never blocks a save or a read. Without the extension loaded, its fields stay in `plans.json` untouched and nothing checks them.
 
+#### Project-wide keys
+
+Some settings belong to a whole project rather than one plan, the way state and priority do: every plan sharing a `project_name` carries the same value. A `plan_fields` entry can name such keys in `project_keys` (hook name `project_keys`):
+
+```python
+app.plan_fields.append({"extension": "my_ratings", "keys": ["rating", "rating_group"],
+                        "project_keys": ["rating_group"], "validate": validate})
+```
+
+`PUT /api/projects/<project_name>/settings` then accepts those keys in its body beside core's. The entry's `validate` is called with a dict holding only its own project keys from the request, and an error text refuses the whole request with a 400. Accepted values are set on every plan in the project in the same write as core's settings, they appear in the route's response, and they show in the Activity entry for the change. A key left out of the body is left alone. An extension cannot claim one of core's own project keys.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:
