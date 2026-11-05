@@ -165,7 +165,8 @@ class TestPrecedence(unittest.TestCase):
     def test_s9_host_is_not_a_settings_key(self):
         got = self.resolved({"HOST": "0.0.0.0"}, {"host": "0.0.0.0"})
         self.assertNotIn("host", got)
-        self.assertEqual(set(got), {"fits_roots", "manifest_path", "port", "scan_cron"})
+        self.assertEqual(set(got), {"fits_roots", "manifest_path", "port", "scan_cron",
+                                    "upload_incoming", "upload_poll_seconds"})
 
 
 class TestFileHandling(unittest.TestCase):

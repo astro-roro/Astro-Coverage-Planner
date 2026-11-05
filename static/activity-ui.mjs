@@ -14,6 +14,7 @@ import {
   pageState,
   railState,
   renderRowHtml,
+  uploadCardHtml,
   visibleRows,
 } from "./activity.mjs";
 import { openBalancerDialog } from "./balancer-ui.mjs";
@@ -107,7 +108,7 @@ export function setupActivity({ openPlan, showOnMap }) {
     const page = pageState({ shown: st.nights.length, total: st.total });
     const nights = st.nights.map(nightHtml).join("");
     body.innerHTML =
-      `<div class="act-scroll"><div class="act-head"><button type="button" class="btn" data-act="balancer">Balancer</button></div>${lastNightHtml(s.last_night)}${needsYouHtml(s.open || [], s.open_total || 0)}` +
+      `<div class="act-scroll"><div class="act-head"><button type="button" class="btn" data-act="balancer">Balancer</button></div>${uploadCardHtml(s.uploads, s.now)}${lastNightHtml(s.last_night)}${needsYouHtml(s.open || [], s.open_total || 0)}` +
       `${chipsHtml()}${nights || (st.loaded ? '<div class="empty-note">No activity yet. Events appear here as plans change, syncs run and nights are imaged.</div>' : "")}` +
       `<div class="more"><span class="count">${esc(page.text)}</span>` +
       (page.showLoadOlder ? '<button type="button" class="btn" data-act="older">Load older nights</button>' : "") +

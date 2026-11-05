@@ -104,6 +104,7 @@ import acp_settings
 import activity
 import shortcuts as acp_shortcuts
 import balancer
+import upload_progress
 import filter_rows as fr
 import gear_templates as gt
 from gaps import candidates_in_moc, compute_gap_moc
@@ -6031,7 +6032,8 @@ def api_activity_night(night: str):
 @app.route("/api/activity/summary")
 @_activity_route
 def api_activity_summary():
-    return jsonify(activity.summary())
+    now = datetime.now(timezone.utc).astimezone(activity.tz()).isoformat()
+    return jsonify({**activity.summary(), "uploads": upload_snapshot(), "now": now})
 
 
 @app.route("/api/activity/seen", methods=["POST"])
@@ -7388,7 +7390,7 @@ def _settings_view(authorised: bool) -> dict:
     keys = {}
     for name, info in resolved.items():
         entry = {"source": info["source"], "locked": info["locked"]}
-        hidden = name in ("fits_roots", "manifest_path") and not authorised
+        hidden = name in ("fits_roots", "manifest_path", "upload_incoming") and not authorised
         if not hidden:
             entry["value"] = info["value"]
         keys[name] = entry
@@ -8183,9 +8185,86 @@ def migrate_gear_at_startup() -> None:
         logging.exception("gear migration at startup failed; gear is served as stored")
 
 
+# --------------------------------------------------------------------------
+# Upload progress: Voyager's nightly copy to the NAS, watched from here
+# --------------------------------------------------------------------------
+
+_upload_watcher: upload_progress.UploadWatcher | None = None
+_upload_thread: threading.Thread | None = None
+_upload_stop = threading.Event()
+_UPLOAD_LOCK = threading.Lock()
+
+
+def _upload_incoming() -> Path | None:
+    """The incoming folder, or None when the watcher is switched off."""
+    raw = (acp_settings.effective("upload_incoming") or "").strip()
+    if not raw or raw.lower() == "off":
+        return None
+    return Path(raw)
+
+
+def make_upload_watcher(incoming: Path) -> upload_progress.UploadWatcher:
+    return upload_progress.UploadWatcher(
+        incoming,
+        record=activity.record,
+        already_recorded=lambda key: activity.get_event("acp", key) is not None,
+        night_of=activity.night_of, zone=activity.tz())
+
+
+def upload_snapshot() -> list[dict]:
+    watcher = _upload_watcher
+    return watcher.snapshot() if watcher is not None else []
+
+
+def _upload_loop(watcher: upload_progress.UploadWatcher, seconds: float) -> None:
+    while not _upload_stop.is_set():
+        try:
+            watcher.tick()
+        except Exception:
+            logging.exception("upload progress poll failed")
+        _upload_stop.wait(seconds)
+
+
+def start_upload_watcher(incoming: Path | None = None, seconds: float | None = None) -> bool:
+    """Start the poller unless the setting is off. Not started under the test
+    suite (ACP_SKIP_STARTUP_MIGRATION) unless a test passes the folder."""
+    global _upload_watcher, _upload_thread
+    if incoming is None:
+        if os.environ.get("ACP_SKIP_STARTUP_MIGRATION"):
+            return False
+        incoming = _upload_incoming()
+    # The card lives on the Activity tab, so with Activity off there is
+    # nowhere to show it and nothing to record into.
+    if incoming is None or not activity.enabled():
+        return False
+    seconds = seconds or acp_settings.effective("upload_poll_seconds")
+    with _UPLOAD_LOCK:
+        if _upload_thread is not None and _upload_thread.is_alive():
+            return False
+        _upload_stop.clear()
+        _upload_watcher = make_upload_watcher(incoming)
+        _upload_thread = threading.Thread(target=_upload_loop, args=(_upload_watcher, seconds),
+                                          name="acp-upload-progress", daemon=True)
+        _upload_thread.start()
+    logging.info("watching %s for upload progress every %s s", incoming, seconds)
+    return True
+
+
+def stop_upload_watcher() -> None:
+    global _upload_watcher, _upload_thread
+    _upload_stop.set()
+    thread = _upload_thread
+    if thread is not None:
+        thread.join(timeout=5)
+    _upload_thread = None
+    _upload_watcher = None
+    _upload_stop.clear()
+
+
 migrate_gear_at_startup()
 start_scan_scheduler()
 start_balancer_scheduler()
+start_upload_watcher()
 
 
 def effective_port(env=None) -> int:

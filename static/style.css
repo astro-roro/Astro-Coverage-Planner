@@ -2510,6 +2510,15 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .activity .bar { height: 4px; border-radius: 2px; background: #222a3a; overflow: hidden; flex: 1 1 80px; min-width: 60px; }
 .activity .bar i { display: block; height: 100%; background: #d9b44a; }
 .activity .bar i.done { background: #5fb36a; }
+.activity .upload .up { display: flex; flex-direction: column; gap: 6px; }
+.activity .upload .up + .up { border-top: 1px solid #222a3a; padding-top: 10px; }
+.activity .upload .up-head { display: flex; justify-content: space-between; gap: 10px; }
+.activity .upload .up-head .name { font-weight: 600; color: #e8ecf3; }
+.activity .upload .up-head .hrs { font-variant-numeric: tabular-nums; color: #e8ecf3; }
+.activity .upload .up-bar { height: 6px; flex: none; width: 100%; }
+.activity .upload .up-bar i.live { background: #4da6ff; }
+.activity .upload .up.paused .up-bar i { background: #6b7487; }
+.activity .upload .up-note { margin: 0; font-size: 12px; color: #f0cf70; }
 .activity .pill {
   display: inline-flex;
   align-items: center;

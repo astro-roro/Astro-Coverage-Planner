@@ -14,7 +14,7 @@ export const CHIPS = [
   { id: "imaging", label: "Imaging", types: ["imaging_target", "goal_reached", "progress_report",
     "progress_unknown", "session_start", "session_end"] },
   { id: "site", label: "Site and focus", types: ["safety", "meridian_flip", "autofocus_summary", "park"] },
-  { id: "data", label: "Data landed", types: ["transfer_landed", "ingest"] },
+  { id: "data", label: "Data landed", types: ["transfer_landed", "ingest", "upload_finished"] },
   { id: "processing", label: "Processing", types: ["calibration", "threshold_decision",
     "master_queued", "accepted_counts", "darks_built", "aac_alert", "aac_recovered"] },
   { id: "masters", label: "Masters", types: ["master_built", "master_ready"] },
@@ -322,4 +322,71 @@ export function needsYouHtml(open, total) {
   const body = items ? `<div class="needs">${items}${more}</div>`
     : '<div class="empty-note">Nothing needs you.</div>';
   return `<fieldset class="box"><legend>NEEDS YOU</legend>${body}</fieldset>`;
+}
+
+// --- Upload progress card ---------------------------------------------------
+// The server sends times already in ACP's Activity time zone, so the clock
+// and the date are read straight from the string, as the timeline does.
+
+function datePart(iso) {
+  const m = /^(\d{4}-\d{2}-\d{2})T/.exec(iso || "");
+  return m ? m[1] : "";
+}
+
+// "14:05", or "Fri 09:10" when it falls on another day than `ref`.
+export function whenText(iso, ref) {
+  const clock = clockOf(iso);
+  if (!clock) return "";
+  const day = datePart(iso);
+  if (!ref || !day || day === datePart(ref)) return clock;
+  return `${DAYS[new Date(`${day}T00:00:00Z`).getUTCDay()]} ${clock}`;
+}
+
+export function gbText(bytes) {
+  const gb = Number(bytes) / 1e9;
+  if (!Number.isFinite(gb)) return "0";
+  return gb >= 100 ? String(Math.round(gb)) : gb.toFixed(1);
+}
+
+export function durationText(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h} h ${String(m).padStart(2, "0")} min` : `${m} min`;
+}
+
+const rateText = v => (finite(v) ? `${Number(v).toFixed(1)} Mbps` : "measuring");
+
+export function uploadCardHtml(uploads, now) {
+  if (!uploads || !uploads.length) return "";
+  const cards = uploads.map(u => {
+    const paused = u.state === "paused";
+    const pct = Math.max(0, Math.min(100, Number(u.percent) || 0));
+    const route = u.path === "tailscale" ? "Tailscale" : u.path === "vpn" ? "VPN" : "";
+    const files = u.files_total ? `${u.files_done} / ${u.files_total}` : String(u.files_done);
+    let finish;
+    if (paused) {
+      finish = `<p class="up-note">Paused at the ${esc(whenText(u.window_end, now))} cutoff. It carries on with the next morning's run.</p>`;
+    } else if (u.eta) {
+      const late = u.eta_after_cutoff
+        ? ` <span class="pill bad">after the ${esc(whenText(u.window_end, now))} cutoff</span>` : "";
+      finish = `<span>Finish <b>${esc(whenText(u.eta, now))}</b>${late}</span>`;
+    } else {
+      finish = "<span>Finish <b>working it out</b></span>";
+    }
+    return `<div class="up${paused ? " paused" : ""}" data-night="${esc(u.night_id)}">` +
+      `<div class="up-head"><span class="name">${esc(nightHeading(u.night_id))}</span>` +
+      `<span class="hrs">${esc(pct.toFixed(pct >= 10 ? 0 : 1))}%</span></div>` +
+      `<span class="bar up-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${esc(Math.round(pct))}">` +
+      `<i class="${paused ? "" : "live"}" style="width:${pct}%"></i></span>` +
+      `<div class="night-line"><span>Files <b>${esc(files)}</b></span>` +
+      `<span><b>${esc(gbText(u.bytes_done))}</b> of <b>${esc(gbText(u.bytes_total))}</b> GB</span>` +
+      `<span>Started <b>${esc(whenText(u.started_at, now))}</b>${route ? ` over ${esc(route)}` : ""}</span>` +
+      `<span>Running <b>${esc(durationText(u.elapsed_s))}</b></span></div>` +
+      `<div class="night-line"><span>Average <b>${esc(rateText(u.avg_mbps))}</b></span>` +
+      `<span>Last 5 min <b>${esc(rateText(u.recent_mbps))}</b></span>` +
+      (paused ? "" : finish) + `</div>${paused ? finish : ""}</div>`;
+  }).join("");
+  const label = uploads.length === 1 ? "UPLOADING TO THE NAS" : `UPLOADING TO THE NAS · ${uploads.length} NIGHTS`;
+  return `<fieldset class="box upload"><legend>${label}</legend>${cards}</fieldset>`;
 }

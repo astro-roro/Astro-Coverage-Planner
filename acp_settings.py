@@ -31,8 +31,15 @@ ENV_VARS = {
     "manifest_path": "MANIFEST_PATH",
     "port": "PORT",
     "scan_cron": "ACP_SCAN_CRON",
+    "upload_incoming": "ACP_UPLOAD_INCOMING",
+    "upload_poll_seconds": "ACP_UPLOAD_POLL_SECONDS",
 }
 DEFAULT_PORT = 5555
+# Where Voyager's nightly upload lands, as the live container mounts it. The
+# upload card watches it; "off" switches the watcher off. A folder that does
+# not exist costs one failed listing a minute and shows nothing.
+DEFAULT_UPLOAD_INCOMING = "/mnt/remotes/SINGULARITY.ERKO_Singularity/Astro With RoRo/Images/_incoming"
+DEFAULT_UPLOAD_POLL_SECONDS = 60
 
 MAX_ROOTS = 32
 MAX_PATH_CHARS = 1000
@@ -221,6 +228,16 @@ def _text(raw) -> str | None:
     return raw.strip() or None if isinstance(raw, str) else None
 
 
+def _poll_seconds(raw) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return None
+    return value if 10 <= value <= 3600 else None
+
+
 def _file_roots(raw) -> list[str] | None:
     if not isinstance(raw, list):
         return None
@@ -233,14 +250,20 @@ _FROM_ENV = {
     "manifest_path": _text,
     "port": _port,
     "scan_cron": _text,
+    "upload_incoming": _text,
+    "upload_poll_seconds": _poll_seconds,
 }
 _FROM_FILE = {
     "fits_roots": _file_roots,
     "manifest_path": _text,
     "port": _port,
     "scan_cron": _text,
+    "upload_incoming": _text,
+    "upload_poll_seconds": _poll_seconds,
 }
-_DEFAULTS = {"fits_roots": [], "manifest_path": None, "port": DEFAULT_PORT, "scan_cron": None}
+_DEFAULTS = {"fits_roots": [], "manifest_path": None, "port": DEFAULT_PORT, "scan_cron": None,
+             "upload_incoming": DEFAULT_UPLOAD_INCOMING,
+             "upload_poll_seconds": DEFAULT_UPLOAD_POLL_SECONDS}
 
 
 def resolve_all(env: Mapping[str, str] | None = None,

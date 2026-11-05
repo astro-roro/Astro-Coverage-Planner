@@ -269,6 +269,17 @@ Phase 3, AAC (pytest):
 49. A calibration failure posts `aac_alert` keyed `aac:calibration:<job_id>`. For a streak key, `FailureStreakTracker.record` reports "recovered" on the first success after failure, and the client posts `aac_recovered` resolving it.
 50. With ACP unreachable, processing finishes normally and the client logs one warning per event after three tries. After a 404 it posts nothing more for the process.
 
+## Upload progress card
+
+Voyager uploads each night with rclone into `<incoming>/<night_id>/` on the NAS. At the start of each run it writes `upload_plan.json` there, and when the copy is complete it writes `night_manifest.json`. ACP reads the same folder and works out progress itself. The code is in `upload_progress.py`.
+
+- **Settings**: `upload_incoming` (`ACP_UPLOAD_INCOMING`) defaults to the live container's `/mnt/remotes/SINGULARITY.ERKO_Singularity/Astro With RoRo/Images/_incoming`, and `off` stops the watcher. `upload_poll_seconds` (`ACP_UPLOAD_POLL_SECONDS`) defaults to 60 and accepts 10 to 3600. Both can also sit in the settings file. The folder path is hidden from an unauthorised settings view. The watcher does not start with `ACP_ACTIVITY=off` or under the test suite.
+- **Counting**: every file under the night folder counts, except the protocol files (`upload_plan.json`, `night_manifest.json`, `ingest_result.json` and their `.tmp` names) and anything under `_collisions`. A file ending `.partial` or `.tmp` is in flight: its bytes count, but it is not a finished file.
+- **Progress**: `total_files` and `total_bytes` in the plan are what this run sends. Files and bytes already there before the run (`already_on_nas_*`) are subtracted, so a resumed morning run counts from zero. The average rate runs from `started_at`. The recent rate covers the last 5 minutes of samples, or what there is after the first minute. The finish time uses the recent rate, falling back to the average, and is flagged when it lands after `window_end`.
+- **Paused**: once `window_end` passes with no manifest, the card says it paused at the cutoff. The next run's fresh plan brings it back with new numbers. A night still paused 24 hours after its cutoff drops off the card.
+- **Finished**: when the manifest appears, ACP records one `upload_finished` event (chip `data`), keyed `upload_finished:<night_id>`, with the plan's totals and the average rate from `started_at` to the manifest's time. The plan's totals are used because AAC may move the frames away before the next poll. A manifest more than 36 hours old when first seen records nothing, and an existing event is never recorded again.
+- **API**: `GET /api/activity/summary` gains `uploads` (one row per night in progress) and `now`, in `ACP_ACTIVITY_TZ`. The page draws the card above "Last night" from the same 60 s poll.
+
 ## Rollback
 
 The feature only adds things. `ACP_ACTIVITY=off` makes every activity route answer 404, hides the rail button and turns `record()` into a no-op. The plugin and AAC clients disable themselves after the first 404 or 403. Deleting `activity.sqlite` removes the history and nothing else. Phases 2 and 3 roll back by reverting their own repos.
