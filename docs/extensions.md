@@ -379,6 +379,42 @@ def register(app):
 
 Core does not validate what `transact` writes. Keep to fields your extension owns (see [Plan fields](#plan-fields-owned-by-an-extension) once that hook is present) or core's documented fields. Do not call core routes over HTTP from inside `fn`: they take the same lock from another thread and would wait for ever.
 
+### Plan fields owned by an extension
+
+A plan can carry fields core knows nothing about. Core stores any key it does not recognise exactly as the client sent it, and sends it back on every GET, so the editor's save round-trips it. That is enough for a field the user sets freely. When a field needs checking, must not be set by the client, or has a derived value to show, register it in `app.plan_fields`:
+
+```python
+def validate(payload):
+    r = payload.get("rating")
+    if r is not None and r not in (1, 2, 3, 4, 5):
+        return "rating must be a whole number from 1 to 5"
+    return None
+
+def keep(payload, existing):
+    payload.pop("rating_label", None)          # derived, never stored
+    if existing and "rated_at" in existing:     # server-owned
+        payload["rated_at"] = existing["rated_at"]
+    else:
+        payload.pop("rated_at", None)
+
+def view(plan):
+    if plan.get("rating"):
+        plan["rating_label"] = ["", "poor", "fair", "good", "very good", "excellent"][plan["rating"]]
+    return plan
+
+def register(app):
+    app.plan_fields.append({"extension": "my_ratings",
+                            "keys": ["rating", "rated_at"],
+                            "validate": validate, "keep": keep, "view": view})
+```
+
+- `validate(payload)` runs on every create (`POST /api/plans`) and update (`PUT /api/plans/<id>`). Return an error text to refuse the save with a 400, or `None` to accept it. Check only the keys you own, and only when they are present.
+- `keep(payload, existing)` runs next, after every `validate` has passed. Change `payload` in place: copy server-owned values from `existing` (a copy of the stored plan, or `None` for a new one) and drop derived ones. Its return value is ignored.
+- `view(plan)` runs on every plan `GET /api/plans` and `GET /api/plans/<id>` return. It gets a copy and returns the plan to send. Add derived values here; they are never stored unless `keep` lets them through.
+- All three are optional. `keys` and `extension` are for people reading the code and the log.
+
+When a callable raises, ACP logs it on the root logger with the extension's name and carries on as though that callable were absent. A broken extension never blocks a save or a read. Without the extension loaded, its fields stay in `plans.json` untouched and nothing checks them.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:

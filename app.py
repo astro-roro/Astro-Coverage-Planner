@@ -1752,6 +1752,13 @@ app.plans_api = plans_api
 from extensions import add_hook as _add_ext_hook  # noqa: E402
 _add_ext_hook(app, "plans_api")
 
+# Plan fields an extension owns (docs/extensions.md, "Plan fields owned by an
+# extension"). Each entry is {"extension", "keys", "validate", "keep", "view"};
+# the three callables are optional. Core calls validate and keep on every plan
+# save and view on every plan GET. Keys nobody registers pass through as sent.
+app.plan_fields: list[dict] = []
+_add_ext_hook(app, "plan_fields")
+
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
 # is validated (sanitised flag + caps + path-leak scan) before joining the
@@ -4863,11 +4870,59 @@ def _commitment_progress(plan: dict) -> list[dict]:
     return out
 
 
+def _ext_plan_field_entries():
+    for entry in getattr(app, "plan_fields", None) or []:
+        if isinstance(entry, dict):
+            yield entry
+
+
+def _ext_plan_fields_on_save(payload: dict, existing: dict | None) -> str | None:
+    """Run each extension's ``validate`` then ``keep`` on a plan being saved.
+    Returns the first error text a ``validate`` gives. A callable that raises
+    is logged and skipped, so a broken extension never blocks a save."""
+    for entry in _ext_plan_field_entries():
+        fn = entry.get("validate")
+        if callable(fn):
+            try:
+                err = fn(payload)
+            except Exception:
+                logging.exception("extension %s: plan field validate raised", _safe_log(entry.get("extension")))
+                err = None
+            if err:
+                return str(err)
+    for entry in _ext_plan_field_entries():
+        fn = entry.get("keep")
+        if callable(fn):
+            try:
+                fn(payload, copy.deepcopy(existing) if existing is not None else None)
+            except Exception:
+                logging.exception("extension %s: plan field keep raised", _safe_log(entry.get("extension")))
+    return None
+
+
+def _ext_plan_view(plan: dict) -> dict:
+    """Each extension's ``view`` on a plan about to be returned. ``view`` gets
+    a copy and returns the plan to send (or None to leave it unchanged)."""
+    for entry in _ext_plan_field_entries():
+        fn = entry.get("view")
+        if not callable(fn):
+            continue
+        try:
+            out = fn(copy.deepcopy(plan))
+        except Exception:
+            logging.exception("extension %s: plan field view raised", _safe_log(entry.get("extension")))
+            continue
+        if isinstance(out, dict):
+            plan = out
+    return plan
+
+
 def _with_goals_view(plan):
     """A copy of *plan* carrying the derived `filter_goals` older plugins
     read (filter_rows.filter_goals_view). Never stored."""
     if not isinstance(plan, dict):
         return plan
+    plan = _ext_plan_view(plan)
     # A plan with no target_class reads as survey (section 6), for AAC.
     plan = {**plan, "target_class": fr.target_class_of(plan)}
     if plan.get("commitments"):
@@ -4911,6 +4966,9 @@ def api_plans():
     previous = next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None)
     before = copy.deepcopy(previous) if previous is not None and activity.enabled() else None
     err = _keep_balancer_fields(payload, previous)
+    if err:
+        return jsonify({"error": err}), 400
+    err = _ext_plan_fields_on_save(payload, previous)
     if err:
         return jsonify({"error": err}), 400
     fr.keep_aac(payload, previous)
@@ -5006,6 +5064,9 @@ def api_plan(plan_id: str):
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     _keep_rows_from_old_page(payload, existing)
     err = _keep_balancer_fields(payload, existing)
+    if err:
+        return jsonify({"error": err}), 400
+    err = _ext_plan_fields_on_save(payload, existing)
     if err:
         return jsonify({"error": err}), 400
     fr.keep_aac(payload, existing)
