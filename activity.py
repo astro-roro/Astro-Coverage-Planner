@@ -17,6 +17,7 @@ import math
 import os
 import re
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone, tzinfo
@@ -1270,39 +1271,142 @@ def newest_progress_night() -> str | None:
     return row[0] if row and row[0] else None
 
 
+_canon_filter_fn = None
+
+
+def _canon(name) -> str:
+    """The scanner's canonical filter name ("O" is OIII, "Antlia Ha" is Ha), so
+    the card's dots and goals match the plan. A name the scanner cannot place
+    stays as written."""
+    global _canon_filter_fn
+    if _canon_filter_fn is None:
+        try:
+            scripts = str(Path(__file__).resolve().parent / "scripts")
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from build_archive_manifest import canon_filter
+            _canon_filter_fn = canon_filter
+        except Exception:  # noqa: BLE001 - the card still renders, just uncanonicalised
+            logging.getLogger(__name__).warning(
+                "filter canonicalisation unavailable for the Last night card")
+            _canon_filter_fn = lambda n: n  # noqa: E731
+    text = str(name).strip()
+    return (_canon_filter_fn(text) or text) if text else text
+
+
+def _latest_reports(conn) -> dict:
+    """The newest progress report for each plan, from any night: its filters,
+    keyed by canonical name, each with the plan's hours and goal."""
+    out: dict = {}
+    for r in conn.execute("SELECT refs, data FROM events WHERE type = 'progress_report' "
+                          "ORDER BY at_ts DESC, id DESC"):
+        plan_id = json.loads(r["refs"]).get("plan_id")
+        if not plan_id or plan_id in out:
+            continue
+        filters: dict = {}
+        for name, f in (json.loads(r["data"]).get("filters") or {}).items():
+            if isinstance(f, dict):
+                slot = filters.setdefault(_canon(name), {"hours": 0.0, "goal": 0.0})
+                slot["hours"] += _hours(f.get("hours"))
+                slot["goal"] += _hours(f.get("goal"))
+        out[plan_id] = filters
+    return out
+
+
+def _whole_plan_at_goal(filters: dict) -> bool:
+    goals = [f for f in filters.values() if f["goal"] > 0]
+    return bool(goals) and all(f["hours"] >= f["goal"] for f in goals)
+
+
 def _last_night(conn) -> dict | None:
+    """The Last night card: what was shot on the newest night the plugin
+    reported frames for.
+
+    Hours per target and filter come from those frames. A progress report is
+    not evidence of what was shot on its night: the archive scan files it on
+    the night it ran, which is usually the day after, and it describes the
+    nights before. So reports only supply each plan's current hours and goal
+    (for the bar) and whether the whole plan is at goal. When no night has
+    frames at all (no plugin posting them), the card falls back to the
+    reports' own gains, as it did before the plugin sent frames.
+    """
     row = conn.execute(
-        "SELECT night FROM events WHERE type IN ('imaging_target','progress_report') "
-        "ORDER BY night DESC LIMIT 1").fetchone()
-    if row is None:
+        "SELECT MAX(night) FROM events WHERE type = 'imaging_target'").fetchone()
+    if row is None or row[0] is None:
+        return _last_night_from_reports(conn)
+    night = row[0]
+    events = [_row_event(r) for r in conn.execute(
+        "SELECT * FROM events WHERE night = ? AND type IN ('imaging_target','goal_reached') "
+        "ORDER BY at_ts, id", (night,))]
+    finished = {e["refs"].get("plan_id") for e in events if e["type"] == "goal_reached"}
+    reports = _latest_reports(conn)
+    shot: dict = {}
+    for e in events:
+        if e["type"] != "imaging_target":
+            continue
+        pid = e["refs"].get("plan_id") or e["key"]
+        t = shot.setdefault(pid, {"plan_id": e["refs"].get("plan_id"),
+                                  "target": e["refs"].get("target") or e["title"],
+                                  "ra_deg": e["refs"].get("ra_deg"),
+                                  "dec_deg": e["refs"].get("dec_deg"), "per": {}})
+        for fr_ in e["data"].get("frames") or []:
+            if isinstance(fr_, dict) and fr_.get("filter"):
+                name = _canon(fr_["filter"])
+                t["per"][name] = t["per"].get(name, 0.0) + \
+                    _hours(fr_.get("exposure_s")) * _hours(fr_.get("count")) / 3600.0
+    targets = []
+    for pid, t in shot.items():
+        known = reports.get(t["plan_id"]) or {}
+        filters = []
+        for name, h in t["per"].items():
+            if h <= 0:
+                continue
+            f = known.get(name)
+            goal = round(f["goal"], 2) if f and f["goal"] > 0 else None
+            hours = round(f["hours"], 2) if goal else None
+            filters.append({"filter": name, "delta_h": round(h, 2), "hours": hours,
+                            "goal": goal, "done": bool(goal) and hours >= goal})
+        if not filters:
+            continue
+        at_goal = t["plan_id"] in finished and (not known or _whole_plan_at_goal(known))
+        targets.append({"plan_id": t["plan_id"], "target": t["target"],
+                        "ra_deg": t["ra_deg"], "dec_deg": t["dec_deg"], "filters": filters,
+                        "hours": round(sum(f["delta_h"] for f in filters), 2),
+                        "finished": at_goal})
+    return {"night": night, "targets": targets,
+            "total_h": round(sum(t["hours"] for t in targets), 2)}
+
+
+def _last_night_from_reports(conn) -> dict | None:
+    row = conn.execute(
+        "SELECT MAX(night) FROM events WHERE type = 'progress_report'").fetchone()
+    if row is None or row[0] is None:
         return None
     night = row[0]
     events = [_row_event(r) for r in conn.execute(
         "SELECT * FROM events WHERE night = ? AND type IN "
-        "('imaging_target','progress_report','goal_reached') ORDER BY at_ts, id", (night,))]
+        "('progress_report','goal_reached') ORDER BY at_ts, id", (night,))]
     finished = {e["refs"].get("plan_id") for e in events if e["type"] == "goal_reached"}
     targets: dict = {}
     for e in events:
         if e["type"] != "progress_report":
             continue
+        raw = e["data"].get("filters") or {}
         filters = []
-        for name, f in (e["data"].get("filters") or {}).items():
-            if not isinstance(f, dict):
+        for name, f in raw.items():
+            if not isinstance(f, dict) or _hours(f.get("delta_h")) <= 0:
                 continue
             delta = _hours(f.get("delta_h"))
-            if delta <= 0:
-                continue
-            filters.append({"filter": name, "delta_h": round(delta, 2),
+            filters.append({"filter": _canon(name), "delta_h": round(delta, 2),
                             "hours": round(_hours(f.get("hours")), 2),
                             "goal": round(_hours(f.get("goal")), 2),
                             "done": _hours(f.get("goal")) > 0 and _hours(f.get("hours")) >= _hours(f.get("goal"))})
         if filters:
-            # Finished means the whole plan, not one row: a goal was reached
-            # tonight and every filter with a goal is at it. A star row
-            # filling up while Ha was at 2.4 of 5 h used to mark the Helix
-            # finished (2026-10-16). The report carries every filter, so the
-            # check also sees filters that added nothing tonight.
-            all_goals = [f for f in (e["data"].get("filters") or {}).values()
+            # Finished means the whole plan, not one row. A star row filling up
+            # while Ha was at 2.4 of 5 h once marked the Helix finished
+            # (2026-10-16). The report carries every filter, so the check also
+            # sees filters that added nothing tonight.
+            all_goals = [f for f in raw.values()
                          if isinstance(f, dict) and _hours(f.get("goal")) > 0]
             whole = bool(all_goals) and all(_hours(f.get("hours")) >= _hours(f.get("goal"))
                                             for f in all_goals)
@@ -1312,28 +1416,6 @@ def _last_night(conn) -> dict | None:
                 "ra_deg": e["refs"].get("ra_deg"), "dec_deg": e["refs"].get("dec_deg"),
                 "filters": filters, "hours": round(sum(f["delta_h"] for f in filters), 2),
                 "finished": e["refs"].get("plan_id") in finished and whole}
-    # Before the plugin posts imaging_target events of its own, only the
-    # progress reports carry hours. Once it does, frames fill in any target
-    # a report has not covered.
-    for e in events:
-        if e["type"] != "imaging_target":
-            continue
-        pid = e["refs"].get("plan_id") or e["key"]
-        if pid in targets:
-            continue
-        per: dict = {}
-        for fr_ in e["data"].get("frames") or []:
-            if isinstance(fr_, dict) and fr_.get("filter"):
-                per[fr_["filter"]] = per.get(fr_["filter"], 0.0) + \
-                    _hours(fr_.get("exposure_s")) * _hours(fr_.get("count")) / 3600.0
-        filters = [{"filter": n, "delta_h": round(h, 2), "hours": None, "goal": None,
-                    "done": False} for n, h in per.items() if h > 0]
-        if filters:
-            targets[pid] = {"plan_id": e["refs"].get("plan_id"),
-                            "target": e["refs"].get("target") or e["title"],
-                            "ra_deg": e["refs"].get("ra_deg"), "dec_deg": e["refs"].get("dec_deg"),
-                            "filters": filters, "hours": round(sum(f["delta_h"] for f in filters), 2),
-                            "finished": e["refs"].get("plan_id") in finished}
     return {"night": night, "targets": list(targets.values()),
             "total_h": round(sum(t["hours"] for t in targets.values()), 2)}
 
