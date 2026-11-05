@@ -113,10 +113,76 @@ def register_source(name: str) -> None:
 
 
 def reset_registrations() -> None:
-    """Back to core's own types and sources. For tests."""
+    """Back to core's own types, sources and no aliases. For tests."""
     global POSTABLE_SOURCES
     _rebuild_types(CORE_CHIPS)
     POSTABLE_SOURCES = CORE_SOURCES
+    for table in _ALIASES.values():
+        table.clear()
+
+
+# Old names a sender may still use, mapped to the names ACP uses now
+# (docs/extensions.md, "Old names"). Core ships none. An extension registers
+# them, so a tool posting under a name it used before a rename keeps working.
+_ALIASES: dict[str, dict[str, str]] = {"source": {}, "type": {}, "ref": {}}
+
+
+def register_alias(kind: str, old: str, new: str) -> None:
+    """Accept *old* wherever *new* is a valid ``source``, event ``type`` or
+    ``refs`` key (*kind*), and store it as *new*. An alias whose *new* name is
+    not valid on this ACP is kept but has no effect until it is, so an
+    extension can register aliases ahead of a rename. Events already stored
+    under *old* are renamed when the store opens, or straight away when it is
+    already open. Raises ValueError on a bad argument."""
+    if kind not in _ALIASES:
+        raise ValueError("kind must be source, type or ref")
+    for name in (old, new):
+        if not isinstance(name, str) or not name or len(name) > MAX_KEY:
+            raise ValueError("old and new must be non-empty text")
+    if old == new or old == "acp" or new == "acp":
+        raise ValueError("an alias must map one name to another, and never to or from acp")
+    _ALIASES[kind][old] = new
+    with _lock:
+        if _conn is not None:
+            _rename_aliased(_conn)
+
+
+def aliases(kind: str) -> dict[str, str]:
+    """A copy of the registered aliases of one kind, old name to new."""
+    return dict(_ALIASES.get(kind, {}))
+
+
+def _alias_target(kind: str, name, valid) -> str | None:
+    """The new name for *name* when an alias maps it to a name *valid* accepts."""
+    new = _ALIASES[kind].get(name) if isinstance(name, str) else None
+    return new if new is not None and valid(new) else None
+
+
+def _rename_aliased(conn) -> None:
+    """Rename stored events under each alias whose new name is valid now. A
+    row that would collide with one already stored under the new name is
+    left alone. No schema version is involved, so an older ACP still opens
+    the file."""
+    sources = {o: n for o, n in _ALIASES["source"].items() if n in POSTABLE_SOURCES}
+    types = {o: n for o, n in _ALIASES["type"].items() if n in KNOWN_TYPES}
+    refs = {o: n for o, n in _ALIASES["ref"].items() if n in REF_KEYS}
+    if not (sources or types or refs):
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for old, new in sources.items():
+            conn.execute("UPDATE OR IGNORE events SET source = ? WHERE source = ?", (new, old))
+            conn.execute("UPDATE OR IGNORE tombstones SET source = ? WHERE source = ?", (new, old))
+        for old, new in types.items():
+            conn.execute("UPDATE events SET type = ? WHERE type = ?", (new, old))
+        for old, new in refs.items():
+            o, n = json.dumps(old) + ":", json.dumps(new) + ":"
+            conn.execute("UPDATE events SET refs = replace(refs, ?, ?) WHERE instr(refs, ?) > 0 "
+                         "AND instr(refs, ?) = 0", (o, n, o, n))
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def chip_defs() -> list[dict]:
@@ -400,6 +466,7 @@ def _open(path: Path) -> sqlite3.Connection:
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
+        _rename_aliased(conn)
     except BaseException:
         conn.close()
         raise
@@ -478,6 +545,7 @@ def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
         raise ValueError("an event must be an object")
 
     source = raw.get("source")
+    source = _alias_target("source", source, lambda n: n in POSTABLE_SOURCES) or source
     if allow_acp:
         source = "acp"
     elif source not in POSTABLE_SOURCES:
@@ -509,6 +577,7 @@ def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
         raise ValueError("severity must be info, warn or error")
 
     etype = raw.get("type")
+    etype = _alias_target("type", etype, lambda n: n in KNOWN_TYPES) or etype
     if not isinstance(etype, str) or etype not in KNOWN_TYPES:
         etype = "other"
 
@@ -533,6 +602,9 @@ def validate(raw, *, allow_acp: bool, now: datetime) -> dict:
         refs_in = {}
     if not isinstance(refs_in, dict):
         raise ValueError("refs must be an object")
+    if _ALIASES["ref"]:
+        refs_in = {(_alias_target("ref", k, lambda n: n in REF_KEYS and n not in refs_in) or k): v
+                   for k, v in refs_in.items()}
     refs = {}
     for k in REF_KEYS:
         if k not in refs_in:
