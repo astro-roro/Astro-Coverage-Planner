@@ -1772,6 +1772,9 @@ _add_ext_hook(app, "scan_hooks")
 # jobs"): {"id", "cron", "run"}. Read once, after the extensions load.
 app.scheduled_jobs: list[dict] = []
 _add_ext_hook(app, "scheduled_jobs")
+# Manifest key editor_sections: pages shown under the plan editor
+# (docs/extensions.md, "Plan editor sections").
+_add_ext_hook(app, "editor_sections")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -2885,8 +2888,9 @@ def api_extensions_manifest():
     warning, see ``extensions.sanitise_rail_tabs``); everything else passes
     through verbatim.
     """
-    from extensions import sanitise_rail_tabs
-    return jsonify([sanitise_rail_tabs(e) for e in app.extensions_manifest])
+    from extensions import sanitise_pages, sanitise_rail_tabs
+    return jsonify([sanitise_pages(sanitise_rail_tabs(e), "editor_sections", needs_label=True)
+                    for e in app.extensions_manifest])
 
 
 @app.route("/api/sources")

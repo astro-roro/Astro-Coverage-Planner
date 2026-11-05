@@ -314,6 +314,10 @@ export function bridgeRequest(event, frames, origin) {
     return { kind: "layer-set", id: d.id, enabled: d.enabled };
   }
   if (d.type === "acp:tiles:refresh") return { kind: "tiles-refresh" };
+  if (d.type === "acp:plan:reload") {
+    if (typeof d.plan_id !== "string" || !d.plan_id || d.plan_id.length > 200) return null;
+    return { kind: "plan-reload", planId: d.plan_id };
+  }
   if (d.type === "acp:time-aware:set") {
     return typeof d.enabled === "boolean" ? { kind: "time-aware-set", enabled: d.enabled } : null;
   }
@@ -340,4 +344,58 @@ export function parsePostBody(raw) {
   if (raw == null || String(raw).trim() === "") return { ok: true, body: {} };
   try { return { ok: true, body: JSON.parse(raw) }; }
   catch { return { ok: false }; }
+}
+
+// --- Pages an extension shows inside ACP's own panels ----------------------
+
+// Flatten a manifest list such as `editor_sections` or `activity_cards` into
+// [{key, extension, id, label, page, height}], checked the way rail tabs are.
+export function pagesFrom(manifest, listKey, needsLabel = false) {
+  const out = [];
+  const seen = new Set();
+  for (const ext of Array.isArray(manifest) ? manifest : []) {
+    if (!ext || typeof ext !== "object" || !Array.isArray(ext[listKey])) continue;
+    for (const t of ext[listKey]) {
+      if (!t || typeof t !== "object") continue;
+      if (typeof t.id !== "string" || !ID_RE.test(t.id)) continue;
+      const label = typeof t.label === "string" ? t.label.trim() : "";
+      if (needsLabel && !label) continue;
+      if (!railPageOk(ext.extension, t.page)) continue;
+      const key = `ext-${ext.extension}-${t.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const height = Number.isInteger(t.height) && t.height >= 40 && t.height <= 1200 ? t.height : null;
+      out.push({ key, extension: ext.extension, id: t.id, label, page: t.page, height });
+    }
+  }
+  return out;
+}
+
+// The page with `plan_id=<id>` added to its query string.
+export function withPlanId(page, planId) {
+  const [path, hash] = String(page).split("#", 2);
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}plan_id=${encodeURIComponent(planId)}${hash !== undefined ? "#" + hash : ""}`;
+}
+
+// After an editor section changes a plan on the server, take the top-level
+// keys the server changed into the plan open in the editor, and leave the
+// user's unsaved edits to every other key alone. `loaded` is the plan as the
+// editor last loaded it. Changes `editing` and `loaded` in place and returns
+// the keys taken.
+export function adoptServerChanges(editing, loaded, fresh) {
+  if (!editing || !loaded || !fresh) return [];
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const taken = [];
+  for (const k of new Set([...Object.keys(loaded), ...Object.keys(fresh)])) {
+    if (k === "updated_at" || k === "filter_goals") continue;
+    if (same(loaded[k], fresh[k])) continue;
+    if (k in fresh) editing[k] = JSON.parse(JSON.stringify(fresh[k]));
+    else delete editing[k];
+    taken.push(k);
+  }
+  if ("updated_at" in fresh) editing.updated_at = fresh.updated_at;
+  for (const k of Object.keys(loaded)) delete loaded[k];
+  Object.assign(loaded, JSON.parse(JSON.stringify(fresh)));
+  return taken;
 }

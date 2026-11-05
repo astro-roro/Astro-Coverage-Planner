@@ -495,6 +495,32 @@ ACP reads the list once, after every extension has registered, and starts one th
 
 Set `ACP_DISABLE_JOBS=1` to keep the thread from starting, for example in tests or while debugging. `GET /api/scan/status` lists each job under `jobs` with its `id`, `cron`, `next_at`, `last_run` and `last_ok`. Error text stays in the log, since that route can be read without a token.
 
+### Plan editor sections
+
+A manifest entry can add sections under the plan editor with `editor_sections` (hook name `editor_sections`). Each is a page of yours, shown in a same-origin iframe inside its own titled box, just above the Save button:
+
+```python
+app.extensions_manifest.append({
+    "extension": "my_tool",
+    "name": "My tool",
+    "editor_sections": [
+        {"id": "checklist", "label": "Checklist", "page": "/api/ext/my-tool/checklist", "height": 160},
+    ],
+})
+```
+
+- `id`, `label` and `page` follow the rail tab rules: a short slug, a non-empty label, and a path under `/api/ext/<your extension>`. Bad sections are dropped with one warning on the `acp.extensions` logger.
+- `height` is optional, in pixels from 40 to 1200. The default is 180.
+- ACP adds `plan_id=<id>` to the page's query string. A plan that has not been saved yet shows no sections, since there is nothing to look up.
+
+When the page has changed the plan on the server (through your own route, which should use [`plans_api`](#plan-reads-and-writes-plans_api)), tell ACP:
+
+```js
+window.parent.postMessage({type: "acp:plan:reload", plan_id: planId}, location.origin);
+```
+
+ACP fetches the plan again and copies every top-level field the server changed into the open editor, so the user's unsaved edits to other fields stay and the next Save does not overwrite your change. It also refreshes the plan list. Fields the core editor shows are not redrawn, so a section should change only fields it owns. The layer messages under [Rail tab width and the layer bridge](#rail-tab-width-and-the-layer-bridge) work from editor sections too.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:

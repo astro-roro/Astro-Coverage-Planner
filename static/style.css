@@ -2684,6 +2684,15 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   background: #0c1016;
 }
 
+/* Extension sections under the plan editor (manifest editor_sections). */
+.ext-editor-frame {
+  display: block;
+  width: 100%;
+  height: 180px;
+  border: 0;
+  background: #0c1016;
+}
+
 /* Plan links an extension attaches to a tile (metadata.plans). */
 .tile-plans { list-style: none; margin: 4px 0 0; padding: 0; }
 .tile-plans li { margin: 0 0 6px; }
