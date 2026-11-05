@@ -238,12 +238,12 @@ def test_acp_only_change(host, tmp_path):
 
 
 def test_pne_style_filter_name_mismatch_is_not_a_conflict(host, tmp_path):
-    """The PNe Survey case: ACP has a plan keyed "OIII", and TS's own
+    """The Sample Survey case: ACP has a plan keyed "OIII", and TS's own
     exposuretemplate for that same plan is named "OIII" but its filtername
     column (the wheel's own slot name) is "O". Before the canon fix the
     import kept "O" as a second, phantom goal, so every such plan came back
     "needs a choice" for a mismatch that was only a spelling difference."""
-    a = plan("a", project_name="PNe Survey",
+    a = plan("a", project_name="Sample Survey",
              filter_goals={"OIII": {"target_hours": 1.5, "sub_exposure_s": 300}})
     db = _setup(host, tmp_path, [a])
     conn = connect(db)
@@ -406,7 +406,7 @@ def test_links_after_apply(host, tmp_path):
     shared = plan("shared", project_name="M31", filter_goals=ha(10))
     db = new_db(tmp_path / "ts.sqlite")
     push(db, [shared], Q)
-    link(db, [shared], Q, machine="HAYABUSA")
+    link(db, [shared], Q, machine="LAPTOP")
     push(db, [shared], P)
     link(db, [shared], P)
     host.write_plans([shared])
@@ -469,13 +469,13 @@ def test_link_from_another_machine_falls_back_to_guid(host, tmp_path):
     a = plan("a", project_name="M31")
     db = new_db(tmp_path / "ts.sqlite")
     push(db, [a])
-    link(db, [a], P, machine="HAYABUSA")
+    link(db, [a], P, machine="LAPTOP")
     host.write_plans([a])
     status = host.upload_ready(db)
     preview = status["preview"]
     assert preview["unchanged"][0]["matched_by"] == "guid"
     assert preview["link_notes"] == [
-        "Profile Voyager main was last linked from HAYABUSA; matched by name stamp instead."]
+        "Profile Main profile was last linked from LAPTOP; matched by name stamp instead."]
 
 
 # ---------------------------------------------------------------------------

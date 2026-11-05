@@ -64,7 +64,7 @@ def test_s21_the_sync_route_and_the_links_route_record_the_same_results(host, tm
     # The same results arrive through the links route on a fresh copy of gear.
     host.write_gear(sc.gear_v3())
     r = host.client.post("/api/ext/nina-ts-sync/links", json={
-        "profile_id": GEAR_PROFILE, "machine": "VOYAGER", "states": [],
+        "profile_id": GEAR_PROFILE, "machine": "RIG-A", "states": [],
         "templates": results, "capabilities": ["templates", "repoint"]})
     assert r.status_code == 200, r.get_json()
     assert len(host.template_result_calls) == 2

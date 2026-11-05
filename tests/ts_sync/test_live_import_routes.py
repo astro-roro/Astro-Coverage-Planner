@@ -1,5 +1,5 @@
 """The routes that read the TS database on the ACP host, after they moved
-onto the shared merge engine, and a round trip on Voyager's real rows.
+onto the shared merge engine, and a round trip on a made-up TS profile.
 
 There were no route tests for `/import/diff` and `/import/resolve` before
 this change. What they did and still do:
@@ -26,7 +26,9 @@ from .make_db import make_db
 from .plans import plan, row
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-VOYAGER_PROFILE = "9d3a61fd-9f35-42ae-a911-bd6e4b0f76a7"
+SAMPLE_PROFILE = "00000000-0000-4000-8000-000000000002"
+#: Plans the import makes of ts-snapshot-sample.sql, one per target.
+SAMPLE_PLANS = 21
 
 
 @pytest.fixture
@@ -122,38 +124,38 @@ def test_import_apply_writes_ts_links(host, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Voyager round trip
+# Round trip on the sample profile
 # ---------------------------------------------------------------------------
 
 
-def _voyager_db(tmp_path) -> Path:
-    path = make_db(23, tmp_path / "voyager.sqlite")
+def _sample_db(tmp_path) -> Path:
+    path = make_db(23, tmp_path / "sample.sqlite")
     conn = sqlite3.connect(path)
-    conn.executescript((FIXTURES / "ts-snapshot-voyager.sql").read_text(encoding="utf-8"))
+    conn.executescript((FIXTURES / "ts-snapshot-sample.sql").read_text(encoding="utf-8"))
     conn.commit()
     conn.close()
     return path
 
 
-def test_voyager_upload_applies_and_a_second_upload_changes_nothing(host, tmp_path):
+def test_sample_upload_applies_and_a_second_upload_changes_nothing(host, tmp_path):
     """The last step of the live run order: upload, apply, upload again, and
     the preview shows nothing new, nothing updated and no conflicts."""
-    host.gear_path.write_text((FIXTURES / "gear-voyager.json").read_text(encoding="utf-8"),
+    host.gear_path.write_text((FIXTURES / "gear-sample.json").read_text(encoding="utf-8"),
                               encoding="utf-8")
     host.write_plans([])
-    db = _voyager_db(tmp_path)
-    profiles = [{"id": VOYAGER_PROFILE, "name": "Voyager main"}]
+    db = _sample_db(tmp_path)
+    profiles = [{"id": SAMPLE_PROFILE, "name": "Main profile"}]
 
-    first = host.upload_ready(db, profile_id=VOYAGER_PROFILE, profiles=profiles)
+    first = host.upload_ready(db, profile_id=SAMPLE_PROFILE, profiles=profiles)
     preview = first["preview"]
-    assert preview["counts"]["new"] > 50
+    assert preview["counts"]["new"] == SAMPLE_PLANS
     assert preview["notes"] and preview["notes"][0]["losses"] > 0
     r = host.apply(first)
     assert r.status_code == 200, r.get_json()
     added = len(host.plans())
     assert added == preview["counts"]["new"]
 
-    second = host.upload_ready(db, profile_id=VOYAGER_PROFILE, profiles=profiles)
+    second = host.upload_ready(db, profile_id=SAMPLE_PROFILE, profiles=profiles)
     assert second["counts"] == {"new": 0, "updated": 0, "conflicts": 0}
     assert second["preview"]["proposals"] == []
     assert second["preview"]["counts"]["unchanged"] == added
@@ -194,7 +196,7 @@ def test_links_route_preserves_unknown_top_level_keys(host, tmp_path):
     refs = {"profile_id": P, "project_id": 1}
     r = host.client.post(
         "/api/ext/nina-ts-sync/links",
-        json={"profile_id": P, "machine": "VOYAGER",
+        json={"profile_id": P, "machine": "RIG-A",
               "states": [{"plan_id": "a", "refs": refs, "base_snapshot": None}]})
     assert r.status_code == 200, r.get_json()
     assert _top_level_doc(host)["settings_migrated"] == 1
