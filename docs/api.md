@@ -49,8 +49,9 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest), drives the Extensions rail accordion and the core-button swap mechanism |
 | `GET /api/ext/...` | Routes registered by [extensions](extensions.md) |
 | `GET /api/version` | `{version, plans_last_modified, manifest_last_modified}`, lets a client poll cheaply instead of refetching plans on a timer |
+| `GET /api/update` | `{available, current, latest, url, jump, docker}`. `jump` is `patch`, `minor` or `major` when a newer stable release exists, else `available` is false. Asks GitHub at most once a day, never when the update check is off, and answers "nothing new" on any failure |
 | `GET /api/settings` | Where each setting came from, whether the environment locks it, `first_run`, `writable` and the version. Folder and manifest paths go to an authorised client only |
-| `PUT /api/settings` | Save `fits_roots` (and `shortcuts` where available). Authorised client only, JSON body |
+| `PUT /api/settings` | Save `fits_roots`, `update_check` (and `shortcuts` where available). Authorised client only, JSON body |
 | `POST /api/settings/adopt-env` | Copy the folders in `FITS_ROOTS` into the settings file. Authorised client only |
 | `POST /api/settings/check-path` | Body `{"path": "..."}`. Checks one folder against the saved list and writes nothing. Returns `{code, warnings}`. Authorised client only |
 | `GET /setup` | The first-run and settings page |
@@ -82,7 +83,7 @@ Nothing needs it. The NINA plugin is a desktop HTTP client and never sees CORS, 
 
 The routes behind the settings file described in [the archive setup guide](setup-archive.md#the-settings-file).
 
-`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to, and always false inside a container), `error` (`null`, or `settings_file_corrupt`), `packaged` (true when a launcher started ACP), `shortcuts` (`{available, value}`) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
+`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to, and always false inside a container), `error` (`null`, or `settings_file_corrupt`), `packaged` (true when a launcher started ACP), `shortcuts` (`{available, value}`), `update_check` (`{value, locked}`, locked when `ACP_UPDATE_CHECK` is set) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
 
 An authorised client is one that passed the access gate with the bearer token or session cookie, or, when `ACP_API_TOKEN` is not set, one connecting from the same machine (`127.0.0.1`, `::1`) with no `X-Forwarded-For` header and a `Host` of `localhost`, `127.0.0.1` or `[::1]`. The `Host` rule stops a web page on another site from reaching ACP through a DNS name it has pointed at your machine.
 
@@ -90,7 +91,7 @@ An authorised client is one that passed the access gate with the bearer token or
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `unknown_key` | The body has a key other than `fits_roots` or `shortcuts`. `port`, `manifest_path` and `scan_cron` are edited in the file. |
+| 400 | `unknown_key` | The body has a key other than `fits_roots`, `shortcuts` or `update_check`. `port`, `manifest_path` and `scan_cron` are edited in the file. |
 | 400 | `not_absolute`, `invalid`, `duplicate`, `too_many` | A folder failed the syntax check. Nothing is saved. |
 | 400 | `not_found`, `not_a_directory`, `not_readable`, `timed_out` | A folder failed the disk check. The reply also has `index`, the position of the folder in the list. Nothing is saved. A folder that does not answer within 5 seconds gives `timed_out`. |
 | 400 | `unavailable` | `shortcuts` where shortcuts are not supported. |
