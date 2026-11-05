@@ -355,6 +355,30 @@ Source: <https://github.com/astro-roro/Astro-Coverage-Planner> (the extension it
 
 These let an extension take part in what core does, rather than only add routes beside it. Each hook's name is in `app.acp_extension_hooks` when the build offers it (see [Versions and hooks](#versions-and-hooks)). Core does not use them for its own features. Each one has a small working example under `tests/dummy_extensions/`.
 
+### Plan reads and writes (`plans_api`)
+
+Every core route that changes `plans.json` holds one lock while it reads, changes and writes the file. An extension that writes plans some other way can lose a save from the editor, or have its own change overwritten. `app.plans_api` is the supported way in:
+
+- `read()` returns a deep copy of the plans document, `{"version": ..., "plans": [...]}`.
+- `transact(fn)` takes the lock, hands `fn` a deep copy of the plans list, and saves the list afterwards if it changed. Change the list in place: edit plans, append or remove them. Whatever `fn` returns, `transact` returns. If `fn` raises, nothing is saved and the exception comes back to you.
+- `apply_project_settings(plans, project_name, wanted)` sets each key in `wanted` on every plan in a project, the way the project settings route does, and returns `{key: {"from": ..., "to": ...}}` for the keys that changed. Call it inside `transact` on the list you were given.
+- `project_key(plan)` is the project a plan belongs to: its project name, else its target's name, else its id.
+
+```python
+def register(app):
+    api = app.plans_api
+
+    def mark_project(plans):
+        for p in plans:
+            if api.project_key(p) == "M31 mosaic":
+                p["my_tool_note"] = "checked"
+        return api.apply_project_settings(plans, "M31 mosaic", {"priority": "high"})
+
+    changed = api.transact(mark_project)
+```
+
+Core does not validate what `transact` writes. Keep to fields your extension owns (see [Plan fields](#plan-fields-owned-by-an-extension) once that hook is present) or core's documented fields. Do not call core routes over HTTP from inside `fn`: they take the same lock from another thread and would wait for ever.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:
