@@ -2,9 +2,8 @@
 
 docs/specs/goal-panel-and-ts-order.md section 6, test A2, and the
 ACP half of A3 (each row's desired in tests/fixtures/aac_accepted_cases.json).
-The endpoint is checked against the request grader's client sends
-(auto_pix/acp_feedback.py in processing-pipeline) and the response table
-that client acts on.
+The endpoint is checked against the request a grader's client sends and the
+response table that client acts on.
 """
 from __future__ import annotations
 
@@ -125,8 +124,8 @@ class TestAcceptedEndpoint(unittest.TestCase):
     def test_a2_zeros_for_a_row_with_no_frames_are_stored_not_complete(self):
         r = self._post(_request([_figures(G_ID, "G", "G Stars", 0.0, 0)]))
         self.assertEqual(r.status_code, 200)
-        grader = self._stored()["filter_rows"][2]["grader"]
-        self.assertEqual((grader["accepted_frames"], grader["complete"]), (0, False))
+        block = self._stored()["filter_rows"][2]["grader"]
+        self.assertEqual((block["accepted_frames"], block["complete"]), (0, False))
 
     def test_a2_an_unknown_plan_is_404(self):
         self.assertEqual(self._post(_request([]), plan_id="nope").status_code, 404)
@@ -305,7 +304,7 @@ class TestReviewFixes(unittest.TestCase):
 
 
 class TestSharedCases(unittest.TestCase):
-    """The ACP half of A3: the desired the writers push, with grader's floor."""
+    """The ACP half of A3: the desired the writers push, with the pipeline's floor."""
 
     def _plan(self, case):
         rows = []

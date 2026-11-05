@@ -517,7 +517,7 @@ The build includes these tests, written against the spec. A reviewer checks that
 | P6 | No response contains operating-system error text or the raw input path from an exception. |
 | P7 | A folder read that blocks past 5 seconds returns `timed_out` and does not hold a waitress thread. |
 | P8 | `PUT` with a `not_absolute` path saves nothing and returns 400 with the code. `PUT` with `port` returns 400. |
-| P9 | A container started as a uid with no passwd entry, with server-like environment variables, shows the read-only page, and its `GET /api/settings` has `writable: false`. |
+| P9 | A container started as a uid with no passwd entry, with the environment variables a home server deployment sets, shows the read-only page, and its `GET /api/settings` has `writable: false`. |
 
 ### Scan and catalogues (`tests/test_scan_endpoint.py`)
 

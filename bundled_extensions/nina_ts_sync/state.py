@@ -182,8 +182,8 @@ def _plan_entry(pl, tpl, filter_name, template_name, row: dict | None = None,
     update that writes `exposure`). `template_sub_s` is the sub TS uses,
     which a push copies back onto the row.
 
-    `desired` is the row's goal: when *row* is an grader-linked row and TS holds
-    exactly the floored value, the base records the unfloored goal, so grader's
+    `desired` is the row's goal: when *row* is a pipeline-linked row and TS holds
+    exactly the floored value, the base records the unfloored goal, so the pipeline's
     floor never reads as an edit (goal-panel-and-ts-order.md section 6).
 
     `enabled` is whether ACP wants the plan on: 1 when its row has a goal

@@ -305,19 +305,26 @@ export function hoursByFilter(plan) {
 
 // --- progress ---
 
-// What a row has done, in its own unit. grader's accepted figures win when the
-// row has an grader block (section 6); otherwise actual_hours, with frame rows
+// A frame grader's figures for the row, or null. ACP always sends them as
+// `grader`, copying a block stored under an older name.
+export function graderOf(row) {
+  const b = row && row.grader;
+  return b && typeof b === "object" ? b : null;
+}
+
+// What a row has done, in its own unit. The grader's accepted figures win when
+// the row has a grader block (section 6); otherwise actual_hours, with frame rows
 // converted to whole frames.
 export function rowDone(row, dims = null) {
   const sub = rowSub(row);
-  const grader = row?.grader;
+  const graded = graderOf(row);
   const shot = rowPanels(row, dims) ? creditedHours(row, dims) : num(row?.actual_hours);
   if (row?.unit === "fr") {
-    if (grader && Number.isFinite(Number(grader.accepted_frames))) return Math.round(num(grader.accepted_frames));
-    if (grader && Number.isFinite(Number(grader.accepted_seconds))) return Math.round(num(grader.accepted_seconds) / sub);
+    if (graded && Number.isFinite(Number(graded.accepted_frames))) return Math.round(num(graded.accepted_frames));
+    if (graded && Number.isFinite(Number(graded.accepted_seconds))) return Math.round(num(graded.accepted_seconds) / sub);
     return Math.round(shot * 3600 / sub);
   }
-  if (grader && Number.isFinite(Number(grader.accepted_seconds))) return num(grader.accepted_seconds) / 3600;
+  if (graded && Number.isFinite(Number(graded.accepted_seconds))) return num(graded.accepted_seconds) / 3600;
   return shot;
 }
 
@@ -343,28 +350,28 @@ export function rowPanelProgress(row, dims) {
   return out;
 }
 
-// What Target Scheduler has shot that grader has not looked at yet, in the row's
+// What Target Scheduler has shot that the grader has not looked at yet, in the row's
 // own unit. actual_hours is TS's acquired total from the plugin's live
-// reports; grader.seen_* is everything grader has graded, accepted or not. So the
-// difference is frames taken since grader's last pass, and it falls back to 0 on
-// its own once grader catches up. Rows without grader figures have nothing waiting:
+// reports; seen_* is everything the grader has looked at, accepted or not. So the
+// difference is frames taken since its last pass, and it falls back to 0 on
+// its own once it catches up. Rows without grader figures have nothing waiting:
 // their bar already shows actual_hours.
 export function rowPending(row) {
-  const grader = row?.grader;
-  if (!grader) return 0;
-  const hasFrames = grader.seen_frames != null && Number.isFinite(Number(grader.seen_frames));
-  const hasSeconds = grader.seen_seconds != null && Number.isFinite(Number(grader.seen_seconds));
-  // A block stored before grader sent seen figures: what grader has looked at is
+  const graded = graderOf(row);
+  if (!graded) return 0;
+  const hasFrames = graded.seen_frames != null && Number.isFinite(Number(graded.seen_frames));
+  const hasSeconds = graded.seen_seconds != null && Number.isFinite(Number(graded.seen_seconds));
+  // A block stored before the grader sent seen figures: what it has looked at is
   // unknown, so claim nothing is waiting rather than the whole total.
   if (!hasFrames && !hasSeconds) return 0;
   const sub = rowSub(row);
   if (row?.unit === "fr") {
     const shot = Math.round(num(row.actual_hours) * 3600 / sub);
-    const seen = hasFrames ? Math.round(num(grader.seen_frames)) : Math.round(num(grader.seen_seconds) / sub);
+    const seen = hasFrames ? Math.round(num(graded.seen_frames)) : Math.round(num(graded.seen_seconds) / sub);
     return Math.max(0, shot - seen);
   }
   if (!hasSeconds) return 0;
-  const pending = num(row.actual_hours) - num(grader.seen_seconds) / 3600;
+  const pending = num(row.actual_hours) - num(graded.seen_seconds) / 3600;
   // Under half a sub is rounding between the two counts, not a frame.
   return pending * 3600 >= sub / 2 ? pending : 0;
 }
@@ -378,7 +385,7 @@ export function rowGoal(row) {
 // goal is per panel, so the bar measures against goal x panels and
 // `panelText` says how that total is made up. `left` is the "3.0 / 4.2 h" text, `right` the "1.2 h left",
 // "done" or "set a goal" text. `pendingPct` is the striped part of the bar
-// after `pct` (shot, waiting for grader), and `pendingText` its line under the
+// after `pct` (shot, waiting for grading), and `pendingText` its line under the
 // bar, empty when nothing is waiting.
 export function rowProgress(row, panels = 1) {
   // `panels` is the plan's mosaic: a panel count, or its {rows, cols}, which
@@ -391,9 +398,9 @@ export function rowProgress(row, panels = 1) {
   const frames = row?.unit === "fr";
   const fmt = v => (frames ? String(v) : v.toFixed(1));
   const u = frames ? "fr" : "h";
-  const finished = row?.grader ? row.grader.complete === true : (goal > 0 && done >= goal);
+  const finished = graderOf(row) ? graderOf(row).complete === true : (goal > 0 && done >= goal);
   const pendingText = pending > 0
-    ? `+${frames ? pending : pending.toFixed(2)} ${u} shot, waiting for grader`
+    ? `+${frames ? pending : pending.toFixed(2)} ${u} shot, waiting for grading`
     : "";
   if (!(goal > 0)) {
     return { left: "", right: "set a goal", finished: false, noGoal: true, pct: 0, pendingPct: 0, pendingText, panelText: "", panelLines: [] };
@@ -458,7 +465,7 @@ export function cardHtml(row, index, { camera, colors = {}, smart = false, panel
     <select class="fr-tmpl-sel" aria-label="TS template" title="${esc(cur)}">${tmplOpts}</select>
     <button type="button" class="fr-remove" title="Remove this filter" aria-label="Remove this filter">×</button>
     <div class="fr-goal"><input type="number" class="fr-goal-input" min="0" step="${frames ? 1 : 0.5}" value="${goalVal}" aria-label="Goal"><select class="fr-unit-sel" aria-label="Unit"><option value="h"${frames ? "" : " selected"}>h</option><option value="fr"${frames ? " selected" : ""}>fr</option></select></div>
-    <div class="fr-progress"><div class="fr-bar${row.grader ? " fr-bar-grader" : ""}"><i style="width:${p.pct.toFixed(1)}%"></i>${p.pendingPct > 0 ? `<b class="fr-pending-bar" style="width:${p.pendingPct.toFixed(1)}%"></b>` : ""}</div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div>${p.panelText ? `<div class="fr-panels">${esc(p.panelText)}</div>` : ""}${p.panelLines.length ? `<div class="fr-panel-list">${p.panelLines.map(l => `<span class="fr-panel${l.finished ? " fr-panel-done" : ""}" title="${esc(l.title)}">${esc(l.key)} ${esc(l.text)}</span>`).join("")}</div>` : ""}${p.pendingText ? `<div class="fr-pending">${esc(p.pendingText)}</div>` : ""}</div>
+    <div class="fr-progress"><div class="fr-bar${graderOf(row) ? " fr-bar-grader" : ""}"><i style="width:${p.pct.toFixed(1)}%"></i>${p.pendingPct > 0 ? `<b class="fr-pending-bar" style="width:${p.pendingPct.toFixed(1)}%"></b>` : ""}</div><div class="fr-prog-text"><span class="fr-prog-left">${esc(p.left)}</span><span class="fr-prog-right">${esc(p.right)}</span></div>${p.panelText ? `<div class="fr-panels">${esc(p.panelText)}</div>` : ""}${p.panelLines.length ? `<div class="fr-panel-list">${p.panelLines.map(l => `<span class="fr-panel${l.finished ? " fr-panel-done" : ""}" title="${esc(l.title)}">${esc(l.key)} ${esc(l.text)}</span>`).join("")}</div>` : ""}${p.pendingText ? `<div class="fr-pending">${esc(p.pendingText)}</div>` : ""}</div>
     ${notes ? `<div class="fr-notes">${notes}</div>` : ""}
   </div>`;
 }

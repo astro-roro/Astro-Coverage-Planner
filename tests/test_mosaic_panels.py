@@ -3,7 +3,7 @@
 A row may carry `panels`, a map from panel key ("row,col" from 1, the key
 ts_links uses in `target_ids_by_panel`) to the hours acquired on that panel.
 `actual_hours` is then the sum of the map. Plans without a map behave as they
-did before, and the grader /progress and /accepted payloads keep working.
+did before, and the /progress and /accepted payloads keep working.
 """
 from __future__ import annotations
 

@@ -39,7 +39,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/plans/<id>`, `PUT`, `DELETE` | Single-plan operations |
 | `POST /api/plans/match` | Score every plan against a connected rig's gear fingerprint |
 | `POST /api/plans/<id>/progress` | Record acquired hours against a plan's filter goals |
-| `POST /api/plans/<id>/accepted` | Store Astro Auto Calibration's accepted counts per filter row |
+| `POST /api/plans/<id>/accepted` | Store a processing pipeline's accepted counts per filter row |
 | `GET /api/fingerprints` | Last gear fingerprint each NINA profile reported |
 | `GET /api/target-overrides`, `POST` | Per-target metadata overrides |
 | `GET /api/destinations`, `POST` | CRUD for multi-rig sync destinations |
@@ -187,7 +187,7 @@ The viewer can compute year-long observability for any saved site or arbitrary s
 
 ### Per-target visibility, `/api/visibility`
 
-`GET /api/visibility?site_id=sydney` returns a 12-month bin for every target in the manifest:
+`GET /api/visibility?site_id=example-site` returns a 12-month bin for every target in the manifest:
 
 ```json
 {
@@ -203,7 +203,7 @@ Each `monthly` array has 12 entries (one per month, January first), each one of 
 
 ### Arbitrary point, `/api/visibility/point`
 
-`GET /api/visibility/point?ra=161.26&dec=-59.68&site_id=sydney` returns the same 12-month bin shape for one (RA, Dec) point, useful for the Inventory tile-detail panel.
+`GET /api/visibility/point?ra=161.26&dec=-59.68&site_id=example-site` returns the same 12-month bin shape for one (RA, Dec) point, useful for the Inventory tile-detail panel.
 
 ## Coverage sources, tiles, catalogues
 
@@ -338,16 +338,18 @@ On `/api/sync`, a mosaic row with a `panels` map gives each exported panel targe
 
 ### Accepted counts: `POST /api/plans/<id>/accepted`
 
-Astro Auto Calibration (grader) is the only caller. It sends the frames it accepted, per filter row, so the editor can show done against what grader kept and the Target Scheduler sync can write the shortfall (docs/specs/goal-panel-and-ts-order.md section 6). The bearer token is checked like every other `/api` route, against `ACP_API_TOKEN`.
+For an external frame grader: any tool that looks at the frames you shot and decides which to keep. It sends the frames it accepted, per filter row, so the editor can show done against what was kept and the Target Scheduler sync can write the shortfall (docs/specs/goal-panel-and-ts-order.md section 6). The bearer token is checked like every other `/api` route, against `ACP_API_TOKEN`.
 
 ```json
-{"source": "grader", "at": "2026-10-12T10:05:00Z", "filed_through_night": "2026-10-11", "min_total_frames": 10,
+{"source": "my-grader", "at": "2026-10-12T10:05:00Z", "filed_through_night": "2026-10-11", "min_total_frames": 10,
  "rows": [{"id": "<row id>", "filter": "Ha", "template": "Ha 300",
            "accepted_seconds": 20700.0, "accepted_frames": 69, "seen_seconds": 21600.0, "seen_frames": 72,
            "complete": false, "estimated_hours": null, "measurement": null}]}
 ```
 
 A row is stored only when its `id` is on the plan, its `filter` reaches the row's filter (`Antlia Ha` is `Ha`), and its `template` equals the row's. It replaces the row's `grader` block, and values may go down. `actual_hours` is never changed. The plan gets `grader.filed_through_night`, `grader.min_total_frames` and `grader.received_at`. A save from the plan editor cannot change any of these.
+
+Plans saved before this contract was renamed hold these blocks under an older name. ACP finds a block under an older name by its fields. If an extension registered that name with `filter_rows.register_block_alias(<old>, "grader")`, the block moves to `grader` when plans load, is stored that way on the next save, and `GET /api/plans` also returns it under the old name for clients written before the rename. If no extension registered the name, ACP logs a warning, leaves the block where it is, adds a `grader` copy, and keeps both current, so nothing reading the old name breaks (docs/extensions.md, "Old names").
 
 ```json
 {"ok": true, "unknown_rows": [{"id": "<row id>", "reason": "row now has filter G and template G Stars"}],
@@ -438,6 +440,8 @@ The legacy `/api/export/priority` CSV route stays for backwards compatibility, s
 ## Activity: `/api/activity`
 
 The Activity tab's events, in `docs/specs/activity-tab.md`. `POST /api/activity/events` takes `{"events": [...]}` (up to 100, 2 MiB) from the plugin, a processing tool or anything else with the token, and answers `{stored, updated, unchanged, stale, rejected}`; it answers 403 while `ACP_API_TOKEN` is unset. `GET /api/activity?nights=5&before=<night>`, `GET /api/activity/night/<night>?offset=200`, `GET /api/activity/summary`, `POST /api/activity/seen`, `POST /api/activity/events/<id>/dismiss` and `/restore`, `GET`/`PUT /api/activity/prefs`, and `GET /api/activity/types` (the filter chips with their event types, and the accepted sources, including any an extension registered) serve the tab. With `ACP_ACTIVITY=off` all of them answer 404.
+
+An event's `source` is `plugin`, `processing` or `external`, or a source an extension registered. Calibration, stacking, grading and similar tools post as `processing`, with types such as `calibration`, `threshold_decision`, `master_queued`, `master_built`, `master_ready`, `darks_built`, `accepted_counts`, `processing_alert` and `processing_recovered`, and may name their job in `refs.job`. These names replaced older ones. When the store opens, a source, type or ref key it finds in stored events that ACP does not know is accepted as it is from then on, with a warning in the log, so a sender nobody has updated is neither refused nor stripped. An extension can register the old names as aliases (docs/extensions.md, "Old names"), and then old and new posts are stored under the new names and stored events are renamed.
 
 ## Upload progress: `/api/uploads`
 

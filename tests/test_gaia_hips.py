@@ -1,7 +1,7 @@
 """scripts/make_gaia_hips.py: the parts that need only numpy and astropy.
 
 The tile writer and the HEALPix lookup need Pillow and astropy-healpix, which
-the server build container has, so they are not run here.
+the build container has, so they are not run here.
 """
 from __future__ import annotations
 

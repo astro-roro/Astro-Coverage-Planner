@@ -44,13 +44,13 @@ describe("renderRowHtml", () => {
     assert.ok(renderRowHtml(row()).includes(">19:10<"));
   });
 
-  it("links a plan, the map, the grader job and the upload review page", () => {
+  it("links a plan, the map, the processing job and the upload review page", () => {
     const html = renderRowHtml(row({
-      refs: { plan_id: "M42", ra_deg: 83.8, dec_deg: -5.4, aac_job: "f17d6737", upload_id: "abc123" },
+      refs: { plan_id: "M42", ra_deg: 83.8, dec_deg: -5.4, job: "f17d6737", upload_id: "abc123" },
     }));
     assert.ok(html.includes('data-act="plan"'));
     assert.ok(html.includes('data-ra="83.8"'));
-    assert.ok(html.includes("grader job f17d6737"));
+    assert.ok(html.includes("Job f17d6737"));
     assert.ok(html.includes('href="/ext/nina-ts-sync/import/uploads/abc123"'));
   });
 
@@ -133,14 +133,14 @@ describe("masterRowStrings", () => {
 describe("collapseRows", () => {
   const edit = (id, plan) => row({
     id, type: "plan_edited", title: "min altitude 20 to 30",
-    refs: { plan_id: plan, project: "survey" },
+    refs: { plan_id: plan, project: "Example Mosaic" },
     data: { changes: { min_altitude_deg: { from: 20, to: 30 } } },
   });
 
   it("folds consecutive identical edits across a project into one line", () => {
     const out = collapseRows([edit(1, "a"), edit(2, "b"), edit(3, "c")]);
     assert.equal(out.length, 1);
-    assert.equal(out[0].title, "3 survey plans: min altitude 20 to 30");
+    assert.equal(out[0].title, "3 Example Mosaic plans: min altitude 20 to 30");
     assert.equal(out[0].collapsed, 3);
   });
 
@@ -248,9 +248,9 @@ describe("headings and boxes", () => {
 
   it("Last night lists each target's filters against goal and a finished mark", () => {
     const html = lastNightHtml({ night: "2026-10-13", total_h: 2.3, targets: [{
-      plan_id: "P<1>", target: "Example Target", hours: 2.3, finished: true,
+      plan_id: "P<1>", target: "NGC 300", hours: 2.3, finished: true,
       filters: [{ filter: "Ha", delta_h: 2.3, hours: 12.5, goal: 30, done: false }] }] });
-    assert.ok(html.includes("Example Target"));
+    assert.ok(html.includes("NGC 300"));
     assert.ok(html.includes("12.5 / 30 h"));
     assert.ok(html.includes("Finished"));
     assert.ok(!html.includes("P<1>"));
