@@ -149,5 +149,112 @@ class CheckPrivateTermsTest(unittest.TestCase):
         self.assertIn("rule 2", proc.stderr)
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@unittest.skipIf(shutil.which("sh") is None, "pre-push hook needs a POSIX sh")
+class PrePushHookTest(unittest.TestCase):
+    """Runs real pushes to a local bare remote with .githooks/pre-push on."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.home = self.tmp / "home"
+        (self.home / ".config").mkdir(parents=True)
+        self.terms = self.home / ".config" / "acp-private-terms.txt"
+        self.terms.write_text(TERMS, encoding="utf-8")
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        self.env.pop("ACP_PRIVATE_TERMS", None)
+        self.env.update(HOME=str(self.home), GIT_CONFIG_NOSYSTEM="1")
+        self.remote = self.tmp / "remote.git"
+        self.work = self.tmp / "work"
+        self.git(self.tmp, "init", "-q", "--bare", "-b", "main", str(self.remote))
+        self.git(self.tmp, "init", "-q", "-b", "main", str(self.work))
+        self.identity("Test", "test@example.invalid")
+        (self.work / "scripts").mkdir()
+        shutil.copy(SCRIPT, self.work / "scripts" / "check_private_terms.py")
+        shutil.copytree(REPO_ROOT / ".githooks", self.work / ".githooks")
+        # An old hit that is already public must not block later pushes.
+        (self.work / "notes.txt").write_text("zebra-secret was here\n", encoding="utf-8")
+        self.commit("base")
+        self.git(self.work, "remote", "add", "origin", str(self.remote))
+        self.git(self.work, "push", "-q", "origin", "main")
+        self.git(self.work, "fetch", "-q", "origin")
+        self.git(self.work, "config", "core.hooksPath", ".githooks")
+
+    def git(self, cwd, *args):
+        return subprocess.run(
+            ["git", *args], cwd=cwd, env=self.env, check=True,
+            capture_output=True, text=True,
+        ).stdout
+
+    def identity(self, name, email):
+        self.env.update(
+            GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email,
+            GIT_COMMITTER_NAME=name, GIT_COMMITTER_EMAIL=email,
+        )
+
+    def commit(self, message="change"):
+        self.git(self.work, "add", "-A")
+        self.git(self.work, "commit", "-q", "--no-verify", "-m", message)
+
+    def push(self, *refs):
+        proc = subprocess.run(
+            ["git", "push", "origin", *refs], cwd=self.work, env=self.env,
+            capture_output=True, text=True,
+        )
+        out = proc.stdout + proc.stderr
+        self.assertNotIn("zebra", out.lower())
+        self.assertNotIn("example-host", out.lower())
+        return proc
+
+    def test_clean_push_passes(self):
+        (self.work / "a.txt").write_text("fine\n", encoding="utf-8")
+        self.commit("Tidy up")
+        self.assertEqual(self.push("main").returncode, 0)
+
+    def test_added_line_blocks_existing_branch(self):
+        (self.work / "a.txt").write_text("host = example-host3\n", encoding="utf-8")
+        self.commit()
+        proc = self.push("main")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("a.txt:1: private term (rule 2)", proc.stdout + proc.stderr)
+
+    def test_new_branch_checked_against_origin_main(self):
+        self.git(self.work, "checkout", "-q", "-b", "feature")
+        (self.work / "b.txt").write_text("ok\n", encoding="utf-8")
+        self.commit("first")
+        (self.work / "c.txt").write_text("zebra-secret\n", encoding="utf-8")
+        self.commit("second")
+        proc = self.push("feature")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("c.txt:1: private term (rule 1)", proc.stdout + proc.stderr)
+
+    def test_message_blocks(self):
+        (self.work / "a.txt").write_text("fine\n", encoding="utf-8")
+        self.commit("Ran it on example-host9")
+        proc = self.push("main")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertRegex(proc.stdout + proc.stderr, r"commit [0-9a-f]{12}:1: private term \(rule 2\)")
+
+    def test_identity_blocks(self):
+        self.identity("Test", "me@zebra-secret.example")
+        (self.work / "a.txt").write_text("fine\n", encoding="utf-8")
+        self.commit()
+        proc = self.push("main")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertRegex(proc.stdout + proc.stderr, r"commit [0-9a-f]{12}:author: private term \(rule 1\)")
+
+    def test_branch_deletion_passes(self):
+        self.git(self.work, "push", "-q", "--no-verify", "origin", "main:old")
+        self.assertEqual(self.push(":old").returncode, 0)
+
+    def test_no_list_passes(self):
+        self.terms.unlink()
+        (self.work / "a.txt").write_text("zebra-secret\n", encoding="utf-8")
+        self.commit()
+        self.assertEqual(self.push("main").returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
