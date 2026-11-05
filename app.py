@@ -90,6 +90,27 @@ for _stream in (sys.stdout, sys.stderr):
         except (OSError, ValueError):
             pass
 
+
+def _configure_logging() -> None:
+    """Send INFO and above to stderr, so the scan start, finish and skip lines
+    reach the console and `docker logs`. Without this Python drops everything
+    below WARNING. A process that set up logging first (the desktop launcher
+    writes its own log file) is left alone. Chatty third-party loggers stay at
+    WARNING, the level they effectively had before, so a network library does
+    not log every connection step."""
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    for name in ("paramiko", "urllib3", "PIL", "matplotlib", "asyncio"):
+        lib = logging.getLogger(name)
+        if lib.level == logging.NOTSET:
+            lib.setLevel(logging.WARNING)
+
+
+_configure_logging()
+
 try:
     from mocpy import MOC  # noqa: F401
     _MOCPY_AVAILABLE = True
@@ -7111,6 +7132,7 @@ def run_claimed_scan() -> None:
             _scan_state["running"] = False
             _scan_state["last_finish"] = datetime.now().isoformat(timespec="seconds")
             _scan_state["last_exit_code"] = code
+    logging.info("archive scan finished (exit %s)", code)
     _run_activity(lambda: _record_scan_activity(before, code == 0))
 
 
@@ -7232,6 +7254,60 @@ def _scan_scheduler_loop(expr: str, poll_seconds: float = 30.0) -> None:
         run_scan_now("cron")
 
 
+def _last_fire_time(expr: str, now: datetime) -> datetime:
+    """The most recent local time ``expr`` fired at or before ``now``."""
+    from croniter import croniter
+
+    return croniter(expr, now).get_prev(datetime)
+
+
+def _scan_overdue(expr: str, now: datetime) -> bool:
+    """True when the manifest is missing or older than the last time the cron
+    should have fired. That happens when ACP was down at the fire time, or
+    when a restart killed the scan part way through: the dead builder never
+    wrote its manifest, and the forward-only loop would wait a full cycle."""
+    try:
+        mtime = MANIFEST_PATH.stat().st_mtime
+    except OSError:
+        return True
+    return datetime.fromtimestamp(mtime) < _last_fire_time(expr, now)
+
+
+def _catch_up_scan(expr: str) -> bool:
+    """Run one scan straight away if the last scheduled one never produced a
+    manifest. Returns True if a scan ran. Called once, when the scheduler
+    starts, so it cannot repeat."""
+    try:
+        overdue = _scan_overdue(expr, datetime.now())
+    except Exception as e:
+        logging.error("could not check for a missed scan (%s: %s)", type(e).__name__, e)
+        return False
+    if not overdue:
+        return False
+    logging.info("the last scheduled scan did not finish or never ran; "
+                 "starting a catch-up scan now")
+    return run_scan_now("catchup")
+
+
+def _scheduler_main(expr: str) -> None:
+    _catch_up_scan(expr)
+    if not _scan_scheduler_stop.is_set():
+        _scan_scheduler_loop(expr)
+
+
+def clear_dead_scan_progress() -> None:
+    """At startup no scan can be running in this process, so a progress file
+    on disk belongs to a builder that died with the last one (the app was
+    restarted mid-scan). Clear it so the status stops showing that scan's
+    stage and count. Skipped under ACP_SKIP_STARTUP_MIGRATION, which the test
+    suite sets so an import never touches the developer's own data folder."""
+    if os.environ.get("ACP_SKIP_STARTUP_MIGRATION"):
+        return
+    if _scan_progress_path().exists():
+        logging.info("clearing the progress file left by a scan that did not finish")
+        _clear_scan_progress()
+
+
 def start_scan_scheduler(expr: str | None = None) -> bool:
     """Start the rescan thread if ACP_SCAN_CRON is set and valid.
 
@@ -7260,7 +7336,7 @@ def start_scan_scheduler(expr: str | None = None) -> bool:
         _scan_cron_expr = expr
         _scan_scheduler_stop.clear()
         _scan_scheduler_thread = threading.Thread(
-            target=_scan_scheduler_loop, args=(expr,),
+            target=_scheduler_main, args=(expr,),
             name="acp-scan-scheduler", daemon=True)
         _scan_scheduler_thread.start()
     logging.info("scheduled archive rescan on %r (next run computed from local time)", expr)
@@ -8184,6 +8260,7 @@ def migrate_gear_at_startup() -> None:
 
 
 migrate_gear_at_startup()
+clear_dead_scan_progress()
 start_scan_scheduler()
 start_balancer_scheduler()
 
