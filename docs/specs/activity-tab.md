@@ -91,7 +91,7 @@ History is kept forever by default, at well under 1 KB an event. `ACP_ACTIVITY_K
 
 ## Night
 
-`ACP_ACTIVITY_TZ` is an IANA zone name, default `Australia/Sydney`, not the container's time zone. When `night` is absent, ACP converts `at` into that zone. A local time before 12:00 belongs to the previous date, and noon or later to the same date. Daylight saving changes nothing in the rule, because the cut-over is local noon on each day.
+`ACP_ACTIVITY_TZ` is an IANA zone name. Unset, ACP uses the system time zone: `TZ` or `/etc/localtime` when either names a zone, otherwise the offset the operating system reports, and UTC if nothing else is known. Set it when the server's clock is in a different zone from the observing site. When `night` is absent, ACP converts `at` into that zone. A local time before 12:00 belongs to the previous date, and noon or later to the same date. Daylight saving changes nothing in the rule, because the cut-over is local noon on each day.
 
 ## Master paths
 
@@ -128,7 +128,7 @@ All routes sit behind ACP's existing access gate: a bearer `ACP_API_TOKEN` or th
 ACP exposes `app.record_activity(**fields)`, which calls `record()` with `source: "acp"`. The sync extension calls `getattr(app, "record_activity", None)` and skips when it is absent, so a newer extension still works on an older ACP.
 
 - **Plan created, deleted**: one event each, key `plan_created:<plan_id>:<night>` or `plan_deleted:<plan_id>:<night>`, so a plan deleted and recreated on a later night records again.
-- **Plan edited**: type `plan_edited`, key `plan_edited:<plan_id>:<night>`. ACP diffs the stored plan before and after the PUT, ignoring `updated_at`, `guid`, `created_at`, `last_synced_at` and anything only a load-time heal or migration changed. The night's cumulative change set lives in `data.changes` (field to `{ from, to }`, where `from` stays the first value of the night) and merges on each save. The title is built from that set, such as "min altitude 20 to 30, priority Normal to High". A save that changes nothing records nothing. In the UI, consecutive rows with the same change across one project collapse into one line, such as "46 survey plans: min altitude 20 to 30".
+- **Plan edited**: type `plan_edited`, key `plan_edited:<plan_id>:<night>`. ACP diffs the stored plan before and after the PUT, ignoring `updated_at`, `guid`, `created_at`, `last_synced_at` and anything only a load-time heal or migration changed. The night's cumulative change set lives in `data.changes` (field to `{ from, to }`, where `from` stays the first value of the night) and merges on each save. The title is built from that set, such as "min altitude 20 to 30, priority Normal to High". A save that changes nothing records nothing. In the UI, consecutive rows with the same change across one project collapse into one line, such as "46 Survey Mosaic plans: min altitude 20 to 30".
 - **Project settings and gear**: `project_settings` and `gear_changed`, coalesced per night the same way.
 - **Send TS to ACP** (extension, `nina_ts_sync/upload_routes.py`): `ts_upload_received` when an upload arrives, then `ts_upload_applied` with the number of plans changed, or `ts_upload_discarded`.
 - **Rig synced** (extension, the `/links` route): `rig_synced`, key `rig_synced:<profile>:<night>`, one row per rig per night.
@@ -191,9 +191,9 @@ Phase 1, ACP (pytest, in `tests/test_activity.py` unless named):
 
 1. Posting two events with the same `(source, key)` and identical content stores one event, and the second call reports `unchanged: 1`.
 2. Posting the same `(source, key)` with a new `title` keeps `id`, `night` and `received_at`, changes the title, and bumps `updated_at`.
-3. With `ACP_ACTIVITY_TZ=Australia/Sydney` and no `night`: `2026-10-14T10:00+11:00` is stored under `2026-10-13`, and `2026-10-14T12:00+11:00` under `2026-10-14`.
-4. With the same zone, `2026-10-14T00:30:00Z` (11:30 local) is stored under `2026-10-13`.
-5. On a daylight saving change day (`2026-10-04`, Sydney), `2026-10-04T11:59+11:00` is stored under `2026-10-03` and `2026-10-04T12:00+11:00` under `2026-10-04`.
+3. With `ACP_ACTIVITY_TZ=Europe/Berlin` and no `night`: `2026-10-14T10:00+02:00` is stored under `2026-10-13`, and `2026-10-14T12:00+02:00` under `2026-10-14`.
+4. With the same zone, `2026-10-14T00:30:00Z` (02:30 local) is stored under `2026-10-13`.
+5. On a daylight saving change day (`2026-03-29` in that zone), `2026-03-29T11:59+02:00` is stored under `2026-03-28` and `2026-03-29T12:00+02:00` under `2026-03-29`.
 6. An event posted with `night: "2026-10-13"` keeps that night whatever its `at` is.
 7. One batch covers decision 5's validation: missing `key` rejected, `source: "acp"` rejected, `source: "bogus"` rejected, a 201-character title rejected, `data` over 8 KB rejected, `severity: "fatal"` rejected, unknown `type` stored as `other`, a 3000-character `detail` stored cut to 2000, and missing `at` stored with the receipt time. Valid events in the same batch are stored.
 8. A batch of 101 events is refused with 413 and stores nothing, and so is a body over 2 MiB.
@@ -241,7 +241,7 @@ Phase 1, frontend (`tests/frontend/activity.test.mjs` against `static/activity.m
 
 The clipboard buttons are checked by hand, through an entry in `notes/qa/queue.md`.
 
-Phase 2, plugin (xunit on workstation):
+Phase 2, plugin (xunit on a Windows build machine):
 
 44. Two frames on the same target, filter and exposure produce one `imaging_target` with count 2 under one key, the second post carrying a higher `seq`.
 45. A failed batch is retried with the same keys, and a 404 or 403 stops posting for the session after one log line.

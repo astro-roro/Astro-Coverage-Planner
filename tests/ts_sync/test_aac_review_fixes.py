@@ -1,8 +1,8 @@
 """Review fixes for the grader link, phase 6 (goal-panel-and-ts-order.md section 6).
 
-grader's floor never reaches ACP's goal, a row's `grader` block goes when its filter
-or template changes, a goal of 0 disables the plan like a removed row, a push
-says why it skipped grader's counts, and the host's plans lock is shared.
+The grader's floor never reaches ACP's goal, a row's grader block goes when its
+filter or template changes, a goal of 0 disables the plan like a removed row, a
+push says why it skipped the grader's counts, and the host's plans lock is shared.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _push(conn, plans, now=NOW):
 
 
 def _floored(tmp_path):
-    """One R Stars row with a goal of 8 frames, an grader block, and a floor of
+    """One R Stars row with a goal of 8 frames, a pipeline block, and a floor of
     10, pushed: TS holds desired 10, the base records the goal."""
     conn = _db(tmp_path)
     p = sc.m42([sc.row("rs", "R", "R Stars", 15, frames=8)])
@@ -240,7 +240,7 @@ def test_a_plan_ts_holds_that_acp_does_not_names_itself(tmp_path):
     assert any("is enabled in Target Scheduler but is not a row in ACP" in n for n in rep.notes), rep.notes
 
 
-# --- decision 4: complete is judged against the goal grader saw -----------------
+# --- decision 4: complete is judged against the goal the pipeline saw -----------------
 
 
 def test_complete_counts_only_while_the_goal_is_not_above_the_one_sent():

@@ -2,9 +2,8 @@
 
 docs/specs/goal-panel-and-ts-order.md section 6, test A2, and the
 ACP half of A3 (each row's desired in tests/fixtures/aac_accepted_cases.json).
-The endpoint is checked against the request grader's client sends
-(auto_pix/acp_feedback.py in processing-pipeline) and the response table
-that client acts on.
+The endpoint is checked against the request a grader's client sends and the
+response table that client acts on.
 """
 from __future__ import annotations
 
@@ -305,7 +304,7 @@ class TestReviewFixes(unittest.TestCase):
 
 
 class TestSharedCases(unittest.TestCase):
-    """The ACP half of A3: the desired the writers push, with grader's floor."""
+    """The ACP half of A3: the desired the writers push, with the pipeline's floor."""
 
     def _plan(self, case):
         rows = []

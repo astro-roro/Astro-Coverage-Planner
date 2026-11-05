@@ -20,7 +20,7 @@ __version__ = "0.1.0-dev"
 def register(app: "Flask") -> None:
     """Called by ACP's extension loader at startup."""
     from .api import blueprint
-    # ACP's own routes that read, change and write plans.json (the grader
+    # ACP's own routes that read, change and write plans.json (the pipeline
     # /accepted write, progress, plan saves) hold the host's `plans_lock`.
     # Share it, so they and this extension's routes exclude one another.
     # A host that predates it leaves this extension's own lock in place.

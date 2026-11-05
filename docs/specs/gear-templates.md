@@ -44,8 +44,8 @@ All figures are from the scratch copy of IMAGING-PC's database taken on 12 Octob
 - The nine 15 s plans on ids 14, 16 and 19 are star rows that sit on normal-class templates: plan ids 404, 405, 408, 409, 410, 413, 415, 416 and 419. Plans 404, 405, 408, 409, 410 and 413 each hold 18 acquired and 18 accepted frames.
 - `gear.json` for the ASI6200MM Pro pins `ts_template_id` "15" to B, "12" to Ha, "4" to L, "13" to OIII and "14" to SII. Only Ha's is right (id 15 is "B Stars (ZWO...)", id 4 is a B template, id 13 is SII, id 14 is B). The pinned ids in gear are stale and the migration must not trust them.
 - `gear.json` holds filters named "Antlia Ha" and "IDAS + RED" on the ASI294MM Pro. `_FILTER_NAME_RE` (`app.py:3355`) is `^[A-Za-z0-9_+\-]{1,32}$`, which rejects a space, so `POST /api/gear` returns 400 for the whole document today. Section 4 widens the rule.
-- The second profile that appears in `plans.json` is `093effd2-29a5-4ce6-ae38-d6eea265a912`, on one plan. A camera can therefore meet more than one profile.
-- Plan `plan-mouufrs7` (Example Target) pins exposure plan ids 21, 22 and 23 in its links. No such plans exist in TS.
+- The second profile that appears in `plans.json` is `00000000-0000-4000-8000-000000000003`, on one plan. A camera can therefore meet more than one profile.
+- A science plan pins exposure plan ids 21, 22 and 23 in its links. No such plans exist in TS.
 - After every push the sync runs `refresh_template_subs` (`nina_ts_sync/rows.py:270`), which copies the sub recorded in the base (the plan's explicit `exposure`) back onto each row's `template_sub_s`. Section 8 changes its rule.
 
 ## 2. Three names for one filter
@@ -673,7 +673,7 @@ Restore `gear.json.bak-*` and `plans.json.bak-*` together. The rows and the gear
 | M8 | ACP | Gain 0 in the old shape | The new template has gain 0. |
 | M9 | ACP | A plans file with a row on a filter that the migration leaves with no template | The load logs the plan id, the row has `template_unresolved: true`, and no template is assigned. |
 | M10 | ACP | M1, then a template list with no `id` fields (older plugin) | No adoption happens, the 6200 camera keeps seven templates with no `ts` entry, and `GET /api/gear/tidy` is refused. |
-| M11 | ACP | M3 with a second profile `093effd2-...` whose list has the same templates but Ha offset 10, and the first profile primary | The Ha template keeps offset -1. Its `ts` entry for the second profile has base offset -1. The notes list "Ha offset is 10 in TS and -1 in gear". |
+| M11 | ACP | M3 with a second profile `00000000-...-000000000003` whose list has the same templates but Ha offset 10, and the first profile primary | The Ha template keeps offset -1. Its `ts` entry for the second profile has base offset -1. The notes list "Ha offset is 10 in TS and -1 in gear". |
 | M12 | ACP | The 6200's primary profile is P1 and no gear template for "R Stars" exists. P2's list (with ids, capable) arrives first. | Nothing is created. P2's R Stars templates show `waiting` with the note. After P1's list arrives and adoption creates "R Stars", P2's adoption runs again and links it with the base equal to the gear values. |
 
 ## 12. Build order

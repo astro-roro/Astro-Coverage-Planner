@@ -39,7 +39,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/plans/<id>`, `PUT`, `DELETE` | Single-plan operations |
 | `POST /api/plans/match` | Score every plan against a connected rig's gear fingerprint |
 | `POST /api/plans/<id>/progress` | Record acquired hours against a plan's filter goals |
-| `POST /api/plans/<id>/accepted` | Store Astro Auto Calibration's accepted counts per filter row |
+| `POST /api/plans/<id>/accepted` | Store a processing pipeline's accepted counts per filter row |
 | `GET /api/fingerprints` | Last gear fingerprint each NINA profile reported |
 | `GET /api/target-overrides`, `POST` | Per-target metadata overrides |
 | `GET /api/destinations`, `POST` | CRUD for multi-rig sync destinations |
@@ -187,7 +187,7 @@ The viewer can compute year-long observability for any saved site or arbitrary s
 
 ### Per-target visibility, `/api/visibility`
 
-`GET /api/visibility?site_id=sydney` returns a 12-month bin for every target in the manifest:
+`GET /api/visibility?site_id=example-site` returns a 12-month bin for every target in the manifest:
 
 ```json
 {
@@ -203,7 +203,7 @@ Each `monthly` array has 12 entries (one per month, January first), each one of 
 
 ### Arbitrary point, `/api/visibility/point`
 
-`GET /api/visibility/point?ra=161.26&dec=-59.68&site_id=sydney` returns the same 12-month bin shape for one (RA, Dec) point, useful for the Inventory tile-detail panel.
+`GET /api/visibility/point?ra=161.26&dec=-59.68&site_id=example-site` returns the same 12-month bin shape for one (RA, Dec) point, useful for the Inventory tile-detail panel.
 
 ## Coverage sources, tiles, catalogues
 

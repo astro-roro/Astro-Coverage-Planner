@@ -83,8 +83,8 @@ export async function withMirror(key, urls, attempt, {
 // ---- map background -------------------------------------------------------
 
 // Where DSS2 colour comes from when CDS cannot be reached, in the order tried.
-// IRSA mirrors the CDS HiPS tree (and answered faster in a 2026-10-31 check
-// from server); ESASky serves its own copy.
+// IRSA mirrors the CDS HiPS tree (and answered faster in a 2026-10-31
+// check); ESASky serves its own copy.
 export const IRSA_DSS2_COLOUR_URL = "https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color/";
 export const ESASKY_DSS2_COLOUR_URL = "https://skies.esac.esa.int/DSSColor/";
 export const BACKGROUND_FALLBACKS = [

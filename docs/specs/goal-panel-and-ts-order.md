@@ -59,7 +59,7 @@ TS reuses a stored cadence before anything else. `Planning/FilterCadenceFactory.
 
 ### What that means for the user's database today
 
-Three targets have override orders in the scratch copy of IMAGING-PC's database from 12 October 18:46. They are Example Target, Dolphin Nebula and Helix Nebula. The rows appeared between the 15:01 backups of 11 and 12 October, so they were set in TS on 11 October. Their projects have a switch frequency of 0. TS therefore rotates one frame per filter on those three targets, rather than finishing each filter. Helix's order is OIII, Ha, SII, B, G, R. B, G and R are complete, so Helix now shoots one frame each of OIII, Ha and SII in turn.
+Three targets have override orders in a scratch copy of IMAGING-PC's database. They are a science target, Dolphin Nebula and Helix Nebula. The rows were set by hand in TS. Their projects have a switch frequency of 0. TS therefore rotates one frame per filter on those three targets, rather than finishing each filter. Helix's order is OIII, Ha, SII, B, G, R. B, G and R are complete, so Helix now shoots one frame each of OIII, Ha and SII in turn.
 
 ### What the sync writes so TS shoots in ACP's order
 
@@ -180,7 +180,7 @@ The fix adds one constant near the top of `static/app.js`, `const EMPTY_CELL = "
 
 ## 2. The TS template list from the plugin
 
-`/api/ts-templates` (`app.py:4370-4408`) reads the TS database at `TS_DB_PATH`. On homeserver that file does not exist, so ACP has no template list.
+`/api/ts-templates` (`app.py:4370-4408`) reads the TS database at `TS_DB_PATH`. On the home server that file does not exist, so ACP has no template list.
 
 The plugin sends the list instead.
 
@@ -508,7 +508,7 @@ Both suites run the shared case file `tests/fixtures/aac_accepted_cases.json` in
 
 ## 7. Acceptance tests
 
-Each test names the repo it lives in. "Python" means `acp-nina-ts-sync/tests`, run with `~/Developer/Astro-Coverage-Planner/.venv/bin/python -m pytest tests -q`. "C#" means `ACP.NINA.Plugin.Tests`, which runs only on Windows. "ACP" means `Astro-Coverage-Planner/tests`.
+Each test names the repo it lives in. "Python" means `acp-nina-ts-sync/tests`, run with ACP's virtual environment, `.venv/bin/python -m pytest tests -q`. "C#" means `ACP.NINA.Plugin.Tests`, which runs only on Windows. "ACP" means `Astro-Coverage-Planner/tests`.
 
 ### A TS order oracle
 
@@ -649,5 +649,5 @@ I cannot run TS here, so the order needs one check on IMAGING-PC after phase 5 s
 
 ## Open questions
 
-1. The user's three hand-made override orders (Example Target, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what they wanted when they set them on 11 October? If not, they can set each order once in ACP after phase 5, and the sync replaces them. The user has been asked and has not answered yet.
+1. The user's three hand-made override orders (a science target, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what they wanted when they set them? If not, they can set each order once in ACP after phase 5, and the sync replaces them. The user has been asked and has not answered yet.
 2. Does `ACP.NINA.Plugin.Tests` reference TS's assembly in a way that lets test O9 run on Windows? If not, the manual check is the only check against TS itself.

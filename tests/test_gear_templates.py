@@ -28,7 +28,7 @@ from app import app  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 P1 = "00000000-0000-4000-8000-000000000001"
-P2 = "093effd2-29a5-4ce6-ae38-d6eea265a912"
+P2 = "00000000-0000-4000-8000-000000000003"
 SLOTS = ["L", "R", "G", "B", "H", "O", "S"]
 CAM = "zwo-asi6200mm-pro"
 

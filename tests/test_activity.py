@@ -48,7 +48,7 @@ class ActivityCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             "ACP_API_TOKEN": TOKEN,
             "ACP_ACTIVITY_DB": str(self.td / "activity.sqlite"),
-            "ACP_ACTIVITY_TZ": "Australia/Sydney",
+            "ACP_ACTIVITY_TZ": "Europe/Berlin",
         })
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -127,22 +127,32 @@ class TestPosting(ActivityCase):
         return self.all_events()[0]["night"]
 
     def test_03_local_noon_is_the_cut_over(self):
-        self.assertEqual(self._night_for("2026-10-14T10:00+11:00"), "2026-10-13")
+        self.assertEqual(self._night_for("2026-10-14T10:00+02:00"), "2026-10-13")
         activity.close()
         os.environ["ACP_ACTIVITY_DB"] = str(self.td / "b.sqlite")
-        self.assertEqual(self._night_for("2026-10-14T12:00+11:00"), "2026-10-14")
+        self.assertEqual(self._night_for("2026-10-14T12:00+02:00"), "2026-10-14")
 
     def test_04_utc_times_are_read_in_the_configured_zone(self):
         self.assertEqual(self._night_for("2026-10-14T00:30:00Z"), "2026-10-13")
 
     def test_05_daylight_saving_day_does_not_move_the_cut_over(self):
-        self.assertEqual(self._night_for("2026-10-04T11:59+11:00"), "2026-10-03")
+        self.assertEqual(self._night_for("2026-03-29T11:59+02:00"), "2026-03-28")
         activity.close()
         os.environ["ACP_ACTIVITY_DB"] = str(self.td / "b.sqlite")
-        self.assertEqual(self._night_for("2026-10-04T12:00+11:00"), "2026-10-04")
+        self.assertEqual(self._night_for("2026-03-29T12:00+02:00"), "2026-03-29")
+
+    def test_05b_unset_zone_follows_the_system_zone(self):
+        os.environ.pop("ACP_ACTIVITY_TZ", None)
+        with mock.patch.dict(os.environ, {"TZ": "America/Chicago"}):
+            self.assertEqual(getattr(activity.tz(), "key", None), "America/Chicago")
+            self.assertEqual(self._night_for("2026-10-14T11:00-05:00"), "2026-10-13")
+
+    def test_05c_a_bad_zone_falls_back_to_the_system_zone(self):
+        with mock.patch.dict(os.environ, {"ACP_ACTIVITY_TZ": "Not/AZone", "TZ": "America/Chicago"}):
+            self.assertEqual(getattr(activity.tz(), "key", None), "America/Chicago")
 
     def test_06_an_explicit_night_wins(self):
-        self.post(ev(at="2026-10-20T15:00+11:00", night="2026-10-13"))
+        self.post(ev(at="2026-10-20T15:00+02:00", night="2026-10-13"))
         self.assertEqual(self.all_events()[0]["night"], "2026-10-13")
 
     def test_07_validation_rejects_alone_and_stores_the_rest(self):
@@ -574,7 +584,7 @@ class TestPlanEvents(ActivityCase):
                "accepted_frames": frames, "seen_seconds": seconds + 300, "seen_frames": frames + 1,
                "complete": complete, "estimated_hours": None, "measurement": None}
         return self.client.post("/api/plans/M42/accepted", headers=self.h, json={
-            "source": "grader", "at": "2026-10-12T10:05:00Z", "filed_through_night": "2026-10-11",
+            "source": "my-grader", "at": "2026-10-12T10:05:00Z", "filed_through_night": "2026-10-11",
             "min_total_frames": 10, "rows": [row]})
 
     def test_28_reaching_a_goal_through_accepted_counts(self):

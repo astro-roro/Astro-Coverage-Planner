@@ -19,7 +19,7 @@ import re
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -250,16 +250,37 @@ def db_path() -> Path:
     return Path(raw) if raw else Path(_default_db_path())
 
 
-DEFAULT_TZ = "Australia/Sydney"
-
-
-def tz() -> ZoneInfo:
-    name = (os.environ.get("ACP_ACTIVITY_TZ") or "").strip() or DEFAULT_TZ
+def system_tz() -> tzinfo:
+    """The machine's own time zone. A named zone from TZ or /etc/localtime
+    when there is one, so daylight saving is followed; otherwise the offset
+    the OS reports right now (Windows has no zone name to read); UTC last."""
+    name = (os.environ.get("TZ") or "").strip().lstrip(":")
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
     try:
-        return ZoneInfo(name)
+        link = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in link:
+            return ZoneInfo(link.split("zoneinfo/", 1)[1])
     except Exception:
-        logger.warning("ACP_ACTIVITY_TZ=%r is not a time zone; using %s", name, DEFAULT_TZ)
-        return ZoneInfo(DEFAULT_TZ)
+        pass
+    try:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    except Exception:
+        return timezone.utc
+
+
+def tz() -> tzinfo:
+    """ACP_ACTIVITY_TZ when it names a zone, else the system time zone."""
+    name = (os.environ.get("ACP_ACTIVITY_TZ") or "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            logger.warning("ACP_ACTIVITY_TZ=%r is not a time zone; using the system zone", name)
+    return system_tz()
 
 
 def keep_nights() -> int | None:

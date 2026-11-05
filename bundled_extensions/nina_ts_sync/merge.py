@@ -39,17 +39,17 @@ def merge_remote_into_local(plan: dict, remote: dict) -> None:
 
 
 def same_row_identity(a: dict, b: dict) -> bool:
-    """Whether two rows name the same filter and template, which is what an
-    `grader` block was reported against."""
+    """Whether two rows name the same filter and template, which is what a
+    grader block was reported against."""
     from .rows import same_filter
     return same_filter(a.get("filter"), b.get("filter")) and a.get("template") == b.get("template")
 
 
 def take_rows(plan: dict, remote: dict) -> list[dict]:
-    """The remote's rows, keeping each local row's `grader` block, which only
-    grader writes and TS knows nothing of. A block is kept only while the row
-    still has the filter and template grader reported it for. The remote's
-    `desired` is read back as the row's goal where it is only grader's floor
+    """The remote's rows, keeping each local row's grader block, which only
+    the grader writes and TS knows nothing of. A block is kept only while the row
+    still has the filter and template the pipeline reported it for. The remote's
+    `desired` is read back as the row's goal where it is only the pipeline's floor
     (goal-panel-and-ts-order.md section 6)."""
     import copy
     from .diff import rows_by_id
@@ -125,7 +125,7 @@ def apply_auto_pull(plan: dict, remote: dict, fields: list[str]) -> None:
     """
     from .diff import ORDER, ROWS, align_units, split_path
     from .rows import unfloored
-    # The diff compared TS's rows with grader's floor read back as the goal and
+    # The diff compared TS's rows with the pipeline's floor read back as the goal and
     # in each local row's unit; pull them so.
     remote = unfloored(plan, remote) or remote
     remote = align_units(plan, remote) or remote

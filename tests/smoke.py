@@ -119,15 +119,15 @@ finally:
     app.coverage_sources.pop()
     _friend_path.unlink(missing_ok=True)
 
-r = c.get("/api/observability?lat=-33.87&lon=151.21")
+r = c.get("/api/observability?lat=-24.63&lon=-70.40")
 print("GET /api/observability (valid)", r.status_code)
 assert r.status_code == 200
 
-r = c.get("/api/observability?lat=999&lon=151.21")
+r = c.get("/api/observability?lat=999&lon=-70.40")
 print("GET /api/observability (out-of-range lat ->clamped to default)", r.status_code)
 assert r.status_code == 200
 
-r = c.get("/api/observability?lat=abc&lon=151.21")
+r = c.get("/api/observability?lat=abc&lon=-70.40")
 print("GET /api/observability (non-numeric lat ->clamped)", r.status_code)
 assert r.status_code == 200
 
@@ -424,12 +424,12 @@ print("visibility bin rules OK")
 # Force-clear the cache so the smoke run actually computes against the demo
 # manifest rather than reading a stale entry from a previous import.
 app_module._visibility_cache.clear()
-r = c.get("/api/visibility?lat=-33.87&lon=151.21&min_alt_deg=30")
+r = c.get("/api/visibility?lat=-24.63&lon=-70.40&min_alt_deg=30")
 print("GET /api/visibility (lat/lon)", r.status_code)
 assert r.status_code == 200
 vis = r.get_json()
 assert vis["labels"] == ["not_visible", "partial", "fair", "good", "great"]
-assert vis["site"]["lat"] == -33.87
+assert vis["site"]["lat"] == -24.63
 assert isinstance(vis["targets"], dict) and vis["targets"], vis["targets"]
 first_bins = next(iter(vis["targets"].values()))
 assert len(first_bins) == 12
@@ -440,20 +440,20 @@ for b in first_bins:
 
 # site_id resolution — first save a known site, then reference it.
 r = c.post("/api/sites", json={"sites": [
-    {"id": "sydney", "name": "Sydney", "lat": -33.87, "lon": 151.21, "elev_m": 20, "min_alt_deg": 30},
+    {"id": "example-site", "name": "Example site", "lat": -24.63, "lon": -70.40, "elev_m": 20, "min_alt_deg": 30},
 ]})
 assert r.status_code == 200
-r = c.get("/api/visibility?site_id=sydney")
+r = c.get("/api/visibility?site_id=example-site")
 print("GET /api/visibility (site_id)", r.status_code)
 assert r.status_code == 200
-assert r.get_json()["site"]["id"] == "sydney"
+assert r.get_json()["site"]["id"] == "example-site"
 
 r = c.get("/api/visibility?site_id=does-not-exist")
 print("GET /api/visibility (bad site_id)", r.status_code)
 assert r.status_code == 404
 
 # /api/visibility/point — single arbitrary point
-r = c.get("/api/visibility/point?lat=-33.87&lon=151.21&min_alt_deg=30&ra=210.5&dec=-60.0")
+r = c.get("/api/visibility/point?lat=-24.63&lon=-70.40&min_alt_deg=30&ra=210.5&dec=-60.0")
 print("GET /api/visibility/point (lat/lon)", r.status_code)
 assert r.status_code == 200
 pt = r.get_json()
@@ -462,7 +462,7 @@ assert pt["ra_deg"] == 210.5
 for m in pt["months"]:
     assert m["label"] in pt["labels"]
 
-r = c.get("/api/visibility/point?lat=-33.87&lon=151.21&min_alt_deg=30")
+r = c.get("/api/visibility/point?lat=-24.63&lon=-70.40&min_alt_deg=30")
 print("GET /api/visibility/point (no ra/dec)", r.status_code)
 assert r.status_code == 400
 
@@ -472,12 +472,12 @@ r = c.get("/api/sites")
 print("GET /api/sites (defaults)", r.status_code)
 assert r.status_code == 200
 sites = r.get_json()["sites"]
-assert any(s["id"] == "sydney" for s in sites), sites
+assert any(s["id"] == "example-site" for s in sites), sites
 assert all({"id", "name", "lat", "lon"}.issubset(s.keys()) for s in sites)
 
 r = c.post("/api/sites", json={"sites": [
-    {"id": "sydney", "name": "Sydney", "lat": -33.87, "lon": 151.21, "elev_m": 20, "min_alt_deg": 30},
-    {"id": "remote", "name": "Remote rig", "lat": -34.5, "lon": 142.0, "min_alt_deg": 25},
+    {"id": "example-site", "name": "Example site", "lat": -24.63, "lon": -70.40, "elev_m": 20, "min_alt_deg": 30},
+    {"id": "remote", "name": "Remote rig", "lat": -30.24, "lon": -70.74, "min_alt_deg": 25},
 ]})
 print("POST /api/sites", r.status_code)
 assert r.status_code == 200

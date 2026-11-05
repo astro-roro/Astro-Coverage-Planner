@@ -251,12 +251,12 @@ class RuleWeight:
 
 @dataclass
 class AacProject:
-    """What convert.py knows about one project's grader figures, so the push can
+    """What convert.py knows about one project's pipeline figures, so the push can
     decide whether to write `accepted` and turn the grader on
     (goal-panel-and-ts-order.md section 6).
 
     `blocked` is a reason ACP's own data rules the project out (a mosaic
-    panel, or a pushed row with no grader block); None means the push still has
+    panel, or a pushed row with no pipeline block); None means the push still has
     to check TS (the profile, the plans TS holds, imaging since the
     watermark). `accepted_by_plan_guid` is the count to write for every plan
     this push writes in the project. `filed_through_night` is the oldest
@@ -264,8 +264,8 @@ class AacProject:
     """
     name: str
     filed_through_night: str | None = None
-    #: Whether any plan or row in the project carries an `grader` block. A
-    #: project grader has never reported on is skipped without a push note.
+    #: Whether any plan or row in the project carries a grader block. A
+    #: project the pipeline has never reported on is skipped without a push note.
     linked: bool = False
     blocked: str | None = None
     accepted_by_plan_guid: dict[str, int] = field(default_factory=dict)
@@ -341,14 +341,16 @@ class SyncPayload:
     # Canonical filter names on the cameras this push's plans use. A template
     # on the profile whose filter is none of these is listed in the result.
     camera_filters: set[str] = field(default_factory=set)
-    # Per project guid, the grader figures the push may write
+    # Per project guid, the pipeline figures the push may write
     # (goal-panel-and-ts-order.md section 6). A project not listed has none.
     aac_by_project_guid: dict[str, "AacProject"] = field(default_factory=dict)
-    # The time the grader freshness rule is judged at, in the site's zone. Set
-    # by convert.build_payload; None means no grader write is made.
+    # The time the pipeline freshness rule is judged at, in the site's zone. Set
+    # by convert.build_payload; None means no pipeline write is made.
     aac_now: "datetime | None" = None
-    # The IANA name of the site's time zone, for the same rule.
-    aac_tz: str = "Australia/Melbourne"
+    # The IANA name of the site's time zone, for the same rule. Empty means
+    # the zone aac_now carries, which is the system time zone when
+    # convert.build_payload is given no time.
+    aac_tz: str = ""
     # Lines for the push result that convert.py works out, such as plans in
     # one project disagreeing on the filter switch frequency.
     notes: list[str] = field(default_factory=list)
