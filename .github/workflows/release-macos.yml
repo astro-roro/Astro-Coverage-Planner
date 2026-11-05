@@ -37,8 +37,8 @@ permissions:
 
 jobs:
   build:
-    # macos-14 is Apple Silicon.
-    runs-on: macos-14
+    # macos-15 is Apple Silicon (GitHub retired macos-14 in November 2026).
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 
@@ -61,7 +61,7 @@ jobs:
     # turns that into a failure, so a tag build is signed or it does not release.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
-    runs-on: macos-14
+    runs-on: macos-15
     environment: release
     outputs:
       signed: ${{ steps.sign.outputs.signed }}
@@ -109,7 +109,7 @@ jobs:
     # (every pull request, and every fork).
     needs: [build, sign]
     if: ${{ !cancelled() && needs.build.result == 'success' && needs.sign.result != 'failure' && needs.sign.result != 'cancelled' }}
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
 
