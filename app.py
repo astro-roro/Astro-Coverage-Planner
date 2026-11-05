@@ -141,7 +141,7 @@ MAX_ACQUIRED_HOURS = 100_000.0
 # first one, bumped by hand until a release process picks it up. The NINA
 # plugin polls GET /api/version to know when to refetch plans, so this
 # constant matters more for cache-busting than for human version pride.
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 
 REPO_ROOT = Path(__file__).resolve().parent
 data_path = acp_settings.data_path
