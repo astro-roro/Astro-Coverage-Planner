@@ -3,7 +3,7 @@
  "format": {
   "now": "the moment the sync runs, with the site's UTC offset; the freshness rule reads the local date in that offset",
   "profile": "profilepreference grading columns that differ from 0 (all start at 0)",
-  "plan": "the ACP plan's aac block (filed_through_night, min_total_frames) and whether it is a 2 column mosaic",
+  "plan": "the ACP plan's grader block (filed_through_night, min_total_frames) and whether it is a 2 column mosaic",
   "ts": "the project's enablegrader before, and UTC times of acquiredimage rows",
   "rows": "ACP filter rows with an optional block of the grader's figures (null: a row ACP has but the grader has not reported); row.ts is the exposure plan before the push; row.expected is desired and accepted after it. That block may hold goal_at_send, the row's goal (in the row's unit) when the figures were stored: a complete flag counts only while the row's goal is not above it.",
   "expected": "enablegrader after, a substring the push result's notes must contain (null: no note about the pipeline), and whether the pipeline write happened"
@@ -37,7 +37,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 6.0,
-     "aac": {
+     "grader": {
       "accepted_seconds": 20700.0,
       "accepted_frames": 69,
       "seen_seconds": 21600.0,
@@ -84,7 +84,7 @@
      "template_sub_s": 15,
      "unit": "fr",
      "target_frames": 48,
-     "aac": {
+     "grader": {
       "accepted_seconds": 705.0,
       "accepted_frames": 47,
       "seen_seconds": 720.0,
@@ -131,7 +131,7 @@
      "template_sub_s": 300,
      "unit": "fr",
      "target_frames": 40,
-     "aac": {
+     "grader": {
       "accepted_seconds": 9900.0,
       "accepted_frames": 33,
       "seen_seconds": 10800.0,
@@ -159,7 +159,7 @@
    "note": "32 images pending; TS shoots 7"
   },
   {
-   "name": "project_with_a_row_that_has_no_aac_block",
+   "name": "project_with_a_row_that_has_no_grader_block",
    "now": "2026-10-12T15:00:00+11:00",
    "plan": {
     "filed_through_night": "2026-10-11",
@@ -178,7 +178,7 @@
      "template_sub_s": 300,
      "unit": "fr",
      "target_frames": 40,
-     "aac": {
+     "grader": {
       "accepted_seconds": 9900.0,
       "accepted_frames": 33,
       "seen_seconds": 9900.0,
@@ -203,7 +203,7 @@
      "template_sub_s": 300,
      "unit": "fr",
      "target_frames": 40,
-     "aac": null,
+     "grader": null,
      "ts": {
       "desired": 40,
       "acquired": 0,
@@ -217,7 +217,7 @@
    ],
    "expected": {
     "enablegrader": 0,
-    "warning": "SII 300 has no AAC figures yet",
+    "warning": "SII 300 has no grader figures yet",
     "written": false
    }
   },
@@ -241,7 +241,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 6.0,
-     "aac": {
+     "grader": {
       "accepted_seconds": 20700.0,
       "accepted_frames": 69,
       "seen_seconds": 20700.0,
@@ -289,7 +289,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 6.0,
-     "aac": {
+     "grader": {
       "accepted_seconds": 20700.0,
       "accepted_frames": 69,
       "seen_seconds": 20700.0,
@@ -335,7 +335,7 @@
      "template_sub_s": 15,
      "unit": "h",
      "target_hours": 0.02,
-     "aac": {
+     "grader": {
       "accepted_seconds": 120.0,
       "accepted_frames": 8,
       "seen_seconds": 120.0,
@@ -382,7 +382,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 6.0,
-     "aac": {
+     "grader": {
       "accepted_seconds": 20700.0,
       "accepted_frames": 69,
       "seen_seconds": 20700.0,
@@ -434,7 +434,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 6.0,
-     "aac": {
+     "grader": {
       "accepted_seconds": 20700.0,
       "accepted_frames": 69,
       "seen_seconds": 20700.0,
@@ -480,7 +480,7 @@
      "template_sub_s": 15,
      "unit": "fr",
      "target_frames": 50,
-     "aac": {
+     "grader": {
       "accepted_seconds": 735.0,
       "accepted_frames": 49,
       "seen_seconds": 735.0,
@@ -528,7 +528,7 @@
      "template_sub_s": 15,
      "unit": "fr",
      "target_frames": 8,
-     "aac": {
+     "grader": {
       "accepted_seconds": 120.0,
       "accepted_frames": 8,
       "seen_seconds": 120.0,
@@ -578,7 +578,7 @@
      "template_sub_s": 300,
      "unit": "fr",
      "target_frames": 40,
-     "aac": {
+     "grader": {
       "accepted_seconds": 9900.0,
       "accepted_frames": 33,
       "seen_seconds": 9900.0,
@@ -627,7 +627,7 @@
      "template_sub_s": 300,
      "unit": "fr",
      "target_frames": 40,
-     "aac": {
+     "grader": {
       "accepted_seconds": 9900.0,
       "accepted_frames": 33,
       "seen_seconds": 9900.0,
@@ -673,7 +673,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 6.0,
-     "aac": {
+     "grader": {
       "accepted_seconds": 20700.0,
       "accepted_frames": 69,
       "seen_seconds": 20700.0,
@@ -698,7 +698,7 @@
      "template_sub_s": 300,
      "unit": "fr",
      "target_frames": 40,
-     "aac": {
+     "grader": {
       "accepted_seconds": 0.0,
       "accepted_frames": 0,
       "seen_seconds": 0.0,
@@ -744,7 +744,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 0.5,
-     "aac": {
+     "grader": {
       "accepted_seconds": 1500.0,
       "accepted_frames": 5,
       "seen_seconds": 1500.0,
@@ -792,7 +792,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 2.0,
-     "aac": {
+     "grader": {
       "accepted_seconds": 1500.0,
       "accepted_frames": 5,
       "seen_seconds": 1500.0,
@@ -840,7 +840,7 @@
      "template_sub_s": 300,
      "unit": "h",
      "target_hours": 0.25,
-     "aac": {
+     "grader": {
       "accepted_seconds": 1500.0,
       "accepted_frames": 5,
       "seen_seconds": 1500.0,

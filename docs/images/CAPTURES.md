@@ -30,7 +30,7 @@ End-to-end planning demo: Planning tab → + New plan → click sky → pick tel
 
 ### Hero video — hosted on GitHub's user-attachments CDN
 
-Top of README. A 60 second captioned reel, replaced on 29 September 2026: the whole library on one sky, a search, the filter dots, the survey backgrounds, a mosaic plan built on the Gum Nebula, the NINA plugin and an end card. It was built in Remotion from frame-by-frame captures of a throwaway ACP instance with demo plans and vivid telescope colours. The project, capture scripts and storyboard live in the separate `astro-videos` repo (`src/acp-hero/`, `scripts/acp-capture/`). Music is "Space Ambient" by Monume under the Pixabay Content License, which needs no attribution. The upload is a two-pass H.264 encode at 1600 px wide with AAC audio and faststart, **8.9 MB**, kept under GitHub's 10 MB attachment limit.
+Top of README. A 60 second captioned reel, replaced on 29 September 2026: the whole library on one sky, a search, the filter dots, the survey backgrounds, a mosaic plan built on the Gum Nebula, the NINA plugin and an end card. It was built in Remotion from frame-by-frame captures of a throwaway ACP instance with demo plans and vivid telescope colours. The video project, capture scripts and storyboard live outside this repository. Music is "Space Ambient" by Monume under the Pixabay Content License, which needs no attribution. The upload is a two-pass H.264 encode at 1600 px wide with a stereo audio track and faststart, **8.9 MB**, kept under GitHub's 10 MB attachment limit.
 
 **Hosting**: rather than committing the MP4 into the repo (which kept hitting GitHub's ~5MB inline video render threshold), the file lives on GitHub's user-attachments CDN at:
 

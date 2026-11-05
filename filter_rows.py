@@ -279,7 +279,7 @@ def desired_for(row: dict, plan: dict | None) -> int:
     """`desired` with the grader's floor (section 6): a row that has a grader
     block on a plan with one never sits below `min_total_frames`. A row with a
     goal of 0 still pushes no plan. The TS sync writers compute the same number
-    (tests/fixtures/aac_accepted_cases.json)."""
+    (tests/fixtures/grader_accepted_cases.json)."""
     d = desired(row)
     if d <= 0 or grader_block(row) is None:
         return d

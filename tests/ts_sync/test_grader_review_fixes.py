@@ -45,8 +45,8 @@ def _floored(tmp_path):
     10, pushed: TS holds desired 10, the base records the goal."""
     conn = _db(tmp_path)
     p = sc.m42([sc.row("rs", "R", "R Stars", 15, frames=8)])
-    p["filter_rows"][0]["aac"] = copy.deepcopy(BLOCK)
-    p["aac"] = {"filed_through_night": "2026-10-11", "min_total_frames": 10, "received_at": "x"}
+    p["filter_rows"][0]["grader"] = copy.deepcopy(BLOCK)
+    p["grader"] = {"filed_through_night": "2026-10-11", "min_total_frames": 10, "received_at": "x"}
     rep = _push(conn, [p])
     assert [r[0] for r in conn.execute("SELECT desired FROM exposureplan")] == [10]
     return conn, p, rep
@@ -82,7 +82,7 @@ def test_no_edits_gives_no_diff_and_the_goal_stays(tmp_path):
     assert (d.auto_pull, d.auto_keep, d.conflict) == ([], [], [])
     plan = _apply(view)
     assert _goal(plan) == 8
-    assert fr.aac_block(plan["filter_rows"][0]) is not None
+    assert fr.grader_block(plan["filter_rows"][0]) is not None
 
 
 def test_ts_raising_desired_past_the_floor_auto_pulls(tmp_path):
@@ -94,7 +94,7 @@ def test_ts_raising_desired_past_the_floor_auto_pulls(tmp_path):
     assert d.auto_pull == ["filter_rows.rs.target_frames"] and d.conflict == []
     plan = _apply(view)
     assert _goal(plan) == 14
-    assert fr.aac_block(plan["filter_rows"][0]) is not None
+    assert fr.grader_block(plan["filter_rows"][0]) is not None
 
 
 def test_take_ts_on_an_unrelated_conflict_leaves_the_goal(tmp_path):
@@ -107,7 +107,7 @@ def test_take_ts_on_an_unrelated_conflict_leaves_the_goal(tmp_path):
     plan = _apply(view, {"m42": "take_ts"}, require=True)
     assert plan["priority"] == "low"
     assert _goal(plan) == 8 and plan["filter_rows"][0]["unit"] == "fr"
-    assert fr.aac_block(plan["filter_rows"][0]) is not None
+    assert fr.grader_block(plan["filter_rows"][0]) is not None
 
 
 def test_an_import_with_no_base_leaves_the_goal(tmp_path):
@@ -122,8 +122,8 @@ def test_an_import_with_no_base_leaves_the_goal(tmp_path):
 def test_an_hours_goal_below_the_floor_is_read_back_as_hours(tmp_path):
     conn = _db(tmp_path)
     p = sc.m42([sc.row("ha", "Ha", "Ha 300", 300, hours=0.5)])
-    p["filter_rows"][0]["aac"] = copy.deepcopy(BLOCK)
-    p["aac"] = {"filed_through_night": "2026-10-11", "min_total_frames": 10, "received_at": "x"}
+    p["filter_rows"][0]["grader"] = copy.deepcopy(BLOCK)
+    p["grader"] = {"filed_through_night": "2026-10-11", "min_total_frames": 10, "received_at": "x"}
     _push(conn, [p])
     assert [r[0] for r in conn.execute("SELECT desired FROM exposureplan")] == [10]
     view = _view(conn, p)
@@ -133,41 +133,41 @@ def test_an_hours_goal_below_the_floor_is_read_back_as_hours(tmp_path):
     assert row["target_hours"] == 0.5 and row["unit"] == "h"
 
 
-# --- decision 2: a stale aac block goes --------------------------------------
+# --- decision 2: a stale grader block goes -----------------------------------
 
 
-def _plan_with_aac_row(**changes):
-    row = {**sc.row("rs", "R", "R Stars", 15, frames=8), "aac": copy.deepcopy(BLOCK)}
+def _plan_with_grader_row(**changes):
+    row = {**sc.row("rs", "R", "R Stars", 15, frames=8), "grader": copy.deepcopy(BLOCK)}
     return sc.m42([row]), {**row, **changes}
 
 
 def test_take_rows_keeps_the_block_while_filter_and_template_agree():
-    p, remote_row = _plan_with_aac_row()
-    remote_row.pop("aac")
+    p, remote_row = _plan_with_grader_row()
+    remote_row.pop("grader")
     out = merge.take_rows(p, {"filter_rows": [remote_row]})
-    assert fr.aac_block(out[0]) == BLOCK
+    assert fr.grader_block(out[0]) == BLOCK
 
 
 @pytest.mark.parametrize("change", [{"template": "R Narrow"}, {"filter": "G"}])
 def test_take_rows_drops_the_block_when_filter_or_template_differ(change):
-    p, remote_row = _plan_with_aac_row(**change)
-    remote_row.pop("aac")
+    p, remote_row = _plan_with_grader_row(**change)
+    remote_row.pop("grader")
     out = merge.take_rows(p, {"filter_rows": [remote_row]})
-    assert fr.aac_block(out[0]) is None
+    assert fr.grader_block(out[0]) is None
 
 
 @pytest.mark.parametrize("field,value", [("template", "R Narrow"), ("filter", "G")])
 def test_pulling_a_filter_or_template_drops_the_block(field, value):
-    p, remote_row = _plan_with_aac_row(**{field: value})
+    p, remote_row = _plan_with_grader_row(**{field: value})
     merge.apply_auto_pull(p, {"filter_rows": [remote_row]}, [f"filter_rows.rs.{field}"])
     assert p["filter_rows"][0][field] == value
-    assert fr.aac_block(p["filter_rows"][0]) is None
+    assert fr.grader_block(p["filter_rows"][0]) is None
 
 
 def test_pulling_the_same_template_keeps_the_block():
-    p, remote_row = _plan_with_aac_row()
+    p, remote_row = _plan_with_grader_row()
     merge.apply_auto_pull(p, {"filter_rows": [remote_row]}, ["filter_rows.rs.template"])
-    assert fr.aac_block(p["filter_rows"][0]) is not None
+    assert fr.grader_block(p["filter_rows"][0]) is not None
 
 
 # --- decision 3: a goal of 0 is a removed row --------------------------------
@@ -195,29 +195,29 @@ def test_goal_zero_disables_the_plan_and_a_rise_enables_it_again(tmp_path):
     assert _plans(conn)["OIII 300"] == (1, 6)
 
 
-def test_a_disabled_zero_goal_plan_no_longer_blocks_aac(tmp_path):
+def test_a_disabled_zero_goal_plan_no_longer_blocks_the_grader(tmp_path):
     conn = _db(tmp_path)
     p = _two_rows(4)
     _push(conn, [p])
     p["filter_rows"][1]["target_frames"] = 0
     for r in p["filter_rows"]:
-        r["aac"] = copy.deepcopy(BLOCK)
-    p["aac"] = {"filed_through_night": "2026-10-11", "min_total_frames": 3, "received_at": "x"}
+        r["grader"] = copy.deepcopy(BLOCK)
+    p["grader"] = {"filed_through_night": "2026-10-11", "min_total_frames": 3, "received_at": "x"}
     rep = _push(conn, [p])
-    assert rep.aac_written_projects == ["M42"]
+    assert rep.grader_written_projects == ["M42"]
 
 
 def test_a_skipped_project_says_why(tmp_path):
     conn = _db(tmp_path)
     p = _two_rows(4)
-    p["filter_rows"][0]["aac"] = copy.deepcopy(BLOCK)
-    p["aac"] = {"filed_through_night": "2026-10-11", "min_total_frames": 3, "received_at": "x"}
+    p["filter_rows"][0]["grader"] = copy.deepcopy(BLOCK)
+    p["grader"] = {"filed_through_night": "2026-10-11", "min_total_frames": 3, "received_at": "x"}
     rep = _push(conn, [p])
-    assert rep.aac_written_projects == []
+    assert rep.grader_written_projects == []
     assert "M42: grader counts not written, OIII 300 has no grader figures yet." in rep.notes
 
 
-def test_a_project_aac_never_touched_gets_no_note(tmp_path):
+def test_a_project_the_grader_never_touched_gets_no_note(tmp_path):
     conn = _db(tmp_path)
     rep = _push(conn, [_two_rows(4)])
     assert not any("grader" in n for n in rep.notes)
@@ -230,13 +230,13 @@ def test_a_plan_ts_holds_that_acp_does_not_names_itself(tmp_path):
     # Drop the OIII row in ACP but leave its plan enabled, as a hand edit in TS would.
     p["filter_rows"] = p["filter_rows"][:1]
     for r in p["filter_rows"]:
-        r["aac"] = copy.deepcopy(BLOCK)
-    p["aac"] = {"filed_through_night": "2026-10-11", "min_total_frames": 3, "received_at": "x"}
+        r["grader"] = copy.deepcopy(BLOCK)
+    p["grader"] = {"filed_through_night": "2026-10-11", "min_total_frames": 3, "received_at": "x"}
     conn.execute("UPDATE exposureplan SET guid = 'hand' WHERE Id = (SELECT MAX(Id) FROM exposureplan)")
     conn.commit()
     p.pop("ts_links", None)
     rep = _push(conn, [p])
-    assert rep.aac_written_projects == []
+    assert rep.grader_written_projects == []
     assert any("is enabled in Target Scheduler but is not a row in ACP" in n for n in rep.notes), rep.notes
 
 
@@ -244,13 +244,13 @@ def test_a_plan_ts_holds_that_acp_does_not_names_itself(tmp_path):
 
 
 def test_complete_counts_only_while_the_goal_is_not_above_the_one_sent():
-    row = {"unit": "h", "target_hours": 2.0, "aac": {"complete": True, "goal_at_send": 0.5}}
+    row = {"unit": "h", "target_hours": 2.0, "grader": {"complete": True, "goal_at_send": 0.5}}
     assert not fr.complete_counts(row)
     row["target_hours"] = 0.5
     assert fr.complete_counts(row)
     row["target_hours"] = 0.25
     assert fr.complete_counts(row)
-    fr_row = {"unit": "fr", "target_frames": 49, "aac": {"complete": True, "goal_at_send": 48}}
+    fr_row = {"unit": "fr", "target_frames": 49, "grader": {"complete": True, "goal_at_send": 48}}
     assert not fr.complete_counts(fr_row)
 
 

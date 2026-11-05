@@ -24,11 +24,11 @@ from app import app  # noqa: E402
 TOKEN = "activity-test-token-0123456789"
 HA_ID = "6f1c2a9e-4b7d-4e21-9a35-0c8d1e2f3a4b"
 OIII_ID = "7a2d3b0f-5c8e-4f32-8b46-1d9e2f3a4b5c"
-DOLPHIN_HA = ("/mnt/remotes/NAS/Astro/Library/"
+SAMPLE_HA = ("/data/archive/Library/"
               "Example_Target/RIG_CAMERA/masters/full_master_Ha.fit")
-PATH_MAP = json.dumps([{"from": "/mnt/remotes/NAS",
-                        "mac": "/Volumes/NAS",
-                        "windows": "\\\\NAS\\share"}])
+PATH_MAP = json.dumps([{"from": "/data/archive",
+                        "mac": "/Volumes/archive",
+                        "windows": "\\\\SERVER\\archive"}])
 
 
 def iso_ago(**delta) -> str:
@@ -671,15 +671,15 @@ class TestStoreRules(ActivityCase):
 
     def test_32_the_path_map(self):
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
-        got = activity.map_master_path(DOLPHIN_HA)
-        self.assertEqual(got["mac_folder"], "/Volumes/NAS/Astro/Library/"
+        got = activity.map_master_path(SAMPLE_HA)
+        self.assertEqual(got["mac_folder"], "/Volumes/archive/Library/"
                                             "Example_Target/RIG_CAMERA/masters/")
         self.assertEqual(got["windows_folder"],
-                         "\\\\NAS\\share\\Astro\\Library\\"
+                         "\\\\SERVER\\archive\\Library\\"
                          "Example_Target\\RIG_CAMERA\\masters\\")
         self.assertEqual(got["file_name"], "full_master_Ha.fit")
         os.environ.pop("ACP_ACTIVITY_PATH_MAP")
-        self.assertEqual(activity.map_master_path(DOLPHIN_HA), {
+        self.assertEqual(activity.map_master_path(SAMPLE_HA), {
             "mac_folder": "(unmapped) full_master_Ha.fit",
             "windows_folder": "(unmapped) full_master_Ha.fit", "file_name": "full_master_Ha.fit"})
 
@@ -691,16 +691,16 @@ class TestStoreRules(ActivityCase):
         self.assertTrue(activity.map_master_path("/mnt/ab/x.fit")["mac_folder"].startswith("(unmapped)"))
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
         self.assertTrue(activity.map_master_path(
-            "/mnt/remotes/NAS2/x.fit")["mac_folder"].startswith("(unmapped)"))
+            "/data/archive2/x.fit")["mac_folder"].startswith("(unmapped)"))
 
     def test_32_a_posted_master_gets_its_folders(self):
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
         self.post(ev(source="processing", type="master_built",
-                     refs={"master": {"path": DOLPHIN_HA, "frames": 45, "hours": 3.75, "filter": "Ha"}}))
+                     refs={"master": {"path": SAMPLE_HA, "frames": 45, "hours": 3.75, "filter": "Ha"}}))
         master = self.all_events()[0]["refs"]["master"]
         self.assertEqual(master["file_name"], "full_master_Ha.fit")
         self.assertEqual(master["frames"], 45)
-        self.assertTrue(master["mac_folder"].startswith("/Volumes/NAS/"))
+        self.assertTrue(master["mac_folder"].startswith("/Volumes/archive/"))
 
     def test_33_secrets_and_home_folders_are_scrubbed(self):
         self.post(ev(

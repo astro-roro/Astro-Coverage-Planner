@@ -504,7 +504,7 @@ The values, for each grader-linked row, with `sub` meaning `template_sub_s`:
 | `accepted`, row complete | max(grader count, `desired`) |
 | `accepted`, row not complete | max(0, min(grader count, `desired` - frames short of the floor)) |
 
-Both suites run the shared case file `tests/fixtures/aac_accepted_cases.json` in acp-nina-ts-sync.
+Both suites run the shared case file `tests/fixtures/grader_accepted_cases.json` in acp-nina-ts-sync.
 
 ## 7. Acceptance tests
 
@@ -594,7 +594,7 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | F2 | Python | Base 0, ACP 0, TS 3 | The push leaves 3. The base stays 0. |
 | F3 | C# | F1 and F2 as golden scenarios | The plugin's rows equal the Python rows. |
 | A2 | ACP | `POST /api/plans/M42/accepted` with the Ha row's id, filter "Antlia Ha", template "Ha", 22320 s, complete false. Then 21240 s. A row with the R Stars row's id, filter R, template "R Stars". A row whose id exists but now has template "G Stars". The request has `filed_through_night` 2026-10-11 and `min_total_frames` 10. Also one request with no token. | The Ha values are stored on the Ha row and the second lowers them. The R Stars values are stored on its row. The changed row comes back in `unknown_rows` with its reason. `grader.filed_through_night`, `grader.min_total_frames` and `grader.received_at` are stored. `actual_hours` is unchanged. The request with no token is refused as `/progress` refuses it. |
-| A3 | Python | Every case in `tests/fixtures/aac_accepted_cases.json`, which includes a frame row with `target_frames` 8 and floor 10 | Each case writes exactly the expected `accepted`, `desired` and `enablegrader`. The frame row gets `desired` 10. `acquired` never changes. |
+| A3 | Python | Every case in `tests/fixtures/grader_accepted_cases.json`, which includes a frame row with `target_frames` 8 and floor 10 | Each case writes exactly the expected `accepted`, `desired` and `enablegrader`. The frame row gets `desired` 10. `acquired` never changes. |
 | A4 | Python | Two exposure plans in one project, one with a `grader` block and one without. Then both with blocks, but `filed_through_night` two nights old. | Neither push writes `accepted` or `enablegrader` in that project. |
 | A5 | Python | A mosaic plan with fresh figures. Then an eligible project on a profile with `delayGrading` 80. | Neither push makes a grader write. The second logs a warning naming the profile setting. |
 | A6 | C# | The same case file, and A4 and A5 | The plugin's rows equal the expected rows in every case. |
