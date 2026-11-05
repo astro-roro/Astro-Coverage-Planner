@@ -1,0 +1,72 @@
+name: Private terms
+
+# ACP is public. This checks that a pull request or a push to main adds no
+# private detail, using a term list kept in the ACP_PRIVATE_TERMS secret.
+# Only added lines and commit messages are checked, never the whole tree.
+# Forks and Dependabot have no access to the secret, so the script warns and
+# passes there.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  private-terms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Mask the term list
+        env:
+          ACP_PRIVATE_TERMS: ${{ secrets.ACP_PRIVATE_TERMS }}
+        run: |
+          # GitHub masks a secret as a whole; mask each line too so no single
+          # term can show up in a log. Workflow commands are not printed.
+          printf '%s\n' "$ACP_PRIVATE_TERMS" | while IFS= read -r line; do
+            line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done
+          exit 0
+
+      - name: Work out the range
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "diff=$PR_BASE...$PR_HEAD" >> "$GITHUB_OUTPUT"
+            echo "log=$PR_BASE..$PR_HEAD" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            echo "diff=$PUSH_BEFORE..$PUSH_AFTER" >> "$GITHUB_OUTPUT"
+            echo "log=$PUSH_BEFORE..$PUSH_AFTER" >> "$GITHUB_OUTPUT"
+          else
+            echo "diff=$PUSH_AFTER~1..$PUSH_AFTER" >> "$GITHUB_OUTPUT"
+            echo "log=$PUSH_AFTER~1..$PUSH_AFTER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check added lines
+        env:
+          ACP_PRIVATE_TERMS: ${{ secrets.ACP_PRIVATE_TERMS }}
+          RANGE: ${{ steps.range.outputs.diff }}
+        run: python scripts/check_private_terms.py --diff "$RANGE"
+
+      - name: Check commit messages
+        if: always()
+        env:
+          ACP_PRIVATE_TERMS: ${{ secrets.ACP_PRIVATE_TERMS }}
+          RANGE: ${{ steps.range.outputs.log }}
+        run: python scripts/check_private_terms.py --messages "$RANGE"
