@@ -201,7 +201,7 @@ class TestTheRealBundledFolder(unittest.TestCase):
     def test_core_does_not_import_the_extension(self):
         """It stays a separate extension: found by path, never imported by name."""
         pattern = re.compile(r"(?m)^\s*(from|import)\s+(bundled_extensions|nina_ts_sync)\b")
-        for name in ("app.py", "extensions.py", "sources.py", "shooting_publish.py"):
+        for name in ("app.py", "extensions.py", "sources.py"):
             text = (REPO_ROOT / name).read_text(encoding="utf-8")
             self.assertIsNone(pattern.search(text), name)
 

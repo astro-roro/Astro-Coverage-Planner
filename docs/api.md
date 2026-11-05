@@ -46,9 +46,6 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `GET /api/ts-templates` | NINA TS plugin's exposure templates (if installed) |
 | `POST /api/sync` | Build a NINA Target Scheduler import zip from current plans |
 | `GET /api/sync/download/<filename>` | Download a zip previously built by `/api/sync` |
-| `GET /api/publish/config` | `{"live_page_enabled": bool}`, true when `ACP_PUBLISH_DEST` is set; the plan editor shows its Public page section only then |
-| `GET /api/public/shooting` | Sanitised document of public plans for the live page at astrowithroro.com/live ([spec](specs/shooting-page.md)) |
-| `POST /api/publish/shooting` | Write that document to `data/live/` and upload it over SFTP to `ACP_PUBLISH_DEST` |
 | `GET /api/extensions/manifest` | UI-action manifest registered by [extensions](extensions.md#ui-manifest), drives the Extensions rail accordion and the core-button swap mechanism |
 | `GET /api/ext/...` | Routes registered by [extensions](extensions.md) |
 | `GET /api/version` | `{version, plans_last_modified, manifest_last_modified}`, lets a client poll cheaply instead of refetching plans on a timer |
@@ -358,8 +355,6 @@ A row is stored only when its `id` is on the plan, its `filter` reaches the row'
 ```
 
 `unknown_rows` lists the rows that were not stored, with `no such row` or the row's current filter and template as the reason. A missing or wrong token is a 401, an unknown plan id a 404, and a malformed body a 400 with nothing written.
-
-A plan also carries `target_class`, one of `survey`, `deep` and `pretty`, which AAC reads from `GET /api/plans`. A plan with none reads as `survey`, and any other value is refused with a 400.
 
 ### Destinations: `/api/destinations`
 

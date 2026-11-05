@@ -1,6 +1,6 @@
-"""What AAC needs from ACP: target_class and POST /api/plans/<id>/accepted.
+"""What a frame grader needs from ACP: POST /api/plans/<id>/accepted.
 
-docs/specs/goal-panel-and-ts-order.md section 6, tests A1 and A2, and the
+docs/specs/goal-panel-and-ts-order.md section 6, test A2, and the
 ACP half of A3 (each row's desired in tests/fixtures/aac_accepted_cases.json).
 The endpoint is checked against the request AAC's client sends
 (auto_pix/acp_feedback.py in Astro-Auto-Calibration) and the response table
@@ -302,33 +302,6 @@ class TestReviewFixes(unittest.TestCase):
 
     def test_the_host_exposes_its_lock_for_the_extension_to_share(self):
         self.assertIs(app.plans_lock, app_module.PLANS_LOCK)
-
-
-class TestTargetClass(unittest.TestCase):
-    def setUp(self):
-        _redirect_state()
-        self.client = app.test_client()
-
-    def _save(self, **extra):
-        return self.client.post("/api/plans", json={**{"id": "p1", "target": {"name": "M42"}}, **extra})
-
-    def test_a1_deep_saves_and_giant_is_refused(self):
-        self.assertEqual(self._save(target_class="deep").status_code, 201)
-        self.assertEqual(self.client.get("/api/plans/p1").get_json()["target_class"], "deep")
-        r = self._save(target_class="giant")
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("target_class", r.get_json()["error"])
-
-    def test_a1_each_known_class_saves(self):
-        for cls in ("survey", "deep", "pretty"):
-            self.assertEqual(self._save(target_class=cls).status_code, 201, cls)
-
-    def test_a1_a_plan_with_none_reads_as_survey(self):
-        self.assertEqual(self._save().status_code, 201)
-        self.assertEqual(self.client.get("/api/plans/p1").get_json()["target_class"], "survey")
-        listed = self.client.get("/api/plans").get_json()["plans"]
-        self.assertEqual(listed[0]["target_class"], "survey")
-        self.assertNotIn("target_class", app_module.load_plans()["plans"][0])
 
 
 class TestSharedCases(unittest.TestCase):

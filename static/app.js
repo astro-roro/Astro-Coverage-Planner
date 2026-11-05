@@ -128,7 +128,6 @@ let _pressInfo = null;        // {x, y, t, dragged}, last mousedown over the map
 let planningMode = false;      // false = Coverage mode, true = Planning mode
 let plans = [];                // [{id, guid, project_name, target: {...}, telescope_id, camera_id, filter_rows, priority, ...}]
 let gear = { telescopes: [], cameras: [], rev: 0, conflict_count: 0, wheel_unlinked: [] };  // /api/gear response (v3)
-let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on the server
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
 let editingPlanLoaded = null;   // the plan as the editor last loaded it, for acp:plan:reload
@@ -718,7 +717,6 @@ import {
   extPostPathOk, parsePostBody, pagesFrom, withPlanId, adoptServerChanges,
 } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
-import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
   LABEL_PRETTY as _LABEL_PRETTY,
   LABEL_RANK as _LABEL_RANK,
@@ -7224,7 +7222,7 @@ async function init() {
     // planner sees the user's actual rigs; nothing else here reads gear.
     await Promise.all([
       seedGearFromManifest().then(loadGear), loadPlans(), loadTargetOverrides(), loadHidden(),
-      loadPublishConfig(), initSites(), catalogReady,
+      initSites(), catalogReady,
     ]);
     // The legend was drawn before gear loaded; redraw it with the saved picks.
     applyTelescopeColours();
@@ -7318,14 +7316,6 @@ function renderTelescopeLegend(telescopes) {
 }
 
 // === Planner mode ===
-
-async function loadPublishConfig() {
-  try {
-    const r = await fetch("/api/publish/config");
-    const c = await r.json();
-    livePageEnabled = !!(c && c.live_page_enabled);
-  } catch { livePageEnabled = false; }
-}
 
 async function loadGear() {
   try {
@@ -7631,17 +7621,6 @@ try {
   if (Array.isArray(s.open)) openProjects = new Set(s.open.filter(x => typeof x === "string"));
   showHiddenPlans = s.showHidden === true;
 } catch { /* localStorage disabled or bad JSON, keep defaults */ }
-
-// This month and the next two, for the "Won the vote for" button. The first
-// is selected, which is the current month.
-function wonMonthOptions() {
-  const now = new Date();
-  return [0, 1, 2].map(i => {
-    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
-    const v = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    return `<option value="${v}">${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}</option>`;
-  }).join("");
-}
 
 function savePlanListState() {
   try {
@@ -8001,67 +7980,7 @@ function originalSettingsOf(plan) {
     minimum_time_min: plan.minimum_time_min ?? 0,
     filter_switch_frequency: plan.filter_switch_frequency,
     smart_exposure_order: plan.smart_exposure_order,
-    balance_role: plan.balance_role || null,
-    balance_hold: plan.balance_hold === true,
   };
-}
-
-// The balancer's part of the plan editor (docs/specs/imaging-balancer.md
-// section 1, UI): role and hold apply to the whole TS project like priority,
-// and a plan that won a vote lists its commitments with a Remove button.
-const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
-  "August", "September", "October", "November", "December"];
-
-// One line per commitment. The hours come from the server (`commitment_progress`
-// on the plan), which counts them as the balancer does, so the editor, the
-// run report and the live page agree.
-function commitmentLine(plan, c) {
-  const name = MONTH_NAMES[Number(String(c.month).slice(5, 7)) - 1] || c.month;
-  const stored = plan.commitment_progress || plans.find(p => p.id === plan.id)?.commitment_progress || [];
-  const prog = stored.find(x => x.month === c.month);
-  if (c.lapsed_at) {
-    const d = new Date(`${c.lapsed_at}T00:00:00`);
-    const fmt = x => (Math.round(x * 10) / 10).toString();
-    const hours = prog ? ` with ${fmt(prog.done_h)} of ${fmt(prog.goal_h)} h done` : "";
-    return `Vote winner for ${name}: lapsed ${d.getDate()} ${MONTH_NAMES[d.getMonth()].slice(0, 3)}, ${c.lapsed_reason || "out of season"}${hours}`;
-  }
-  if (c.met_at || (prog && prog.met)) {
-    if (c.met_at) {
-      const d = new Date(`${c.met_at}T00:00:00`);
-      return `Vote winner for ${name}: met ${d.getDate()} ${MONTH_NAMES[d.getMonth()].slice(0, 3)}`;
-    }
-    return `Vote winner for ${name}: met`;
-  }
-  if (!prog) return `Vote winner for ${name}`;
-  const fmt = x => (Math.round(x * 10) / 10).toString();
-  return `Vote winner for ${name}: ${fmt(prog.done_h)} of ${fmt(prog.goal_h)} h, ${prog.behind ? "behind pace" : "on pace"}`;
-}
-
-function balancerEditorHtml(plan) {
-  const role = plan.balance_role || "";
-  const opt = (v, l) => `<option value="${v}" ${role === v ? "selected" : ""}>${l}</option>`;
-  const note = plan.balancer_note;
-  const noteHtml = note && note.text
-    ? `<div style="font-size:11px;color:#78839a" title="Balancer rule ${esc(note.rule)}">${esc(note.text)}</div>` : "";
-  const lines = (plan.commitments || []).map(c =>
-    `<div class="bal-commitment" style="font-size:12px">${esc(commitmentLine(plan, c))}
-      <button type="button" class="bal-remove" data-month="${esc(c.month)}">Remove</button></div>`).join("");
-  return `<label><span class="lab">Balancer role</span>
-      <select id="f_balance_role">${opt("", "None")}${opt("science", "Science")}${opt("survey", "Survey")}${opt("pretty", "Pretty")}</select>
-    </label>
-    <label><span class="lab">Balancer leaves this alone</span>
-      <input type="checkbox" id="f_balance_hold" ${plan.balance_hold ? "checked" : ""}>
-    </label>
-    ${noteHtml}${lines}`;
-}
-
-// Adopt the commitments the server just changed without losing unsaved edits.
-function adoptCommitments(saved) {
-  if (!editingPlan || !saved || editingPlan.id !== saved.id) return;
-  if (saved.commitments) editingPlan.commitments = saved.commitments; else delete editingPlan.commitments;
-  if (saved.balance_role) editingPlan.balance_role = saved.balance_role;
-  editingPlanOriginalSettings = { ...editingPlanOriginalSettings, balance_role: editingPlan.balance_role || null };
-  renderPlanEditor(editingPlan);
 }
 
 // Redraw the card list after a structural change (add, remove, filter or
@@ -8336,7 +8255,6 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Project</span>
           <input type="text" class="wide" id="f_project" value="${esc(editingPlan.project_name)}" placeholder="groups plans into a TS project">
         </label>
-        ${targetClassFieldHtml(editingPlan)}
         <div class="coord-row">
           <label style="flex:1"><span class="lab">RA</span>
             <input type="text" inputmode="decimal" id="f_ra" placeholder="deg, 05h35m17s or paste a pair" autocomplete="off" value="${Number(tg.center_ra_deg).toFixed(3)}">
@@ -8417,8 +8335,7 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Minimum time (min)</span>
           <input type="number" step="1" min="0" id="f_mintime" value="${editingPlan.minimum_time_min ?? 0}">
         </label>
-        ${balancerEditorHtml(editingPlan)}
-        ${projectMateCount > 0 ? `<div class="proj-settings-note" style="font-size:11px;color:#78839a">State, priority, minimum time, balancer role and hold apply to all ${projectMateCount + 1} plans in project ${esc(editingPlan.project_name)}.</div>` : ""}
+        ${projectMateCount > 0 ? `<div class="proj-settings-note" style="font-size:11px;color:#78839a">State, priority and minimum time apply to all ${projectMateCount + 1} plans in project ${esc(editingPlan.project_name)}.</div>` : ""}
         <label><span class="lab">Min altitude (°)</span>
           <input type="number" step="1" min="0" max="90" id="f_minalt" value="${editingPlan.min_altitude_deg ?? 30}">
         </label>
@@ -8429,46 +8346,6 @@ function renderPlanEditor(plan) {
           <textarea id="f_notes">${esc(editingPlan.notes || "")}</textarea>
         </label>
       </fieldset>
-
-      ${livePageEnabled ? `<fieldset>
-        <legend>Public page</legend>
-        <label><span class="lab">Visibility</span>
-          <select id="f_visibility">
-            <option value="private" ${effectivePlanVisibility(editingPlan) === "private" ? "selected" : ""}>Private</option>
-            <option value="public"  ${effectivePlanVisibility(editingPlan) === "public" ? "selected" : ""}>${esc(publicVisibilityLabel(editingPlan))}</option>
-          </select>
-        </label>
-        <div id="f_public_extra" ${effectivePlanVisibility(editingPlan) === "public" ? "" : "hidden"}>
-          <label><span class="lab">Finished</span>
-            <input type="date" id="f_finished_at" value="${esc(editingPlan.finished_at || "")}">
-            <button type="button" id="f_finished_today">Today</button>
-          </label>
-          <label><span class="lab">AstroBin link</span>
-            <input type="url" id="f_astrobin_url" maxlength="300" placeholder="https://www.astrobin.com/..." value="${esc(editingPlan.astrobin_url || "")}">
-          </label>
-          <label><span class="lab">Current project</span>
-            <input type="checkbox" id="f_is_current" ${editingPlan.is_current ? "checked" : ""}>
-          </label>
-          <label><span class="lab">Section</span>
-            <select id="f_public_section">
-              <option value="current" ${editingPlan.public_section === "vote" ? "" : "selected"}>Currently imaging</option>
-              <option value="vote" ${editingPlan.public_section === "vote" ? "selected" : ""}>Up for the vote</option>
-            </select>
-          </label>
-          <div id="f_vote_goals" ${editingPlan.public_section === "vote" ? "" : "hidden"}>${voteGoalsHtml(editingPlan)}</div>
-          ${editingPlan.public_section === "vote" && plans.some(p => p.id === editingPlan.id) ? `<div id="f_won_vote">
-            <select id="f_won_month">${wonMonthOptions()}</select>
-            <button type="button" id="f_won_button">Won the vote for</button>
-          </div>` : ""}
-          <label><span class="lab">Why I'm shooting this</span>
-            <textarea id="f_public_blurb" maxlength="500" rows="3">${esc(editingPlan.public_blurb || "")}</textarea>
-          </label>
-        </div>
-        <div>
-          <button type="button" id="f_publish_now">Publish now (saved plans)</button>
-          <span id="f_publish_result" style="font-size:12px;margin-left:8px"></span>
-        </div>
-      </fieldset>` : ""}
 
       ${editorSectionsHtml(editingPlan)}
 
@@ -8483,10 +8360,6 @@ function renderPlanEditor(plan) {
   // Wire live-edit handlers
   panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
-  panel.querySelector("#f_target_class")?.addEventListener("change", e => {
-    setTargetClass(editingPlan, e.target.value);
-    syncPublicVisibility(panel);
-  });
   const raInput = panel.querySelector("#f_ra");
   const decInput = panel.querySelector("#f_dec");
   const isPlainDecimal = s => /^\s*[+-]?(\d+\.?\d*|\.\d+)\s*$/.test(s);
@@ -8579,84 +8452,9 @@ function renderPlanEditor(plan) {
   wireFilterRows(panel);
   panel.querySelector("#f_state")?.addEventListener("change", e => { editingPlan.state = e.target.value; });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
-  panel.querySelector("#f_balance_role")?.addEventListener("change", e => { editingPlan.balance_role = e.target.value || null; });
-  panel.querySelector("#f_balance_hold")?.addEventListener("change", e => { editingPlan.balance_hold = !!e.target.checked; });
-  for (const btn of panel.querySelectorAll(".bal-remove")) {
-    btn.addEventListener("click", async () => {
-      const month = btn.dataset.month;
-      if (!confirm(`Remove the ${month} vote commitment? The balancer stops holding this plan high for it.`)) return;
-      const r = await fetch(`/api/plans/${encodeURIComponent(editingPlan.id)}/commitments/${encodeURIComponent(month)}`, { method: "DELETE" });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) { alert(j.error || `Remove failed (${r.status}).`); return; }
-      adoptCommitments(j);
-      await loadPlans();
-    });
-  }
-  panel.querySelector("#f_won_button")?.addEventListener("click", async () => {
-    const month = panel.querySelector("#f_won_month").value;
-    if (editingPlan.id && !editingPlan.vote_goals) { alert("Set vote hours for this plan first."); return; }
-    // Marking a winner ends the round: offer to move the other vote plans out
-    // of the vote section in the same step.
-    const others = plans.filter(p => p.id !== editingPlan.id && p.public_section === "vote").length;
-    const clear = others > 0 && confirm(
-      `Also move the other ${others} plan${others === 1 ? "" : "s"} out of the vote section on the live page?`);
-    const r = await fetch(`/api/plans/${encodeURIComponent(editingPlan.id)}/commitments`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ month, clear_other_votes: clear }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { alert(j.error || `Could not mark the winner (${r.status}).`); return; }
-    adoptCommitments(j);
-    await loadPlans();
-  });
   panel.querySelector("#f_mintime")?.addEventListener("input", e => {
     const v = parseInt(e.target.value, 10); if (Number.isFinite(v) && v >= 0) editingPlan.minimum_time_min = v;
   });
-  panel.querySelector("#f_visibility")?.addEventListener("change", e => {
-    editingPlan.visibility = e.target.value;
-    syncPublicVisibility(panel);
-  });
-  panel.querySelector("#f_finished_at")?.addEventListener("input", e => { editingPlan.finished_at = e.target.value; });
-  panel.querySelector("#f_finished_today")?.addEventListener("click", () => {
-    const d = new Date();
-    const pad = n => String(n).padStart(2, "0");
-    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    editingPlan.finished_at = iso;
-    panel.querySelector("#f_finished_at").value = iso;
-  });
-  panel.querySelector("#f_astrobin_url")?.addEventListener("input", e => { editingPlan.astrobin_url = e.target.value.trim(); });
-  panel.querySelector("#f_public_section")?.addEventListener("change", e => {
-    editingPlan.public_section = e.target.value;
-    const box = panel.querySelector("#f_vote_goals");
-    if (box) box.hidden = e.target.value !== "vote";
-  });
-  panel.querySelector("#f_vote_goals")?.addEventListener("input", e => {
-    if (!e.target.matches("input[data-vote-filter]")) return;
-    const goals = {};
-    for (const inp of panel.querySelectorAll("#f_vote_goals input[data-vote-filter]")) {
-      const v = parseFloat(inp.value);
-      if (Number.isFinite(v) && v > 0) goals[inp.dataset.voteFilter] = v;
-    }
-    editingPlan.vote_goals = goals;
-    const total = Object.values(goals).reduce((t, v) => t + v, 0);
-    const out = panel.querySelector("#f_vote_total");
-    if (out) out.innerHTML = voteTotalHtml(total);
-  });
-  panel.querySelector("#f_publish_now")?.addEventListener("click", async e => {
-    const btn = e.currentTarget, out = panel.querySelector("#f_publish_result");
-    btn.disabled = true; out.textContent = "Publishing…";
-    try {
-      const r = await fetch("/api/publish/shooting", { method: "POST" });
-      const j = await r.json().catch(() => ({}));
-      out.textContent = r.ok && j.ok
-        ? `Published ${j.projects} project${j.projects === 1 ? "" : "s"}.`
-        : `Publish failed: ${j.error || r.status}`;
-    } catch (err) {
-      out.textContent = `Publish failed: ${err.message || err}`;
-    } finally { btn.disabled = false; }
-  });
-  panel.querySelector("#f_is_current")?.addEventListener("change", e => { editingPlan.is_current = !!e.target.checked; });
-  panel.querySelector("#f_public_blurb")?.addEventListener("input", e => { editingPlan.public_blurb = e.target.value.slice(0, 500); });
   panel.querySelector("#f_minalt")?.addEventListener("input", e => {
     const v = parseFloat(e.target.value); if (isFinite(v)) editingPlan.min_altitude_deg = v;
   });
@@ -8746,51 +8544,6 @@ function renderPlanEditor(plan) {
   }
 }
 
-const VOTE_HOURS_WARN = 7;
-
-function voteTotalHtml(total) {
-  const t = Math.round(total * 10) / 10;
-  return `Total ${t} h` + (total > VOTE_HOURS_WARN
-    ? ` <strong>This is more than ${VOTE_HOURS_WARN} hours. A vote option is meant to be about 6.</strong>` : "");
-}
-
-// Mirrors shooting_publish.effective_visibility: an explicit value wins, and
-// with none set a pretty plan is public.
-function effectivePlanVisibility(plan) {
-  if (plan.visibility === "public" || plan.visibility === "private") return plan.visibility;
-  return plan.target_class === "pretty" ? "public" : "private";
-}
-
-function publicVisibilityLabel(plan) {
-  const byDefault = !plan.visibility && plan.target_class === "pretty";
-  return byDefault ? "Public (default for pretty plans)" : "Public";
-}
-
-// Re-render the visibility choice and the public-only fields after the
-// visibility or the target class changes.
-function syncPublicVisibility(panel) {
-  const sel = panel.querySelector("#f_visibility");
-  if (!sel || !editingPlan) return;
-  const eff = effectivePlanVisibility(editingPlan);
-  sel.value = eff;
-  const pub = sel.querySelector('option[value="public"]');
-  if (pub) pub.textContent = publicVisibilityLabel(editingPlan);
-  const extra = panel.querySelector("#f_public_extra");
-  if (extra) extra.hidden = eff !== "public";
-}
-
-// The hours table for a plan in the vote section. A blank box means the
-// filter is not part of the vote option.
-function voteGoalsHtml(plan) {
-  const names = Object.keys(hoursByFilter(plan));
-  const goals = plan.vote_goals || {};
-  if (!names.length) return `<div style="font-size:12px">This plan has no filters yet.</div>`;
-  const total = names.reduce((t, n) => t + (Number(goals[n]) > 0 ? Number(goals[n]) : 0), 0);
-  return `<table><tbody>${names.map(n => `<tr><td>${esc(n)}</td>
-      <td><input type="number" min="0" step="0.5" data-vote-filter="${esc(n)}" value="${goals[n] > 0 ? goals[n] : ""}" placeholder="not in vote"> h</td></tr>`).join("")}</tbody></table>
-    <div id="f_vote_total" style="font-size:12px">${voteTotalHtml(total)}</div>`;
-}
-
 async function savePlan() {
   if (!editingPlan) return false;
   // State, priority and minimum time apply to every plan sharing this
@@ -8807,8 +8560,6 @@ async function savePlan() {
     editingPlan.state !== editingPlanOriginalSettings.state
     || editingPlan.priority !== editingPlanOriginalSettings.priority
     || editingPlan.minimum_time_min !== editingPlanOriginalSettings.minimum_time_min
-    || (editingPlan.balance_role || null) !== editingPlanOriginalSettings.balance_role
-    || (editingPlan.balance_hold === true) !== editingPlanOriginalSettings.balance_hold
     || orderChanged
   );
   if (editingPlan.project_name && settingsChanged) {
@@ -8819,10 +8570,6 @@ async function savePlan() {
         state: editingPlan.state,
         priority: editingPlan.priority,
         minimum_time_min: editingPlan.minimum_time_min,
-        ...((editingPlan.balance_role || null) !== editingPlanOriginalSettings.balance_role
-          ? { balance_role: editingPlan.balance_role || null } : {}),
-        ...((editingPlan.balance_hold === true) !== editingPlanOriginalSettings.balance_hold
-          ? { balance_hold: editingPlan.balance_hold === true } : {}),
         // Switching and smart order each go only when changed here: a value
         // never set stays unknown, and the sync leaves TS's alone.
         ...(editingPlan.filter_switch_frequency !== editingPlanOriginalSettings.filter_switch_frequency

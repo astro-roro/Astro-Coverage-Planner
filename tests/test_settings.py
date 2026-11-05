@@ -333,11 +333,10 @@ import activity
 out = {
  "app": {n: str(getattr(app, n)) for n in (
    "MANIFEST_PATH", "CATALOGS_PATH", "GEAR_PATH", "PLANS_PATH", "FINGERPRINTS_PATH",
-   "LIVE_OUT_DIR", "SITES_PATH", "DESTINATIONS_PATH", "SAVED_SEARCHES_PATH",
+   "SITES_PATH", "DESTINATIONS_PATH", "SAVED_SEARCHES_PATH",
    "TARGET_OVERRIDES_PATH", "HIDDEN_PATH", "TS_TEMPLATES_PATH", "ZIP_OUTPUT_DIR",
    "SURVEYS_PATH", "CATALOG_REGISTRY_PATH", "MOC_CACHE_DIR")},
  "activity_db": str(activity.db_path()),
- "balancer": str(app._balancer_path()),
  "builder": {"MANIFEST_PATH": str(b.MANIFEST_PATH), "SCAN_CACHE_PATH": str(b.SCAN_CACHE_PATH),
              "TARGET_IDS_PATH": str(b.TARGET_IDS_PATH),
              "FILTER_CATALOGUE_PATH": str(b.FILTER_CATALOGUE_PATH)},
@@ -351,7 +350,7 @@ print(json.dumps(out))
 APP_FILES = {
     "MANIFEST_PATH": "manifest.json", "CATALOGS_PATH": "catalogs.json", "GEAR_PATH": "gear.json",
     "PLANS_PATH": "plans.json", "FINGERPRINTS_PATH": "fingerprints.json",
-    "LIVE_OUT_DIR": "live", "SITES_PATH": "sites.json", "DESTINATIONS_PATH": "destinations.json",
+    "SITES_PATH": "sites.json", "DESTINATIONS_PATH": "destinations.json",
     "SAVED_SEARCHES_PATH": "saved_searches.json", "TARGET_OVERRIDES_PATH": "target_overrides.json",
     "HIDDEN_PATH": "hidden.json", "TS_TEMPLATES_PATH": "ts_templates.json",
     "ZIP_OUTPUT_DIR": "exports", "MOC_CACHE_DIR": "moc_cache",
@@ -376,7 +375,6 @@ class TestImportTimePaths(unittest.TestCase):
             "GEAR_PATH": "data/gear.json",
             "PLANS_PATH": "data/plans.json",
             "FINGERPRINTS_PATH": "data/fingerprints.json",
-            "LIVE_OUT_DIR": "data/live",
             "SITES_PATH": "data/sites.json",
             "DESTINATIONS_PATH": "data/destinations.json",
             "SAVED_SEARCHES_PATH": "data/saved_searches.json",
@@ -389,7 +387,6 @@ class TestImportTimePaths(unittest.TestCase):
             "MOC_CACHE_DIR": "data/moc_cache",
         })
         self.assertEqual(self.rel(out["activity_db"]), "data/activity.sqlite")
-        self.assertEqual(self.rel(out["balancer"]), "data/balancer.json")
         self.assertEqual({k: self.rel(v) for k, v in out["builder"].items()}, {
             "MANIFEST_PATH": "data/manifest.json",
             "SCAN_CACHE_PATH": "data/scan_cache.json",
@@ -417,7 +414,6 @@ class TestImportTimePaths(unittest.TestCase):
         for name, filename in APP_FILES.items():
             self.assertEqual(Path(out["app"][name]), data_dir / filename, name)
         self.assertEqual(Path(out["activity_db"]), data_dir / "activity.sqlite")
-        self.assertEqual(Path(out["balancer"]), data_dir / "balancer.json")
         self.assertEqual(Path(out["builder"]["MANIFEST_PATH"]), data_dir / "manifest.json")
         self.assertEqual(Path(out["builder"]["SCAN_CACHE_PATH"]), data_dir / "scan_cache.json")
         self.assertEqual(Path(out["builder"]["TARGET_IDS_PATH"]), data_dir / "target_ids.json")
