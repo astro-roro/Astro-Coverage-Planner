@@ -243,23 +243,23 @@ describe("U11: grader figures", () => {
   });
 });
 
-describe("shot, waiting for grader", () => {
-  // actual_hours is Target Scheduler's acquired total; grader.seen_* is what grader
-  // has graded, accepted or not. The gap is frames grader has not reached yet.
+describe("shot, waiting for grading", () => {
+  // actual_hours is Target Scheduler's acquired total; grader.seen_* is what the grader
+  // has graded, accepted or not. The gap is frames the grader has not reached yet.
   const hrs = (extra = {}) => row({ target_hours: 4, actual_hours: 2.5,
     grader: { accepted_seconds: 5400, seen_seconds: 7200, complete: false }, ...extra });
 
-  it("stripes the hours grader has not seen, after the accepted part", () => {
+  it("stripes the hours the grader has not seen, after the accepted part", () => {
     const p = rowProgress(hrs());
     assert.equal(p.left, "1.5 / 4.0 h");
     assert.equal(p.right, "2.5 h left");
     assert.equal(p.pct, 37.5);
     assert.equal(p.pendingPct, 12.5);
-    assert.equal(p.pendingText, "+0.50 h shot, waiting for grader");
+    assert.equal(p.pendingText, "+0.50 h shot, waiting for grading");
     const html = cardHtml(hrs(), 0, { camera: CAMERA, templates: TEMPLATES });
     assert.match(html, /class="fr-bar fr-bar-grader"/);
     assert.match(html, /class="fr-pending-bar" style="width:12.5%"/);
-    assert.match(html, /<div class="fr-pending">\+0.50 h shot, waiting for grader<\/div>/);
+    assert.match(html, /<div class="fr-pending">\+0.50 h shot, waiting for grading<\/div>/);
   });
 
   it("counts frames in a frame row", () => {
@@ -268,10 +268,10 @@ describe("shot, waiting for grader", () => {
     const p = rowProgress(r);
     assert.equal(p.left, "0 / 15 fr");
     assert.equal(p.pendingPct, 100);
-    assert.equal(p.pendingText, "+15 fr shot, waiting for grader");
+    assert.equal(p.pendingText, "+15 fr shot, waiting for grading");
   });
 
-  it("shows nothing waiting once grader has seen everything", () => {
+  it("shows nothing waiting once the grader has seen everything", () => {
     const p = rowProgress(hrs({ actual_hours: 2.0 }));
     assert.equal(p.pendingPct, 0);
     assert.equal(p.pendingText, "");
@@ -283,7 +283,7 @@ describe("shot, waiting for grader", () => {
     assert.equal(p.pendingText, "");
   });
 
-  it("never claims more than grader has seen when TS reports less", () => {
+  it("never claims more than the grader has seen when TS reports less", () => {
     assert.equal(rowProgress(hrs({ actual_hours: 1.0 })).pendingPct, 0);
   });
 
@@ -299,7 +299,7 @@ describe("shot, waiting for grader", () => {
     assert.equal(done.finished, true);
   });
 
-  it("leaves rows without grader figures as a plain bar", () => {
+  it("leaves rows without the grader figures as a plain bar", () => {
     const r = row({ target_hours: 4, actual_hours: 2.5 });
     assert.equal(rowProgress(r).pendingPct, 0);
     assert.match(cardHtml(r, 0, { camera: CAMERA, templates: TEMPLATES }), /class="fr-bar"/);

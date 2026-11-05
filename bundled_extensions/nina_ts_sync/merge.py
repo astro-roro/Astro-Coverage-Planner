@@ -53,7 +53,7 @@ def take_rows(plan: dict, remote: dict) -> list[dict]:
     (goal-panel-and-ts-order.md section 6)."""
     import copy
     from .diff import rows_by_id
-    from .rows import unfloored
+    from .rows import aac_block, other_grader_keys, unfloored
     local = rows_by_id(plan)
     remote = unfloored(plan, remote) or remote
     out = []
@@ -61,8 +61,12 @@ def take_rows(plan: dict, remote: dict) -> list[dict]:
         if not isinstance(row, dict):
             continue
         mine = local.get(str(row.get("id"))) or {}
-        if isinstance(mine.get("grader"), dict) and same_row_identity(mine, row):
-            row["grader"] = copy.deepcopy(mine["grader"])
+        for k in other_grader_keys(row):
+            row.pop(k, None)
+        if aac_block(mine) is not None and same_row_identity(mine, row):
+            for k in ("grader", *other_grader_keys(mine)):
+                if isinstance(mine.get(k), dict):
+                    row[k] = copy.deepcopy(mine[k])
         out.append(row)
     return out
 
@@ -72,6 +76,7 @@ def _pull_row_field(plan: dict, remote: dict, row_id: str, field: str | None) ->
     at the end of the list; a field the remote row lacks is dropped."""
     import copy
     from .diff import rows_by_id
+    from .rows import other_grader_keys
     remote_row = rows_by_id(remote).get(row_id)
     rows = plan.setdefault("filter_rows", [])
     mine = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == row_id), None)
@@ -91,9 +96,10 @@ def _pull_row_field(plan: dict, remote: dict, row_id: str, field: str | None) ->
             mine["unit"] = remote_row.get("unit", mine.get("unit"))
     else:
         mine.pop(field, None)
-    # grader's figures were reported for the filter and template the row had.
+    # The grader's figures were reported for the filter and template the row had.
     if field in ("filter", "template") and (mine.get("filter"), mine.get("template")) != before:
-        mine.pop("grader", None)
+        for k in ("grader", *other_grader_keys(mine)):
+            mine.pop(k, None)
 
 
 def pull_order(plan: dict, remote: dict) -> None:

@@ -134,7 +134,7 @@ A gear template:
 | `offset` | integer | The same. |
 | `bin` | integer | 1 to 4. |
 | `starred` | boolean | See Terms. The server repairs the flag: if a filter has no starred template the first one is starred, and if several, the first. |
-| `aliases` | list of strings | Earlier names from ACP renames, newest first, at most 8. Server-owned. Used to find this template's TS row after a rename and to match a plan row, a progress entry or an grader row that still says the old name. |
+| `aliases` | list of strings | Earlier names from ACP renames, newest first, at most 8. Server-owned. Used to find this template's TS row after a rename and to match a plan row, a progress entry or a grader's row that still says the old name. |
 | `ts_names` | list of strings | The names of the other TS templates in this template's group when adoption or Tidy linked it. Server-owned. Used only to map a plan row or a TS import that uses one of those names onto this template. Never used to look up a TS row. |
 | `ts` | object | Server-owned. Keyed by profile id. |
 
@@ -387,7 +387,7 @@ The goal panel's card list is unchanged except for the template drop-down and "+
 - A row with `template_unresolved` shows "template not in gear" in amber and its drop-down offers the camera's templates for the filter.
 - The filter drop-down marks filters not on the wheel: "SII · not on the wheel yet". They stay selectable.
 - A row on a filter that is not on the wheel shows "Not synced until SII is on the wheel" under its progress block. It adds no state to the plan.
-- Progress from the plugin and grader's `/accepted` match a row by filter and template name exactly (goal panel spec sections 3 and 6). They now also accept the template's `aliases` and `ts_names`, so a rename between grader reading the plans and writing back does not drop the grader block.
+- Progress from the plugin and a grader's `/accepted` match a row by filter and template name exactly (goal panel spec sections 3 and 6). They now also accept the template's `aliases` and `ts_names`, so a rename between the grader reading the plans and writing back does not drop the grader block.
 
 ### Tests
 

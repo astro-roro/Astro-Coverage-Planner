@@ -881,7 +881,7 @@ def _write_aac(
     except Exception:  # noqa: BLE001 - a missing zone database is a skip, not a crash
         zone = None
     if now is None or zone is None:
-        _aac_warn(report, f"grader figures not written: no time zone data for {payload.aac_tz}.")
+        _aac_warn(report, f"Grader figures not written: no time zone data for {payload.aac_tz}.")
         return
     local = now.astimezone(zone)
     from datetime import timedelta
@@ -890,11 +890,11 @@ def _write_aac(
     profile_problem = None
     profile_checked = False
     profile_warned = False
-    for guid, grader in candidates:
+    for guid, gproj in candidates:
         pid = project_id_by_guid[guid]
-        wm = grader.filed_through_night
+        wm = gproj.filed_through_night
         if wm is None or wm < newest_night:
-            _aac_warn(report, f"{grader.name}: grader figures not written: they are filed through "
+            _aac_warn(report, f"{gproj.name}: grader figures not written: they are filed through "
                               f"{wm}, older than the night that ended this morning ({newest_night}).")
             continue
         enabled = {
@@ -902,7 +902,7 @@ def _write_aac(
                 "SELECT e.Id FROM exposureplan e JOIN target t ON t.Id = e.targetid "
                 "WHERE t.projectid = ? AND COALESCE(e.enabled, 1) <> 0", (pid,)).fetchall()
         }
-        counts = {plan_id_by_guid[g]: n for g, n in grader.accepted_by_plan_guid.items() if g in plan_id_by_guid}
+        counts = {plan_id_by_guid[g]: n for g, n in gproj.accepted_by_plan_guid.items() if g in plan_id_by_guid}
         if not enabled or not enabled <= set(counts):
             if not enabled:
                 why = "no exposure plan is enabled"
@@ -914,13 +914,13 @@ def _write_aac(
                     for i in sorted(enabled - set(counts))
                 ]
                 why = f"{', '.join(names)} is enabled in Target Scheduler but is not a row in ACP"
-            _aac_warn(report, f"{grader.name}: grader counts not written, {why}.")
+            _aac_warn(report, f"{gproj.name}: grader counts not written, {why}.")
             continue
         if not profile_checked:
             profile_problem, profile_checked = _aac_profile_problem(conn, payload.profile_id), True
         if profile_problem:
             if not profile_warned:
-                _aac_warn(report, f"grader figures not written for profile {payload.profile_id}: "
+                _aac_warn(report, f"Grader figures not written for profile {payload.profile_id}: "
                                   f"{profile_problem}.")
                 profile_warned = True
             continue
@@ -929,13 +929,13 @@ def _write_aac(
             "SELECT 1 FROM acquiredimage WHERE projectId = ? AND acquireddate > ? LIMIT 1", (pid, cutoff)
         ).fetchone() is not None:
             report.notes.append(
-                f"{grader.name}: grader figures not written: Target Scheduler has saved frames since the "
+                f"{gproj.name}: grader figures not written: Target Scheduler has saved frames since the "
                 "night they cover, so its own counts stand until tomorrow's sync.")
             continue
         for plan_id in enabled:
             conn.execute("UPDATE exposureplan SET accepted = ? WHERE Id = ?", (counts[plan_id], plan_id))
         conn.execute("UPDATE project SET enablegrader = 1 WHERE Id = ?", (pid,))
-        report.aac_written_projects.append(grader.name)
+        report.aac_written_projects.append(gproj.name)
 
 
 def _aac_warn(report: SyncReport, message: str) -> None:

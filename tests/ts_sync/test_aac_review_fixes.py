@@ -82,7 +82,7 @@ def test_no_edits_gives_no_diff_and_the_goal_stays(tmp_path):
     assert (d.auto_pull, d.auto_keep, d.conflict) == ([], [], [])
     plan = _apply(view)
     assert _goal(plan) == 8
-    assert "grader" in plan["filter_rows"][0]
+    assert fr.aac_block(plan["filter_rows"][0]) is not None
 
 
 def test_ts_raising_desired_past_the_floor_auto_pulls(tmp_path):
@@ -94,7 +94,7 @@ def test_ts_raising_desired_past_the_floor_auto_pulls(tmp_path):
     assert d.auto_pull == ["filter_rows.rs.target_frames"] and d.conflict == []
     plan = _apply(view)
     assert _goal(plan) == 14
-    assert "grader" in plan["filter_rows"][0]
+    assert fr.aac_block(plan["filter_rows"][0]) is not None
 
 
 def test_take_ts_on_an_unrelated_conflict_leaves_the_goal(tmp_path):
@@ -107,7 +107,7 @@ def test_take_ts_on_an_unrelated_conflict_leaves_the_goal(tmp_path):
     plan = _apply(view, {"m42": "take_ts"}, require=True)
     assert plan["priority"] == "low"
     assert _goal(plan) == 8 and plan["filter_rows"][0]["unit"] == "fr"
-    assert "grader" in plan["filter_rows"][0]
+    assert fr.aac_block(plan["filter_rows"][0]) is not None
 
 
 def test_an_import_with_no_base_leaves_the_goal(tmp_path):
@@ -145,7 +145,7 @@ def test_take_rows_keeps_the_block_while_filter_and_template_agree():
     p, remote_row = _plan_with_aac_row()
     remote_row.pop("grader")
     out = merge.take_rows(p, {"filter_rows": [remote_row]})
-    assert out[0]["grader"] == BLOCK
+    assert fr.aac_block(out[0]) == BLOCK
 
 
 @pytest.mark.parametrize("change", [{"template": "R Narrow"}, {"filter": "G"}])
@@ -153,7 +153,7 @@ def test_take_rows_drops_the_block_when_filter_or_template_differ(change):
     p, remote_row = _plan_with_aac_row(**change)
     remote_row.pop("grader")
     out = merge.take_rows(p, {"filter_rows": [remote_row]})
-    assert "grader" not in out[0]
+    assert fr.aac_block(out[0]) is None
 
 
 @pytest.mark.parametrize("field,value", [("template", "R Narrow"), ("filter", "G")])
@@ -161,13 +161,13 @@ def test_pulling_a_filter_or_template_drops_the_block(field, value):
     p, remote_row = _plan_with_aac_row(**{field: value})
     merge.apply_auto_pull(p, {"filter_rows": [remote_row]}, [f"filter_rows.rs.{field}"])
     assert p["filter_rows"][0][field] == value
-    assert "grader" not in p["filter_rows"][0]
+    assert fr.aac_block(p["filter_rows"][0]) is None
 
 
 def test_pulling_the_same_template_keeps_the_block():
     p, remote_row = _plan_with_aac_row()
     merge.apply_auto_pull(p, {"filter_rows": [remote_row]}, ["filter_rows.rs.template"])
-    assert "grader" in p["filter_rows"][0]
+    assert fr.aac_block(p["filter_rows"][0]) is not None
 
 
 # --- decision 3: a goal of 0 is a removed row --------------------------------

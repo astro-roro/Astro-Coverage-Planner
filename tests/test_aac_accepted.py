@@ -125,8 +125,8 @@ class TestAcceptedEndpoint(unittest.TestCase):
     def test_a2_zeros_for_a_row_with_no_frames_are_stored_not_complete(self):
         r = self._post(_request([_figures(G_ID, "G", "G Stars", 0.0, 0)]))
         self.assertEqual(r.status_code, 200)
-        grader = self._stored()["filter_rows"][2]["grader"]
-        self.assertEqual((grader["accepted_frames"], grader["complete"]), (0, False))
+        block = self._stored()["filter_rows"][2]["grader"]
+        self.assertEqual((block["accepted_frames"], block["complete"]), (0, False))
 
     def test_a2_an_unknown_plan_is_404(self):
         self.assertEqual(self._post(_request([]), plan_id="nope").status_code, 404)
