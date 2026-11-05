@@ -316,7 +316,7 @@ ACP core goes last on purpose. It is the only piece that deploys on merge, and t
 Nothing in TS is edited from the first step to the last.
 
 - [ ] Cancel the current pending upload from its review page.
-- [ ] Merge the extension and copy it to homeserver. Merge ACP core, which deploys. Check the log says 47 plans moved to active, and ACP shows no badges.
+- [ ] Merge the extension and copy it to the home server. Merge and deploy ACP core. Check the log says 47 plans moved to active, and ACP shows no badges.
 - [ ] Install the plugin on IMAGING-PC and restart NINA.
 - [ ] Back up `schedulerdb.sqlite` with NINA closed, then open NINA.
 - [ ] Press "Send TS to ACP". The review page shows the 9 inactive projects as TS-only changes to inactive, and no other state change.

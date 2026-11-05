@@ -293,7 +293,7 @@ def build_payload(
 ) -> SyncPayload:
     """Convert ACP plan model into the SyncPayload upsert.py applies.
 
-    *now* is the moment the AAC freshness rule is judged at (section 6);
+    *now* is the moment the pipeline freshness rule is judged at (section 6);
     the real time when left out. It must carry a time zone.
 
     *wheel_slots* are the slot names of the NINA profile's filter wheel. A

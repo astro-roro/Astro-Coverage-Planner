@@ -221,7 +221,7 @@ Or in Docker, along with the roots the builder needs:
     docker run -d \
       -e FITS_ROOTS=/data/images \
       -e ACP_SCAN_CRON="0 3 * * *" \
-      -e TZ=Australia/Sydney \
+      -e TZ=Europe/Berlin \
       -v /mnt/nas/images:/data/images:ro \
       -v acp-data:/app/data \
       -p 5555:5555 astro-coverage-planner

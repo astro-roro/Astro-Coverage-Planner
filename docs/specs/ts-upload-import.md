@@ -8,7 +8,7 @@ Status: draft, revised 2026-09-24 so an upload merges and never replaces. Not bu
 
 ## Goal
 
-Get plans made or changed in a rig's Target Scheduler (TS) back into ACP on homeserver. The TS readers already exist in the extension, but they read the TS database from a path on the ACP host. The database is on the rig, so ACP cannot see it.
+Get plans made or changed in a rig's Target Scheduler (TS) back into ACP on the home server. The TS readers already exist in the extension, but they read the TS database from a path on the ACP host. The database is on the rig, so ACP cannot see it.
 
 This reverses the direction the plugin already uses. The plugin pulls plans from ACP over HTTP. Now it also sends TS's database file to ACP. ACP compares it with its own plans and shows what would change. The user reviews that in ACP and applies it with a separate click.
 
@@ -32,7 +32,7 @@ The first version sends the whole database file. Sending only the rows is a late
 | Push state sent back to ACP after a sync | Plugin | Only the plugin knows which rows it just wrote. See "Per-rig links". |
 | Upload endpoint, worker, temp storage, merge, review page | Extension | The reader, the version check, the importer, the three-way diff and its loss notes all live there. ACP core knows nothing about TS by design. |
 | Per-request body limit, 413 message | ACP core | Core sets a 1 MB limit on every request (`MAX_BODY_BYTES`, `app.py:159`). Only core can let one route go higher. |
-| Token on the daily publish job, `ACP_API_TOKEN` on homeserver | the deployment repo and homeserver | Deployment settings, not code in either app. |
+| Token on any scheduled job that calls ACP, `ACP_API_TOKEN` on the server | the server's own setup | Deployment settings, not code in either app. |
 
 ACP core's access gate (`_api_gate`, `app.py:265`) already covers every path, including the extension's `/api/ext/...` routes. The extension needs no auth code of its own beyond the check in "Auth" below.
 
@@ -167,7 +167,7 @@ The state is one of `checking`, `ready`, `failed`, `superseded`, `applied`.
 
 An upload lives 24 hours (`ACP_TS_UPLOAD_TTL_HOURS`). Expired files are swept when the extension registers and on every new upload. A successful apply deletes both files straight away.
 
-In the server container the temp directory is inside the container, not on the archive share. A Watchtower redeploy wipes it. The review page then says the upload has expired and to send it again from NINA. Nothing is lost except the upload itself.
+In the server container the temp directory is inside the container, not on the archive share. Recreating the container, such as for an image update, wipes it. The review page then says the upload has expired and to send it again from NINA. Nothing is lost except the upload itself.
 
 ## The merge
 
@@ -312,11 +312,11 @@ The user sets the token in this order:
 
 1. Generate a token of at least 32 ASCII characters.
 2. On each rig (IMAGING-PC, and any other NINA machine), paste it into NINA's Options page for the ACP plugin. Press Test; it still passes.
-3. On homeserver, add `-H "Authorization: Bearer <token>"` to the `live-publish` script, reading the token from a file rather than the script text.
-4. On homeserver, put `ACP_API_TOKEN` in the ACP stack's `.env`. Reference it from `docker-compose.yml` as `ACP_API_TOKEN: ${ACP_API_TOKEN}`. Recreate the container.
+3. On the server, add `-H "Authorization: Bearer <token>"` to any scheduled job that calls ACP, reading the token from a file rather than the script text.
+4. On the server, put `ACP_API_TOKEN` in the ACP stack's `.env`. Reference it from `docker-compose.yml` as `ACP_API_TOKEN: ${ACP_API_TOKEN}`. Recreate the container.
 5. Check the container log says "API auth: ON". Sign in once in the browser. Press Test on each rig again.
 
-The compose file in the deployment repo gets the `${ACP_API_TOKEN}` reference. The token itself is never committed.
+The server's compose file gets the `${ACP_API_TOKEN}` reference. The token itself is never committed.
 
 ## Profiles in one file
 
@@ -339,7 +339,7 @@ A TS database holds rows for every NINA profile on that machine that has used TS
 | Wrong or missing token | `401`. The dock shows "ACP rejected the token", as today. |
 | Not a SQLite file | `415`. |
 | SQLite, but not TS, or damaged | The worker marks it `failed` with the reason. The dock and page show it. |
-| TS schema version ACP does not know | The worker marks it `failed` with the extension's version message. This happens when the plugin supports a newer TS than the extension on homeserver. The message names both. |
+| TS schema version ACP does not know | The worker marks it `failed` with the extension's version message. This happens when the plugin supports a newer TS than the extension on the server. The message names both. |
 | A second upload for the same profile while one is pending | The new upload replaces the old. The old one is marked `superseded` and its file deleted. Its review page says a newer upload replaced it and links to the new one. |
 | A second upload for a different profile | Both stay pending. Each has its own review page and its own scope. Applying one does not affect the other, because their scopes do not overlap. |
 | ACP plans edited between preview and apply | `409`, "ACP changed since this preview". The page offers to re-run the preview on the same upload. |
@@ -421,8 +421,8 @@ Each test starts from a `plans.json` and a TS file built for it. "Unchanged" mea
 
 ## Live run order
 
-- [ ] Merge and deploy the ACP core change (a push to main redeploys homeserver).
-- [ ] Copy the updated extension into `/path/to/acp/extensions` on homeserver and recreate the `acp` container.
+- [ ] Merge and deploy the ACP core change.
+- [ ] Copy the updated extension into `/path/to/acp/extensions` on the server and recreate the `acp` container.
 - [ ] Build and install the plugin on IMAGING-PC, and restart NINA.
 - [ ] Set the token in the order under "Auth".
 - [ ] Back up TS on IMAGING-PC: with NINA closed, copy `schedulerdb.sqlite` somewhere outside `SchedulerPlugin`. Then open NINA.

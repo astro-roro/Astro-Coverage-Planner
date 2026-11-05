@@ -3771,8 +3771,8 @@ function renderConflictCards(conflicts, decisions) {
 }
 
 // Look up an ACP plan's friendly "Project / Target" name from its id. Used
-// in the bidi modal so the user sees "Fesen SNR / G7.7-3.7" instead of the
-// internal "plan-mouufrs7" handle.
+// in the bidi modal so the user sees "Project / Target" instead of the
+// internal "plan-xxxxxxxx" handle.
 function friendlyPlanName(planId) {
   if (typeof plans === "undefined" || !Array.isArray(plans)) return planId;
   const p = plans.find(x => x.id === planId);
@@ -7256,7 +7256,7 @@ async function init() {
 
     // Load planner data in parallel with catalogs (sites included so the
     // first updateObsNow uses the saved active site rather than the hardcoded
-    // Sydney fallback in `currentSite`). Auto-importing manifest-discovered
+    // fallback in `currentSite`). Auto-importing manifest-discovered
     // telescopes/cameras must finish before the first gear load so the
     // planner sees the user's actual rigs; nothing else here reads gear.
     await Promise.all([

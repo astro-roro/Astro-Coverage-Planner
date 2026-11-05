@@ -1,6 +1,6 @@
 """ACP's canonical filter names, for translating a TS filter or template name.
 
-TS holds filter names as whatever Voyager or the wheel calls them ("O", "H",
+TS holds filter names as whatever the rig's filter wheel calls them ("O", "H",
 "S"); ACP's own plans use "OIII", "Ha", "SII" and so on. This table mirrors
 the alias list in two other places, and any change here should be checked
 against both:

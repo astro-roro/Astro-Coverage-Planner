@@ -16,18 +16,43 @@ from flask import current_app
 
 logger = logging.getLogger("nina_ts_sync.activity")
 
-DEFAULT_TZ = "Australia/Sydney"
+def system_zone():
+    """The machine's own time zone: TZ or /etc/localtime when either names
+    a zone, otherwise the offset the OS reports now, and UTC last."""
+    name = (os.environ.get("TZ") or "").strip().lstrip(":")
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    try:
+        link = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in link:
+            return ZoneInfo(link.split("zoneinfo/", 1)[1])
+    except Exception:
+        pass
+    try:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    except Exception:
+        return timezone.utc
+
+
+def zone_from_env():
+    """ACP_ACTIVITY_TZ when it names a zone, else the system time zone."""
+    name = (os.environ.get("ACP_ACTIVITY_TZ") or "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return system_zone()
 
 
 def night_now() -> str:
     """The observing night right now, as ACP works it out: the date the
-    evening started, cutting over at local noon in ACP_ACTIVITY_TZ."""
-    name = (os.environ.get("ACP_ACTIVITY_TZ") or DEFAULT_TZ).strip() or DEFAULT_TZ
-    try:
-        zone = ZoneInfo(name)
-    except Exception:
-        zone = ZoneInfo(DEFAULT_TZ)
-    local = datetime.now(timezone.utc).astimezone(zone)
+    evening started, cutting over at local noon in ACP_ACTIVITY_TZ, or in
+    the system time zone when that is unset."""
+    local = datetime.now(timezone.utc).astimezone(zone_from_env())
     day = local.date() if local.hour >= 12 else local.date().fromordinal(local.date().toordinal() - 1)
     return day.isoformat()
 

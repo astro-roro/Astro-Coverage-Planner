@@ -218,7 +218,7 @@ function groupQuietProgress(rows) {
 }
 
 // Consecutive edits that made the same change across one project read as one
-// line: "46 PNe Survey plans: min altitude 20 to 30".
+// line: "12 Example Mosaic plans: min altitude 20 to 30".
 export function collapseRows(rows) {
   return groupQuietProgress(collapseEdits(rows));
 }
