@@ -337,7 +337,6 @@ out = {
    "TARGET_OVERRIDES_PATH", "HIDDEN_PATH", "TS_TEMPLATES_PATH", "ZIP_OUTPUT_DIR",
    "SURVEYS_PATH", "CATALOG_REGISTRY_PATH", "MOC_CACHE_DIR")},
  "activity_db": str(activity.db_path()),
- "balancer": str(app._balancer_path()),
  "builder": {"MANIFEST_PATH": str(b.MANIFEST_PATH), "SCAN_CACHE_PATH": str(b.SCAN_CACHE_PATH),
              "TARGET_IDS_PATH": str(b.TARGET_IDS_PATH),
              "FILTER_CATALOGUE_PATH": str(b.FILTER_CATALOGUE_PATH)},
@@ -389,7 +388,6 @@ class TestImportTimePaths(unittest.TestCase):
             "MOC_CACHE_DIR": "data/moc_cache",
         })
         self.assertEqual(self.rel(out["activity_db"]), "data/activity.sqlite")
-        self.assertEqual(self.rel(out["balancer"]), "data/balancer.json")
         self.assertEqual({k: self.rel(v) for k, v in out["builder"].items()}, {
             "MANIFEST_PATH": "data/manifest.json",
             "SCAN_CACHE_PATH": "data/scan_cache.json",
@@ -417,7 +415,6 @@ class TestImportTimePaths(unittest.TestCase):
         for name, filename in APP_FILES.items():
             self.assertEqual(Path(out["app"][name]), data_dir / filename, name)
         self.assertEqual(Path(out["activity_db"]), data_dir / "activity.sqlite")
-        self.assertEqual(Path(out["balancer"]), data_dir / "balancer.json")
         self.assertEqual(Path(out["builder"]["MANIFEST_PATH"]), data_dir / "manifest.json")
         self.assertEqual(Path(out["builder"]["SCAN_CACHE_PATH"]), data_dir / "scan_cache.json")
         self.assertEqual(Path(out["builder"]["TARGET_IDS_PATH"]), data_dir / "target_ids.json")

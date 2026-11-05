@@ -48,8 +48,7 @@ REF_KEYS = ("plan_id", "project", "target", "bucket", "filter", "ra_deg", "dec_d
 # Chip id, label, and the event types it shows. Mirrored in static/activity.mjs.
 CHIPS = (
     ("plans", "Plans", ("plan_created", "plan_edited", "plan_deleted", "project_settings",
-                        "gear_changed", "counts_corrected", "balancer_run",
-                        "balancer_alert", "other")),
+                        "gear_changed", "counts_corrected", "other")),
     ("syncs", "Syncs", ("sync_for_tonight", "rig_synced", "ts_upload_received",
                         "ts_upload_applied", "ts_upload_discarded", "ts_push")),
     ("imaging", "Imaging", ("imaging_target", "goal_reached", "progress_report",
