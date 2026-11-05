@@ -467,7 +467,7 @@ class TestMacWorkflow(unittest.TestCase):
 
     def test_it_builds_on_apple_silicon(self):
         for name in ("build", "sign", "smoke"):
-            self.assertEqual(self.jobs[name]["runs-on"], "macos-14", name)
+            self.assertEqual(self.jobs[name]["runs-on"], "macos-15", name)
 
     def test_the_job_order_is_build_then_sign_then_smoke_then_release(self):
         self.assertEqual(self.jobs["sign"]["needs"], "build")
