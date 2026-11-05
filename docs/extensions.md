@@ -447,6 +447,34 @@ The extension can record its own events with `activity.record(type=..., key=...,
 
 If the extension is later removed, events already stored keep their type and show under Plans, which is where unknown types go. New posts of those types are stored as `other`.
 
+### Scan finished
+
+`app.scan_hooks` is a list of callables ACP calls after each archive scan that finishes cleanly, whether it was started by the schedule, the Scan button or the API (hook name `scan_hooks`). A failed scan calls none of them.
+
+```python
+import json, logging, urllib.request
+
+def post_summary(summary):
+    req = urllib.request.Request("http://127.0.0.1:9000/scan-done",
+                                 data=json.dumps(summary).encode(),
+                                 headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req, timeout=10)
+
+def register(app):
+    app.scan_hooks.append(post_summary)
+```
+
+Each hook gets its own copy of a summary:
+
+| Key | Meaning |
+|---|---|
+| `trigger` | What started the scan, such as `cron` or `page`. |
+| `started_at`, `finished_at` | Local times, `YYYY-MM-DDTHH:MM:SS`. |
+| `exit_code` | Always `0`, since only clean scans call hooks. |
+| `targets` | How many targets the new manifest holds, or `null` if it could not be read. |
+
+Hooks run one after another in the scan's own thread, after the scan's state and Activity entry are written. Each runs in its own `try`: one that raises is logged and never changes the scan's result or stops the hooks after it. Keep a hook quick, or start a thread of your own for slow work, because the next scheduled scan waits until the hooks return.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:

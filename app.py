@@ -1764,6 +1764,10 @@ _add_ext_hook(app, "project_keys")
 # activity.register_types and activity.register_source (docs/extensions.md,
 # "Activity types and sources").
 _add_ext_hook(app, "activity_types")
+# Callables run after each clean archive scan with a summary dict
+# (docs/extensions.md, "Scan finished").
+app.scan_hooks: list = []
+_add_ext_hook(app, "scan_hooks")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -7263,8 +7267,33 @@ def run_claimed_scan() -> None:
             _scan_state["running"] = False
             _scan_state["last_finish"] = datetime.now().isoformat(timespec="seconds")
             _scan_state["last_exit_code"] = code
+            summary = {"trigger": _scan_state.get("last_trigger"),
+                       "started_at": _scan_state.get("last_start"),
+                       "finished_at": _scan_state["last_finish"], "exit_code": code}
     logging.info("archive scan finished (exit %s)", code)
     _run_activity(lambda: _record_scan_activity(before, code == 0))
+    if code == 0:
+        _run_scan_hooks(summary)
+
+
+def _run_scan_hooks(summary: dict) -> None:
+    """Call each extension's scan hook after a clean scan (docs/extensions.md,
+    "Scan finished"). Each gets its own copy of the summary and its own try,
+    so one that raises is logged and never touches the scan's result or the
+    other hooks."""
+    try:
+        doc = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        targets = doc.get("targets") if isinstance(doc, dict) else None
+        summary = {**summary, "targets": len(targets) if isinstance(targets, list) else None}
+    except (OSError, ValueError):
+        summary = {**summary, "targets": None}
+    for hook in list(getattr(app, "scan_hooks", None) or []):
+        if not callable(hook):
+            continue
+        try:
+            hook(dict(summary))
+        except Exception:
+            logging.exception("scan hook %s raised", _safe_log(getattr(hook, "__qualname__", repr(hook))))
 
 
 def _manifest_snapshot() -> dict | None:
