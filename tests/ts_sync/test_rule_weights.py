@@ -55,7 +55,7 @@ def test_new_project_gets_the_eight_ts_names(tmp_path):
 
 
 def test_legacy_names_are_replaced_and_tuned_weights_survive(tmp_path):
-    """Two broken shapes seen on Voyager: five legacy rows only (projects a bad
+    """Two broken shapes seen on a real rig: five legacy rows only (projects a bad
     sync inserted), and the eight real rows plus the five legacy ones (a bad
     sync followed by a NINA restart, which adds the real names)."""
     conn = _open(tmp_path)

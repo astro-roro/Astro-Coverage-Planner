@@ -38,7 +38,7 @@ from .plans import GEAR
 TOKEN = "test-token-0123456789abcdef-0123456789"
 P = "profile-P"
 Q = "profile-Q"
-MACHINE = "VOYAGER"
+MACHINE = "RIG-A"
 
 # ACP's gear list in these tests: the push tests' pair first, then a second
 # pair, so "the first in the list" and "the most used" can differ.
@@ -186,7 +186,7 @@ class FakeHost:
         meta = {
             "profile_id": profile_id,
             "profiles": profiles if profiles is not None else [
-                {"id": P, "name": "Voyager main"}, {"id": Q, "name": "Travel rig"}],
+                {"id": P, "name": "Main profile"}, {"id": Q, "name": "Travel rig"}],
             "sha256": sha or hashlib.sha256(raw).hexdigest(),
             "user_version": 28,
             "plugin_version": "3.3.0.0",

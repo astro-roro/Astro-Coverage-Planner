@@ -1,10 +1,10 @@
 """TS filter names on import: canonicalised to ACP's spelling.
 
-TS holds filter names however the wheel or Voyager spells them ("O", "H",
+TS holds filter names however the wheel or the rig spells them ("O", "H",
 "S"); ACP's own plans key their goals by its canonical spelling ("OIII",
 "Ha", "SII"). Before this fix the import kept TS's raw spelling as the goal
 key, so a plan pushed to ACP as "OIII" came back from TS as a second, phantom
-"O" goal on the next sync (the PNe Survey case: ACP has "OIII: 1.5 h", TS has
+"O" goal on the next sync (the Sample Survey case: ACP has "OIII: 1.5 h", TS has
 "O: 1.5 h, 300 s", and the review page showed both).
 """
 from __future__ import annotations
@@ -156,17 +156,17 @@ def test_the_shared_row_filter_table(raw, expected):
     assert row_filter(raw) == expected
 
 
-# -- the PNe Survey case: TS "O" matches ACP's "OIII" row ----------------
+# -- the Sample Survey case: TS "O" matches ACP's "OIII" row ----------------
 
 
 def test_pne_style_plan_keys_by_canonical_name_not_raw(tmp_path):
     """TS's exposuretemplate can be named 'OIII' (matching ACP's plan) while
     its filtername is 'O' (matching the wheel slot's own name), which is
-    exactly the PNe Survey shape: the row's filter comes from the wheel-name
+    exactly the Sample Survey shape: the row's filter comes from the wheel-name
     column, canonicalised, and its template from the template's name."""
     path = tmp_path / "ts.sqlite"
     _make_ts_db(
-        path, project_name="PNe Survey", target_name="OIII-T 266.25 -28.75",
+        path, project_name="Sample Survey", target_name="Survey Tile 01",
         filters=[("OIII", "O", 18, 300)])
     plans, notes, _ = _plans_for(path)
     (plan,) = plans

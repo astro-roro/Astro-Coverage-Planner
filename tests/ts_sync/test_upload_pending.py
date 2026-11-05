@@ -42,7 +42,7 @@ def test_a_ready_upload_is_listed_with_its_summary_and_counts(host, tmp_path):
     assert row["upload_id"] == status["upload_id"]
     assert row["state"] == "ready"
     assert row["machine"] == status["machine"]
-    assert row["profile_name"] == "Voyager main"
+    assert row["profile_name"] == "Main profile"
     assert row["summary"] == status["preview"]["summary"]
     assert row["counts"] == status["counts"]
     assert row["review_url"] == status["review_url"]
@@ -61,7 +61,7 @@ def test_a_checking_upload_is_listed_with_no_preview_yet(host, tmp_path):
     assert row["summary"] is None
     assert row["counts"] == {"new": 0, "updated": 0, "conflicts": 0}
     # meta.profiles carries the name even before the worker has run again.
-    assert row["profile_name"] == "Voyager main"
+    assert row["profile_name"] == "Main profile"
     assert row["expires_iso"] == status["expires_iso"]
 
 
