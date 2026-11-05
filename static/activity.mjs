@@ -16,7 +16,7 @@ export let CHIPS = [
   { id: "imaging", label: "Imaging", types: ["imaging_target", "goal_reached", "progress_report",
     "progress_unknown", "session_start", "session_end"] },
   { id: "site", label: "Site and focus", types: ["safety", "meridian_flip", "autofocus_summary", "park"] },
-  { id: "data", label: "Data landed", types: ["transfer_landed", "ingest"] },
+  { id: "data", label: "Data landed", types: ["transfer_landed", "ingest", "upload_finished", "upload_failed"] },
   { id: "processing", label: "Processing", types: ["calibration", "threshold_decision",
     "master_queued", "accepted_counts", "darks_built", "aac_alert", "aac_recovered"] },
   { id: "masters", label: "Masters", types: ["master_built", "master_ready"] },

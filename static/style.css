@@ -2696,6 +2696,20 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
   background: #0c1016;
 }
 
+/* Upload progress card (POST /api/uploads/<id>/progress). */
+.upload-card { border: 1px solid #263042; border-radius: 6px; padding: 6px 10px; background: #111722; }
+.upload-card h3 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: #9aa6bd; }
+.upload-card ul { list-style: none; margin: 0; padding: 0; }
+.upload-card .up-row + .up-row { margin-top: 8px; }
+.upload-card .up-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.upload-card .up-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-card .up-state { color: #9aa6bd; white-space: nowrap; }
+.upload-card .up-row[data-state="paused"] .up-state { color: #d8b45a; }
+.upload-card .up-bar { height: 4px; margin: 4px 0; border-radius: 2px; background: #263042; overflow: hidden; }
+.upload-card .up-bar > span { display: block; height: 100%; background: #5a9be6; }
+.upload-card .up-row[data-state="paused"] .up-bar > span { background: #d8b45a; }
+.upload-card .up-figs, .upload-card .up-times { font-size: 11px; color: #78839a; }
+
 /* Extension sections under the plan editor (manifest editor_sections). */
 .ext-editor-frame {
   display: block;

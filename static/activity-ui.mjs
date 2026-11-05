@@ -18,10 +18,12 @@ import {
   visibleRows,
 } from "./activity.mjs";
 import { openBalancerDialog } from "./balancer-ui.mjs";
+import { uploadCardHtml } from "./upload-card.mjs";
 
 const POLL_MS = 60000;
 const FIRST_PAGE = 5;
 const PREFS_DELAY_MS = 500;
+const UPLOADS_MS = 15000;
 
 async function getJson(url) {
   const r = await fetch(url);
@@ -60,6 +62,7 @@ export function setupActivity({ openPlan, showOnMap }) {
     openNights: new Map(),  // night -> open, once the user or a default chose
     openGroups: new Set(),  // ids of quiet-progress groups the user expanded
     prefsTimer: null,
+    uploadsTimer: null,
     pollTimer: null,
     observer: null,
     error: null,
@@ -213,7 +216,38 @@ export function setupActivity({ openPlan, showOnMap }) {
         st.seenMax = s.max_updated_at;
       }
       if (st.visible && st.loaded) render();
+      if (st.visible) refreshUploads();
     } catch { /* offline; try again next tick */ }
+  }
+
+  // The upload progress card sits in #activityCards, above the list, so the
+  // list's re-renders never touch it. It refreshes every 15 seconds while the
+  // tab is open and a transfer is running or paused.
+  async function refreshUploads() {
+    const box = document.getElementById("activityCards");
+    if (!box) return;
+    let html = "";
+    try {
+      const r = await getJson("/api/uploads");
+      html = r && !r.gone ? uploadCardHtml(r.transfers, esc) : "";
+    } catch { return; /* keep what is shown; try next tick */ }
+    let card = document.getElementById("activityUploadCard");
+    if (!html) { if (card) card.remove(); return; }
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "activityUploadCard";
+      box.prepend(card);
+    }
+    card.innerHTML = html;
+    if (!st.uploadsTimer) {
+      st.uploadsTimer = setInterval(() => {
+        if (!st.visible || document.hidden) return;
+        if (!document.getElementById("activityUploadCard")) {
+          clearInterval(st.uploadsTimer); st.uploadsTimer = null; return;
+        }
+        refreshUploads();
+      }, UPLOADS_MS);
+    }
   }
 
   function startPolling() {
@@ -305,6 +339,7 @@ export function setupActivity({ openPlan, showOnMap }) {
     const wasShown = st.visible;
     st.visible = shown;
     if (!shown || wasShown || st.gone) return;
+    refreshUploads();
     await loadFirstPage();
     // The previous visit's marker was kept for highlighting; now move it on.
     try { await post("/api/activity/seen"); await loadSummary(); } catch { /* try next visit */ }
