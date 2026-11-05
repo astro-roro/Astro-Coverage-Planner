@@ -8,8 +8,12 @@ same scan cache.
 """
 from __future__ import annotations
 
+import logging
+import os
 import sys
+import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -128,8 +132,15 @@ class TestNoDoubleStart(ScanScheduleCase):
 
     def test_scheduler_thread_is_not_started_twice(self):
         app_module._run_scan_subprocess = lambda args: 0
+        # A fresh manifest, so starting the scheduler runs no catch-up scan.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        manifest = Path(tmp.name) / "manifest.json"
+        manifest.write_text("{}")
+        self.addCleanup(setattr, app_module, "MANIFEST_PATH", app_module.MANIFEST_PATH)
+        app_module.MANIFEST_PATH = manifest
         self.assertTrue(app_module.start_scan_scheduler("0 3 * * *"))
-        first = app_module._scan_scheduler_thread
+        first =app_module._scan_scheduler_thread
         self.assertTrue(first.is_alive())
         self.assertFalse(app_module.start_scan_scheduler("0 4 * * *"))
         self.assertIs(app_module._scan_scheduler_thread, first)
@@ -184,6 +195,138 @@ class TestUnsetAndInvalid(ScanScheduleCase):
     def test_invalid_expression_is_refused_without_crashing(self):
         self.assertFalse(app_module.start_scan_scheduler("not a cron expression"))
         self.assertIsNone(app_module._scan_scheduler_thread)
+
+
+class ManifestCase(ScanScheduleCase):
+    """Points MANIFEST_PATH (and so scan_progress.json) at a temp folder."""
+
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.manifest = self.dir / "manifest.json"
+        self.addCleanup(setattr, app_module, "MANIFEST_PATH", app_module.MANIFEST_PATH)
+        app_module.MANIFEST_PATH = self.manifest
+        self.calls = []
+
+        def _run(args):
+            self.calls.append(args)
+            return 0
+        app_module._run_scan_subprocess = _run
+
+    def write_manifest(self, when: datetime):
+        self.manifest.write_text("{}")
+        ts = when.timestamp()
+        os.utime(self.manifest, (ts, ts))
+
+
+class TestCatchUp(ManifestCase):
+    """A restart that kills the scheduled scan, or ACP being down at the fire
+    time, used to leave the archive stale until the next fire. The scheduler
+    now runs one scan at startup when the manifest is older than the last
+    fire time."""
+
+    NOW = datetime(2026, 9, 5, 3, 15, 0)
+    CRON = "0 3 * * *"   # last fired at 03:00 on NOW's day
+
+    def test_missing_manifest_is_overdue(self):
+        self.assertTrue(app_module._scan_overdue(self.CRON, self.NOW))
+
+    def test_manifest_older_than_the_last_fire_is_overdue(self):
+        self.write_manifest(datetime(2026, 9, 4, 3, 10, 0))
+        self.assertTrue(app_module._scan_overdue(self.CRON, self.NOW))
+
+    def test_manifest_newer_than_the_last_fire_is_not_overdue(self):
+        self.write_manifest(datetime(2026, 9, 5, 3, 1, 0))
+        self.assertFalse(app_module._scan_overdue(self.CRON, self.NOW))
+
+    def test_catch_up_runs_a_scan_when_stale(self):
+        self.write_manifest(datetime.now() - timedelta(days=2))
+        self.assertTrue(app_module._catch_up_scan("0 3 * * *"))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(app_module.scan_status()["last_trigger"], "catchup")
+
+    def test_catch_up_does_nothing_when_fresh(self):
+        self.write_manifest(datetime.now())
+        self.assertFalse(app_module._catch_up_scan("0 3 * * *"))
+        self.assertEqual(self.calls, [])
+
+    def test_scheduler_start_catches_up_once(self):
+        # The next regular fire is pushed out of reach, so any second scan
+        # could only come from a repeated catch-up.
+        real_next = app_module._next_fire_time
+        self.addCleanup(setattr, app_module, "_next_fire_time", real_next)
+        app_module._next_fire_time = lambda expr, now: now + timedelta(days=1)
+        self.write_manifest(datetime.now() - timedelta(days=2))
+        self.assertTrue(app_module.start_scan_scheduler("0 3 * * *"))
+        end = time.monotonic() + 5
+        while not self.calls and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertEqual(len(self.calls), 1)
+        # A second start is refused, and the running loop does not rescan.
+        self.assertFalse(app_module.start_scan_scheduler("0 3 * * *"))
+        time.sleep(0.3)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_dead_scan_progress_is_cleared_at_startup(self):
+        progress = self.dir / "scan_progress.json"
+        progress.write_text('{"stage": "reading", "files_seen": 1234}')
+        self.assertIsNotNone(app_module.scan_status()["progress"])
+        saved = os.environ.pop("ACP_SKIP_STARTUP_MIGRATION", None)
+        try:
+            app_module.clear_dead_scan_progress()
+            app_module.clear_dead_scan_progress()   # nothing left: still fine
+        finally:
+            if saved is not None:
+                os.environ["ACP_SKIP_STARTUP_MIGRATION"] = saved
+        self.assertFalse(progress.exists())
+        self.assertIsNone(app_module.scan_status()["progress"])
+
+
+class TestLogging(unittest.TestCase):
+
+    def setUp(self):
+        root = logging.getLogger()
+        saved_handlers, saved_level = root.handlers[:], root.level
+        lib = logging.getLogger("paramiko")
+        saved_lib = lib.level
+
+        def _restore():
+            root.handlers[:] = saved_handlers
+            root.setLevel(saved_level)
+            lib.setLevel(saved_lib)
+        self.addCleanup(_restore)
+
+    def test_info_reaches_the_log_and_libraries_stay_quiet(self):
+        root = logging.getLogger()
+        root.handlers[:] = []
+        root.setLevel(logging.WARNING)
+        logging.getLogger("paramiko").setLevel(logging.NOTSET)
+        app_module._configure_logging()
+        self.assertEqual(root.level, logging.INFO)
+        self.assertTrue(root.handlers)
+        self.assertEqual(logging.getLogger("paramiko").getEffectiveLevel(), logging.WARNING)
+
+    def test_existing_setup_is_left_alone(self):
+        root = logging.getLogger()
+        marker = logging.NullHandler()
+        root.handlers[:] = [marker]
+        root.setLevel(logging.ERROR)
+        app_module._configure_logging()
+        self.assertEqual(root.handlers, [marker])
+        self.assertEqual(root.level, logging.ERROR)
+
+
+class TestScanLogLines(ScanScheduleCase):
+
+    def test_scan_start_and_finish_are_logged(self):
+        app_module._run_scan_subprocess = lambda args: 0
+        with self.assertLogs(level="INFO") as logs:
+            app_module.run_scan_now("test")
+        joined = "\n".join(logs.output)
+        self.assertIn("starting the archive scan", joined)
+        self.assertIn("archive scan finished (exit 0)", joined)
 
 
 if __name__ == "__main__":
