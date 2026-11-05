@@ -13,6 +13,7 @@ There are three ways an extension can plug in:
 - [Flask-route example](#flask-route-example-friends-fov-list-as-csv)
 - [Plugin protocols](#plugin-protocols)
 - [UI manifest](#ui-manifest)
+- [Extension hooks](#extension-hooks)
 - [What kinds of things make sense as extensions](#what-kinds-of-things-make-sense-as-extensions)
 - [Trust, failures, debugging](#trust-failures-debugging)
 
@@ -34,6 +35,32 @@ ACP also loads the extensions in its own `bundled_extensions/` folder, currently
 Each extension defines a top-level `register(app)` callable that receives the Flask app. From there you can register blueprints, append to the registries, read `app.config`, attach teardown hooks — anything Flask supports plus the plugin registries below.
 
 Extensions are loaded once at startup; failures in one are logged and don't block the others or the app itself.
+
+### Versions and hooks
+
+Before any extension loads, ACP sets two attributes on the app:
+
+- `app.acp_extension_api` is the version of the extension interface, currently `1`. It goes up only when something an extension relies on changes in a way that would break it.
+- `app.acp_extension_hooks` is a set naming the hooks this build offers, such as `"plan_fields"` or `"scan_hooks"`. New hooks add a name here and leave the version alone.
+
+An extension that lives outside ACP should check both first, and refuse to register when it sees a version it does not know. Log why, so the reason shows in the server log:
+
+```python
+import logging
+log = logging.getLogger("acp.extensions.my_workflow")
+
+def register(app):
+    if getattr(app, "acp_extension_api", None) != 1:
+        log.warning("my_workflow: unknown extension API %r, not registering",
+                    getattr(app, "acp_extension_api", None))
+        return
+    if "plan_fields" not in getattr(app, "acp_extension_hooks", set()):
+        log.warning("my_workflow: this ACP has no plan_fields hook, not registering")
+        return
+    ...
+```
+
+The hooks are described under [Extension hooks](#extension-hooks).
 
 ## Flask-route example: friend's FOV list as CSV
 
@@ -323,6 +350,10 @@ The `acp-nina-ts-sync` extension uses all of the above:
 - Both actions declare `needs: ["profile_id"]`; the config + profiles endpoints drive the first-time picker.
 
 Source: <https://github.com/astro-roro/Astro-Coverage-Planner> (the extension itself is a separate repo).
+
+## Extension hooks
+
+These let an extension take part in what core does, rather than only add routes beside it. Each hook's name is in `app.acp_extension_hooks` when the build offers it (see [Versions and hooks](#versions-and-hooks)). Core does not use them for its own features. Each one has a small working example under `tests/dummy_extensions/`.
 
 ## What kinds of things make sense as extensions
 

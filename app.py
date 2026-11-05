@@ -1730,6 +1730,11 @@ app.catalog_sources: list = []
 # panel. Entries may declare ``replaces: "<core-button-id>"`` to swap a core
 # button in place (handler/label come from the extension). See docs/extensions.md.
 app.extensions_manifest: list[dict] = []
+# The extension interface's version and the hooks this build offers
+# (docs/extensions.md, "Versions and hooks"). Set before any extension loads,
+# so register(app) can check them and refuse a version it does not know.
+from extensions import set_api_version as _set_ext_api_version  # noqa: E402
+_set_ext_api_version(app)
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
