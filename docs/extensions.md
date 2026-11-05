@@ -475,6 +475,26 @@ Each hook gets its own copy of a summary:
 
 Hooks run one after another in the scan's own thread, after the scan's state and Activity entry are written. Each runs in its own `try`: one that raises is logged and never changes the scan's result or stops the hooks after it. Keep a hook quick, or start a thread of your own for slow work, because the next scheduled scan waits until the hooks return.
 
+### Scheduled jobs
+
+`app.scheduled_jobs` takes jobs ACP runs on a cron schedule, in the server's local time, the same way it schedules the archive rescan (hook name `scheduled_jobs`):
+
+```python
+def register(app):
+    def tidy():
+        plans = app.plans_api.read()["plans"]
+        ...
+    app.scheduled_jobs.append({"id": "my_tidy", "cron": "30 9 * * *", "run": tidy})
+```
+
+- `id` is a short name, unique across extensions: letters, digits, `_`, `-` and `.`, up to 60 characters.
+- `cron` is a five-field cron expression.
+- `run` is called with no arguments.
+
+ACP reads the list once, after every extension has registered, and starts one thread for all jobs. Append jobs inside `register(app)`; a job added later never runs. A bad entry is logged and skipped. Jobs run one at a time, so a slow one delays the others; start your own thread for long work. A job that raises is logged on the `acp.jobs` logger and runs again at its next time.
+
+Set `ACP_DISABLE_JOBS=1` to keep the thread from starting, for example in tests or while debugging. `GET /api/scan/status` lists each job under `jobs` with its `id`, `cron`, `next_at`, `last_run` and `last_ok`. Error text stays in the log, since that route can be read without a token.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:

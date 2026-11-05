@@ -58,7 +58,7 @@ ACP is a Flask app that exposes a small JSON API. This doc covers every public e
 | `POST /api/settings/check-path` | Body `{"path": "..."}`. Checks one folder against the saved list and writes nothing. Returns `{code, warnings}`. Authorised client only |
 | `GET /setup` | The first-run and settings page |
 | `POST /api/scan/start` | Start one scan now. 202, or 409 `scan_running`, or 400 `no_archive_roots`. Authorised client only |
-| `GET /api/scan/status` | Scan state, with `progress` (`{stage, files_seen}`, never a path) and `elapsed_seconds` while running |
+| `GET /api/scan/status` | Scan state, with `progress` (`{stage, files_seen}`, never a path) and `elapsed_seconds` while running, and `jobs`: the extensions' scheduled jobs as `{id, cron, next_at, last_run, last_ok}` |
 | `POST /api/catalogues/fetch` | Download the catalogue overlays in the background. 202, or 409 `fetch_running`. Authorised client only |
 | `GET /api/catalogues/status` | `{running, finished, error_kind, last_finish, present}` |
 | `POST /api/quit` | Stop a packaged ACP. 200 `{status: "stopping"}`, 409 `scan_running`, 503 `unavailable` if no launcher registered. Answers 404 unless the launcher set `ACP_PACKAGED=1`. Authorised client only |
