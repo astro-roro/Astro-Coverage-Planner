@@ -306,7 +306,6 @@ When `ACP_API_TOKEN` is unset, ACP ignores any bearer header. So a plugin with a
 These callers exist today:
 
 - The plugin on each rig. That covers its sync and push buttons, the dock's version poll, and hours sent back. All use `AcpApiClient`, so all carry the token once it is stored. A missing or wrong token shows "ACP rejected the token" in the dock.
-- The homeserver User Script `live-publish`, which POSTs `/api/publish/shooting` at 07:15 daily. If it is not changed to send the header, it will get `401` and the live page will stop updating.
 - The user's browser, which will get the login form once.
 
 The user sets the token in this order:

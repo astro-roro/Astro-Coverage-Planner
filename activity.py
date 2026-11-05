@@ -48,8 +48,7 @@ REF_KEYS = ("plan_id", "project", "target", "bucket", "filter", "ra_deg", "dec_d
 # Chip id, label, and the event types it shows. Mirrored in static/activity.mjs.
 CHIPS = (
     ("plans", "Plans", ("plan_created", "plan_edited", "plan_deleted", "project_settings",
-                        "gear_changed", "counts_corrected", "balancer_run",
-                        "balancer_alert", "other")),
+                        "gear_changed", "counts_corrected", "other")),
     ("syncs", "Syncs", ("sync_for_tonight", "rig_synced", "ts_upload_received",
                         "ts_upload_applied", "ts_upload_discarded", "ts_push")),
     ("imaging", "Imaging", ("imaging_target", "goal_reached", "progress_report",
@@ -862,13 +861,10 @@ _LABELS = {
     "meridian_window_min": "meridian window",
     "filter_switch_frequency": "filter switch frequency",
     "smart_exposure_order": "smart exposure order",
-    "target_class": "target class",
     "telescope_id": "telescope",
     "camera_id": "camera",
     "destination_id": "destination",
     "project_name": "project",
-    "public_blurb": "public blurb",
-    "is_current": "current target",
     "target.name": "target name",
     "target.center_ra_deg": "centre RA",
     "target.center_dec_deg": "centre Dec",
@@ -878,7 +874,7 @@ _ROW_LABELS = {
     "target_hours": "goal", "target_frames": "goal frames", "actual_hours": "hours shot",
     "template": "template", "template_sub_s": "sub length", "unit": "unit", "filter": "filter",
 }
-_CAPITALISED = frozenset({"priority", "state", "target_class"})
+_CAPITALISED = frozenset({"priority", "state"})
 
 
 def _blank(v) -> bool:
@@ -914,11 +910,7 @@ def diff_plans(before: dict | None, after: dict | None) -> dict:
         for k, v in src.items():
             if k in _PLAN_IGNORED or k == "filter_rows":
                 continue
-            if k == "target_class":
-                continue
             _flatten(k, v, dst)
-        tc = src.get("target_class")
-        dst["target_class"] = tc if tc is not None else _default_target_class(src)
         rows = src.get("filter_rows")
         if isinstance(rows, list):
             seen: dict = {}
@@ -972,14 +964,6 @@ def diff_gear(before: dict | None, after: dict | None) -> dict:
                 if not _same(fb.get(field), fa.get(field)):
                     changes[f"{label}:{name}.{field}"] = {"from": fb.get(field), "to": fa.get(field)}
     return changes
-
-
-def _default_target_class(plan: dict) -> str:
-    try:
-        import filter_rows as fr
-        return fr.target_class_of(plan)
-    except Exception:
-        return "survey"
 
 
 def same_value(a, b) -> bool:
