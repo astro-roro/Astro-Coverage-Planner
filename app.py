@@ -1736,6 +1736,22 @@ app.extensions_manifest: list[dict] = []
 from extensions import set_api_version as _set_ext_api_version  # noqa: E402
 _set_ext_api_version(app)
 
+# Plan reads and writes for extensions, under PLANS_LOCK (docs/extensions.md,
+# "Plan reads and writes"). The lambdas look the functions up when called,
+# since several are defined further down this file.
+import plans_api  # noqa: E402
+plans_api.bind(
+    load=lambda: load_plans(),
+    save=lambda doc: save_plans(doc),
+    lock=PLANS_LOCK,
+    apply_project_settings=lambda *a: apply_project_settings(*a),
+    project_key=lambda plan: balancer.project_key(plan),
+    now=lambda: datetime.now(timezone.utc).isoformat(),
+)
+app.plans_api = plans_api
+from extensions import add_hook as _add_ext_hook  # noqa: E402
+_add_ext_hook(app, "plans_api")
+
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
 # is validated (sanitised flag + caps + path-leak scan) before joining the
