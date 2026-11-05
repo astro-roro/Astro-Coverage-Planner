@@ -717,7 +717,6 @@ import {
   extPostPathOk, parsePostBody, pagesFrom, withPlanId, adoptServerChanges,
 } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
-import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
 import {
   LABEL_PRETTY as _LABEL_PRETTY,
   LABEL_RANK as _LABEL_RANK,
@@ -8256,7 +8255,6 @@ function renderPlanEditor(plan) {
         <label><span class="lab">Project</span>
           <input type="text" class="wide" id="f_project" value="${esc(editingPlan.project_name)}" placeholder="groups plans into a TS project">
         </label>
-        ${targetClassFieldHtml(editingPlan)}
         <div class="coord-row">
           <label style="flex:1"><span class="lab">RA</span>
             <input type="text" inputmode="decimal" id="f_ra" placeholder="deg, 05h35m17s or paste a pair" autocomplete="off" value="${Number(tg.center_ra_deg).toFixed(3)}">
@@ -8362,9 +8360,6 @@ function renderPlanEditor(plan) {
   // Wire live-edit handlers
   panel.querySelector("#f_name")?.addEventListener("input", e => { editingPlan.target.name = e.target.value; });
   panel.querySelector("#f_project")?.addEventListener("input", e => { editingPlan.project_name = e.target.value; });
-  panel.querySelector("#f_target_class")?.addEventListener("change", e => {
-    setTargetClass(editingPlan, e.target.value);
-  });
   const raInput = panel.querySelector("#f_ra");
   const decInput = panel.querySelector("#f_dec");
   const isPlainDecimal = s => /^\s*[+-]?(\d+\.?\d*|\.\d+)\s*$/.test(s);

@@ -168,6 +168,8 @@ The headline features are above. These are the secondary bits — the stuff that
 - **Friend manifests** — load sanitised coverage manifests from imaging buddies as toggleable layers, so you can split the sky between you and avoid duplicating Hα hours on the same target. See [the sharing guide](docs/sharing.md).
 - **Public survey coverage overlays** — toggle MOC footprints from CDS-hosted surveys (IPHAS DR2 Hα ships in the box; more easy to add) to see where professional surveys have already covered the sky alongside your own work. See [the public-survey docs](docs/public-surveys.md).
 - **Plugin platform** — extensions can register custom coverage sources, ranked tile inventories, class-tagged catalogues, or UI actions (buttons + toggles in the planning rail, including swapping a core button for an extension-supplied one) and they show up alongside the built-ins. See [the extensions guide](docs/extensions.md) for the protocols and the manifest API.
+- **Your own workflow as an extension**: an extension can keep its own fields on a plan, add a section to the plan editor, run a job on a schedule, record its own events in Activity, and act after each library scan. Anything personal to your setup, such as publishing or automation, lives there rather than in ACP.
+- **Generic endpoints for outside tools**: a frame grader can post the frames it kept per filter row, and any tool can post an event to Activity. See [the API reference](docs/api.md).
 
 ### Export
 - **CSV export** of priority candidates (e.g. Hα ≥ 1h, SII < 0.5h) — paste into NINA or whatever you keep your target list in. This needs both your manifest and the catalogue overlays built first, so press **Download catalogues** on the Settings page, or run `python scripts/fetch_catalogs.py` (see [Setting up your own archive](docs/setup-archive.md#optional-download-catalogue-overlays)) before using it: without that, the export endpoint returns an error.
@@ -179,7 +181,7 @@ ACP is designed to be hackable, with a stable API surface and three plugin proto
 - **[Installing on Windows / macOS / Linux](docs/install.md)** — zero-to-hero per-OS walkthroughs.
 - **[Setting up your own archive](docs/setup-archive.md)** — manifest builder, configuration variables, optional pipeline-DB integration, security and deployment notes.
 - **[API and manifest reference](docs/api.md)** — every endpoint, the manifest JSON schema, gap-finder details.
-- **[Extensions](docs/extensions.md)** — write Python plugins that register coverage sources, tile inventories, or catalogues against the protocols in `sources.py`.
+- **[Extensions](docs/extensions.md)** — write Python plugins that register coverage sources, tile inventories, or catalogues against the protocols in `sources.py`, or that add plan fields, editor sections, scheduled jobs and Activity events.
 - **[Sharing coverage with friends](docs/sharing.md)** — sanitised friend manifests as additional coverage layers.
 - **[Public survey overlays](docs/public-surveys.md)** — wiring more CDS-hosted surveys into the Sources rail.
 

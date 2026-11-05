@@ -356,8 +356,6 @@ A row is stored only when its `id` is on the plan, its `filter` reaches the row'
 
 `unknown_rows` lists the rows that were not stored, with `no such row` or the row's current filter and template as the reason. A missing or wrong token is a 401, an unknown plan id a 404, and a malformed body a 400 with nothing written.
 
-A plan also carries `target_class`, one of `survey`, `deep` and `pretty`, which grader reads from `GET /api/plans`. A plan with none reads as `survey`, and any other value is refused with a 400.
-
 ### Destinations: `/api/destinations`
 
 Multi-rig setups (more than one NUC/rig each running its own NINA + Target Scheduler) can register a *destination* per rig instead of relying on the single global TS database path. `GET /api/destinations` returns `{version, destinations: [...]}`, empty when `destinations.json` doesn't exist (single-rig users never see the concept). `POST /api/destinations` replaces the full list.

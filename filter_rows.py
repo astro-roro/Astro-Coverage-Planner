@@ -782,16 +782,6 @@ def register_block_alias(old: str, new: str) -> None:
     BLOCK_ALIASES[old] = new
 
 
-TARGET_CLASSES = ("survey", "deep", "pretty")
-DEFAULT_TARGET_CLASS = "survey"
-
-
-def target_class_of(plan: dict | None) -> str:
-    """A plan's target class; absent or any other value reads as survey."""
-    v = (plan or {}).get("target_class")
-    return v if v in TARGET_CLASSES else DEFAULT_TARGET_CLASS
-
-
 def keep_aac(payload: dict, existing: dict | None) -> None:
     """Put grader's figures back on a plan a client is saving.
 

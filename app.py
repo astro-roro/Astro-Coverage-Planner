@@ -4695,10 +4695,6 @@ def _validate_plan_payload(payload: dict) -> str | None:
                                payload.get("id"), gt.is_migrated(gear))
         if err:
             return err
-    # What grader reads (section 6). Absent means survey.
-    tclass = payload.get("target_class")
-    if tclass is not None and tclass not in fr.TARGET_CLASSES:
-        return f"target_class must be one of {', '.join(fr.TARGET_CLASSES)}"
     # TS project state (docs/specs/ts-project-settings.md section 1). Absent
     # means "active". "parked" is a held PR #97 value that never shipped;
     # normalise it to "inactive" (TS's meaning for a plan paused by hand)
@@ -4839,8 +4835,6 @@ def _with_goals_view(plan):
     if not isinstance(plan, dict):
         return plan
     plan = _ext_plan_view(plan)
-    # A plan with no target_class reads as survey (section 6), for grader.
-    plan = {**plan, "target_class": fr.target_class_of(plan)}
     if not isinstance(plan.get("filter_rows"), list):
         # Not migrated yet (the backup failed): its own filter_goals stand.
         return plan
