@@ -111,6 +111,11 @@
         <dt id="infoPortLabel">Port</dt><dd id="infoPort"></dd>
         <dt>Version</dt><dd><span id="infoVersion"></span>
           <a href="https://github.com/astro-roro/Astro-Coverage-Planner/releases" target="_blank" rel="noopener">See new releases</a></dd>
+        <dt>Update check</dt>
+        <dd>
+          <label><input type="checkbox" id="updateCheckBox" /> Tell me when a newer release is out</label>
+          <span id="updateCheckMsg" class="setup-hint" role="status"></span>
+        </dd>
         <dt id="shortcutsDt" hidden>Shortcuts</dt>
         <dd id="shortcutsDd" hidden>
           <span id="shortcutsState"></span>
@@ -119,6 +124,7 @@
           <span id="shortcutsMsg" class="setup-hint" role="status"></span>
         </dd>
       </dl>
+      <p class="setup-hint">With the update check on, ACP asks GitHub once a day for the latest release number. The request carries nothing about you or your install. Turn it off here, or set <code>ACP_UPDATE_CHECK=0</code> (the setting for Docker).</p>
       <p class="setup-hint" id="infoHintWritable">The port and manifest path are changed in the settings file, then ACP needs a restart.</p>
       <p class="setup-hint" id="infoHintReadOnly" hidden>The port and manifest path are set in the compose file, and the container needs a restart to change them. The port shown is the one inside the container, which can differ from the port you open in your browser.</p>
     </section>

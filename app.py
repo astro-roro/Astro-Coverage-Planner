@@ -37,6 +37,7 @@ Endpoints:
 - POST /api/settings/adopt-env    copy FITS_ROOTS into the settings file
 - POST /api/quit                 stop a packaged ACP (404 unless ACP_PACKAGED=1)
 - GET /api/version               app version + plans/manifest mtimes, for the NINA plugin's poll loop
+- GET /api/update                is a newer release out? (daily cached GitHub check, off by setting)
 
 Env:
 - MANIFEST_PATH   path to archive manifest JSON  (default: ./data/manifest.json)
@@ -124,6 +125,7 @@ except ImportError:
 import acp_settings
 import activity
 import shortcuts as acp_shortcuts
+import update_check
 import filter_rows as fr
 import gear_templates as gt
 from gaps import candidates_in_moc, compute_gap_moc
@@ -2205,6 +2207,28 @@ def api_version():
         "plans_last_modified": _iso_mtime(PLANS_PATH),
         "manifest_last_modified": _iso_mtime(MANIFEST_PATH),
     })
+
+
+def _update_check_setting() -> dict:
+    """{"value", "locked"}: ACP_UPDATE_CHECK, then the settings file, then on."""
+    _, data, _ = _settings_state()
+    return update_check.enabled(os.environ, data)
+
+
+@app.route("/api/update")
+def api_update():
+    """Whether a newer stable release exists, for the page's notice. Makes no
+    request to GitHub when the check is switched off, and answers "nothing
+    new" on any failure. Never an error the page shows."""
+    try:
+        body = update_check.status(
+            VERSION, _update_check_setting()["value"], acp_settings.in_container(),
+            acp_settings.data_path(update_check.CACHE_FILENAME))
+    except Exception:
+        logging.exception("update check failed")
+        body = {"available": False, "current": VERSION, "latest": None, "url": None,
+                "jump": None, "docker": False}
+    return jsonify(body)
 
 
 @app.route("/")
@@ -7433,7 +7457,7 @@ def api_scan_status():
 
 _LOOPBACK_ADDRS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "::ffff:127.0.0.1"})
-_SETTINGS_WRITABLE_KEYS = ("fits_roots", "shortcuts")
+_SETTINGS_WRITABLE_KEYS = ("fits_roots", "shortcuts", "update_check")
 
 
 def _shortcuts_available() -> bool:
@@ -7540,6 +7564,7 @@ def _settings_view(authorised: bool) -> dict:
         "error": "settings_file_corrupt" if error == "corrupt" else error,
         "shortcuts": {"available": _shortcuts_available(),
                       "value": acp_settings.shortcuts_value(data)},
+        "update_check": update_check.enabled(os.environ, data),
         "packaged": _packaged(),
         "keys": keys,
     }
@@ -7583,6 +7608,12 @@ def api_put_settings():
         return jsonify({"error": "not_writable"}), 409
 
     updates: dict = {}
+    if "update_check" in body:
+        if not isinstance(body["update_check"], bool):
+            return jsonify({"error": "bad_request"}), 400
+        if _update_check_setting()["locked"]:
+            return jsonify({"error": "locked_by_env", "key": "update_check"}), 409
+        updates["update_check"] = body["update_check"]
     if "shortcuts" in body:
         value = body["shortcuts"]
         if value is not None and not isinstance(value, bool):
