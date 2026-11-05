@@ -131,6 +131,7 @@ let gear = { telescopes: [], cameras: [], rev: 0, conflict_count: 0, wheel_unlin
 let livePageEnabled = false;  // /api/publish/config: ACP_PUBLISH_DEST is set on the server
 let selectedPlanId = null;     // currently-edited plan id
 let editingPlan = null;        // in-memory copy of the plan under edit (unsaved edits live here)
+let editingPlanLoaded = null;   // the plan as the editor last loaded it, for acp:plan:reload
 let editingPlanOriginalSettings = null; // {state, priority, minimum_time_min, filter_switch_frequency, smart_exposure_order} as loaded, so savePlan() knows whether to also hit the project settings route
 let editingRotateN = ROTATE_DEFAULT;   // N shown beside "Rotate every" while the switch is on "Finish each"
 let planOverlay = null;        // Aladin overlay for plan footprints (solid, plans with data)
@@ -714,7 +715,7 @@ import {
   resolveTileDraw,
   retryDelayMs, sourcesNeedRetry, extensionStatusModel,
   railTabWidthPx, railWidthDefault, layerStateMessage, bridgeRequest,
-  extPostPathOk, parsePostBody,
+  extPostPathOk, parsePostBody, pagesFrom, withPlanId, adoptServerChanges,
 } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
 import { targetClassFieldHtml, setTargetClass } from "./target-class.mjs";
@@ -2564,6 +2565,7 @@ const REPLACEABLE_BUTTONS = {
 };
 
 let extensionsManifest = []; // populated by loadExtensions()
+let activityCardsShown = false; // the Activity tab's extension cards are built (ensureActivityCards)
 // Whether the global Target Scheduler database file exists on this
 // machine. Starts true (fail open) so a slow/failed /api/sync/config
 // fetch never hides a button that would otherwise work.
@@ -2616,6 +2618,8 @@ async function loadExtensions() {
   if (!Array.isArray(entries)) entries = [];
   extensionsManifest = entries;
   setupExtensionRailTabs(entries);
+  activityCardsShown = false;
+  if (sidePanelState.open && sidePanelState.tab === "activity") ensureActivityCards();
   renderExtensionStatus();
 
   try {
@@ -6485,7 +6489,27 @@ function applySidePanel() {
   const mainTip = document.getElementById("railMainTip");
   if (mainTip) mainTip.textContent = planningMode ? "Plans and projects" : "Targets in your archive";
   nudgeMapControls();
+  if (open && tab === "activity") ensureActivityCards();
   if (activityUi) activityUi.onTabShown(open && tab === "activity");
+}
+
+// Cards extensions add at the top of the Activity tab (manifest
+// activity_cards, docs/extensions.md). Created the first time the tab opens
+// after the manifest loads, and kept, so a card nobody looks at costs nothing.
+function ensureActivityCards() {
+  const box = document.getElementById("activityCards");
+  if (!box || activityCardsShown) return;
+  activityCardsShown = true;
+  box.querySelectorAll("[data-ext-card]").forEach(n => n.remove());
+  for (const c of pagesFrom(extensionsManifest, "activity_cards")) {
+    const frame = document.createElement("iframe");
+    frame.className = "ext-activity-frame";
+    frame.dataset.extCard = c.key;
+    frame.title = c.label || c.id;
+    frame.src = c.page;
+    if (c.height) frame.style.height = `${c.height}px`;
+    box.appendChild(frame);
+  }
 }
 
 // The iframe for an extension rail tab is created the first time the tab is
@@ -6509,6 +6533,13 @@ function ensureExtensionFrame(key) {
 // ACP's own origin are accepted. Documented in docs/extensions.md.
 function railFrameWindows() {
   return Array.from(document.querySelectorAll("iframe.ext-rail-frame"))
+    .map(f => f.contentWindow).filter(Boolean);
+}
+
+// Every iframe ACP shows for an extension: rail tabs, editor sections and
+// Activity cards. All of them may use the bridge.
+function extensionFrameWindows() {
+  return Array.from(document.querySelectorAll("iframe.ext-rail-frame, iframe.ext-editor-frame, iframe.ext-activity-frame"))
     .map(f => f.contentWindow).filter(Boolean);
 }
 
@@ -6541,9 +6572,10 @@ function setLayerEnabled(id, enabled) {
 }
 
 window.addEventListener("message", e => {
-  const req = bridgeRequest(e, railFrameWindows(), location.origin);
+  const req = bridgeRequest(e, extensionFrameWindows(), location.origin);
   if (!req) return;
-  if (req.kind === "layer-set") setLayerEnabled(req.id, req.enabled);
+  if (req.kind === "plan-reload") reloadPlanFromExtension(req.planId);
+  else if (req.kind === "layer-set") setLayerEnabled(req.id, req.enabled);
   else if (req.kind === "time-aware-set") { if (req.enabled !== timeAware) setTimeAware(req.enabled); }
   else if (req.kind === "tiles-refresh") refreshExtensionTiles();
   else {
@@ -8228,6 +8260,32 @@ async function createGearTemplate(camera, filter, name, sub_s) {
   }
 }
 
+// Sections extensions add under the plan editor (manifest `editor_sections`,
+// docs/extensions.md). Each is a same-origin iframe given ?plan_id=. A plan
+// not saved yet has no id the extension could look up, so it gets none.
+function editorSectionsHtml(plan) {
+  if (!plan || !plan.id || !plans.some(p => p.id === plan.id)) return "";
+  return pagesFrom(extensionsManifest, "editor_sections", true).map(s => (
+    `<fieldset class="ext-editor-section" data-ext-section="${esc(s.key)}"><legend>${esc(s.label)}</legend>` +
+    `<iframe class="ext-editor-frame" title="${esc(s.label)}" src="${esc(withPlanId(s.page, plan.id))}"` +
+    `${s.height ? ` style="height:${s.height}px"` : ""}></iframe></fieldset>`
+  )).join("");
+}
+
+// An editor section changed a plan on the server: take the changed fields
+// into the open editor, so the next Save keeps them, and refresh the list.
+async function reloadPlanFromExtension(planId) {
+  try {
+    const r = await fetch(`/api/plans/${encodeURIComponent(planId)}`);
+    if (!r.ok) return;
+    const fresh = await r.json();
+    if (editingPlan && editingPlan.id === planId) {
+      adoptServerChanges(editingPlan, editingPlanLoaded, fresh);
+    }
+    await loadPlans();
+  } catch { /* the next load picks it up */ }
+}
+
 function renderPlanEditor(plan) {
   const tileBack = navStack.bind(`plan:${plan.id}`);
   panelMode = "plan-edit";
@@ -8239,6 +8297,7 @@ function renderPlanEditor(plan) {
   delete editingPlan.filter_goals;
   if (!Array.isArray(editingPlan.filter_rows)) editingPlan.filter_rows = [];
   editingPlanOriginalSettings = originalSettingsOf(editingPlan);
+  editingPlanLoaded = JSON.parse(JSON.stringify(editingPlan));
   editingRotateN = editingPlan.filter_switch_frequency > 0 ? editingPlan.filter_switch_frequency : ROTATE_DEFAULT;
   saveUiState();
 
@@ -8410,6 +8469,8 @@ function renderPlanEditor(plan) {
           <span id="f_publish_result" style="font-size:12px;margin-left:8px"></span>
         </div>
       </fieldset>` : ""}
+
+      ${editorSectionsHtml(editingPlan)}
 
       <div class="plan-editor-actions">
         <button type="button" id="planSave" class="btn-primary">Save</button>
