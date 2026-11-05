@@ -521,6 +521,25 @@ window.parent.postMessage({type: "acp:plan:reload", plan_id: planId}, location.o
 
 ACP fetches the plan again and copies every top-level field the server changed into the open editor, so the user's unsaved edits to other fields stay and the next Save does not overwrite your change. It also refreshes the plan list. Fields the core editor shows are not redrawn, so a section should change only fields it owns. The layer messages under [Rail tab width and the layer bridge](#rail-tab-width-and-the-layer-bridge) work from editor sections too.
 
+### Activity cards
+
+A manifest entry can add cards to the top of the Activity tab with `activity_cards` (hook name `activity_cards`). Each card is a page of yours in a same-origin iframe, above the night-by-night list, and stays put while the list below it refreshes:
+
+```python
+app.extensions_manifest.append({
+    "extension": "my_tool",
+    "name": "My tool",
+    "activity_cards": [{"id": "status", "label": "My tool status",
+                        "page": "/api/ext/my-tool/card", "height": 80}],
+})
+```
+
+- `id` and `page` follow the rail tab rules. `label` is optional and becomes the iframe's title for screen readers.
+- `height` is optional, in pixels from 40 to 1200. The default is 120.
+- The iframe is created the first time the Activity tab opens, so a card nobody looks at costs no request. It is kept afterwards, so a card that shows live figures should poll for them itself.
+
+A card can send `acp:plan:reload` and the layer messages, as rail tabs and editor sections do. To put an entry in the night-by-night list instead, record an event (see [Activity types and sources](#activity-types-and-sources)).
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:

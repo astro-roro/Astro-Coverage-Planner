@@ -1775,6 +1775,9 @@ _add_ext_hook(app, "scheduled_jobs")
 # Manifest key editor_sections: pages shown under the plan editor
 # (docs/extensions.md, "Plan editor sections").
 _add_ext_hook(app, "editor_sections")
+# Manifest key activity_cards: pages shown at the top of the Activity tab
+# (docs/extensions.md, "Activity cards").
+_add_ext_hook(app, "activity_cards")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -2889,7 +2892,8 @@ def api_extensions_manifest():
     through verbatim.
     """
     from extensions import sanitise_pages, sanitise_rail_tabs
-    return jsonify([sanitise_pages(sanitise_rail_tabs(e), "editor_sections", needs_label=True)
+    return jsonify([sanitise_pages(sanitise_pages(sanitise_rail_tabs(e), "editor_sections", needs_label=True),
+                                   "activity_cards", needs_label=False)
                     for e in app.extensions_manifest])
 
 

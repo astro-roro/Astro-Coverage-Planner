@@ -2565,6 +2565,7 @@ const REPLACEABLE_BUTTONS = {
 };
 
 let extensionsManifest = []; // populated by loadExtensions()
+let activityCardsShown = false; // the Activity tab's extension cards are built (ensureActivityCards)
 // Whether the global Target Scheduler database file exists on this
 // machine. Starts true (fail open) so a slow/failed /api/sync/config
 // fetch never hides a button that would otherwise work.
@@ -2617,6 +2618,8 @@ async function loadExtensions() {
   if (!Array.isArray(entries)) entries = [];
   extensionsManifest = entries;
   setupExtensionRailTabs(entries);
+  activityCardsShown = false;
+  if (sidePanelState.open && sidePanelState.tab === "activity") ensureActivityCards();
   renderExtensionStatus();
 
   try {
@@ -6486,7 +6489,27 @@ function applySidePanel() {
   const mainTip = document.getElementById("railMainTip");
   if (mainTip) mainTip.textContent = planningMode ? "Plans and projects" : "Targets in your archive";
   nudgeMapControls();
+  if (open && tab === "activity") ensureActivityCards();
   if (activityUi) activityUi.onTabShown(open && tab === "activity");
+}
+
+// Cards extensions add at the top of the Activity tab (manifest
+// activity_cards, docs/extensions.md). Created the first time the tab opens
+// after the manifest loads, and kept, so a card nobody looks at costs nothing.
+function ensureActivityCards() {
+  const box = document.getElementById("activityCards");
+  if (!box || activityCardsShown) return;
+  activityCardsShown = true;
+  box.querySelectorAll("[data-ext-card]").forEach(n => n.remove());
+  for (const c of pagesFrom(extensionsManifest, "activity_cards")) {
+    const frame = document.createElement("iframe");
+    frame.className = "ext-activity-frame";
+    frame.dataset.extCard = c.key;
+    frame.title = c.label || c.id;
+    frame.src = c.page;
+    if (c.height) frame.style.height = `${c.height}px`;
+    box.appendChild(frame);
+  }
 }
 
 // The iframe for an extension rail tab is created the first time the tab is
