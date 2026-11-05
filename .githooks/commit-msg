@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refuse a commit message that contains a private term.
+# Enable with: git config core.hooksPath .githooks
+# The term list is read from ~/.config/acp-private-terms.txt when it exists.
+terms="$HOME/.config/acp-private-terms.txt"
+[ -f "$terms" ] || exit 0
+root=$(git rev-parse --show-toplevel) || exit 1
+py=$(command -v python3 || command -v python) || { echo "commit-msg: python not found, private term check skipped" >&2; exit 0; }
+exec "$py" "$root/scripts/check_private_terms.py" --terms "$terms" --message-file "$1"
