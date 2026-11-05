@@ -220,7 +220,7 @@ def test_o11_a_base_without_an_order_writes_none_and_the_upload_brings_ts_in(con
 
 
 def test_hand_made_orders_stay_until_acp_changes_the_order(conn):
-    """The Helix, Dolphin and Example Target: rows set in TS, a base from
+    """Three hand-made orders: rows set in TS, a base from
     before orders were recorded. Push, upload, push: the rows stay. Only a
     change of order in ACP replaces them."""
     p = sc.m42([sc.row("row-ha", "Ha", "Ha", 300, frames=4), sc.row("row-oiii", "OIII", "OIII", 300, frames=4),

@@ -746,7 +746,7 @@ from nina_ts_sync.schema import row_plan_guid  # noqa: E402
 from .make_db import make_db  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-GEAR_PROFILE = "00000000-0000-0000-0000-000000000000"
+GEAR_PROFILE = "00000000-0000-4000-8000-000000000002"
 CAMERA_6200 = "zwo-asi6200mm-pro"
 CAMERA_2600 = "zwo-asi2600mm-pro"
 WHEEL_SLOTS = ["L", "R", "G", "B", "H", "O", "S"]
