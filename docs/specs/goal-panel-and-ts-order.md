@@ -314,7 +314,7 @@ The three-way diff (`diff.py`) compares rows by `id`, with the same noise rules 
 
 ### Other readers of the goals
 
-Every reader of `filter_goals` moves to `filter_rows`: 15 places in `app.py`, 23 in `static/app.js`, one in `shooting_publish.py`, and the sync and plugin files that read goals. Readers that want a total per filter (sky map dots, coverage, the live page) sum the rows of each filter through one helper in each language.
+Every reader of `filter_goals` moves to `filter_rows`: 15 places in `app.py`, 23 in `static/app.js`, and the sync and plugin files that read goals. Readers that want a total per filter (sky map dots, coverage) sum the rows of each filter through one helper in each language.
 
 `GET /api/plans` still returns a `filter_goals` object for older plugins, built from the first row of each filter and never stored. Each entry has `target_hours`, `sub_exposure_s` from `template_sub_s`, and `actual_hours`. A filter whose only rows are frame rows gets `target_hours` = frames x sub / 3600. An older plugin therefore keeps pushing each filter's first row, and pushes no star rows, until the new plugin is installed. `PUT` ignores a `filter_goals` it receives.
 

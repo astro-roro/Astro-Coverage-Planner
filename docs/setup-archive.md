@@ -125,7 +125,6 @@ Both the build script and the webapp read these environment variables. Set whate
 | `ACP_SCAN_CRON` | unset | Cron expression for an automatic rescan run by the app itself. See below. |
 | `ACP_STATIC_MAX_AGE_S` | `0` | Cache lifetime for static files. At 0 the browser checks each file on every load and gets a short "not modified" reply when nothing changed. A longer lifetime can leave an open browser running old scripts after an upgrade. |
 | `ACP_API_TOKEN` | unset | When set, requires `Authorization: Bearer <token>` on `/api/*` (401 otherwise). Unset means no auth, matching pre-existing loopback behaviour. See [docs/api.md](api.md#optional-bearer-token-auth). |
-| `ACP_PUBLISH_DEST`, `ACP_PUBLISH_SSH_KEY`, `ACP_LIVE_OUT_DIR` | unset | Live-page publishing, see [sharing.md](sharing.md). |
 | `ACP_MAX_BODY_BYTES` | `1048576` | Largest request body accepted. Anything bigger gets a 413. The largest legitimate body is a 400-panel mosaic at roughly 25 KB, so raise this only if you hit the limit. |
 | `ACP_MAX_FINGERPRINT_PROFILES` | `50` | How many NINA profiles the gear fingerprint store keeps. Oldest report is dropped first. |
 | `NAS_PREFIX`, `PIPELINE_DB_ALT` | unset | Manifest builder only: NAS path prefix and an alternate pipeline DB, see `scripts/build_archive_manifest.py`. |

@@ -333,7 +333,7 @@ import activity
 out = {
  "app": {n: str(getattr(app, n)) for n in (
    "MANIFEST_PATH", "CATALOGS_PATH", "GEAR_PATH", "PLANS_PATH", "FINGERPRINTS_PATH",
-   "LIVE_OUT_DIR", "SITES_PATH", "DESTINATIONS_PATH", "SAVED_SEARCHES_PATH",
+   "SITES_PATH", "DESTINATIONS_PATH", "SAVED_SEARCHES_PATH",
    "TARGET_OVERRIDES_PATH", "HIDDEN_PATH", "TS_TEMPLATES_PATH", "ZIP_OUTPUT_DIR",
    "SURVEYS_PATH", "CATALOG_REGISTRY_PATH", "MOC_CACHE_DIR")},
  "activity_db": str(activity.db_path()),
@@ -350,7 +350,7 @@ print(json.dumps(out))
 APP_FILES = {
     "MANIFEST_PATH": "manifest.json", "CATALOGS_PATH": "catalogs.json", "GEAR_PATH": "gear.json",
     "PLANS_PATH": "plans.json", "FINGERPRINTS_PATH": "fingerprints.json",
-    "LIVE_OUT_DIR": "live", "SITES_PATH": "sites.json", "DESTINATIONS_PATH": "destinations.json",
+    "SITES_PATH": "sites.json", "DESTINATIONS_PATH": "destinations.json",
     "SAVED_SEARCHES_PATH": "saved_searches.json", "TARGET_OVERRIDES_PATH": "target_overrides.json",
     "HIDDEN_PATH": "hidden.json", "TS_TEMPLATES_PATH": "ts_templates.json",
     "ZIP_OUTPUT_DIR": "exports", "MOC_CACHE_DIR": "moc_cache",
@@ -375,7 +375,6 @@ class TestImportTimePaths(unittest.TestCase):
             "GEAR_PATH": "data/gear.json",
             "PLANS_PATH": "data/plans.json",
             "FINGERPRINTS_PATH": "data/fingerprints.json",
-            "LIVE_OUT_DIR": "data/live",
             "SITES_PATH": "data/sites.json",
             "DESTINATIONS_PATH": "data/destinations.json",
             "SAVED_SEARCHES_PATH": "data/saved_searches.json",

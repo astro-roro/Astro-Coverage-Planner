@@ -109,7 +109,7 @@ Everything below installs with `pip` from `requirements.txt`. The Docker image a
 | xisf | reads `.xisf` image headers in the archive scan (optional) | GNU GPL v3 | none stated. ACP is GPL v3 too, so xisf ships inside the Windows download. |
 | Waitress | production web server | ZPL 2.1 | none stated |
 | croniter | scheduled rescan | MIT | none stated |
-| Paramiko | SFTP upload for the live page | LGPL-2.1 | none stated |
+| Paramiko | SSH and SFTP for extensions | LGPL-2.1 | none stated |
 | tzdata | time zone data on Windows | Apache-2.0 (PyPI metadata, tzdata 2026.5) | none stated |
 
 ### Packages installed alongside
