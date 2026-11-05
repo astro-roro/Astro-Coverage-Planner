@@ -79,7 +79,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 NAS_ROOTS = [Path(p) for p in acp_settings.effective("fits_roots")] or [
     Path("Z:/Astro/Images"),
 ]
-NAS_PREFIX = os.environ.get("NAS_PREFIX", "/data/NAS/")
+# Path prefix a container or server sees for the share mapped to
+# LOCAL_NAS_PREFIX on Windows, e.g. NAS_PREFIX=/data/archive/. Unset means
+# paths are left as they are.
+NAS_PREFIX = os.environ.get("NAS_PREFIX", "")
 LOCAL_NAS_PREFIX = "Z:/"
 
 # Optional extra root of stacked full-master files (skipped if it doesn't exist).
@@ -2693,6 +2696,8 @@ def save_scan_cache(entries: dict, path: Path | None = None,
 
 
 def translate_nas_path(p: str) -> str:
+    if not NAS_PREFIX:
+        return p
     return p.replace(NAS_PREFIX, LOCAL_NAS_PREFIX)
 
 

@@ -3,7 +3,7 @@
 It is what the gear editor receives: `GET /api/gear` for the gear after
 migration (gear-templates-v3.json) with the IMAGING-PC profile's fingerprint
 (wheel slots L R G B H O S) and a plan set that uses the templates as often as
-the live data does (docs/specs/gear-templates.md section 6). Re-run it after
+the sample TS data does (docs/specs/gear-templates.md section 6). Re-run it after
 the gear API changes shape:
 
     .venv/bin/python tests/fixtures/make_gear_editor_fixture.py

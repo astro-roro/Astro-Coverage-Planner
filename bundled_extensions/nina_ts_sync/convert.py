@@ -43,7 +43,7 @@ from .filter_canon import canonical_filter_name, resolve_to_wheel
 from .links import link_for
 from .order import as_rows, known_rows_of_base
 from .schema import (
-    AacProject,
+    GraderProject,
     ExposurePlan,
     ExposureTemplate,
     GearWork,
@@ -314,7 +314,7 @@ def build_payload(
     # wheel, in the order met.
     off_wheel_rows: dict[tuple[str, str], list[str]] = {}
     off_wheel_owner: dict[tuple[str, str], tuple[str, str]] = {}
-    payload.aac_now = now if now is not None else datetime.now().astimezone()
+    payload.grader_now = now if now is not None else datetime.now().astimezone()
     now_unix = int(time.time())
 
     seen_template_names: set[str] = set()
@@ -388,7 +388,7 @@ def build_payload(
             for name, w in DEFAULT_RULE_WEIGHTS.items()
         ]
         payload.targets_by_project_guid.setdefault(proj.guid, [])
-        gproj = payload.aac_by_project_guid.setdefault(proj.guid, AacProject(name=pname))
+        gproj = payload.grader_by_project_guid.setdefault(proj.guid, GraderProject(name=pname))
         watermarks: list[str] = []
 
         for pl in group:
@@ -411,12 +411,12 @@ def build_payload(
                 _register_gear_templates(payload, camera, profile_id, wheel_slots, wheel_known, gear_work_by_key)
             plan_rows = fr.rows_of(pl, camera)
             pushed = [r for r in plan_rows if fr.desired(r) > 0]
-            plan_aac = fr.plan_aac(pl)
-            if plan_aac is None:
+            plan_grader = fr.plan_grader(pl)
+            if plan_grader is None:
                 gproj.blocked = gproj.blocked or f"{_plan_label(pl)} has no grader figures yet"
             else:
-                watermarks.append(plan_aac["filed_through_night"])
-            if fr.aac_block(pl) is not None or any(fr.aac_block(r) is not None for r in plan_rows):
+                watermarks.append(plan_grader["filed_through_night"])
+            if fr.grader_block(pl) is not None or any(fr.grader_block(r) is not None for r in plan_rows):
                 gproj.linked = True
 
             # One template per name per profile. The push looks each one up
@@ -568,7 +568,7 @@ def build_payload(
                         acquired=acquired,
                         accepted=acquired,
                     ))
-                    counted = fr.aac_accepted(row, pl, wanted)
+                    counted = fr.grader_accepted(row, pl, wanted)
                     if counted is None:
                         gproj.blocked = gproj.blocked or f"{fr.row_label(row)} has no grader figures yet"
                     else:

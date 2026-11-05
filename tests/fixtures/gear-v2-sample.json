@@ -6,53 +6,53 @@
       "default_camera_id": "zwo-asi6200mm-pro",
       "focal_length_mm": 550,
       "id": "telescope-2",
-      "name": "110GTX"
+      "name": "Refractor 110"
     },
     {
       "aperture_mm": 51,
       "focal_length_mm": 250,
-      "id": "redcat51",
-      "name": "RedCat 51 APO"
+      "id": "refractor-51",
+      "name": "Refractor 51 APO"
     },
     {
       "aperture_mm": 190,
       "focal_length_mm": 1000,
       "id": "telescope-3",
-      "name": "190MN"
+      "name": "Newtonian 190"
     },
     {
       "aperture_mm": 0,
-      "focal_length_mm": 516.5149,
-      "id": "hyperstar",
-      "name": "HyperStar",
-      "observed_fov_arcmin": 156.96,
-      "observed_pix_arcsec": 1.519
+      "focal_length_mm": 500.0,
+      "id": "fast-astrograph",
+      "name": "Fast Astrograph",
+      "observed_fov_arcmin": 160.0,
+      "observed_pix_arcsec": 1.55
     },
     {
-      "id": "skywatcher-190makn",
-      "name": "SkyWatcher 190MakN",
-      "focal_length_mm": 248.132210845322,
+      "id": "mak-newtonian-a",
+      "name": "Mak Newtonian A",
+      "focal_length_mm": 250.0,
       "aperture_mm": 0,
-      "observed_pix_arcsec": 3.849,
-      "observed_fov_arcmin": 265.82
+      "observed_pix_arcsec": 3.8,
+      "observed_fov_arcmin": 270.0
     },
     {
-      "id": "190mak",
-      "name": "190Mak",
-      "focal_length_mm": 248.221949805311,
+      "id": "mak-newtonian-b",
+      "name": "Mak Newtonian B",
+      "focal_length_mm": 252.0,
       "aperture_mm": 0,
-      "observed_pix_arcsec": 3.847,
-      "observed_fov_arcmin": 265.73
+      "observed_pix_arcsec": 3.77,
+      "observed_fov_arcmin": 268.0
     },
     {
-      "id": "c9-25-edgehd-0-7x-re",
-      "name": "C9.25 EdgeHD 0.7x Re",
+      "id": "sct-235-0-7x-re",
+      "name": "SCT 235 0.7x Re",
       "focal_length_mm": 0,
       "aperture_mm": 0
     },
     {
-      "id": "fsq-106edx4",
-      "name": "FSQ-106EDX4",
+      "id": "refractor-106",
+      "name": "Refractor 106",
       "focal_length_mm": 0,
       "aperture_mm": 0
     }
@@ -230,8 +230,8 @@
           "ts_template_name": null
         }
       },
-      "id": "zwo-asi294mc-pro",
-      "name": "ZWO ASI294MC Pro",
+      "id": "colour-camera-a",
+      "name": "Colour Camera A",
       "pixel_size_um": 4.63,
       "sensor_px": [
         4144,
@@ -284,8 +284,8 @@
       ]
     },
     {
-      "id": "zwo-asi294mm-pro",
-      "name": "ZWO ASI294MM Pro",
+      "id": "mono-camera-b",
+      "name": "Mono Camera B",
       "pixel_size_um": 2.315,
       "sensor_px": [
         4144,
@@ -343,8 +343,8 @@
       }
     },
     {
-      "id": "poseidon-m-pro",
-      "name": "Poseidon-M PRO",
+      "id": "mono-camera-c",
+      "name": "Mono Camera C",
       "pixel_size_um": 0,
       "sensor_px": [
         0,
@@ -366,10 +366,10 @@
     }
   ],
   "telescope_colours": {
-    "110GTX": "#0084ff",
-    "190MN": "#00ba00",
-    "RedCat 51": "#fb3917",
-    "HyperStar": "#e8b800",
-    "C9.25 EdgeHD 0.7x Re": "#eb9c36"
+    "Refractor 110": "#0084ff",
+    "Newtonian 190": "#00ba00",
+    "Refractor 51": "#fb3917",
+    "Fast Astrograph": "#e8b800",
+    "SCT 235 0.7x Re": "#eb9c36"
   }
 }

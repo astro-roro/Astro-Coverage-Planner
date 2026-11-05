@@ -1,7 +1,7 @@
 """What a frame grader needs from ACP: POST /api/plans/<id>/accepted.
 
 docs/specs/goal-panel-and-ts-order.md section 6, test A2, and the
-ACP half of A3 (each row's desired in tests/fixtures/aac_accepted_cases.json).
+ACP half of A3 (each row's desired in tests/fixtures/grader_accepted_cases.json).
 The endpoint is checked against the request a grader's client sends and the
 response table that client acts on.
 """
@@ -20,7 +20,7 @@ import app as app_module  # noqa: E402
 import filter_rows as fr  # noqa: E402
 from app import app  # noqa: E402
 
-CASES = json.loads((Path(__file__).resolve().parent / "fixtures" / "aac_accepted_cases.json")
+CASES = json.loads((Path(__file__).resolve().parent / "fixtures" / "grader_accepted_cases.json")
                    .read_text(encoding="utf-8"))["cases"]
 
 HA_ID = "6f1c2a9e-4b7d-4e21-9a35-0c8d1e2f3a4b"
@@ -64,7 +64,7 @@ def _figures(row_id, filt, template, seconds, frames, complete=False):
 
 
 def _request(rows, night="2026-10-11", floor=10):
-    return {"source": "grader", "at": "2026-10-12T10:05:00Z", "filed_through_night": night,
+    return {"source": "my-grader", "at": "2026-10-12T10:05:00Z", "filed_through_night": night,
             "min_total_frames": floor, "rows": rows}
 
 
@@ -153,11 +153,11 @@ class TestAcceptedEndpoint(unittest.TestCase):
         ok = self._post(body, headers={"Authorization": "Bearer a-perfectly-ordinary-token"})
         self.assertEqual(ok.status_code, 200)
 
-    def test_a_save_from_the_editor_cannot_overwrite_aac_figures(self):
+    def test_a_save_from_the_editor_cannot_overwrite_grader_figures(self):
         self._post(_request([_figures(HA_ID, "Ha", "Ha", 22320.0, 74)]))
         edited = json.loads(json.dumps(self._stored()))
         edited["filter_rows"][0]["grader"] = {"accepted_seconds": 1.0, "accepted_frames": 0,
-                                           "complete": True}
+                                              "complete": True}
         edited["grader"] = {"filed_through_night": "1999-01-01", "min_total_frames": 0}
         r = self.client.put("/api/plans/M42", json=edited)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -165,7 +165,7 @@ class TestAcceptedEndpoint(unittest.TestCase):
         self.assertEqual(stored["filter_rows"][0]["grader"]["accepted_seconds"], 22320.0)
         self.assertEqual(stored["grader"]["filed_through_night"], "2026-10-11")
 
-    def test_the_progress_route_leaves_aac_figures_alone(self):
+    def test_the_progress_route_leaves_grader_figures_alone(self):
         self._post(_request([_figures(HA_ID, "Ha", "Ha", 22320.0, 74)]))
         r = self.client.post("/api/plans/M42/progress", json={
             "filters": {"Ha": {"acquired_hours": 9.0}}, "source": "ts"})
@@ -300,7 +300,9 @@ class TestReviewFixes(unittest.TestCase):
         self.assertIn("grader", self._stored()["filter_rows"][0])
 
     def test_the_host_exposes_its_lock_for_the_extension_to_share(self):
-        self.assertIs(app.plans_lock, app_module.PLANS_LOCK)
+        # Read both from the module: another test may reload app, which
+        # replaces the Flask object this file imported.
+        self.assertIs(app_module.app.plans_lock, app_module.PLANS_LOCK)
 
 
 class TestSharedCases(unittest.TestCase):

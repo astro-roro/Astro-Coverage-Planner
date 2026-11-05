@@ -97,10 +97,10 @@ History is kept forever by default, at well under 1 KB an event. `ACP_ACTIVITY_K
 
 A browser cannot open Finder or Explorer, so master rows show copyable text. A processing tool reports the path it sees, which may be inside a container. `ACP_ACTIVITY_PATH_MAP` is a JSON list of `{ "from", "mac", "windows" }` entries, and the first entry whose `from` matches wins. A match must end on a path segment boundary, so `/mnt/a` matches `/mnt/a/x.fit` but not `/mnt/ab/x.fit`.
 
-For `/data/NAS/Astro/Library/Example_Target/RIG_CAMERA/masters/full_master_Ha.fit` with the map `/data/NAS` to `/Volumes/NAS` and `\\NAS\share`, ACP produces:
+For `/data/archive/Library/Example_Target/RIG_CAMERA/masters/full_master_Ha.fit` with the map `/data/archive` to `/Volumes/archive` and `\\SERVER\archive`, ACP produces:
 
-- `mac_folder`: `/Volumes/NAS/Astro/Library/Example_Target/RIG_CAMERA/masters/`
-- `windows_folder`: `\\NAS\share\Astro\Library\Example_Target\RIG_CAMERA\masters\`
+- `mac_folder`: `/Volumes/archive/Library/Example_Target/RIG_CAMERA/masters/`
+- `windows_folder`: `\\SERVER\archive\Library\Example_Target\RIG_CAMERA\masters\`
 - `file_name`: `full_master_Ha.fit`
 
 A path matching no entry is shown as `(unmapped) <basename>` in both folder fields, with `file_name` set to the basename. The Windows share name is an assumption to confirm in Explorer on IMAGING-PC before phase 3 ships.
@@ -216,11 +216,11 @@ Phase 1, ACP (pytest, in `tests/test_activity.py` unless named):
 25. Editing a plan's min altitude from 20 to 30 records one `plan_edited` event titled with "min altitude 20 to 30". A second edit that night changing priority leaves one event whose `data.changes` holds both, with min altitude still from 20.
 26. A plan PUT that changes only `updated_at`, `guid`, `created_at` or `last_synced_at`, or where only a load-time heal differs, records nothing.
 27. A progress report naming a filter the plan lacks posts `progress_unknown` keyed `progress_unknown:<plan_id>:<night>` with resolve key `progress:<plan_id>`, and `summary.open` contains it. A later clean report resolves it.
-28. A progress report taking a row to its goal records one `goal_reached` keyed `goal:<plan_id>:<row_id>:<target_hours as %g>`, and a repeat records nothing. The same through `POST /api/plans/<id>/accepted`, in the fixture style of `tests/test_aac_accepted.py`.
+28. A progress report taking a row to its goal records one `goal_reached` keyed `goal:<plan_id>:<row_id>:<target_hours as %g>`, and a repeat records nothing. The same through `POST /api/plans/<id>/accepted`, in the fixture style of `tests/test_grader_accepted.py`.
 29. Two successful scans each adding 0.25 h of Ha to a target, with `_run_scan_subprocess` and `run_scan_now` monkeypatched as in `tests/test_scan_schedule.py`, leave one `coverage_changed` keyed `coverage:<target id>:Ha:<night>` reading "+0.50 h".
 30. A failed scan records `scan_error` keyed `scan_error:<night>`, distinct from `scan_finished`, and the next successful scan resolves it.
 31. If the activity database cannot be opened, plan saves still return 200 and the failure is logged.
-32. Path map: the Dolphin `full_master_Ha.fit` path gives the three exact strings in "Master paths". An unmapped path gives `(unmapped) full_master_Ha.fit` in both folders. With two matching entries, the first wins. `/data/NAS2/x.fit` does not match the map.
+32. Path map: the sample `full_master_Ha.fit` path gives the three exact strings in "Master paths". An unmapped path gives `(unmapped) full_master_Ha.fit` in both folders. With two matching entries, the first wins. `/data/archive2/x.fit` does not match the map.
 33. Redaction: `Authorization: Bearer abc123`, `token=abc`, `password=hunter2` and `https://u:p@host/` in a title or `data` string are stored with `[redacted]`. `C:\Users\Astro\Pictures\x.fits` is stored as `~\Pictures\x.fits`. A `refs` key outside the allowlist is dropped.
 34. A deleted night's keys go to `tombstones`, and replaying one of those events is reported as `stale` and not stored.
 35. With `ACP_ACTIVITY=off`: every activity route answers 404, a plan PUT stores no event, and the page shell has no Activity rail button, in the style of `tests/test_ts_sync_banner.py`.
@@ -262,7 +262,7 @@ The feature only adds things. `ACP_ACTIVITY=off` makes every activity route answ
 
 - **Master previews.** Default: none in any phase of this spec. A processing tool writing a small stretched JPEG for ACP to serve would be a separate spec.
 - **Where failures appear.** Default: inline in the timeline as error rows that ignore the chips, and in the Needs you box until resolved, dismissed or expired. No separate failures panel.
-- **Windows share name.** Default: `\\NAS\share\`, to confirm in Explorer on IMAGING-PC before phase 3.
+- **Windows share name.** Default: `\\SERVER\archive\`, to confirm in Explorer on IMAGING-PC before phase 3.
 
 ## Out of scope
 
