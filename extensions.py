@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from flask import Flask
 
 __all__ = ["load_extensions", "load_bundled_extensions", "default_extensions_dir",
-           "sanitise_rail_tabs", "EXTENSION_API_VERSION", "set_api_version", "add_hook"]
+           "sanitise_rail_tabs", "sanitise_pages", "EXTENSION_API_VERSION", "set_api_version", "add_hook"]
 
 logger = logging.getLogger("acp.extensions")
 
@@ -197,6 +197,59 @@ def sanitise_rail_tabs(entry: dict) -> dict:
         kept.append(kept_tab)
     out = dict(entry)
     out["rail_tabs"] = kept
+    return out
+
+
+_warned_pages: set[tuple[str, str, str, str]] = set()
+
+
+def sanitise_pages(entry: dict, key: str, *, needs_label: bool) -> dict:
+    """Return *entry* with only the valid items of its list under *key* kept.
+
+    Used for ``editor_sections`` (``{"id", "label", "page"}``) and
+    ``activity_cards`` (``{"id", "page"}`` with an optional ``label``), which
+    are shown as iframes the way rail tabs are and follow the same rules: a
+    short slug ``id`` unique within the entry, and a ``page`` under the
+    extension's own ``/api/ext/`` prefix (``rail_page_ok``). An optional
+    ``height`` in pixels from 40 to 1200 is kept when valid. Bad items are
+    dropped with one warning each. Entries without *key* come back as they are.
+    """
+    if not isinstance(entry, dict) or key not in entry:
+        return entry
+    ext = entry.get("extension")
+    raw = entry.get(key)
+    kept: list[dict] = []
+    seen: set[str] = set()
+    for item in raw if isinstance(raw, list) else []:
+        iid = item.get("id") if isinstance(item, dict) else None
+        label = item.get("label") if isinstance(item, dict) else None
+        page = item.get("page") if isinstance(item, dict) else None
+        reason = None
+        if not isinstance(iid, str) or not _RAIL_ID_RE.match(iid):
+            reason = "id must be a short slug"
+        elif iid in seen:
+            reason = "duplicate id"
+        elif needs_label and (not isinstance(label, str) or not label.strip()):
+            reason = "label must be a non-empty string"
+        elif not rail_page_ok(ext, page):
+            reason = (f"page must be a relative path under "
+                      f"{' or '.join(rail_page_prefixes(ext)) or '/api/ext/<extension>'}")
+        if reason:
+            wkey = (key, str(ext), str(iid), str(page))
+            if wkey not in _warned_pages:
+                _warned_pages.add(wkey)
+                logger.warning("Extension %r %s item %r rejected: %s (page=%r)",
+                               ext, key, iid, reason, page)
+            continue
+        seen.add(iid)
+        out_item = {"id": iid, "page": page,
+                    "label": label.strip() if isinstance(label, str) else ""}
+        height = item.get("height")
+        if isinstance(height, int) and not isinstance(height, bool) and 40 <= height <= 1200:
+            out_item["height"] = height
+        kept.append(out_item)
+    out = dict(entry)
+    out[key] = kept
     return out
 
 
