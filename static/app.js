@@ -210,6 +210,40 @@ async function loadTsSyncBanner() {
   el.hidden = false;
 }
 
+// Newer-release notice. /api/update answers from a once-a-day cache on the
+// server, so this asks once per page load. Any failure leaves it hidden.
+async function loadUpdateNotice() {
+  const banner = document.getElementById("updateBanner");
+  const helpLine = document.getElementById("updateHelpLine");
+  const dot = document.getElementById("railUpdateDot");
+  if (!banner || !helpLine || !dot) return;
+  const hideAll = () => { banner.hidden = true; helpLine.hidden = true; dot.hidden = true; };
+  let notice = null;
+  try {
+    const r = await fetch("/api/update");
+    if (r.ok) notice = noticeFor(await r.json(), dismissedVersion(window.localStorage));
+  } catch {
+    notice = null;
+  }
+  if (!notice) { hideAll(); return; }
+  const setLink = (el) => {
+    el.textContent = notice.linkText;
+    if (notice.url) { el.href = notice.url; el.hidden = false; } else { el.hidden = true; }
+  };
+  document.getElementById("updateBannerText").textContent = notice.text;
+  document.getElementById("updateHelpText").textContent = notice.text;
+  setLink(document.getElementById("updateBannerLink"));
+  setLink(document.getElementById("updateHelpLink"));
+  banner.classList.toggle("is-major", notice.level === "major");
+  banner.dataset.level = notice.level;
+  banner.hidden = !notice.banner;
+  helpLine.hidden = false;
+  dot.hidden = !notice.dot;
+  const onDismiss = () => { dismiss(window.localStorage, notice.version); hideAll(); };
+  document.getElementById("updateBannerDismiss").onclick = onDismiss;
+  document.getElementById("updateHelpDismiss").onclick = onDismiss;
+}
+
 function stopTsSyncPoll() {
   if (tsSyncPollTimer) { clearInterval(tsSyncPollTimer); tsSyncPollTimer = null; }
 }
@@ -710,6 +744,7 @@ import {
   shouldPromptForSite,
 } from "./site-prompt.mjs";
 import { summariseUploads } from "./ts-sync-banner.mjs";
+import { noticeFor, dismissedVersion, dismiss } from "./update-notice.mjs";
 import { deg2hms, deg2dms, parseRA, parseDec, parseCoordPair } from "./coords.mjs";
 import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
@@ -6944,6 +6979,7 @@ async function init() {
   // hide a pending TS upload the user needs to go review.
   loadTsSyncBanner();
   initTsSyncBannerPolling();
+  loadUpdateNotice();
 
   const showInitError = err => {
     // Without this, any exception during startup left the "Loading

@@ -74,12 +74,19 @@ ACP can also read a few settings from a file, `settings.json`, so you do not hav
 | `port` | `PORT` | `5555` |
 | `scan_cron` | `ACP_SCAN_CRON` | unset |
 | `shortcuts` | none | `null` (reserved, no effect yet) |
+| `update_check` | `ACP_UPDATE_CHECK` | `true` |
 
 `fits_roots` is a list of folder paths. `manifest_path` and `port` need a restart to take effect. The bind address is never read from the file: `HOST` stays an environment variable so no file or page can open ACP to the network. A scan started by the app, and `python scripts/build_archive_manifest.py` run by hand from a source checkout, both read `fits_roots` from the file.
 
 If the file cannot be parsed, ACP starts on the defaults and leaves the file alone, and reading never writes anything. The next save copies the unreadable file to `settings.json.bak` first, and refuses to save if that copy fails. A second unreadable file does not replace the first copy. `GET /api/settings` reports the problem as `"error": "settings_file_corrupt"`.
 
 The Docker image does not need a file. It sets `FITS_ROOTS`, and the environment keeps winning. Inside a container (ACP looks for `/.dockerenv` or `/run/.containerenv`) the settings page is read-only and `PUT` answers 409 `not_writable`, because a file written there is lost when the container is recreated. Configure a container with environment variables.
+
+### The update check
+
+ACP tells you when a newer release is out. Once a day, at most, it asks GitHub's public latest-release API for the newest release number (one request to `api.github.com`, with a fixed `User-Agent` and nothing about you or your install) and keeps the answer in `update_check.json` in the data folder. A patch release shows a dot on the Help button and a line beside the version number in Help. A minor release adds a banner under the toolbar, and a major release a more prominent one. Dismissing a notice hides that version; a newer release shows again. A Docker install is told to pull the new image. A development build, or a version ACP cannot read, shows nothing, and so does any failure to reach GitHub.
+
+Turn it off with the **Update check** box on the Settings page, `"update_check": false` in the file, or `ACP_UPDATE_CHECK=0` (also `false`, `off` or `no`). With it off, ACP makes no request to GitHub. The environment variable wins over the file and locks the box, and it is the way to turn the check off in a container, whose settings page is read-only.
 
 ### The data folder
 
@@ -89,7 +96,7 @@ Every file ACP writes, such as the manifest, plans, gear, sites, saved searches,
 
 `GET /api/settings` reports each key's value, where it came from (`env`, `file` or `default`) and whether the environment locks it. Folder and manifest paths go only to an authorised client: one that sent the bearer token or session cookie, or, when `ACP_API_TOKEN` is not set, one on the same machine addressing ACP as `localhost` or `127.0.0.1`.
 
-`PUT /api/settings` saves `fits_roots` (and `shortcuts`, once that is available). It takes JSON, answers 409 `locked_by_env` for a key the environment sets, and 409 `scan_running` for `fits_roots` while a scan runs. `POST /api/settings/adopt-env` copies the folders in `FITS_ROOTS` into the file. See [api.md](api.md) for the details.
+`PUT /api/settings` saves `fits_roots`, `update_check` (and `shortcuts`, once that is available). It takes JSON, answers 409 `locked_by_env` for a key the environment sets, and 409 `scan_running` for `fits_roots` while a scan runs. `POST /api/settings/adopt-env` copies the folders in `FITS_ROOTS` into the file. See [api.md](api.md) for the details.
 
 ## Configuration variables
 
@@ -123,6 +130,7 @@ Both the build script and the webapp read these environment variables. Set whate
 | `TARGET_OVERRIDES_PATH` | `./data/target_overrides.json` | Per-target overrides. |
 | `ACP_SCAN_CACHE` | `./data/scan_cache.json` | Where the builder caches per-file header metadata between scans. |
 | `ACP_SCAN_CRON` | unset | Cron expression for an automatic rescan run by the app itself. See below. |
+| `ACP_UPDATE_CHECK` | on | Set to `0` to stop ACP asking GitHub for the latest release number. See [the update check](#the-update-check). |
 | `ACP_STATIC_MAX_AGE_S` | `0` | Cache lifetime for static files. At 0 the browser checks each file on every load and gets a short "not modified" reply when nothing changed. A longer lifetime can leave an open browser running old scripts after an upgrade. |
 | `ACP_API_TOKEN` | unset | When set, requires `Authorization: Bearer <token>` on `/api/*` (401 otherwise). Unset means no auth, matching pre-existing loopback behaviour. See [docs/api.md](api.md#optional-bearer-token-auth). |
 | `ACP_MAX_BODY_BYTES` | `1048576` | Largest request body accepted. Anything bigger gets a 413. The largest legitimate body is a 400-panel mosaic at roughly 25 KB, so raise this only if you hit the limit. |

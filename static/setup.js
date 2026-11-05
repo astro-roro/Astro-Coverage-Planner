@@ -160,6 +160,7 @@
     show($("skipLink"), setupMode);
 
     renderShortcuts(canEdit, setupMode);
+    renderUpdateCheck(canEdit);
     show($("quitCard"), !!s.packaged);
 
     if (known) {
@@ -198,6 +199,30 @@
     $("shortcutsState").textContent = sc.value === true ? "On" : (sc.value === false ? "Off" : "Not set up");
     show($("shortcutsCreate"), sc.value !== true);
     show($("shortcutsRemove"), sc.value === true);
+  }
+
+  // The update check box. The environment variable ACP_UPDATE_CHECK locks it,
+  // and a read-only install (Docker) cannot save it, so both show it disabled.
+  function renderUpdateCheck(canEdit) {
+    const uc = (state.settings && state.settings.update_check) || { value: true, locked: false };
+    const box = $("updateCheckBox");
+    box.checked = uc.value !== false;
+    box.disabled = uc.locked || !canEdit;
+    $("updateCheckMsg").textContent = uc.locked
+      ? "Set by the ACP_UPDATE_CHECK environment variable."
+      : (!canEdit ? "Set ACP_UPDATE_CHECK=0 to turn it off." : "");
+  }
+
+  async function changeUpdateCheck() {
+    const box = $("updateCheckBox");
+    $("updateCheckMsg").textContent = "";
+    const r = await api("PUT", "/api/settings", { update_check: box.checked });
+    if (r.status === 200) {
+      state.settings = r.body;
+    } else {
+      $("updateCheckMsg").textContent = "ACP could not save that. Try again.";
+    }
+    render();
   }
 
   async function saveShortcuts(value) {
@@ -481,6 +506,7 @@
     $("changeFoldersBtn").addEventListener("click", changeFolders);
     $("catalogBtn").addEventListener("click", fetchCatalogues);
     $("skipLink").addEventListener("click", skipSetup);
+    $("updateCheckBox").addEventListener("change", changeUpdateCheck);
     $("shortcutsCreate").addEventListener("click", () => changeShortcuts(true));
     $("shortcutsRemove").addEventListener("click", () => changeShortcuts(false));
     $("quitBtn").addEventListener("click", quitAcp);

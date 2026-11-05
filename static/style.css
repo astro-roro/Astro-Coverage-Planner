@@ -2821,6 +2821,36 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .help-list li { margin: 3px 0; }
 .help-list a { color: #5bb6ff; }
 .help-version { margin-top: 18px; color: #78839a; font-size: 12px; }
+.help-update { margin-top: 4px; color: #78839a; font-size: 12px; }
+.help-update[hidden] { display: none; }
+.help-update a { color: #5bb6ff; }
+
+/* Newer-release banner, filled by loadUpdateNotice() in app.js. Minor is calm,
+   major is the most visible thing in the toolbar. Patch gets no banner. */
+.update-banner {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: #b9d4f5;
+  background: #121c2b;
+  border: 1px solid #2a4263;
+  border-radius: 4px;
+}
+.update-banner[hidden] { display: none; }
+.update-banner .update-link { color: #6aa6ff; text-decoration: underline; }
+.update-banner.is-major {
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff3d6;
+  background: #6b4a0a;
+  border-color: #f0c674;
+}
+.update-banner.is-major .update-link { color: #ffd98a; }
 .help-tour-btn,
 .tour-card button.primary {
   background: #2a4f7a;
