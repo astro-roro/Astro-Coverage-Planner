@@ -130,11 +130,14 @@ describe("app.js startup without A", () => {
 
   it("starts the panels whether or not the map started", () => {
     const init = body("init");
-    const mapAt = init.indexOf("await startMap()");
-    const fallbackAt = init.indexOf("if (mapError) startWithoutMap(mapError)");
+    // The map starts on its own timer and is not awaited, so the panels no
+    // longer wait for it (see map-ready.test.mjs). Its failure still lands in
+    // the no-map fallback.
+    const mapAt = init.indexOf("startMap().then");
+    const fallbackAt = init.indexOf("startWithoutMap(mapError)");
     const panelsAt = init.indexOf("await startPanels()");
     assert.ok(mapAt >= 0 && fallbackAt > mapAt && panelsAt > fallbackAt,
-      "init should run startMap, then the no-map fallback, then startPanels");
+      "init should kick off startMap, route its failure to the no-map fallback, then run startPanels");
     // Only init's own statements, at two-space indent; handlers nested
     // inside it return from themselves, not from init.
     assert.doesNotMatch(init.slice(0, panelsAt), /^ {2}(if \(.*\) )?return\b/m,
@@ -147,8 +150,10 @@ describe("app.js startup without A", () => {
     const made = [...body("buildMap").matchAll(/^\s+(\w+) = A\.(?:graphicOverlay|catalog)\(/gm)].map(m => m[1]);
     assert.ok(made.length >= 5, `expected buildMap's overlays, found ${made}`);
     const fallback = body("startWithoutMap");
+    const loading = body("showMapLoading");
     for (const name of ["aladin", ...made]) {
       assert.match(fallback, new RegExp(`\\b${name} = noMapStub\\(\\)`), `${name} needs a stand-in`);
+      assert.match(loading, new RegExp(`\\b${name} = noMapStub\\(\\)`), `${name} needs a stand-in while the map loads`);
     }
   });
 
