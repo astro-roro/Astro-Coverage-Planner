@@ -202,7 +202,7 @@ ACP\
   app\                  every file `git ls-files` returns, minus tests/, docs/, .github/, notes/ and packaging/
 ```
 
-`app\` includes the modules `app.py` imports (`activity.py`, `extensions.py`, `filter_rows.py`, `gaps.py`, `gear_templates.py`, `projects.py`, `shooting_publish.py`, `sources.py`) and `bundled_extensions\nina_ts_sync`, the Target Scheduler sync. `python312._pth` lists `..\site-packages` and `..\app`, because a `._pth` file also makes the embeddable Python ignore `PYTHON*` environment variables.
+`app\` includes the modules `app.py` imports (`activity.py`, `extensions.py`, `filter_rows.py`, `gaps.py`, `gear_templates.py`, `projects.py`, `sources.py`) and `bundled_extensions\nina_ts_sync`, the Target Scheduler sync. `python312._pth` lists `..\site-packages` and `..\app`, because a `._pth` file also makes the embeddable Python ignore `PYTHON*` environment variables.
 
 `Start ACP.bat` does these things, with every path built from `%~dp0` and quoted:
 

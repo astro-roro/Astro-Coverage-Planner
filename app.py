@@ -151,8 +151,6 @@ PLANS_PATH = Path(os.environ.get("PLANS_PATH", data_path("plans.json")))
 # Last gear fingerprint each NINA profile reported to /api/plans/match.
 FINGERPRINTS_PATH = Path(os.environ.get(
     "FINGERPRINTS_PATH", data_path("fingerprints.json")))
-# Where the live-page publisher writes shooting.json before uploading it.
-LIVE_OUT_DIR = Path(os.environ.get("ACP_LIVE_OUT_DIR", data_path("live")))
 SITES_PATH = Path(os.environ.get("SITES_PATH", data_path("sites.json")))
 DESTINATIONS_PATH = Path(os.environ.get(
     "DESTINATIONS_PATH", data_path("destinations.json")))
@@ -4726,77 +4724,7 @@ def _validate_plan_payload(payload: dict) -> str | None:
             err = _order_setting_error(key, payload[key])
             if err:
                 return err
-    # Live-page fields (docs/specs/shooting-page.md). Absent means private,
-    # so anything other than the two known values is rejected, never coerced.
-    vis = payload.get("visibility")
-    if vis is not None and vis not in ("private", "public"):
-        return "visibility must be 'private' or 'public'"
-    cur = payload.get("is_current")
-    if cur is not None and not isinstance(cur, bool):
-        return "is_current must be a boolean"
-    blurb = payload.get("public_blurb")
-    if blurb is not None:
-        if not isinstance(blurb, str):
-            return "public_blurb must be a string"
-        if len(blurb) > 500:
-            return "public_blurb must be 500 characters or fewer"
-    section = payload.get("public_section")
-    if section is not None and section not in ("current", "vote"):
-        return "public_section must be 'current' or 'vote'"
-    finished = payload.get("finished_at")
-    if finished not in (None, ""):
-        if not isinstance(finished, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", finished):
-            return "finished_at must be a date as YYYY-MM-DD"
-        try:
-            datetime.strptime(finished, "%Y-%m-%d")
-        except ValueError:
-            return "finished_at must be a real calendar date"
-    astrobin = payload.get("astrobin_url")
-    if astrobin not in (None, ""):
-        import shooting_publish as sp
-        if not sp.valid_astrobin_url(astrobin):
-            return "astrobin_url must be an https link on astrobin.com"
-    for key in ("vote_goals", "vote_baseline"):
-        mapping = payload.get(key)
-        if mapping is None:
-            continue
-        if not isinstance(mapping, dict):
-            return f"{key} must be an object of filter name to hours"
-        for fname, hours in mapping.items():
-            if not isinstance(fname, str) or not fname.strip():
-                return f"{key} filter names must be non-empty strings"
-            if isinstance(hours, bool) or not isinstance(hours, (int, float)) or not math.isfinite(hours):
-                return f"{key} hours must be numbers"
-            if key == "vote_goals" and hours <= 0:
-                return "vote_goals hours must be greater than 0"
-            if key == "vote_baseline" and hours < 0:
-                return "vote_baseline hours must be 0 or more"
     return None
-
-
-def _set_vote_baseline(payload: dict, existing: dict | None) -> None:
-    """The vote baseline is the server's: the hours the plan already had when
-    it entered the vote, so the public page counts only what is added after.
-    It is never taken from the client. Set on entering the vote section or on
-    first setting goals, topped up for any goal filter without one, cleared
-    when the plan goes back to the current section."""
-    if payload.get("public_section") != "vote":
-        payload.pop("vote_baseline", None)
-        return
-    import shooting_publish as sp
-    was_vote = bool(existing) and existing.get("public_section") == "vote"
-    kept = dict(existing.get("vote_baseline") or {}) if was_vote else {}
-    if not was_vote or "vote_baseline" not in (existing or {}):
-        kept = sp.current_done_hours(payload, load_manifest(), load_gear())
-    else:
-        have = {sp.canon_filter(k) or k for k in kept}
-        missing = [f for f in (payload.get("vote_goals") or {}) if (sp.canon_filter(f) or f) not in have]
-        if missing:
-            now = sp.current_done_hours(payload, load_manifest(), load_gear())
-            for f in missing:
-                key = sp.canon_filter(f) or f
-                kept[key] = now.get(key, 0.0)
-    payload["vote_baseline"] = kept
 
 
 _PLAN_EXPAND_TOKENS = frozenset({"gear", "site", "panels"})
@@ -4956,7 +4884,6 @@ def api_plans():
         return jsonify({"error": err}), 400
     fr.keep_aac(payload, previous)
     fr.sync_actuals(payload)
-    _set_vote_baseline(payload, previous)
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -5027,7 +4954,6 @@ def api_plan(plan_id: str):
         return jsonify({"error": err}), 400
     fr.keep_aac(payload, existing)
     fr.sync_actuals(payload)
-    _set_vote_baseline(payload, existing)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
     if before is not None:
@@ -5241,7 +5167,7 @@ _scanner_filters = None
 def _filter_helpers():
     """Lazily import the scanner's filter vocabulary.
 
-    Same trick shooting_publish.py uses: scripts/ isn't a package, so it
+    scripts/ isn't a package, so it
     goes on sys.path first. Imported on first use rather than at module
     scope because the scanner pulls in numpy/astropy and nothing else in
     the request path needs it.
@@ -6203,54 +6129,6 @@ def api_activity_types():
     """The filter chips and the event types under each, core's and any an
     extension registered, so the tab can file every event."""
     return jsonify({"chips": activity.chip_defs(), "sources": list(activity.POSTABLE_SOURCES)})
-
-
-def _build_live_document() -> dict:
-    import shooting_publish as sp
-    plans = load_plans().get("plans", [])
-    return sp.build_shooting_document(plans, load_manifest(), load_gear())
-
-
-@app.route("/api/publish/config")
-def api_publish_config():
-    """Tells the frontend whether live-page publishing is configured. The
-    plan editor only shows the Public page section when it is, so a stock
-    install looks the same as before this feature existed."""
-    return jsonify({"live_page_enabled": bool((os.environ.get("ACP_PUBLISH_DEST") or "").strip())})
-
-
-@app.route("/api/public/shooting")
-def api_public_shooting():
-    """Preview of the document the live-page publisher pushes.
-    Only public plans with a live status appear. See docs/specs/shooting-page.md."""
-    return jsonify(_build_live_document())
-
-
-@app.route("/api/publish/shooting", methods=["POST"])
-def api_publish_shooting():
-    """Write data/live/shooting.json and upload it to ACP_PUBLISH_DEST.
-    400 when the destination is unset, 502 when the upload fails."""
-    import shooting_publish as sp
-    try:
-        dest = sp.resolve_dest()
-    except sp.PublishConfigError as e:
-        # Fixed text on the wire; the detail goes to the log.
-        logging.warning("live publish refused: %s", _safe_log(str(e)))
-        return jsonify({"error": "ACP_PUBLISH_DEST is not set on the server"}), 400
-    doc = _build_live_document()
-    sp.attach_thumbs(doc, LIVE_OUT_DIR)
-    path = sp.write_document(doc, LIVE_OUT_DIR)
-    result = sp.push_document(path, dest, os.environ.get("ACP_PUBLISH_SSH_KEY") or None)
-    ok = result.returncode == 0
-    if not ok:
-        logging.warning("live publish failed: %s", _safe_log(result.stderr))
-    body = {
-        "ok": ok,
-        "dest": dest,
-        "projects": len(doc["projects"]),
-        "error": None if ok else "upload failed; see the ACP server log for the reason",
-    }
-    return jsonify(body), (200 if ok else 502)
 
 
 @app.route("/api/target-overrides", methods=["GET", "POST"])

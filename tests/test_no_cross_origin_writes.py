@@ -48,8 +48,7 @@ class TestPreflightGrantsNothing(unittest.TestCase):
     def test_no_preflight_grants_a_write_anywhere(self):
         """The browser proceeds only when the origin is allowed. If the header
         is absent the request never leaves, whatever the status code is."""
-        paths = ["/api/plans", "/api/plans/p1", "/api/gear",
-                 "/api/publish/shooting", "/api/saved-searches/s1"]
+        paths = ["/api/plans", "/api/plans/p1", "/api/gear", "/api/saved-searches/s1"]
         for path in paths:
             for method in WRITE_METHODS:
                 with self.subTest(path=path, method=method):

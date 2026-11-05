@@ -866,8 +866,6 @@ _LABELS = {
     "camera_id": "camera",
     "destination_id": "destination",
     "project_name": "project",
-    "public_blurb": "public blurb",
-    "is_current": "current target",
     "target.name": "target name",
     "target.center_ra_deg": "centre RA",
     "target.center_dec_deg": "centre Dec",

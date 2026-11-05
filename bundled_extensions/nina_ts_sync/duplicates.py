@@ -2,8 +2,8 @@
 
 A plan's footprint is the rectangle ACP draws for it: the field of view from
 its telescope and camera (app._fov_arcmin), grown to the whole mosaic with
-the panel stride ACP uses (fov * (1 - overlap), as in app._mosaic_panel_centers
-and shooting_publish._mosaic_extent_arcmin), turned by the plan's rotation
+the panel stride ACP uses (fov * (1 - overlap), as in app._mosaic_panel_centers),
+turned by the plan's rotation
 east of north, and centred on the plan's centre.
 
 ACP places panels with a flat offset (RA offset divided by cos Dec). This
@@ -52,7 +52,7 @@ def fov_arcmin(telescope: dict | None, camera: dict | None) -> tuple[float, floa
 
 
 def mosaic_extent_arcmin(fov_w: float, fov_h: float, mosaic: dict | None) -> tuple[float, float]:
-    """shooting_publish._mosaic_extent_arcmin: the whole mosaic's size."""
+    """The whole mosaic's size in arcminutes, panels at the same stride."""
     m = mosaic or {}
     try:
         rows = max(1, int(m.get("rows") or 1))
