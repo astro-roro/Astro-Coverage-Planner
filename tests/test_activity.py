@@ -599,6 +599,128 @@ class TestPlanEvents(ActivityCase):
         self.assertEqual(counts[0]["key"], f"accepted_counts:M42:{activity.current_night()}")
 
 
+class TestLastNightCard(ActivityCase):
+    """The Last night card shows what was shot on the night it is titled."""
+
+    NIGHT = "2026-11-05"
+    SHOT_AT = "2026-11-06T01:00:00+01:00"      # the small hours, night 2026-11-05
+    SCAN_AT = "2026-11-05T14:00:00+01:00"      # a daytime scan, also filed under 2026-11-05
+
+    def frames(self, pid="PLAN-D", target="Sample Dolphin", key=None, **frames):
+        return ev(key=key or f"shot:{pid}", at=self.SHOT_AT,
+                  refs={"plan_id": pid, "target": target},
+                  data={"frames": [{"filter": f, "exposure_s": 300, "count": n}
+                                   for f, n in frames.items()]})
+
+    def report(self, pid="PLAN-D", target="Sample Dolphin", at=None, **filters):
+        """filters: name=(hours, goal, delta_h)"""
+        return activity.record(
+            type="progress_report", key=f"progress_report:{pid}:{at}", title="progress",
+            at=at or self.SCAN_AT, refs={"plan_id": pid, "target": target},
+            data={"filters": {n: {"hours": h, "goal": g, "delta_h": d}
+                              for n, (h, g, d) in filters.items()}})
+
+    def card(self):
+        return self.summary()["last_night"]
+
+    def by_filter(self, target):
+        return {f["filter"]: f for f in target["filters"]}
+
+    def test_the_dolphin_case_shows_the_frames_shot_not_the_scans_gain(self):
+        # The scan filed last night's gain (OIII +0.4 h, 9.4 of 9 h) under the
+        # night of the 5th. The plugin reported L, O and R frames for that night.
+        self.report(OIII=(9.4, 9.0, 0.4), L=(3.0, 6.0, 0.0), R=(2.0, 4.0, 0.0))
+        self.post(self.frames(L=12, O=12, R=12))      # 1 h each
+        card = self.card()
+        self.assertEqual(card["night"], self.NIGHT)
+        [target] = card["targets"]
+        shot = self.by_filter(target)
+        self.assertEqual(sorted(shot), ["L", "OIII", "R"])
+        for name in shot:
+            self.assertAlmostEqual(shot[name]["delta_h"], 1.0)
+        self.assertAlmostEqual(target["hours"], 3.0)
+        self.assertAlmostEqual(card["total_h"], 3.0)
+
+    def test_short_filter_names_are_canonicalised(self):
+        self.post(self.frames(O=12, S=12, H=12))
+        [target] = self.card()["targets"]
+        self.assertEqual(sorted(self.by_filter(target)), ["Ha", "OIII", "SII"])
+
+    def test_every_row_with_a_goal_gets_its_bar(self):
+        self.report(OIII=(9.4, 9.0, 0.4), L=(3.0, 6.0, 0.0), R=(2.0, 4.0, 0.0))
+        self.post(self.frames(L=12, O=12, R=12))
+        [target] = self.card()["targets"]
+        shot = self.by_filter(target)
+        self.assertEqual((shot["OIII"]["hours"], shot["OIII"]["goal"], shot["OIII"]["done"]),
+                         (9.4, 9.0, True))
+        self.assertEqual((shot["L"]["hours"], shot["L"]["goal"], shot["L"]["done"]),
+                         (3.0, 6.0, False))
+        self.assertEqual((shot["R"]["hours"], shot["R"]["goal"]), (2.0, 4.0))
+
+    def test_a_filter_the_plan_has_no_goal_for_has_no_bar_but_still_shows(self):
+        self.report(Ha=(2.0, 5.0, 0.0))
+        self.post(self.frames(Ha=12, B=12))
+        [target] = self.card()["targets"]
+        shot = self.by_filter(target)
+        self.assertEqual(shot["Ha"]["goal"], 5.0)
+        self.assertIsNone(shot["B"]["goal"])
+        self.assertIsNone(shot["B"]["hours"])
+
+    def test_a_target_with_no_report_at_all_has_no_bars(self):
+        self.post(self.frames(Ha=12))
+        [target] = self.card()["targets"]
+        self.assertIsNone(target["filters"][0]["goal"])
+
+    def test_the_card_uses_the_newest_report_even_from_another_night(self):
+        self.report(at="2026-11-02T14:00:00+01:00", Ha=(1.0, 5.0, 1.0))
+        self.report(at="2026-11-06T14:00:00+01:00", Ha=(4.0, 5.0, 3.0))
+        self.post(self.frames(Ha=12))
+        [target] = self.card()["targets"]
+        self.assertEqual((target["filters"][0]["hours"], target["filters"][0]["goal"]), (4.0, 5.0))
+
+    def test_a_scan_filed_on_a_later_night_does_not_move_the_card(self):
+        # A scan on the daytime of the 6th is filed under night 2026-11-06, with
+        # no frames. The card is still the night that was shot.
+        self.post(self.frames(Ha=12))
+        self.report(at="2026-11-06T14:00:00+01:00", Ha=(4.0, 5.0, 3.0))
+        self.assertEqual(self.card()["night"], self.NIGHT)
+
+    def test_a_report_for_a_target_with_no_frames_adds_no_row(self):
+        self.post(self.frames(Ha=12))
+        self.report(pid="PLAN-X", target="Sample Other", Ha=(4.0, 5.0, 3.0))
+        self.assertEqual([t["target"] for t in self.card()["targets"]], ["Sample Dolphin"])
+
+    def test_two_sessions_on_one_plan_add_up(self):
+        self.post(self.frames(key="s1", Ha=12), self.frames(key="s2", Ha=6))
+        [target] = self.card()["targets"]
+        self.assertAlmostEqual(target["filters"][0]["delta_h"], 1.5)
+
+    def test_names_that_differ_only_by_alias_are_one_filter(self):
+        self.post(self.frames(O=12, OIII=12))
+        [target] = self.card()["targets"]
+        self.assertEqual([f["filter"] for f in target["filters"]], ["OIII"])
+        self.assertAlmostEqual(target["filters"][0]["delta_h"], 2.0)
+
+    def test_finished_needs_a_goal_reached_event_and_the_whole_plan_at_goal(self):
+        reached = dict(type="goal_reached", title="goal", at=self.SHOT_AT,
+                       refs={"plan_id": "PLAN-D", "filter": "OIII"}, data={"goal_h": 9})
+        activity.record(key="goal:PLAN-D:oiii:9", **reached)
+        self.report(OIII=(9.4, 9.0, 0.4), Ha=(2.0, 5.0, 0.0))
+        self.post(self.frames(O=12))
+        self.assertFalse(self.card()["targets"][0]["finished"])
+        self.report(OIII=(9.4, 9.0, 0.4), Ha=(5.0, 5.0, 0.0))
+        self.assertTrue(self.card()["targets"][0]["finished"])
+
+    def test_without_any_frames_the_card_falls_back_to_the_reports_gains(self):
+        self.report(OIII=(9.4, 9.0, 0.4))
+        card = self.card()
+        self.assertEqual(card["night"], self.NIGHT)
+        [target] = card["targets"]
+        self.assertEqual(target["filters"][0]["filter"], "OIII")
+        self.assertAlmostEqual(target["filters"][0]["delta_h"], 0.4)
+        self.assertEqual(target["filters"][0]["goal"], 9.0)
+
+
 class TestScanEvents(ActivityCase):
     def write_manifest(self, ha_hours):
         app_module.MANIFEST_PATH.write_text(json.dumps({"targets": [
