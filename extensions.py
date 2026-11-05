@@ -34,9 +34,28 @@ if TYPE_CHECKING:
     from flask import Flask
 
 __all__ = ["load_extensions", "load_bundled_extensions", "default_extensions_dir",
-           "sanitise_rail_tabs"]
+           "sanitise_rail_tabs", "EXTENSION_API_VERSION", "set_api_version", "add_hook"]
 
 logger = logging.getLogger("acp.extensions")
+
+#: The extension interface's version. ACP sets it on the app as
+#: ``app.acp_extension_api`` before any extension loads. It goes up only when
+#: something an extension relies on changes in a way that breaks it. New hooks
+#: do not raise it; they add their name to ``app.acp_extension_hooks`` instead.
+EXTENSION_API_VERSION = 1
+
+
+def set_api_version(app: "Flask") -> None:
+    """Give *app* the version and an empty set of hook names. Idempotent."""
+    app.acp_extension_api = EXTENSION_API_VERSION
+    if not isinstance(getattr(app, "acp_extension_hooks", None), set):
+        app.acp_extension_hooks = set()
+
+
+def add_hook(app: "Flask", name: str) -> None:
+    """Record that *app* offers the hook called *name*."""
+    set_api_version(app)
+    app.acp_extension_hooks.add(name)
 
 #: Extensions that ship inside ACP and load by default.
 BUNDLED_EXTENSIONS_DIR = Path(__file__).resolve().parent / "bundled_extensions"
