@@ -68,7 +68,7 @@ def other_grader_keys(obj) -> list[str]:
             if k not in _NOT_GRADER and isinstance(v, dict) and not _GRADER_MARKS.isdisjoint(v)]
 
 
-def aac_block(row: dict) -> dict | None:
+def grader_block(row: dict) -> dict | None:
     """The grader's block on a row or plan, under `grader` or an older name, or None."""
     if not isinstance(row, dict):
         return None
@@ -79,14 +79,14 @@ def aac_block(row: dict) -> dict | None:
     return None
 
 
-def plan_aac(plan: dict | None) -> dict | None:
+def plan_grader(plan: dict | None) -> dict | None:
     """The plan's grader block with a usable watermark and floor, or None.
 
     `filed_through_night` has to be an ISO date and `min_total_frames` a whole
     number of at least 0; anything else reads as no block, so a malformed
     block can never open a write (goal-panel-and-ts-order.md section 6).
     """
-    b = aac_block(plan or {})
+    b = grader_block(plan or {})
     if not isinstance(b, dict):
         return None
     night, floor = b.get("filed_through_night"), b.get("min_total_frames")
@@ -107,9 +107,9 @@ def desired_for(row: dict, plan: dict | None) -> int:
     on a plan with one never sits below `min_total_frames`. A row with a goal
     of 0 still pushes no plan."""
     d = desired(row)
-    if d <= 0 or aac_block(row) is None:
+    if d <= 0 or grader_block(row) is None:
         return d
-    block = plan_aac(plan)
+    block = plan_grader(plan)
     return max(d, int(block["min_total_frames"])) if block else d
 
 
@@ -126,7 +126,7 @@ def complete_counts(row: dict) -> bool:
     row's unit); a goal raised since means the pipeline has not seen the new goal, so
     the row reads as incomplete until the pipeline reports again. A block with no
     `goal_at_send` has nothing to compare and stands."""
-    block = aac_block(row)
+    block = grader_block(row)
     if block is None or block.get("complete") is not True:
         return False
     sent = _num(block.get("goal_at_send"))
@@ -139,7 +139,7 @@ def unfloored_goal(row: dict, plan: dict | None, ts_desired: int) -> int:
     """TS's `desired` read as ACP's goal. The pipeline's floor lifts what the writer
     sends (`desired_for`), so a `desired` of exactly that is the row's own
     goal, never a change to take; anything else is a real edit in TS."""
-    if aac_block(row) is not None and desired(row) > 0 and ts_desired == desired_for(row, plan):
+    if grader_block(row) is not None and desired(row) > 0 and ts_desired == desired_for(row, plan):
         return desired(row)
     return ts_desired
 
@@ -172,11 +172,11 @@ def unfloored(local: dict | None, remote: dict | None) -> dict | None:
     return {**remote, "filter_rows": out_rows}
 
 
-def aac_accepted(row: dict, plan: dict | None, wanted: int) -> int | None:
+def grader_accepted(row: dict, plan: dict | None, wanted: int) -> int | None:
     """The `accepted` count to write for a pipeline-linked row, or None when the
     row has no usable figures. *wanted* is the row's `desired` after the
     floor. Section 6, "The accepted write to TS"."""
-    block, plan_block = aac_block(row), plan_aac(plan)
+    block, plan_block = grader_block(row), plan_grader(plan)
     if block is None or plan_block is None:
         return None
     seconds, frames = _num(block.get("accepted_seconds")), _num(block.get("accepted_frames"))

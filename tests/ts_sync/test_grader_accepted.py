@@ -1,9 +1,8 @@
-"""grader's accepted counts reach Target Scheduler, tests A3 to A5.
+"""A frame grader's accepted counts reach Target Scheduler, tests A3 to A5.
 
-docs/specs/goal-panel-and-ts-order.md section 6 and grader's
-incremental-master-builds.md section 7. Every case in
-tests/fixtures/aac_accepted_cases.json runs here, in the plugin's C# suite
-and (for the desired column) in ACP. A case seeds the exposure plans grader
+docs/specs/goal-panel-and-ts-order.md section 6. Every case in
+tests/fixtures/grader_accepted_cases.json runs here, in the plugin's C# suite
+and (for the desired column) in ACP. A case seeds the exposure plans the grader
 would have found, pushes the plan with its grader figures, and checks `accepted`,
 `desired`, `enablegrader` and the push result's notes. `acquired` must never
 move.
@@ -12,7 +11,6 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +22,7 @@ from . import row_scenarios as sc
 from .make_db import make_db
 from .plans import PROFILE_ID, plan
 
-DOC = json.loads((Path(__file__).parent / "fixtures" / "aac_accepted_cases.json").read_text(encoding="utf-8"))
+DOC = json.loads((Path(__file__).parent / "fixtures" / "grader_accepted_cases.json").read_text(encoding="utf-8"))
 CASES = DOC["cases"]
 
 
@@ -34,21 +32,21 @@ def _connect(path):
     return c
 
 
-def _acp_rows(case: dict, *, with_aac: bool) -> list[dict]:
+def _acp_rows(case: dict, *, with_grader: bool) -> list[dict]:
     out = []
     for i, r in enumerate(case["rows"]):
         row = {k: v for k, v in r.items() if k not in ("ts", "expected", "grader")}
         row["id"] = f"row{i}"
-        if with_aac and r.get("grader") is not None:
+        if with_grader and r.get("grader") is not None:
             row["grader"] = copy.deepcopy(r["grader"])
         out.append(row)
     return out
 
 
-def _plan(case: dict, *, with_aac: bool) -> dict:
+def _plan(case: dict, *, with_grader: bool) -> dict:
     kw = {"cols": 2, "rows": 1} if case["plan"].get("mosaic") else {}
-    p = plan("m42", project_name=sc.M42, target_name=sc.M42, filter_rows=_acp_rows(case, with_aac=with_aac), **kw)
-    if with_aac:
+    p = plan("m42", project_name=sc.M42, target_name=sc.M42, filter_rows=_acp_rows(case, with_grader=with_grader), **kw)
+    if with_grader:
         p["grader"] = {"filed_through_night": case["plan"]["filed_through_night"],
                     "min_total_frames": case["plan"]["min_total_frames"],
                     "received_at": "2026-10-12T10:05:00+00:00"}
@@ -63,7 +61,7 @@ def _run(case: dict, tmp_path):
                  (PROFILE_ID, *prefs.values()))
     conn.commit()
     # What TS holds before: a push with no grader figures, then the counts the case names.
-    sc.push(conn, [_plan(case, with_aac=False)])
+    sc.push(conn, [_plan(case, with_grader=False)])
     for r in case["rows"]:
         conn.execute(
             "UPDATE exposureplan SET desired = ?, acquired = ?, accepted = ? WHERE exposureTemplateId IN "
@@ -80,7 +78,7 @@ def _run(case: dict, tmp_path):
     conn.commit()
     acquired_before = {r["Id"]: r["acquired"] for r in conn.execute("SELECT Id, acquired FROM exposureplan")}
 
-    payload = convert.build_payload([_plan(case, with_aac=True)], sc.ROW_GEAR, profile_id=PROFILE_ID,
+    payload = convert.build_payload([_plan(case, with_grader=True)], sc.ROW_GEAR, profile_id=PROFILE_ID,
                                     now=datetime.fromisoformat(case["now"]))
     report = upsert.apply(conn, payload)
     conn.commit()
@@ -101,13 +99,10 @@ def test_a3_to_a5_the_shared_cases(case, tmp_path):
     assert {r["Id"]: r["acquired"] for r in conn.execute("SELECT Id, acquired FROM exposureplan")} == acquired_before
     warning = case["expected"]["warning"]
     if warning:
-        # The shared case file predates the rename and is never edited in a
-        # copy; ACP's notes now say "grader" where the file names the old tool.
-        warning = re.sub(r"\S+ figures yet", "grader figures yet", warning)
         assert any(warning in n for n in report.notes), report.notes
     else:
         assert not any("grader" in n for n in report.notes), report.notes
-    assert bool(report.aac_written_projects) == case["expected"]["written"]
+    assert bool(report.grader_written_projects) == case["expected"]["written"]
 
 
 def test_a3_the_fixture_has_the_t8_cases():
@@ -118,7 +113,7 @@ def test_a3_the_fixture_has_the_t8_cases():
 
 def test_a3_desired_follows_the_shared_floor_rule():
     for case in CASES:
-        p = _plan(case, with_aac=True)
+        p = _plan(case, with_grader=True)
         for src, row in zip(case["rows"], fr.rows_of(p)):
             assert fr.desired_for(row, p) == src["expected"]["desired"], (case["name"], row["template"])
 
@@ -132,10 +127,10 @@ def test_a4_a_plan_without_figures_in_the_project_blocks_the_write(tmp_path):
     # A second plan in the same project, with no grader block, rules the project out.
     other = plan("m43", project_name=sc.M42, target_name="M43",
                  filter_rows=[sc.row("x", "Ha", "Ha 300", 300, frames=5)])
-    payload = convert.build_payload([_plan(case, with_aac=True), other], sc.ROW_GEAR, profile_id=PROFILE_ID,
+    payload = convert.build_payload([_plan(case, with_grader=True), other], sc.ROW_GEAR, profile_id=PROFILE_ID,
                                     now=datetime.fromisoformat(case["now"]))
     report = upsert.apply(conn, payload)
-    assert report.aac_written_projects == []
+    assert report.grader_written_projects == []
     assert conn.execute("SELECT enablegrader FROM project").fetchone()[0] == 0
     assert [r[0] for r in conn.execute(
         "SELECT e.accepted FROM exposureplan e JOIN target t ON t.Id = e.targetid WHERE t.name = ?", (sc.M42,))] == [5]

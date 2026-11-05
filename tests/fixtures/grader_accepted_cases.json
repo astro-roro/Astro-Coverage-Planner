@@ -1,12 +1,12 @@
 {
- "description": "Shared cases for the accepted write to Target Scheduler: goal-panel-and-ts-order.md section 6 and grader's incremental-master-builds.md section 7 (test T8, sync side). Run by acp-nina-ts-sync, the plugin and ACP (ACP checks only each row's expected desired). Copied from acp-nina-ts-sync/tests/fixtures into the other two repos; never edit a copy.",
+ "description": "Shared cases for the accepted write to Target Scheduler: goal-panel-and-ts-order.md section 6 (test T8, sync side). Run by the TS sync extension, the plugin and ACP (ACP checks only each row's expected desired). The same file is kept in each suite; change them together.",
  "format": {
-  "now": "the moment the sync runs, with its offset; the site zone is Australia/Melbourne",
+  "now": "the moment the sync runs, with the site's UTC offset; the freshness rule reads the local date in that offset",
   "profile": "profilepreference grading columns that differ from 0 (all start at 0)",
   "plan": "the ACP plan's grader block (filed_through_night, min_total_frames) and whether it is a 2 column mosaic",
   "ts": "the project's enablegrader before, and UTC times of acquiredimage rows",
-  "rows": "ACP filter rows with an optional grader block (null: a row ACP has but grader has not reported); row.ts is the exposure plan before the push; row.expected is desired and accepted after it An grader block may hold goal_at_send, the row's goal (in the row's unit) when the figures were stored: a complete flag counts only while the row's goal is not above it.",
-  "expected": "enablegrader after, a substring the push result's notes must contain (null: no note about grader), and whether the grader write happened"
+  "rows": "ACP filter rows with an optional block of the grader's figures (null: a row ACP has but the grader has not reported); row.ts is the exposure plan before the push; row.expected is desired and accepted after it. That block may hold goal_at_send, the row's goal (in the row's unit) when the figures were stored: a complete flag counts only while the row's goal is not above it.",
+  "expected": "enablegrader after, a substring the push result's notes must contain (null: no note about the pipeline), and whether the pipeline write happened"
  },
  "default_profile": {
   "delayGrading": 0,
@@ -159,7 +159,7 @@
    "note": "32 images pending; TS shoots 7"
   },
   {
-   "name": "project_with_a_row_that_has_no_aac_block",
+   "name": "project_with_a_row_that_has_no_grader_block",
    "now": "2026-10-12T15:00:00+11:00",
    "plan": {
     "filed_through_night": "2026-10-11",

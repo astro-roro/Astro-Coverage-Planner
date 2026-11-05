@@ -23,6 +23,8 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import filter_rows as fr
+
 logger = logging.getLogger("acp.activity")
 
 SCHEMA_VERSION = 1
@@ -918,12 +920,20 @@ def record_merged(merge, **fields) -> dict | None:
 _PLAN_IGNORED = frozenset({
     "updated_at", "guid", "created_at", "last_synced_at",
     # Link bookkeeping the sync writes, and the derived views.
-    "ts_links", "ts_refs", "ts_base_snapshot", "grader", "filter_goals",
+    "ts_links", "ts_refs", "ts_base_snapshot", "filter_goals",
+    # A frame grader's figures, under their current name.
+    fr.GRADER_KEY,
 })
-_ROW_IGNORED = frozenset({"grader", "panels"})
-# A frame grader's figures, under their current name.
-_PLAN_IGNORED = _PLAN_IGNORED | {"grader"}
-_ROW_IGNORED = _ROW_IGNORED | {"grader"}
+_ROW_IGNORED = frozenset({"panels", fr.GRADER_KEY})
+
+
+def _grader_keys(obj: dict) -> set[str]:
+    """Keys on a plan or row that hold the frame grader's figures under a
+    name from before the rename. They are found by the block's fields, as
+    filter_rows finds them, or by an old name an extension registered. The
+    diff leaves them out, so loading an unmigrated plan logs no change."""
+    olds = {o for o, n in fr.BLOCK_ALIASES.items() if n == fr.GRADER_KEY}
+    return set(fr.other_grader_keys(obj)) | (olds & set(obj))
 
 _LABELS = {
     "min_altitude_deg": "min altitude",
@@ -977,8 +987,9 @@ def diff_plans(before: dict | None, after: dict | None) -> dict:
     flat_b: dict = {}
     flat_a: dict = {}
     for src, dst in ((before, flat_b), (after, flat_a)):
+        old_names = _grader_keys(src)
         for k, v in src.items():
-            if k in _PLAN_IGNORED or k == "filter_rows":
+            if k in _PLAN_IGNORED or k in old_names or k == "filter_rows":
                 continue
             _flatten(k, v, dst)
         rows = src.get("filter_rows")
@@ -989,8 +1000,9 @@ def diff_plans(before: dict | None, after: dict | None) -> dict:
                     continue
                 label = _row_label(row, seen)
                 dst[f"rows.{label}"] = "present"
+                old_names = _grader_keys(row)
                 for fk, fv in row.items():
-                    if fk in _ROW_IGNORED or fk in ("id",):
+                    if fk in _ROW_IGNORED or fk in old_names or fk in ("id",):
                         continue
                     dst[f"rows.{label}.{fk}"] = fv
     changes: dict = {}

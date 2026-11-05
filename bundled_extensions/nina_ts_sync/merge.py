@@ -53,7 +53,7 @@ def take_rows(plan: dict, remote: dict) -> list[dict]:
     (goal-panel-and-ts-order.md section 6)."""
     import copy
     from .diff import rows_by_id
-    from .rows import aac_block, other_grader_keys, unfloored
+    from .rows import grader_block, other_grader_keys, unfloored
     local = rows_by_id(plan)
     remote = unfloored(plan, remote) or remote
     out = []
@@ -63,7 +63,7 @@ def take_rows(plan: dict, remote: dict) -> list[dict]:
         mine = local.get(str(row.get("id"))) or {}
         for k in other_grader_keys(row):
             row.pop(k, None)
-        if aac_block(mine) is not None and same_row_identity(mine, row):
+        if grader_block(mine) is not None and same_row_identity(mine, row):
             for k in ("grader", *other_grader_keys(mine)):
                 if isinstance(mine.get(k), dict):
                     row[k] = copy.deepcopy(mine[k])

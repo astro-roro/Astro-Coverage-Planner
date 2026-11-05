@@ -471,7 +471,7 @@ A row's `template_sub_s` is the sub TS shoots for that plan. A template's `sub_s
 
 ### Tests (Python in `acp-nina-ts-sync/tests`, then C# golden)
 
-Fixtures, shared by the Python and C# suites: `tests/fixtures/ts-templates-20.sql` builds the TS tables from the 12 October copy (the 20 templates with every column the writers read, and the 244 exposure plans with their template id, `exposure`, `acquired` and `accepted`), and `tests/fixtures/gear-templates-v3.json` holds the gear after M3. Scenarios are recipes: `row_scenarios.py` in Python and `TsRowScenarios.cs` in the plugin tests, each a named sequence of steps (edit gear, edit TS, set the slot list, push, pull). The slot list is an argument of the step, with `["L","R","G","B","H","O","S"]` as the default. `dump_golden_rows.py` writes each scenario's rows to `golden-rows.json`, which the plugin tests read.
+Fixtures, shared by the Python and C# suites: `tests/fixtures/ts-templates-20.sql` builds the TS tables from sample data (the 20 templates with every column the writers read, and the 244 exposure plans with their template id, `exposure`, `acquired` and `accepted`), and `tests/fixtures/gear-templates-v3.json` holds the gear after M3. Scenarios are recipes: `row_scenarios.py` in Python and `TsRowScenarios.cs` in the plugin tests, each a named sequence of steps (edit gear, edit TS, set the slot list, push, pull). The slot list is an argument of the step, with `["L","R","G","B","H","O","S"]` as the default. `dump_golden_rows.py` writes each scenario's rows to `golden-rows.json`, which the plugin tests read.
 
 | Id | Inputs | Expected |
 |---|---|---|
@@ -550,20 +550,20 @@ For each template in P's list:
 - Its class is "short" when its sub is under 60 s (`FRAME_UNIT_BELOW_S`) and "normal" otherwise.
 - A group is the templates with the same ACP filter and class, keyed `<filter>/<class>`. Only the camera's linked filters are grouped.
 
-From the live data, the groups are `L/normal` (ids 1, 18), `R/normal` (2, 19), `G/normal` (3, 16), `B/normal` (4, 14), `R/short` (5, 20), `G/short` (6, 17), `B/short` (7, 15), `Ha/normal` (8, 12), `OIII/normal` (9, 11) and `SII/normal` (10, 13). Ten groups, each with two templates.
+From the fixture data, the groups are `L/normal` (ids 1, 18), `R/normal` (2, 19), `G/normal` (3, 16), `B/normal` (4, 14), `R/short` (5, 20), `G/short` (6, 17), `B/short` (7, 15), `Ha/normal` (8, 12), `OIII/normal` (9, 11) and `SII/normal` (10, 13). Ten groups, each with two templates.
 
 ### The default pick
 
 Per group: the template on the wheel with the most plans (`len(plans)`), ties to the lowest id. A template that is not on the wheel is never the default and cannot be selected. In a group whose templates are all off the wheel, the screen says "None of these is on the wheel. The sync will create a new template." and nothing is kept.
 
-Defaults for the live data: id 18 (11 plans, over id 1's 1), 19 (26 over 1), 16 (26 over 1), 14 (26 over 1), id 5 for `R/short` (1 plan, because id 20 is off the wheel and cannot win), 6, 7, id 12 (23 over 1), id 11 (55 over 0), id 13 (3 over 0).
+Defaults for the fixture data: id 18 (11 plans, over id 1's 1), 19 (26 over 1), 16 (26 over 1), 14 (26 over 1), id 5 for `R/short` (1 plan, because id 20 is off the wheel and cannot win), 6, 7, id 12 (23 over 1), id 11 (55 over 0), id 13 (3 over 0).
 
 ### What the screen shows
 
 As the Tidy artboard: each group a box with a radio per template. Each option shows the name, the plan count, and, for an off-wheel template, "filter 'R Stars' is not on the wheel". It also shows every field that differs within the group: sub, gain, offset, bin, moon avoidance (on or off, with the separation and width), twilight level, humidity limit and dither every. A differing field is marked, for example for `L/normal`: "sub 180 s or 120 s, offset 25 or Default, moon avoidance on (120°, 14 days) or off, twilight 0 or 1, humidity 0 or 100, dither every 2 or Default". Tidy changes none of the kept template's fields (except the optional offset), so this is the only chance to see what the choice drops. Under the groups:
 
 - A warning inside a group when the plans of the other templates would change sub length. It names only rows that follow their old template: "3 plans that follow their old template change sub length to 120 s. Their goals in hours stay the same, so frame counts change. 2 plans keep their own sub."
-- A checkbox per `normal` group that has them, on by default: "Move N star plans to R Stars". It lists the plans by plan name. These are ACP-linked plans whose sub is under 60 s but whose template is normal class. On the live data that is 3 each in `B/normal`, `G/normal` and `R/normal`, nine in all (plan ids 404, 405, 408, 409, 410, 413, 415, 416, 419).
+- A checkbox per `normal` group that has them, on by default: "Move N star plans to R Stars". It lists the plans by plan name. These are ACP-linked plans whose sub is under 60 s but whose template is normal class. On the fixture data that is 3 each in `B/normal`, `G/normal` and `R/normal`, nine in all (plan ids 404, 405, 408, 409, 410, 413, 415, 416, 419).
 - The amber box "Offsets differ" with the checkbox "Set offset 25 on every template I keep" (default off).
 - The box "Unused after this, remove in TS", listing every template of P that is not kept and that no plan will use after the move. Counts: a template's plans minus those that are in ACP's pinned plan ids (`ts_links[P].refs.exposure_plan_ids`) and so move. TS plans ACP does not know about stay where they are, and keep their template off the unused list.
 - A footer with "Apply to N plans" and "Later". N is the number of ACP plans that will be repointed, including star plans when their boxes are ticked.
@@ -669,7 +669,7 @@ Restore `gear.json.bak-*` and `plans.json.bak-*` together. The rows and the gear
 | M4 | ACP | M3, then compare the order of events: fingerprint first then list, and list first then fingerprint | The same result. |
 | M5 | ACP | M3, then a second `POST /api/ts-templates` with the same list | Gear is unchanged and `rev` does not move. |
 | M6 | ACP | A plan row naming "R Stars (ZWO ASI6200MM Pro)" on filter R, after M3 | `template_id` is the "R Stars" id. `template` is rewritten to "R Stars". |
-| M7 | ACP | A camera in the live file with no filters (`ASI Camera (1) (AS`) | It migrates with `filters` empty. |
+| M7 | ACP | A camera in the v2 sample file with no filters (`ASI Camera (1) (AS`) | It migrates with `filters` empty. |
 | M8 | ACP | Gain 0 in the old shape | The new template has gain 0. |
 | M9 | ACP | A plans file with a row on a filter that the migration leaves with no template | The load logs the plan id, the row has `template_unresolved: true`, and no template is assigned. |
 | M10 | ACP | M1, then a template list with no `id` fields (older plugin) | No adoption happens, the 6200 camera keeps seven templates with no `ts` entry, and `GET /api/gear/tidy` is refused. |

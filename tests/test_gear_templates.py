@@ -5,7 +5,7 @@ repair. Test ids (G1, W4, M1 and so on) are the spec's.
 Each test builds its own gear, plans, fingerprints and TS list in a temp
 directory, from tests/fixtures/gear-templates-v3.json (the gear after the
 migration and adoption, shared with the plugin's tests) or
-tests/fixtures/gear-v2-live.json (the live file before them).
+tests/fixtures/gear-v2-sample.json (a sample v2 file before them).
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def v3() -> dict:
 
 
 def v2_live() -> dict:
-    return json.loads((FIXTURES / "gear-v2-live.json").read_text(encoding="utf-8"))
+    return json.loads((FIXTURES / "gear-v2-sample.json").read_text(encoding="utf-8"))
 
 
 def redirect_state() -> Path:
@@ -613,11 +613,11 @@ class TestGearRoutes(Base):
     def test_g19_telescope_colour_changes_only_rev(self):
         self.seed_v3()
         before = read_gear()
-        r = self.client.post("/api/gear/telescope-colour", json={"name": "110GTX", "colour": "#ff8800"})
+        r = self.client.post("/api/gear/telescope-colour", json={"name": "Refractor 110", "colour": "#ff8800"})
         self.assertEqual(r.status_code, 200)
         after = read_gear()
         self.assertEqual(after["rev"], before["rev"] + 1)
-        self.assertEqual(after["telescope_colours"], {"110GTX": "#ff8800"})
+        self.assertEqual(after["telescope_colours"], {"Refractor 110": "#ff8800"})
         self.assertEqual(after["cameras"], before["cameras"])
         # The answer carries the new rev, so the editor's next save is not a 409.
         self.assertEqual(r.get_json()["rev"], after["rev"])

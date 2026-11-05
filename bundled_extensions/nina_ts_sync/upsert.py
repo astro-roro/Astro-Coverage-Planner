@@ -97,7 +97,7 @@ class SyncReport:
     inserted_project_guids: set[str] = field(default_factory=set)
     #: Projects where this push wrote the pipeline's accepted counts and turned the
     #: grader on (section 6).
-    aac_written_projects: list[str] = field(default_factory=list)
+    grader_written_projects: list[str] = field(default_factory=list)
     #: What the gear template writer did with each gear template of the
     #: pushed plans' cameras: `{template_id, ts_id, guid, base, action,
     #: fields_written, note?, conflicts?}`. Empty without gear templates.
@@ -122,7 +122,7 @@ class SyncReport:
             "override_rebuilt": list(self.override_rebuilt),
             "cadence_reset_projects": list(self.cadence_reset_projects),
             "order_written": list(self.order_written),
-            "aac_written_projects": list(self.aac_written_projects),
+            "grader_written_projects": list(self.grader_written_projects),
         }
         if self.templates:
             out["templates"] = [dict(t) for t in self.templates]
@@ -807,16 +807,16 @@ def _no_duplicate_guids(
 #: The profile grading settings the pipeline's write needs to be 0
 #: (goal-panel-and-ts-order.md section 6). They are set by hand in TS;
 #: the sync only reads them. A column the database lacks cannot be on.
-_AAC_PROFILE_COLUMNS = (
+_GRADER_PROFILE_COLUMNS = (
     "delayGrading", "enableGradeRMS", "enableGradeStars", "enableGradeHFR",
     "enableGradeFWHM", "enableGradeEccentricity",
 )
 
 
-def _aac_profile_problem(conn: sqlite3.Connection, profile_id: str) -> str | None:
+def _grader_profile_problem(conn: sqlite3.Connection, profile_id: str) -> str | None:
     """Why the profile's grading settings rule out the pipeline's write, or None."""
     have = {str(r[1]).lower() for r in conn.execute("PRAGMA table_info(profilepreference)").fetchall()}
-    cols = [c for c in _AAC_PROFILE_COLUMNS if c.lower() in have]
+    cols = [c for c in _GRADER_PROFILE_COLUMNS if c.lower() in have]
     if not cols:
         return "the profile has no grading settings to read"
     row = conn.execute(
@@ -835,7 +835,7 @@ def _aac_profile_problem(conn: sqlite3.Connection, profile_id: str) -> str | Non
     return None
 
 
-def _aac_cutoff_utc(night: str, zone) -> int:
+def _grader_cutoff_utc(night: str, zone) -> int:
     """Noon local on the day after the watermark night, as UTC unix seconds.
     A frame saved after it belongs to a night the pipeline has not seen."""
     from datetime import date, datetime, timedelta
@@ -843,7 +843,7 @@ def _aac_cutoff_utc(night: str, zone) -> int:
     return int(datetime(day.year, day.month, day.day, 12, tzinfo=zone).timestamp())
 
 
-def _write_aac(
+def _write_grader(
     conn: sqlite3.Connection,
     payload: SyncPayload,
     project_id_by_guid: dict[str, int],
@@ -854,7 +854,7 @@ def _write_aac(
     transaction, for each eligible project (goal-panel-and-ts-order.md
     section 6).
 
-    A project is eligible when ACP's data allows it (`AacProject.blocked` is
+    A project is eligible when ACP's data allows it (`GraderProject.blocked` is
     None), the profile's grading settings are all 0, the watermark is on or
     after the night that ended this morning, every enabled exposure plan in
     the project is one this push wrote with a pipeline count, and TS saved no frame
@@ -866,25 +866,25 @@ def _write_aac(
     """
     # A project the pipeline has reported on says why it is skipped; one the pipeline has never
     # touched stays quiet.
-    for g, a in payload.aac_by_project_guid.items():
+    for g, a in payload.grader_by_project_guid.items():
         if a.blocked is not None and a.linked and g in project_id_by_guid:
-            _aac_warn(report, f"{a.name}: grader counts not written, {a.blocked}.")
-    candidates = [(g, a) for g, a in payload.aac_by_project_guid.items()
+            _grader_warn(report, f"{a.name}: grader counts not written, {a.blocked}.")
+    candidates = [(g, a) for g, a in payload.grader_by_project_guid.items()
                   if a.blocked is None and g in project_id_by_guid]
     if not candidates:
         return
-    now = payload.aac_now
+    now = payload.grader_now
     zone = None
-    if not payload.aac_tz:
+    if not payload.grader_tz:
         zone = now.tzinfo if now is not None else None
     else:
         try:
             from zoneinfo import ZoneInfo
-            zone = ZoneInfo(payload.aac_tz)
+            zone = ZoneInfo(payload.grader_tz)
         except Exception:  # noqa: BLE001 - a missing zone database is a skip, not a crash
             zone = None
     if now is None or zone is None:
-        _aac_warn(report, f"Grader figures not written: no time zone data for {payload.aac_tz}.")
+        _grader_warn(report, f"Grader figures not written: no time zone data for {payload.grader_tz}.")
         return
     local = now.astimezone(zone)
     from datetime import timedelta
@@ -897,8 +897,8 @@ def _write_aac(
         pid = project_id_by_guid[guid]
         wm = gproj.filed_through_night
         if wm is None or wm < newest_night:
-            _aac_warn(report, f"{gproj.name}: grader figures not written: they are filed through "
-                              f"{wm}, older than the night that ended this morning ({newest_night}).")
+            _grader_warn(report, f"{gproj.name}: grader figures not written: they are filed through "
+                                 f"{wm}, older than the night that ended this morning ({newest_night}).")
             continue
         enabled = {
             int(r["Id"]) for r in conn.execute(
@@ -917,17 +917,17 @@ def _write_aac(
                     for i in sorted(enabled - set(counts))
                 ]
                 why = f"{', '.join(names)} is enabled in Target Scheduler but is not a row in ACP"
-            _aac_warn(report, f"{gproj.name}: grader counts not written, {why}.")
+            _grader_warn(report, f"{gproj.name}: grader counts not written, {why}.")
             continue
         if not profile_checked:
-            profile_problem, profile_checked = _aac_profile_problem(conn, payload.profile_id), True
+            profile_problem, profile_checked = _grader_profile_problem(conn, payload.profile_id), True
         if profile_problem:
             if not profile_warned:
-                _aac_warn(report, f"Grader figures not written for profile {payload.profile_id}: "
-                                  f"{profile_problem}.")
+                _grader_warn(report, f"Grader figures not written for profile {payload.profile_id}: "
+                                     f"{profile_problem}.")
                 profile_warned = True
             continue
-        cutoff = _aac_cutoff_utc(wm, zone)
+        cutoff = _grader_cutoff_utc(wm, zone)
         if conn.execute(
             "SELECT 1 FROM acquiredimage WHERE projectId = ? AND acquireddate > ? LIMIT 1", (pid, cutoff)
         ).fetchone() is not None:
@@ -938,10 +938,10 @@ def _write_aac(
         for plan_id in enabled:
             conn.execute("UPDATE exposureplan SET accepted = ? WHERE Id = ?", (counts[plan_id], plan_id))
         conn.execute("UPDATE project SET enablegrader = 1 WHERE Id = ?", (pid,))
-        report.aac_written_projects.append(gproj.name)
+        report.grader_written_projects.append(gproj.name)
 
 
-def _aac_warn(report: SyncReport, message: str) -> None:
+def _grader_warn(report: SyncReport, message: str) -> None:
     LOG.warning("%s", message)
     report.notes.append(message)
 
@@ -1123,7 +1123,7 @@ def apply(conn: sqlite3.Connection, payload: SyncPayload) -> SyncReport:
     # 4b) the pipeline's accepted counts and the grader, for the projects that qualify
     # (section 6). Before the order pass, because a block's size follows the
     # project's grader (`_block_size`).
-    _write_aac(conn, payload, project_id_by_guid, plan_id_by_guid, report)
+    _write_grader(conn, payload, project_id_by_guid, plan_id_by_guid, report)
 
     for tgt_guid, tid, before, ts_rows, had_override, inserted, written, written_rows in passes:
         after = _enabled_plan_ids(conn, tid)

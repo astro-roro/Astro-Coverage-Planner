@@ -2,7 +2,7 @@
 // plan editor's template drop-down and flags (section 7). Test ids (U1, P1 and
 // so on) are the spec's. The fixture is what GET /api/gear serves for the
 // migrated gear with the IMAGING-PC wheel (L R G B H O S) and a plan set that
-// uses the templates as often as the live data does; regenerate it with
+// uses the templates as often as the sample TS data does; regenerate it with
 // tests/fixtures/make_gear_editor_fixture.py.
 
 import { describe, it } from "node:test";
@@ -621,9 +621,9 @@ describe("saving", () => {
 });
 
 describe("the field of view line", () => {
-  it("matches the approved mockup for the 110GTX and the 6200", () => {
+  it("matches the approved mockup for the 110 mm refractor and the 6200", () => {
     const st = editorState();
-    const scope = st.doc.telescopes.find(t => t.name === "110GTX");
+    const scope = st.doc.telescopes.find(t => t.name === "Refractor 110");
     const f = fieldOfView(camOf(st), scope);
     assert.equal(f.scale.toFixed(2), "1.41");
     assert.equal(f.width_deg.toFixed(2), "3.75");
@@ -631,9 +631,9 @@ describe("the field of view line", () => {
   });
   it("is on the open card for the telescope whose usual camera it is", () => {
     const st = editorState();
-    const scope = st.doc.telescopes.find(t => t.name === "110GTX");
+    const scope = st.doc.telescopes.find(t => t.name === "Refractor 110");
     scope.default_camera_id = CAM;
-    assert.ok(gearEditorHtml(st).includes("On the 110GTX: 1.41\u2033 per pixel, field 3.75\u00b0 \u00d7 2.50\u00b0"));
+    assert.ok(gearEditorHtml(st).includes("On the Refractor 110: 1.41\u2033 per pixel, field 3.75\u00b0 \u00d7 2.50\u00b0"));
   });
 });
 
