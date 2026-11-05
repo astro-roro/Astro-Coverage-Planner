@@ -34,9 +34,8 @@ jobs:
           # term can show up in a log. Workflow commands are not printed.
           printf '%s\n' "$ACP_PRIVATE_TERMS" | while IFS= read -r line; do
             line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-            [ -n "$line" ] && echo "::add-mask::$line"
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
           done
-          exit 0
 
       - name: Work out the range
         id: range
