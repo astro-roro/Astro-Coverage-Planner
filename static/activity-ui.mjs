@@ -14,6 +14,7 @@ import {
   pageState,
   railState,
   renderRowHtml,
+  setChipDefs,
   visibleRows,
 } from "./activity.mjs";
 import { openBalancerDialog } from "./balancer-ui.mjs";
@@ -137,8 +138,10 @@ export function setupActivity({ openPlan, showOnMap }) {
   async function loadFirstPage() {
     st.loading = true;
     try {
-      const [page, prefs] = await Promise.all([
-        getJson(`/api/activity?nights=${FIRST_PAGE}`), getJson("/api/activity/prefs")]);
+      const [page, prefs, types] = await Promise.all([
+        getJson(`/api/activity?nights=${FIRST_PAGE}`), getJson("/api/activity/prefs"),
+        getJson("/api/activity/types").catch(() => null)]);
+      if (types && !types.gone) setChipDefs(types.chips);
       if (page.gone) { st.gone = true; stopPolling(); return; }
       st.nights = page.nights;
       st.total = page.total_nights;

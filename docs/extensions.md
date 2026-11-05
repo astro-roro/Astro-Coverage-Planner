@@ -426,6 +426,27 @@ app.plan_fields.append({"extension": "my_ratings", "keys": ["rating", "rating_gr
 
 `PUT /api/projects/<project_name>/settings` then accepts those keys in its body beside core's. The entry's `validate` is called with a dict holding only its own project keys from the request, and an error text refuses the whole request with a 400. Accepted values are set on every plan in the project in the same write as core's settings, they appear in the route's response, and they show in the Activity entry for the change. A key left out of the body is left alone. An extension cannot claim one of core's own project keys.
 
+### Activity types and sources
+
+The Activity tab files every event under a filter chip by its type, and `POST /api/activity/events` accepts only known sources. An event with a type ACP does not know is stored as `other`. An extension can add both (hook name `activity_types`):
+
+```python
+import activity
+
+def register(app):
+    activity.register_types("backups", ["backup_done", "backup_failed"], label="Backups")
+    activity.register_types("processing", ["frames_rejected"])   # add to an existing chip
+    activity.register_source("backup")
+```
+
+- `register_types(group, types, label=None)` adds event types under a chip. `group` is an existing chip id (`plans`, `syncs`, `imaging`, `site`, `data`, `processing`, `masters`, `coverage`) or a new one, which needs a `label` and starts switched on. A type ACP already knows stays where it is.
+- `register_source(name)` lets senders post with `source: name`. `acp` is ACP's own and cannot be registered. Posting still needs the access token, as for every source.
+- Ids are short lowercase slugs: a letter, then letters, digits or `_`, 40 characters at most. A bad argument raises `ValueError`.
+
+The extension can record its own events with `activity.record(type=..., key=..., title=...)` once its types are registered. `GET /api/activity/types` returns every chip with its types and the accepted sources, and the tab reads it on opening.
+
+If the extension is later removed, events already stored keep their type and show under Plans, which is where unknown types go. New posts of those types are stored as `other`.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:

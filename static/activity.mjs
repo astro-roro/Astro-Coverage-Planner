@@ -4,8 +4,10 @@
 
 export const ACTIVITY_PANEL_W = 560;
 
-// Chip id, label and event types. Mirrors CHIPS in activity.py.
-export const CHIPS = [
+// Chip id, label and event types. Mirrors CHIPS in activity.py. Extensions
+// can add types and chips on the server; setChipDefs takes the full list from
+// GET /api/activity/types.
+export let CHIPS = [
   { id: "plans", label: "Plans", types: ["plan_created", "plan_edited", "plan_deleted",
     "project_settings", "gear_changed", "counts_corrected", "balancer_run", "balancer_alert",
     "other"] },
@@ -21,9 +23,30 @@ export const CHIPS = [
   { id: "coverage", label: "Coverage", types: ["scan_finished", "scan_error", "coverage_changed"] },
 ];
 
-export const DEFAULT_CHIPS = Object.fromEntries(CHIPS.map(c => [c.id, c.id !== "site"]));
+export let DEFAULT_CHIPS = Object.fromEntries(CHIPS.map(c => [c.id, c.id !== "site"]));
 
-const CHIP_BY_TYPE = new Map(CHIPS.flatMap(c => c.types.map(t => [t, c.id])));
+let CHIP_BY_TYPE = new Map(CHIPS.flatMap(c => c.types.map(t => [t, c.id])));
+
+const SLUG = /^[a-z][a-z0-9_]{0,39}$/;
+
+// Replace the chip list with the server's. Bad entries are dropped; an empty
+// or broken list leaves the built-in one. Returns true when it changed.
+export function setChipDefs(defs) {
+  if (!Array.isArray(defs)) return false;
+  const clean = [];
+  const seen = new Set();
+  for (const d of defs) {
+    if (!d || typeof d !== "object" || typeof d.id !== "string" || !SLUG.test(d.id) || seen.has(d.id)) continue;
+    if (typeof d.label !== "string" || !d.label.trim() || !Array.isArray(d.types)) continue;
+    seen.add(d.id);
+    clean.push({ id: d.id, label: d.label.trim(), types: d.types.filter(t => typeof t === "string" && SLUG.test(t)) });
+  }
+  if (!clean.length) return false;
+  CHIPS = clean;
+  DEFAULT_CHIPS = Object.fromEntries(CHIPS.map(c => [c.id, c.id !== "site"]));
+  CHIP_BY_TYPE = new Map(CHIPS.flatMap(c => c.types.map(t => [t, c.id])));
+  return true;
+}
 
 // An unknown type is stored as "other", which belongs to Plans.
 export function chipOf(type) {

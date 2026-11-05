@@ -1761,6 +1761,9 @@ _add_ext_hook(app, "plan_fields")
 # A plan_fields entry may list "project_keys": keys the project settings route
 # spreads across every plan in a project, like state and priority.
 _add_ext_hook(app, "project_keys")
+# activity.register_types and activity.register_source (docs/extensions.md,
+# "Activity types and sources").
+_add_ext_hook(app, "activity_types")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each
@@ -6221,6 +6224,14 @@ def api_activity_prefs():
             not isinstance(v, bool) for k, v in chips.items() if k in activity.DEFAULT_CHIPS):
         return jsonify({"error": "chips must be an object of chip id to true or false"}), 400
     return jsonify(activity.set_prefs(chips))
+
+
+@app.route("/api/activity/types")
+@_activity_route
+def api_activity_types():
+    """The filter chips and the event types under each, core's and any an
+    extension registered, so the tab can file every event."""
+    return jsonify({"chips": activity.chip_defs(), "sources": list(activity.POSTABLE_SOURCES)})
 
 
 def _build_live_document() -> dict:
