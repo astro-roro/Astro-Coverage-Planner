@@ -62,8 +62,66 @@ CHIPS = (
     ("masters", "Masters", ("master_built", "master_ready")),
     ("coverage", "Coverage", ("scan_finished", "scan_error", "coverage_changed")),
 )
+CORE_CHIPS = CHIPS
 KNOWN_TYPES = frozenset(t for _, _, types in CHIPS for t in types)
 DEFAULT_CHIPS = {cid: cid != "site" for cid, _, _ in CHIPS}
+CORE_SOURCES = POSTABLE_SOURCES
+
+_SLUG_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+
+def _rebuild_types(chips) -> None:
+    global CHIPS, KNOWN_TYPES, DEFAULT_CHIPS
+    CHIPS = tuple(chips)
+    KNOWN_TYPES = frozenset(t for _, _, types in CHIPS for t in types)
+    DEFAULT_CHIPS = {cid: DEFAULT_CHIPS.get(cid, True) for cid, _, _ in CHIPS}
+
+
+def register_types(group: str, types, label: str | None = None) -> None:
+    """Let posted and recorded events use *types* (docs/extensions.md,
+    "Activity types and sources"). *group* is the filter chip they sit under:
+    an existing chip id such as ``"processing"``, or a new id, which then
+    needs a *label* and starts switched on. A type that is already known is
+    left where it is. Type and chip ids are short lowercase slugs. Raises
+    ValueError on a bad argument. Events stored before an extension went
+    missing keep their type and show under Plans, like any unknown type."""
+    if not isinstance(group, str) or not _SLUG_RE.match(group):
+        raise ValueError("group must be a short lowercase slug")
+    types = list(types or [])
+    if not types or any(not isinstance(t, str) or not _SLUG_RE.match(t) for t in types):
+        raise ValueError("types must be a non-empty list of short lowercase slugs")
+    chips = [list(c) for c in CHIPS]
+    target = next((c for c in chips if c[0] == group), None)
+    if target is None:
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"a new group {group!r} needs a label")
+        target = [group, label.strip()[:40], ()]
+        chips.append(target)
+    new = [t for t in types if t not in KNOWN_TYPES and t not in target[2]]
+    target[2] = tuple(target[2]) + tuple(dict.fromkeys(new))
+    _rebuild_types(tuple(c) for c in chips)
+
+
+def register_source(name: str) -> None:
+    """Accept *name* as a ``source`` on POST /api/activity/events. Names are
+    short lowercase slugs; ``acp`` is ACP's own and can not be registered."""
+    global POSTABLE_SOURCES
+    if not isinstance(name, str) or not _SLUG_RE.match(name) or name == "acp":
+        raise ValueError("source must be a short lowercase slug other than acp")
+    if name not in POSTABLE_SOURCES:
+        POSTABLE_SOURCES = POSTABLE_SOURCES + (name,)
+
+
+def reset_registrations() -> None:
+    """Back to core's own types and sources. For tests."""
+    global POSTABLE_SOURCES
+    _rebuild_types(CORE_CHIPS)
+    POSTABLE_SOURCES = CORE_SOURCES
+
+
+def chip_defs() -> list[dict]:
+    """Every chip with its label and types, core's and extensions', for the tab."""
+    return [{"id": cid, "label": label, "types": list(types)} for cid, label, types in CHIPS]
 
 # Needs-you types that stop counting a week after they arrive.
 EXPIRING_TYPES = frozenset({"ts_upload_received", "master_ready"})
