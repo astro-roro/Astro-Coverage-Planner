@@ -95,7 +95,7 @@ class SyncReport:
     #: Guids of the projects this push inserted, whose base holds exactly
     #: ACP's values. Not part of the push result.
     inserted_project_guids: set[str] = field(default_factory=set)
-    #: Projects where this push wrote AAC's accepted counts and turned the
+    #: Projects where this push wrote the pipeline's accepted counts and turned the
     #: grader on (section 6).
     aac_written_projects: list[str] = field(default_factory=list)
     #: What the gear template writer did with each gear template of the
@@ -804,7 +804,7 @@ def _no_duplicate_guids(
         seen.add(guid)
 
 
-#: The profile grading settings AAC's write needs to be 0
+#: The profile grading settings the pipeline's write needs to be 0
 #: (goal-panel-and-ts-order.md section 6). They are set by hand in TS;
 #: the sync only reads them. A column the database lacks cannot be on.
 _AAC_PROFILE_COLUMNS = (
@@ -814,7 +814,7 @@ _AAC_PROFILE_COLUMNS = (
 
 
 def _aac_profile_problem(conn: sqlite3.Connection, profile_id: str) -> str | None:
-    """Why the profile's grading settings rule out AAC's write, or None."""
+    """Why the profile's grading settings rule out the pipeline's write, or None."""
     have = {str(r[1]).lower() for r in conn.execute("PRAGMA table_info(profilepreference)").fetchall()}
     cols = [c for c in _AAC_PROFILE_COLUMNS if c.lower() in have]
     if not cols:
@@ -837,7 +837,7 @@ def _aac_profile_problem(conn: sqlite3.Connection, profile_id: str) -> str | Non
 
 def _aac_cutoff_utc(night: str, zone) -> int:
     """Noon local on the day after the watermark night, as UTC unix seconds.
-    A frame saved after it belongs to a night AAC has not seen."""
+    A frame saved after it belongs to a night the pipeline has not seen."""
     from datetime import date, datetime, timedelta
     day = date.fromisoformat(night) + timedelta(days=1)
     return int(datetime(day.year, day.month, day.day, 12, tzinfo=zone).timestamp())
@@ -850,38 +850,41 @@ def _write_aac(
     plan_id_by_guid: dict[str, int],
     report: SyncReport,
 ) -> None:
-    """Write AAC's accepted counts and turn the project's grader on, in this
+    """Write the pipeline's accepted counts and turn the project's grader on, in this
     transaction, for each eligible project (goal-panel-and-ts-order.md
-    section 6, and AAC's incremental-master-builds.md section 7).
+    section 6).
 
     A project is eligible when ACP's data allows it (`AacProject.blocked` is
     None), the profile's grading settings are all 0, the watermark is on or
     after the night that ended this morning, every enabled exposure plan in
-    the project is one this push wrote with an AAC count, and TS saved no frame
+    the project is one this push wrote with a pipeline count, and TS saved no frame
     for the project after noon on the day after the watermark night (a rerun
     during imaging would otherwise reset `accepted` and have TS reshoot
     tonight's frames). `accepted` and `enablegrader` stay out of the generic
     UPDATE (INSERT_ONLY_COLUMNS) and are written here, together or not at
     all. `acquired` is never written.
     """
-    # A project AAC has reported on says why it is skipped; one AAC has never
+    # A project the pipeline has reported on says why it is skipped; one the pipeline has never
     # touched stays quiet.
     for g, a in payload.aac_by_project_guid.items():
         if a.blocked is not None and a.linked and g in project_id_by_guid:
-            _aac_warn(report, f"{a.name}: AAC counts not written, {a.blocked}.")
+            _aac_warn(report, f"{a.name}: grader counts not written, {a.blocked}.")
     candidates = [(g, a) for g, a in payload.aac_by_project_guid.items()
                   if a.blocked is None and g in project_id_by_guid]
     if not candidates:
         return
     now = payload.aac_now
     zone = None
-    try:
-        from zoneinfo import ZoneInfo
-        zone = ZoneInfo(payload.aac_tz)
-    except Exception:  # noqa: BLE001 - a missing zone database is a skip, not a crash
-        zone = None
+    if not payload.aac_tz:
+        zone = now.tzinfo if now is not None else None
+    else:
+        try:
+            from zoneinfo import ZoneInfo
+            zone = ZoneInfo(payload.aac_tz)
+        except Exception:  # noqa: BLE001 - a missing zone database is a skip, not a crash
+            zone = None
     if now is None or zone is None:
-        _aac_warn(report, f"AAC figures not written: no time zone data for {payload.aac_tz}.")
+        _aac_warn(report, f"Grader figures not written: no time zone data for {payload.aac_tz}.")
         return
     local = now.astimezone(zone)
     from datetime import timedelta
@@ -890,11 +893,11 @@ def _write_aac(
     profile_problem = None
     profile_checked = False
     profile_warned = False
-    for guid, aac in candidates:
+    for guid, gproj in candidates:
         pid = project_id_by_guid[guid]
-        wm = aac.filed_through_night
+        wm = gproj.filed_through_night
         if wm is None or wm < newest_night:
-            _aac_warn(report, f"{aac.name}: AAC figures not written: they are filed through "
+            _aac_warn(report, f"{gproj.name}: grader figures not written: they are filed through "
                               f"{wm}, older than the night that ended this morning ({newest_night}).")
             continue
         enabled = {
@@ -902,7 +905,7 @@ def _write_aac(
                 "SELECT e.Id FROM exposureplan e JOIN target t ON t.Id = e.targetid "
                 "WHERE t.projectid = ? AND COALESCE(e.enabled, 1) <> 0", (pid,)).fetchall()
         }
-        counts = {plan_id_by_guid[g]: n for g, n in aac.accepted_by_plan_guid.items() if g in plan_id_by_guid}
+        counts = {plan_id_by_guid[g]: n for g, n in gproj.accepted_by_plan_guid.items() if g in plan_id_by_guid}
         if not enabled or not enabled <= set(counts):
             if not enabled:
                 why = "no exposure plan is enabled"
@@ -914,13 +917,13 @@ def _write_aac(
                     for i in sorted(enabled - set(counts))
                 ]
                 why = f"{', '.join(names)} is enabled in Target Scheduler but is not a row in ACP"
-            _aac_warn(report, f"{aac.name}: AAC counts not written, {why}.")
+            _aac_warn(report, f"{gproj.name}: grader counts not written, {why}.")
             continue
         if not profile_checked:
             profile_problem, profile_checked = _aac_profile_problem(conn, payload.profile_id), True
         if profile_problem:
             if not profile_warned:
-                _aac_warn(report, f"AAC figures not written for profile {payload.profile_id}: "
+                _aac_warn(report, f"Grader figures not written for profile {payload.profile_id}: "
                                   f"{profile_problem}.")
                 profile_warned = True
             continue
@@ -929,13 +932,13 @@ def _write_aac(
             "SELECT 1 FROM acquiredimage WHERE projectId = ? AND acquireddate > ? LIMIT 1", (pid, cutoff)
         ).fetchone() is not None:
             report.notes.append(
-                f"{aac.name}: AAC figures not written: Target Scheduler has saved frames since the "
+                f"{gproj.name}: grader figures not written: Target Scheduler has saved frames since the "
                 "night they cover, so its own counts stand until tomorrow's sync.")
             continue
         for plan_id in enabled:
             conn.execute("UPDATE exposureplan SET accepted = ? WHERE Id = ?", (counts[plan_id], plan_id))
         conn.execute("UPDATE project SET enablegrader = 1 WHERE Id = ?", (pid,))
-        report.aac_written_projects.append(aac.name)
+        report.aac_written_projects.append(gproj.name)
 
 
 def _aac_warn(report: SyncReport, message: str) -> None:
@@ -1117,7 +1120,7 @@ def apply(conn: sqlite3.Connection, payload: SyncPayload) -> SyncReport:
                 report.disabled_plans += 1
         passes.append((tgt_guid, tid, before, ts_rows, had_override, inserted, written, written_rows))
 
-    # 4b) AAC's accepted counts and the grader, for the projects that qualify
+    # 4b) the pipeline's accepted counts and the grader, for the projects that qualify
     # (section 6). Before the order pass, because a block's size follows the
     # project's grader (`_block_size`).
     _write_aac(conn, payload, project_id_by_guid, plan_id_by_guid, report)

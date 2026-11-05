@@ -39,21 +39,21 @@ def merge_remote_into_local(plan: dict, remote: dict) -> None:
 
 
 def same_row_identity(a: dict, b: dict) -> bool:
-    """Whether two rows name the same filter and template, which is what an
-    `aac` block was reported against."""
+    """Whether two rows name the same filter and template, which is what a
+    grader block was reported against."""
     from .rows import same_filter
     return same_filter(a.get("filter"), b.get("filter")) and a.get("template") == b.get("template")
 
 
 def take_rows(plan: dict, remote: dict) -> list[dict]:
-    """The remote's rows, keeping each local row's `aac` block, which only
-    AAC writes and TS knows nothing of. A block is kept only while the row
-    still has the filter and template AAC reported it for. The remote's
-    `desired` is read back as the row's goal where it is only AAC's floor
+    """The remote's rows, keeping each local row's grader block, which only
+    the grader writes and TS knows nothing of. A block is kept only while the row
+    still has the filter and template the pipeline reported it for. The remote's
+    `desired` is read back as the row's goal where it is only the pipeline's floor
     (goal-panel-and-ts-order.md section 6)."""
     import copy
     from .diff import rows_by_id
-    from .rows import unfloored
+    from .rows import aac_block, other_grader_keys, unfloored
     local = rows_by_id(plan)
     remote = unfloored(plan, remote) or remote
     out = []
@@ -61,8 +61,12 @@ def take_rows(plan: dict, remote: dict) -> list[dict]:
         if not isinstance(row, dict):
             continue
         mine = local.get(str(row.get("id"))) or {}
-        if isinstance(mine.get("aac"), dict) and same_row_identity(mine, row):
-            row["aac"] = copy.deepcopy(mine["aac"])
+        for k in other_grader_keys(row):
+            row.pop(k, None)
+        if aac_block(mine) is not None and same_row_identity(mine, row):
+            for k in ("grader", *other_grader_keys(mine)):
+                if isinstance(mine.get(k), dict):
+                    row[k] = copy.deepcopy(mine[k])
         out.append(row)
     return out
 
@@ -72,6 +76,7 @@ def _pull_row_field(plan: dict, remote: dict, row_id: str, field: str | None) ->
     at the end of the list; a field the remote row lacks is dropped."""
     import copy
     from .diff import rows_by_id
+    from .rows import other_grader_keys
     remote_row = rows_by_id(remote).get(row_id)
     rows = plan.setdefault("filter_rows", [])
     mine = next((r for r in rows if isinstance(r, dict) and str(r.get("id")) == row_id), None)
@@ -91,9 +96,10 @@ def _pull_row_field(plan: dict, remote: dict, row_id: str, field: str | None) ->
             mine["unit"] = remote_row.get("unit", mine.get("unit"))
     else:
         mine.pop(field, None)
-    # AAC's figures were reported for the filter and template the row had.
+    # The grader's figures were reported for the filter and template the row had.
     if field in ("filter", "template") and (mine.get("filter"), mine.get("template")) != before:
-        mine.pop("aac", None)
+        for k in ("grader", *other_grader_keys(mine)):
+            mine.pop(k, None)
 
 
 def pull_order(plan: dict, remote: dict) -> None:
@@ -119,7 +125,7 @@ def apply_auto_pull(plan: dict, remote: dict, fields: list[str]) -> None:
     """
     from .diff import ORDER, ROWS, align_units, split_path
     from .rows import unfloored
-    # The diff compared TS's rows with AAC's floor read back as the goal and
+    # The diff compared TS's rows with the pipeline's floor read back as the goal and
     # in each local row's unit; pull them so.
     remote = unfloored(plan, remote) or remote
     remote = align_units(plan, remote) or remote

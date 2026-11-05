@@ -293,7 +293,7 @@ def build_payload(
 ) -> SyncPayload:
     """Convert ACP plan model into the SyncPayload upsert.py applies.
 
-    *now* is the moment the AAC freshness rule is judged at (section 6);
+    *now* is the moment the pipeline freshness rule is judged at (section 6);
     the real time when left out. It must carry a time zone.
 
     *wheel_slots* are the slot names of the NINA profile's filter wheel. A
@@ -388,7 +388,7 @@ def build_payload(
             for name, w in DEFAULT_RULE_WEIGHTS.items()
         ]
         payload.targets_by_project_guid.setdefault(proj.guid, [])
-        aac = payload.aac_by_project_guid.setdefault(proj.guid, AacProject(name=pname))
+        gproj = payload.aac_by_project_guid.setdefault(proj.guid, AacProject(name=pname))
         watermarks: list[str] = []
 
         for pl in group:
@@ -413,11 +413,11 @@ def build_payload(
             pushed = [r for r in plan_rows if fr.desired(r) > 0]
             plan_aac = fr.plan_aac(pl)
             if plan_aac is None:
-                aac.blocked = aac.blocked or f"{_plan_label(pl)} has no AAC figures yet"
+                gproj.blocked = gproj.blocked or f"{_plan_label(pl)} has no grader figures yet"
             else:
                 watermarks.append(plan_aac["filed_through_night"])
-            if isinstance(pl.get("aac"), dict) or any(fr.aac_block(r) is not None for r in plan_rows):
-                aac.linked = True
+            if fr.aac_block(pl) is not None or any(fr.aac_block(r) is not None for r in plan_rows):
+                gproj.linked = True
 
             # One template per name per profile. The push looks each one up
             # by name and inserts it only when TS has none
@@ -498,7 +498,7 @@ def build_payload(
                 )
             multi = len(panels) > 1
             if multi:
-                aac.blocked = aac.blocked or f"{_plan_label(pl)} is a mosaic, and AAC's counts are per row"
+                gproj.blocked = gproj.blocked or f"{_plan_label(pl)} is a mosaic, and the grader's counts are per row"
 
             for panel in panels:
                 if multi:
@@ -570,9 +570,9 @@ def build_payload(
                     ))
                     counted = fr.aac_accepted(row, pl, wanted)
                     if counted is None:
-                        aac.blocked = aac.blocked or f"{fr.row_label(row)} has no AAC figures yet"
+                        gproj.blocked = gproj.blocked or f"{fr.row_label(row)} has no grader figures yet"
                     else:
-                        aac.accepted_by_plan_guid[plan_uuid] = counted
+                        gproj.accepted_by_plan_guid[plan_uuid] = counted
                     payload.template_guid_by_plan_guid[plan_uuid] = (
                         row_work.guid if row_work is not None else template_guid_by_name[row["template"]])
                     old = [exposure_plan_guid(profile_id, t_guid, row["template"])]
@@ -626,9 +626,9 @@ def build_payload(
                             }),
                         ))
 
-        aac.filed_through_night = min(watermarks) if watermarks else None
-        if not aac.accepted_by_plan_guid:
-            aac.blocked = aac.blocked or "no row has AAC figures yet"
+        gproj.filed_through_night = min(watermarks) if watermarks else None
+        if not gproj.accepted_by_plan_guid:
+            gproj.blocked = gproj.blocked or "no row has grader figures yet"
 
     # The rows a filter that is not on the wheel kept out, said once per
     # camera and filter (gear-templates.md section 5).

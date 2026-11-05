@@ -114,7 +114,7 @@ CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
 
 def in_container() -> bool:
     """Whether ACP is running inside a container. A settings file written there
-    lives in the container's own layer, which Watchtower or a compose pull
+    lives in the container's own layer, which an image update or a compose pull
     throws away, so the setup page is read-only: a container is configured by
     environment variables."""
     return any(os.path.exists(marker) for marker in CONTAINER_MARKERS)

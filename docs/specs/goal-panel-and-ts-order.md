@@ -59,7 +59,7 @@ TS reuses a stored cadence before anything else. `Planning/FilterCadenceFactory.
 
 ### What that means for the user's database today
 
-Three targets have override orders in the scratch copy of IMAGING-PC's database from 12 October 18:46. They are G7.7-3.7, Dolphin Nebula and Helix Nebula. The rows appeared between the 15:01 backups of 11 and 12 October, so they were set in TS on 11 October. Their projects have a switch frequency of 0. TS therefore rotates one frame per filter on those three targets, rather than finishing each filter. Helix's order is OIII, Ha, SII, B, G, R. B, G and R are complete, so Helix now shoots one frame each of OIII, Ha and SII in turn.
+Three targets have override orders in a scratch copy of IMAGING-PC's database. They are a science target, Dolphin Nebula and Helix Nebula. The rows were set by hand in TS. Their projects have a switch frequency of 0. TS therefore rotates one frame per filter on those three targets, rather than finishing each filter. Helix's order is OIII, Ha, SII, B, G, R. B, G and R are complete, so Helix now shoots one frame each of OIII, Ha and SII in turn.
 
 ### What the sync writes so TS shoots in ACP's order
 
@@ -90,7 +90,7 @@ Two exceptions keep the footprint small:
 
 ### Restarting the walk every night
 
-TS's place in the override rows only moves forward (`Planning/FilterCadence.cs:36-51`). Suppose TS passes the end of Ha's block, and next morning AAC lowers Ha's `accepted`. Without help, Ha's shortfall waits until every other filter in the circle is done.
+TS's place in the override rows only moves forward (`Planning/FilterCadence.cs:36-51`). Suppose TS passes the end of Ha's block, and next morning the grader lowers Ha's `accepted`. Without help, Ha's shortfall waits until every other filter in the circle is done.
 
 So for every target that has override rows, the sync deletes the cadence rows on every push, whether or not it writes the order. TS then rebuilds the cadence from the override rows with row 1 marked next (`FilterCadenceFactory.cs:31-41`). Each night's walk starts at row 1, skips finished plans, and lands on the first unfinished plan in ACP's order.
 
@@ -126,7 +126,7 @@ The unit drop-down offers "h" and "fr". Switching it converts the goal using the
 
 Picking a template with a sub under 60 s sets the unit to "fr", and 60 s or more sets "h". The goal converts with the new sub.
 
-Progress shows "3.0 / 4.2 h" or "18 / 20 fr" on the left and "1.2 h left" on the right. A finished row shows "done" and the card is dimmed. A row with a goal of 0 shows "set a goal". Done comes from AAC's figures when the row has them (section 6), otherwise from `actual_hours`.
+Progress shows "3.0 / 4.2 h" or "18 / 20 fr" on the left and "1.2 h left" on the right. A finished row shows "done" and the card is dimmed. A row with a goal of 0 shows "set a goal". Done comes from the grader's figures when the row has them (section 6), otherwise from `actual_hours`.
 
 ### Adding and removing
 
@@ -180,7 +180,7 @@ The fix adds one constant near the top of `static/app.js`, `const EMPTY_CELL = "
 
 ## 2. The TS template list from the plugin
 
-`/api/ts-templates` (`app.py:4370-4408`) reads the TS database at `TS_DB_PATH`. On homeserver that file does not exist, so ACP has no template list.
+`/api/ts-templates` (`app.py:4370-4408`) reads the TS database at `TS_DB_PATH`. On the home server that file does not exist, so ACP has no template list.
 
 The plugin sends the list instead.
 
@@ -207,11 +207,11 @@ A plan gains `filter_rows`, an ordered list. Its order is the shooting order. Ea
 | `target_hours` | number | The goal, when `unit` is "h". |
 | `target_frames` | integer | The goal, when `unit` is "fr". |
 | `actual_hours` | number | TS's acquired hours, from the plugin. |
-| `aac` | object | AAC's figures, written only by AAC (section 6). |
+| `grader` | object | A frame grader's figures, written only through `/accepted` (section 6). Also found under an older name by its fields (section 6). |
 
 `filter_goals` and its per-row `sub_exposure_s` go. ACP no longer edits a sub length.
 
-`template_sub_s` is what the writers divide by and what AAC matches frames against. It holds:
+`template_sub_s` is what the writers divide by and what the grader matches frames against. It holds:
 
 - for a row not yet in TS, the template's default exposure from the template list, or the sub typed into "New template…"
 - after a push or import, the sub TS uses for that row's exposure plan: the plan's own `exposure` when it is above 0, else its template's `defaultexposure` (`Planning/Entities/PlanningExposure.cs:50`)
@@ -233,7 +233,7 @@ A plan gains `filter_rows`, an ordered list. Its order is the shooting order. Ea
 | h | max(1, ceil(`target_hours` x 3600 / `template_sub_s`)) |
 | fr | `target_frames` |
 
-A row whose goal is 0 pushes no exposure plan, as today. For an AAC-linked row the floor in section 6 applies on top.
+A row whose goal is 0 pushes no exposure plan, as today. For a grader-linked row the floor in section 6 applies on top.
 
 ### Removing and re-adding a row
 
@@ -331,7 +331,7 @@ For each plan, the migration turns every `filter_goals` entry into a row:
 | a `sub_rows` entry, from any interim build | its parent key | its key |
 | key with no canonical filter | the key, logged by plan id | the key |
 
-Each row gets a new `id` and `template_sub_s` = the old `sub_exposure_s`, else 300. A sub under 60 s makes a frame row with `target_frames` = max(1, ceil(hours x 3600 / sub)), or 0 when the hours were 0. Every other row keeps `target_hours`. Both choices give the same `desired` the old writer computed, so the next push changes no goal in TS. `actual_hours` and any `aac` block carry over.
+Each row gets a new `id` and `template_sub_s` = the old `sub_exposure_s`, else 300. A sub under 60 s makes a frame row with `target_frames` = max(1, ceil(hours x 3600 / sub)), or 0 when the hours were 0. Every other row keeps `target_hours`. Both choices give the same `desired` the old writer computed, so the next push changes no goal in TS. `actual_hours` and any `grader` block carry over.
 
 Rows are ordered L, R, G, B, Ha, OIII, SII. Within a filter, the row from the canonical key comes first, then the others by template name. Filters outside that list come last, by name.
 
@@ -415,7 +415,7 @@ The decision:
 
 "Differs" and "equals" use the rule above: a row added anywhere but the end, or rows in another relative order, differ. A row removed, or added at the end, does not.
 
-The fifth case refreshes rows the sync wrote itself. A changed goal, AAC floor, throttle, grader setting or switch frequency changes the block sizes, so the generated rows change. The sixth case keeps an order set in TS. A panel's base rows are only ever rows the sync wrote, because an import leaves out rows set in TS, so TS rows equal to them are the sync's own even when stale, and a panel holding stale sync rows is refreshed to ACP's order. A panel whose base has no rows has none of the sync's to refresh, so it is left alone: a hand order on panel 1 that ACP now holds is not copied to a panel 2 that has none. The one exception is a target where the base and TS both have no rows and ACP's order matched TS's natural order (its enabled plans in `Id` order, over the rows with plans) before the push. Nothing there was set in TS, and a plan added back after removal keeps its lower `Id`, so without the refresh TS would shoot it first while ACP lists it last.
+The fifth case refreshes rows the sync wrote itself. A changed goal, grader floor, throttle, grader setting or switch frequency changes the block sizes, so the generated rows change. The sixth case keeps an order set in TS. A panel's base rows are only ever rows the sync wrote, because an import leaves out rows set in TS, so TS rows equal to them are the sync's own even when stale, and a panel holding stale sync rows is refreshed to ACP's order. A panel whose base has no rows has none of the sync's to refresh, so it is left alone: a hand order on panel 1 that ACP now holds is not copied to a panel 2 that has none. The one exception is a target where the base and TS both have no rows and ACP's order matched TS's natural order (its enabled plans in `Id` order, over the rows with plans) before the push. Nothing there was set in TS, and a plan added back after removal keeps its lower `Id`, so without the refresh TS would shoot it first while ACP lists it last.
 
 An import records `known_rows` from the old base plus the row ids behind TS's plans, never from ACP's rows as they stand. A row the user added in ACP since the last push therefore stays new at the next push, however many imports come between. When an import leaves ACP listing rows in an order TS will not shoot (TS's effective order differs from ACP's over the enabled rows both have), it adds a warn note naming the target and both orders, such as "Helix: ACP lists Ha, OIII, SII but Target Scheduler will shoot SII, Ha, OIII. Push after reordering in ACP to change it." No note is made when the order is pulled, or when Keep ACP was chosen on the order, since that push replaces TS's rows.
 
@@ -440,13 +440,13 @@ The order is its own field in the import choices, apart from the plan's Keep ACP
 
 The migration in section 3 does not count as an ACP change to the order. A base without `exposure_order` means the first push writes no order, and the next upload brings in each target's effective order from TS. The user's three hand-made override orders therefore stay in TS until they change the order in ACP.
 
-## 6. What AAC needs from ACP
+## 6. What a frame grader needs from ACP
 
-AAC's incremental masters spec (`Astro-Auto-Calibration/docs/specs/incremental-master-builds.md`, section 7) defines the storage contract this section implements. The AAC spec is being amended to the `filter_rows` names used here.
+This section is the contract for a frame grader: any tool that grades the frames shot and reports how many it kept. Plans saved before the contract was renamed hold the blocks below under an older name. ACP finds a block under an older name by its fields. If an extension registered that name with `filter_rows.register_block_alias(<old>, "grader")`, the block moves to `grader` when plans load, is stored that way on the next save, and `GET /api/plans` also returns it under the old name for clients written before the rename. If no extension registered the name, ACP logs a warning, leaves the block where it is, adds a `grader` copy, and keeps both current, so nothing reading the old name breaks (docs/extensions.md, "Old names").
 
 ### `POST /api/plans/<plan_id>/accepted`
 
-AAC is the only caller. It authenticates as the plugin does on `/progress`, with an `Authorization: Bearer <token>` header that ACP checks against `ACP_API_TOKEN`. A missing or wrong token gets 401, and an unknown plan id gets 404. The body carries `source`, `at`, `filed_through_night`, `min_total_frames` and a list of `rows`. AAC sends every row of the plan. Each row names its target by `id`, the row id, and echoes `filter` and `template` for checking. Each carries these fields:
+The grader is the only caller. It authenticates as the plugin does on `/progress`, with an `Authorization: Bearer <token>` header that ACP checks against `ACP_API_TOKEN`. A missing or wrong token gets 401, and an unknown plan id gets 404. The body carries `source`, `at`, `filed_through_night`, `min_total_frames` and a list of `rows`. The grader sends every row of the plan. Each row names its target by `id`, the row id, and echoes `filter` and `template` for checking. Each carries these fields:
 
 - `accepted_seconds`, `accepted_frames`
 - `seen_seconds`, `seen_frames`
@@ -457,58 +457,58 @@ ACP stores them as follows:
 
 | Path on the plan | Content |
 |---|---|
-| `filter_rows[i].aac` | the row's fields above, and `goal_at_send`, replacing the previous block |
-| `aac.filed_through_night` | from the request |
-| `aac.min_total_frames` | from the request |
-| `aac.received_at` | the time ACP received it |
+| `filter_rows[i].grader` | the row's fields above, and `goal_at_send`, replacing the previous block |
+| `grader.filed_through_night` | from the request |
+| `grader.min_total_frames` | from the request |
+| `grader.received_at` | the time ACP received it |
 
 A row is stored only when its `id` exists on the plan, its `filter` passes `canon_filter` to the row's filter, and its `template` equals the row's template exactly. Any other row comes back in `unknown_rows` with a reason: "no such row", or "row now has filter G and template G Stars". A row that exists but comes back unknown loses its stored block. Values may go down. `actual_hours` is never changed.
 
 ### Done, as the editor shows it
 
-A row with an `aac` block shows done as `aac.accepted_seconds / 3600` hours, or `aac.accepted_frames` in a frame row. It counts as finished when `aac.complete` is true. A row without one uses `actual_hours` against the goal, as today.
+A row with a `grader` block shows done as `grader.accepted_seconds / 3600` hours, or `grader.accepted_frames` in a frame row. It counts as finished when `grader.complete` is true. A row without one uses `actual_hours` against the goal, as today.
 
 ### The accepted write to TS
 
-Both writers follow the AAC spec's section 7, "How the shortfall reaches TS", which is summarised here.
+Both writers follow these rules for how the shortfall reaches TS.
 
-- Before any AAC write, the writer reads the profile's grading settings in `profilepreference`. If `delayGrading` is not 0, or any of `enableGradeRMS`, `enableGradeStars`, `enableGradeHFR`, `enableGradeFWHM` and `enableGradeEccentricity` is not 0, it makes no AAC write for that profile and logs a warning.
+- Before any grader write, the writer reads the profile's grading settings in `profilepreference`. If `delayGrading` is not 0, or any of `enableGradeRMS`, `enableGradeStars`, `enableGradeHFR`, `enableGradeFWHM` and `enableGradeEccentricity` is not 0, it makes no grader write for that profile and logs a warning.
 - A project is eligible when all of these hold:
-  - ACP's data allows it: no target in it is a mosaic panel, every plan in it has a usable `aac` block, and every row the push writes (a goal above 0) has an `aac` block. A row with no block rules the whole project out, and a row with a goal of 0 is not written, so it does not count.
+  - ACP's data allows it: no target in it is a mosaic panel, every plan in it has a usable `grader` block, and every row the push writes (a goal above 0) has a `grader` block. A row with no block rules the whole project out, and a row with a goal of 0 is not written, so it does not count.
   - The profile's grading settings are all 0.
-  - `aac.filed_through_night` is on or after the night that ended that morning. With several plans in the project, the oldest watermark counts.
-  - Every enabled exposure plan in the project is one this push wrote with an AAC count. Disabled plans, such as those of removed rows and rows at goal 0, are not looked at.
+  - `grader.filed_through_night` is on or after the night that ended that morning. With several plans in the project, the oldest watermark counts.
+  - Every enabled exposure plan in the project is one this push wrote with a grader count. Disabled plans, such as those of removed rows and rows at goal 0, are not looked at.
   - TS has saved no frame for the project after noon, local time, on the day after the watermark night. A rerun during imaging would otherwise reset `accepted` and have TS reshoot tonight's frames.
 - For an eligible project, one transaction writes `accepted` for every enabled exposure plan and sets `project.enablegrader` to 1. Any other project gets neither write.
 - `exposureplan.accepted` and `project.enablegrader` stay out of the generic UPDATE (`INSERT_ONLY_COLUMNS` and `insertOnlyColumns`). `upsert.py` and `TsUpsert` write them with explicit UPDATE statements after the plans are written, for eligible projects only, so `convert.py` and `TsConvert` carry no per-project exception for them.
-- A project AAC has reported on and the push skips gets a line in the push result saying why, such as "Helix: AAC counts not written, OIII has no AAC figures yet". A project with no `aac` block anywhere stays quiet.
+- A project the grader has reported on and the push skips gets a line in the push result saying why, such as "Helix: grader counts not written, OIII has no grader figures yet". A project with no `grader` block anywhere stays quiet.
 - `acquired` is never written.
 
-### Four rules that keep AAC and ACP apart
+### Four rules that keep the grader and ACP apart
 
-- **AAC's floor never reaches ACP's goal.** The floor lifts only what the writers send as `desired`. The base snapshot records the row's own goal for an AAC-linked row, not the floored `desired` TS holds. On import, a TS `desired` equal to `max(goal, min_total_frames)` for that row is read back as the row's goal, so with no base, or after "Take TS" on an unrelated conflict, the floor is never written into ACP. Any other `desired` in TS is a real edit and is pulled as usual.
-- **A stale block goes.** A row's `aac` block was reported for one filter and template. ACP drops it when a save, a pull or "Take TS" gives the row a different filter or template, and when AAC sends the row to `/accepted` and gets it back in `unknown_rows`. A project then has a row with no block, which rules it out until AAC reports again.
+- **The grader's floor never reaches ACP's goal.** The floor lifts only what the writers send as `desired`. The base snapshot records the row's own goal for a grader-linked row, not the floored `desired` TS holds. On import, a TS `desired` equal to `max(goal, min_total_frames)` for that row is read back as the row's goal, so with no base, or after "Take TS" on an unrelated conflict, the floor is never written into ACP. Any other `desired` in TS is a real edit and is pulled as usual.
+- **A stale block goes.** A row's `grader` block was reported for one filter and template. ACP drops it when a save, a pull or "Take TS" gives the row a different filter or template, and when the grader sends the row to `/accepted` and gets it back in `unknown_rows`. A project then has a row with no block, which rules it out until the grader reports again.
 - **Goal 0 is a removed row.** A row with a goal of 0 pushes no plan, and its existing exposure plan is disabled on the next push, with the override rows rebuilt as in "Removing and re-adding a row". Raising the goal again enables the plan, as re-adding a row does.
-- **A `complete` flag is judged against the goal AAC saw.** `/accepted` stores `goal_at_send` in the row's `aac` block: the row's goal in its own unit at that moment. The writers count `complete` only while the row's current goal is not above `goal_at_send`. Raised since, the row reads as not complete until AAC reports again. A block with no `goal_at_send` keeps its flag.
+- **A `complete` flag is judged against the goal the grader saw.** `/accepted` stores `goal_at_send` in the row's `grader` block: the row's goal in its own unit at that moment. The writers count `complete` only while the row's current goal is not above `goal_at_send`. Raised since, the row reads as not complete until the grader reports again. A block with no `goal_at_send` keeps its flag.
 
 ACP's own writers of `plans.json` (`/accepted`, `/progress`, plan saves, project settings, sync) hold one lock, `PLANS_LOCK`. The NINA extension adopts it in `register(app)`, so a push, an import and an `/accepted` write cannot write back older copies over each other.
 
-The values, for each AAC-linked row, with `sub` meaning `template_sub_s`:
+The values, for each grader-linked row, with `sub` meaning `template_sub_s`:
 
 | Quantity | Formula |
 |---|---|
-| `desired`, hour row | max(ceil(`target_hours` x 3600 / sub), `aac.min_total_frames`) |
-| `desired`, frame row | max(`target_frames`, `aac.min_total_frames`) |
-| AAC count | floor(`aac.accepted_seconds` / sub + 0.000001) |
-| frames short of the floor | max(1, `aac.min_total_frames` - `aac.accepted_frames`) |
-| `accepted`, row complete | max(AAC count, `desired`) |
-| `accepted`, row not complete | max(0, min(AAC count, `desired` - frames short of the floor)) |
+| `desired`, hour row | max(ceil(`target_hours` x 3600 / sub), `grader.min_total_frames`) |
+| `desired`, frame row | max(`target_frames`, `grader.min_total_frames`) |
+| grader count | floor(`grader.accepted_seconds` / sub + 0.000001) |
+| frames short of the floor | max(1, `grader.min_total_frames` - `grader.accepted_frames`) |
+| `accepted`, row complete | max(grader count, `desired`) |
+| `accepted`, row not complete | max(0, min(grader count, `desired` - frames short of the floor)) |
 
-Both suites run the shared case file `tests/fixtures/aac_accepted_cases.json` in acp-nina-ts-sync, as the AAC spec requires.
+Both suites run the shared case file `tests/fixtures/aac_accepted_cases.json` in acp-nina-ts-sync.
 
 ## 7. Acceptance tests
 
-Each test names the repo it lives in. "Python" means `acp-nina-ts-sync/tests`, run with `~/Developer/Astro-Coverage-Planner/.venv/bin/python -m pytest tests -q`. "C#" means `ACP.NINA.Plugin.Tests`, which runs only on Windows. "ACP" means `Astro-Coverage-Planner/tests`.
+Each test names the repo it lives in. "Python" means `acp-nina-ts-sync/tests`, run with ACP's virtual environment, `.venv/bin/python -m pytest tests -q`. "C#" means `ACP.NINA.Plugin.Tests`, which runs only on Windows. "ACP" means `Astro-Coverage-Planner/tests`.
 
 ### A TS order oracle
 
@@ -541,7 +541,7 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | U8 | ACP, `tests/frontend` | Turn on "Smart order" | Handles are disabled. Dragging and arrow keys change nothing. The explanation line reads the smart text. |
 | U9 | ACP, `tests/frontend` | Panel at 380 px and at 300 px, a row with template "B Stars (ZWO ASI6200MM Pro)" | The card's four columns stay aligned. The template name truncates inside its column. The panel does not scroll sideways. |
 | U10 | ACP, `tests/frontend` | R goal 4.2 h, actual 3.0 h. Then a frame row with goal 20 fr and 18 frames done. | "3.0 / 4.2 h" and "1.2 h left". Then "18 / 20 fr" and "2 fr left". |
-| U11 | ACP, `tests/frontend` | Row with goal 4.2 h, actual 4.2 h, `aac.accepted_seconds` 10800, `aac.complete` false. Then `aac.complete` true. | First: "3.0 / 4.2 h" and the card is not dimmed. Second: "done" and the card is dimmed. |
+| U11 | ACP, `tests/frontend` | Row with goal 4.2 h, actual 4.2 h, `grader.accepted_seconds` 10800, `grader.complete` false. Then `grader.complete` true. | First: "3.0 / 4.2 h" and the card is not dimmed. Second: "done" and the card is dimmed. |
 | U12 | ACP, `tests/frontend` | A plan whose camera has no TS template list. Any page with an empty value. | The template drop-down offers the current template and "New template…". No rendered cell in the app is exactly ",". |
 | V1 | ACP | Save a plan with two rows R / "R Stars" | 400, naming the duplicate. The same filter with two different templates saves. |
 | V2 | ACP | Save rows with unit "fr" and no `target_frames`, with `target_frames` 2.5, and with an empty `template` | Each returns 400. |
@@ -581,8 +581,8 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | O3h | C# | The golden scenarios x1 to x3b | The plugin's rows equal the Python rows. |
 | O4 | Python | Switch frequency 0 against 3. ACP order OIII, Ha. | At 0: the oracle shoots OIII x4 then Ha x4. At 3: override rows are OIII x3, Ha x3. The oracle shoots OIII, OIII, OIII, Ha, Ha, Ha, OIII, Ha. |
 | O4b | Python | Grader off, throttle 125, switch frequency 0, ACP order OIII, Ha | Blocks are 5 rows each. The oracle shoots OIII x5, then Ha x5, which is past `desired`, as TS does. |
-| O4c | Python | After O1, the oracle shoots OIII x4 and one Ha. AAC then lowers OIII's `accepted` to 3. Push. | The cadence rows are gone. The oracle's next frame is OIII, then Ha. |
-| O4d | Python | After O1, raise OIII's goal to 6 frames. Push with no order change. | Case 4 applies: the rows become OIII x6, Ha x4. The same happens when AAC's floor raises `desired`. |
+| O4c | Python | After O1, the oracle shoots OIII x4 and one Ha. The grader then lowers OIII's `accepted` to 3. Push. | The cadence rows are gone. The oracle's next frame is OIII, then Ha. |
+| O4d | Python | After O1, raise OIII's goal to 6 frames. Push with no order change. | Case 4 applies: the rows become OIII x6, Ha x4. The same happens when the grader's floor raises `desired`. |
 | O5 | Python | ACP order equals natural order, Ha then OIII, at 0 and at 3 | No override rows. At 0 the oracle shoots Ha x4 then OIII x4. At 3 it shoots Ha x3, OIII x3, Ha, OIII. |
 | O6 | Python | Smart order turned on in ACP, ACP order OIII, Ha | The project row has `smartexposureorder` 1. No override rows are written, and the cadence rows are deleted. |
 | O7 | Python | `ditherevery` 2, order OIII, Ha, switch 0 | Override rows: OIII, OIII, D, OIII, OIII, Ha, Ha, D, Ha, Ha. |
@@ -593,10 +593,10 @@ Unless a test says otherwise, the fixture is one plan "M42" on a fresh database 
 | F1 | Python | O1's database, base switch frequency 0, ACP 3, TS 0 | The push writes 3 and deletes the cadence rows of every target in the project. The override rows change from OIII x4, Ha x4 to OIII x3, Ha x3. |
 | F2 | Python | Base 0, ACP 0, TS 3 | The push leaves 3. The base stays 0. |
 | F3 | C# | F1 and F2 as golden scenarios | The plugin's rows equal the Python rows. |
-| A2 | ACP | `POST /api/plans/M42/accepted` with the Ha row's id, filter "Antlia Ha", template "Ha", 22320 s, complete false. Then 21240 s. A row with the R Stars row's id, filter R, template "R Stars". A row whose id exists but now has template "G Stars". The request has `filed_through_night` 2026-10-11 and `min_total_frames` 10. Also one request with no token. | The Ha values are stored on the Ha row and the second lowers them. The R Stars values are stored on its row. The changed row comes back in `unknown_rows` with its reason. `aac.filed_through_night`, `aac.min_total_frames` and `aac.received_at` are stored. `actual_hours` is unchanged. The request with no token is refused as `/progress` refuses it. |
+| A2 | ACP | `POST /api/plans/M42/accepted` with the Ha row's id, filter "Antlia Ha", template "Ha", 22320 s, complete false. Then 21240 s. A row with the R Stars row's id, filter R, template "R Stars". A row whose id exists but now has template "G Stars". The request has `filed_through_night` 2026-10-11 and `min_total_frames` 10. Also one request with no token. | The Ha values are stored on the Ha row and the second lowers them. The R Stars values are stored on its row. The changed row comes back in `unknown_rows` with its reason. `grader.filed_through_night`, `grader.min_total_frames` and `grader.received_at` are stored. `actual_hours` is unchanged. The request with no token is refused as `/progress` refuses it. |
 | A3 | Python | Every case in `tests/fixtures/aac_accepted_cases.json`, which includes a frame row with `target_frames` 8 and floor 10 | Each case writes exactly the expected `accepted`, `desired` and `enablegrader`. The frame row gets `desired` 10. `acquired` never changes. |
-| A4 | Python | Two exposure plans in one project, one with an `aac` block and one without. Then both with blocks, but `filed_through_night` two nights old. | Neither push writes `accepted` or `enablegrader` in that project. |
-| A5 | Python | A mosaic plan with fresh figures. Then an eligible project on a profile with `delayGrading` 80. | Neither push makes an AAC write. The second logs a warning naming the profile setting. |
+| A4 | Python | Two exposure plans in one project, one with a `grader` block and one without. Then both with blocks, but `filed_through_night` two nights old. | Neither push writes `accepted` or `enablegrader` in that project. |
+| A5 | Python | A mosaic plan with fresh figures. Then an eligible project on a profile with `delayGrading` 80. | Neither push makes a grader write. The second logs a warning naming the profile setting. |
 | A6 | C# | The same case file, and A4 and A5 | The plugin's rows equal the expected rows in every case. |
 
 The full Python suite still passes, 223 tests on `main` before this change.
@@ -644,10 +644,10 @@ I cannot run TS here, so the order needs one check on IMAGING-PC after phase 5 s
 8. `GET /api/plans` keeps a derived `filter_goals` for older plugins, built from the first row of each filter. Star rows reach TS only once the new plugin is installed.
 9. Switch frequency and smart order are per project, so they are saved for every plan in a project at once. When plans disagree, the first plan in `plans.json` wins.
 10. The placeholders become an en dash rather than the original em dash, so a future punctuation tidy does not catch them.
-11. Section 6 follows the AAC spec at commit `e41528c`: `filter_rows` with row ids, rows addressed by `id` in `/accepted`, and bearer token authentication. That spec defines `template_sub_s` as the template default copied when the row was made. This spec refreshes it to the sub TS actually uses (assumption 6), which is the same value for every row created after the migration.
+11. Section 6 uses `filter_rows` with row ids, rows addressed by `id` in `/accepted`, and bearer token authentication. The grader contract first defined `template_sub_s` as the template default copied when the row was made. This spec refreshes it to the sub TS actually uses (assumption 6), which is the same value for every row created after the migration.
 12. "Rotate every N" keeps N between 1 and 99.
 
 ## Open questions
 
-1. The user's three hand-made override orders (G7.7-3.7, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what they wanted when they set them on 11 October? If not, they can set each order once in ACP after phase 5, and the sync replaces them. The user has been asked and has not answered yet.
+1. The user's three hand-made override orders (a science target, Dolphin Nebula, Helix Nebula) make TS rotate one frame per filter, although their switch frequency is 0. Was that what they wanted when they set them? If not, they can set each order once in ACP after phase 5, and the sync replaces them. The user has been asked and has not answered yet.
 2. Does `ACP.NINA.Plugin.Tests` reference TS's assembly in a way that lets test O9 run on Windows? If not, the manual check is the only check against TS itself.

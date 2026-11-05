@@ -50,20 +50,43 @@ def desired(row: dict) -> int:
     return max(1, math.ceil(hours * 3600.0 / sub_s(row)))
 
 
+#: A frame grader's figures sit in a block called `grader` on a plan and its
+#: rows. A plan from an ACP older than the rename holds it under an older
+#: name, found here by the block's fields, as ACP core finds it.
+GRADER_KEY = "grader"
+_GRADER_MARKS = frozenset({"filed_through_night", "min_total_frames", "accepted_seconds",
+                           "accepted_frames", "seen_seconds", "seen_frames", "goal_at_send"})
+_NOT_GRADER = frozenset({GRADER_KEY, "target", "panels", "filter_goals", "ts_links", "ts_refs",
+                         "ts_base_snapshot"})
+
+
+def other_grader_keys(obj) -> list[str]:
+    """Keys other than `grader` whose value is a grader block by its fields."""
+    if not isinstance(obj, dict):
+        return []
+    return [k for k, v in obj.items()
+            if k not in _NOT_GRADER and isinstance(v, dict) and not _GRADER_MARKS.isdisjoint(v)]
+
+
 def aac_block(row: dict) -> dict | None:
-    """The row's `aac` block, AAC's figures, or None."""
-    b = row.get("aac")
-    return b if isinstance(b, dict) else None
+    """The grader's block on a row or plan, under `grader` or an older name, or None."""
+    if not isinstance(row, dict):
+        return None
+    if isinstance(row.get(GRADER_KEY), dict):
+        return row[GRADER_KEY]
+    for k in other_grader_keys(row):
+        return row[k]
+    return None
 
 
 def plan_aac(plan: dict | None) -> dict | None:
-    """The plan's `aac` block with a usable watermark and floor, or None.
+    """The plan's grader block with a usable watermark and floor, or None.
 
     `filed_through_night` has to be an ISO date and `min_total_frames` a whole
     number of at least 0; anything else reads as no block, so a malformed
     block can never open a write (goal-panel-and-ts-order.md section 6).
     """
-    b = (plan or {}).get("aac")
+    b = aac_block(plan or {})
     if not isinstance(b, dict):
         return None
     night, floor = b.get("filed_through_night"), b.get("min_total_frames")
@@ -80,7 +103,7 @@ def plan_aac(plan: dict | None) -> dict | None:
 
 
 def desired_for(row: dict, plan: dict | None) -> int:
-    """`desired` with AAC's floor (section 6): a row that has an `aac` block
+    """`desired` with the grader's floor (section 6): a row that has a grader block
     on a plan with one never sits below `min_total_frames`. A row with a goal
     of 0 still pushes no plan."""
     d = desired(row)
@@ -98,10 +121,10 @@ def goal_of(row: dict) -> float:
 
 
 def complete_counts(row: dict) -> bool:
-    """Whether the row's `aac.complete` still stands. AAC judged it against
+    """Whether the grader's `complete` flag on the row still stands. The grader judged it against
     the goal the row had when it sent the figures (`goal_at_send`, in the
-    row's unit); a goal raised since means AAC has not seen the new goal, so
-    the row reads as incomplete until AAC reports again. A block with no
+    row's unit); a goal raised since means the pipeline has not seen the new goal, so
+    the row reads as incomplete until the pipeline reports again. A block with no
     `goal_at_send` has nothing to compare and stands."""
     block = aac_block(row)
     if block is None or block.get("complete") is not True:
@@ -113,7 +136,7 @@ def complete_counts(row: dict) -> bool:
 
 
 def unfloored_goal(row: dict, plan: dict | None, ts_desired: int) -> int:
-    """TS's `desired` read as ACP's goal. AAC's floor lifts what the writer
+    """TS's `desired` read as ACP's goal. The pipeline's floor lifts what the writer
     sends (`desired_for`), so a `desired` of exactly that is the row's own
     goal, never a change to take; anything else is a real edit in TS."""
     if aac_block(row) is not None and desired(row) > 0 and ts_desired == desired_for(row, plan):
@@ -150,7 +173,7 @@ def unfloored(local: dict | None, remote: dict | None) -> dict | None:
 
 
 def aac_accepted(row: dict, plan: dict | None, wanted: int) -> int | None:
-    """The `accepted` count to write for an AAC-linked row, or None when the
+    """The `accepted` count to write for a pipeline-linked row, or None when the
     row has no usable figures. *wanted* is the row's `desired` after the
     floor. Section 6, "The accepted write to TS"."""
     block, plan_block = aac_block(row), plan_aac(plan)

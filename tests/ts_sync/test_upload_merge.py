@@ -237,7 +237,7 @@ def test_acp_only_change(host, tmp_path):
     assert row(host.plan("a"), "Ha")["target_hours"] == 14
 
 
-def test_pne_style_filter_name_mismatch_is_not_a_conflict(host, tmp_path):
+def test_short_wheel_name_filter_mismatch_is_not_a_conflict(host, tmp_path):
     """The Sample Survey case: ACP has a plan keyed "OIII", and TS's own
     exposuretemplate for that same plan is named "OIII" but its filtername
     column (the wheel's own slot name) is "O". Before the canon fix the

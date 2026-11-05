@@ -321,7 +321,7 @@ def o4_rotate(conn):
 
 def o4c(conn):
     """O4c: after O1, a night shot OIII x4 and one Ha (the cadence left
-    with row 6 next), then AAC lowered OIII's accepted to 3. Push."""
+    with row 6 next), then the grader lowered OIII's accepted to 3. Push."""
     p, _ = o1_state(conn)
     tid = m42_target_id(conn)
     conn.execute("UPDATE exposureplan SET acquired = 4, accepted = 3 WHERE Id = 2")

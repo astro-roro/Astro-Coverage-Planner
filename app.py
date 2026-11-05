@@ -212,7 +212,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
 
 # Every route that reads plans.json, changes it and writes it back holds this
 # lock, and so does the NINA Target Scheduler extension's push and import,
-# which adopts it in register(app). Without it AAC's /accepted could write
+# which adopts it in register(app). Without it a grader's /accepted could write
 # back an older copy over a push's, and the reverse. ACP runs as one process
 # under waitress, so a thread lock is enough.
 PLANS_LOCK = threading.RLock()
@@ -852,6 +852,23 @@ def _heal_nonfinite_floats(value, path_parts: list[str], healed: list[str]):
     return value
 
 
+_warned_grader_names: set[str] = set()
+
+
+def _warn_unregistered_grader_names(names: set[str]) -> None:
+    """Say once per name that plans hold a grader block under a name no
+    extension registered. ACP keeps that block and keeps it current, so a
+    client reading the old name still works, but it is not renamed."""
+    for name in sorted(names - _warned_grader_names):
+        _warned_grader_names.add(name)
+        logging.warning(
+            "plans.json holds frame grader blocks under the name %r, which no extension has "
+            "registered as an old name for 'grader'. ACP reads them, keeps them current beside "
+            "'grader' and serves them as stored, but does not rename them. Register the name with "
+            "filter_rows.register_block_alias(%r, 'grader') to move them (docs/extensions.md, "
+            "\"Old names\").", name, name)
+
+
 def _heal_plan_list(plans: list) -> list:
     """Heal legacy plans.json entries written before NaN/Infinity were
     rejected on the way in (_validate_plan_payload). Every write path
@@ -877,6 +894,10 @@ def _heal_plan_list(plans: list) -> list:
                 "plan %s: replaced non-finite value(s) with null in field(s): %s",
                 plan_id, fields,
             )
+        # A grader's block saved under a name from before the rename: moved
+        # to `grader` when an extension registered that name, otherwise kept
+        # where it is beside a `grader` copy, with a warning.
+        _warn_unregistered_grader_names(fr.migrate_grader_names(healed_p))
         healed_plans.append(healed_p)
     return healed_plans
 
@@ -4835,6 +4856,9 @@ def _with_goals_view(plan):
     if not isinstance(plan, dict):
         return plan
     plan = _ext_plan_view(plan)
+    # The grader's blocks also go out under any old name an extension
+    # registered, for clients written before the rename.
+    plan = fr.with_old_block_names(plan)
     if not isinstance(plan.get("filter_rows"), list):
         # Not migrated yet (the backup failed): its own filter_goals stand.
         return plan
@@ -4876,7 +4900,7 @@ def api_plans():
     err = _ext_plan_fields_on_save(payload, previous)
     if err:
         return jsonify({"error": err}), 400
-    fr.keep_aac(payload, previous)
+    fr.keep_grader(payload, previous)
     fr.sync_actuals(payload)
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
@@ -4946,7 +4970,7 @@ def api_plan(plan_id: str):
     err = _ext_plan_fields_on_save(payload, existing)
     if err:
         return jsonify({"error": err}), 400
-    fr.keep_aac(payload, existing)
+    fr.keep_grader(payload, existing)
     fr.sync_actuals(payload)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
@@ -5817,14 +5841,15 @@ def api_plan_progress(plan_id: str):
 @app.route("/api/plans/<plan_id>/accepted", methods=["POST"])
 @_holds_plans_lock
 def api_plan_accepted(plan_id: str):
-    """Store AAC's accepted counts against a plan's filter rows.
+    """Store a frame grader's accepted counts against a plan's filter rows.
 
-    AAC is the only caller (docs/specs/goal-panel-and-ts-order.md section 6,
-    and its own spec, incremental-master-builds.md section 7). The access gate
-    has already checked the bearer token. A row lands only when its id, echoed
-    filter and echoed template match the plan; the rest come back in
-    `unknown_rows` with a reason, and AAC does not retry them until its figures
-    change. Values may go down, and `actual_hours` is never touched.
+    For any tool that grades frames and reports how many it kept per row
+    (docs/api.md, "Accepted counts"; docs/specs/goal-panel-and-ts-order.md
+    section 6). The access gate has already checked the bearer token. A row
+    lands only when its id, echoed filter and echoed template match the plan;
+    the rest come back in `unknown_rows` with a reason, and a sender should not
+    retry them until its figures change. Values may go down, and
+    `actual_hours` is never touched.
     """
     body = request.get_json(silent=True)
     data = load_plans()
@@ -5838,7 +5863,7 @@ def api_plan_accepted(plan_id: str):
     plan = plans[idx]
     canon_filter, _ = _filter_helpers()
     now = datetime.now(timezone.utc).isoformat()
-    complete_before = {r.get("id"): bool((r.get("aac") or {}).get("complete"))
+    complete_before = {r.get("id"): bool((fr.grader_block(r) or {}).get("complete"))
                        for r in fr.rows_of(plan)}
     unknown = fr.apply_accepted(plan, body, now, canon_filter, _template_names_for_row(plan))
     plans[idx] = plan
@@ -5846,7 +5871,7 @@ def api_plan_accepted(plan_id: str):
     if activity.enabled():
         plan_copy = copy.deepcopy(plan)
         newly = [r for r in fr.rows_of(plan_copy)
-                 if (r.get("aac") or {}).get("complete") and not complete_before.get(r.get("id"))]
+                 if (fr.grader_block(r) or {}).get("complete") and not complete_before.get(r.get("id"))]
         _activity_later(lambda: _record_accepted(plan_copy, newly))
     return jsonify({"ok": True, "unknown_rows": unknown,
                     "filed_through_night": body["filed_through_night"]})
@@ -5915,7 +5940,7 @@ def _record_accepted(plan: dict, newly: list) -> None:
     night = activity.current_night()
     rows = []
     for r in fr.rows_of(plan):
-        block = r.get("aac")
+        block = fr.grader_block(r)
         if isinstance(block, dict):
             rows.append({"filter": r.get("filter"), "template": r.get("template"),
                          "accepted_frames": block.get("accepted_frames"),
@@ -5923,7 +5948,7 @@ def _record_accepted(plan: dict, newly: list) -> None:
                          "complete": bool(block.get("complete"))})
     activity.record(
         type="accepted_counts", key=f"accepted_counts:{plan.get('id')}:{night}", night=night,
-        title=f"{activity.plan_name(plan)}: AAC accepted counts updated ({len(rows)} rows)",
+        title=f"{activity.plan_name(plan)}: accepted counts updated ({len(rows)} rows)",
         refs=activity.plan_refs(plan), data={"rows": rows[:40]})
     for row in newly:
         _record_goal_reached(plan, row)
@@ -6244,7 +6269,7 @@ def _load_ts_templates_store() -> dict:
 def _plugin_templates_response(path: Path, error: str):
     """Answer from the lists the plugin posted, or None when there are none.
 
-    The server case: ACP on homeserver has no TS database file, so the plugin
+    The server case: ACP on the home server has no TS database file, so the plugin
     sends the list instead (docs/specs/goal-panel-and-ts-order.md section 2).
     """
     profiles = _load_ts_templates_store()
@@ -7844,6 +7869,26 @@ migrate_gear_at_startup()
 clear_dead_scan_progress()
 start_scan_scheduler()
 start_jobs_scheduler()
+
+
+def check_old_names_at_startup() -> None:
+    """Load plans and open the Activity store once, after every extension has
+    registered its aliases, so blocks and Activity names from before a rename
+    are renamed or reported in the log at startup rather than on first use.
+    Skipped with ACP_SKIP_STARTUP_MIGRATION, as the gear migration is."""
+    if os.environ.get("ACP_SKIP_STARTUP_MIGRATION"):
+        return
+    try:
+        load_plans()
+    except Exception:
+        logging.exception("could not load plans at startup to check old names")
+    try:
+        activity.open_now()
+    except Exception:
+        logging.exception("could not open the Activity store at startup to check old names")
+
+
+check_old_names_at_startup()
 
 
 def effective_port(env=None) -> int:

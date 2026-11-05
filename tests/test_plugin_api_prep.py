@@ -58,7 +58,7 @@ def _save_gear():
 def _save_sites():
     app_module.save_sites({
         "version": 1,
-        "sites": [{"id": "sydney", "name": "Sydney", "lat": -33.87, "lon": 151.21}],
+        "sites": [{"id": "example-site", "name": "Example site", "lat": -24.63, "lon": -70.40}],
     })
 
 
@@ -138,7 +138,7 @@ class TestPlansExpand(unittest.TestCase):
     def test_expand_site(self):
         r = self.client.get("/api/plans?expand=site")
         plan = r.get_json()["plans"][0]
-        self.assertEqual(plan["site"]["id"], "sydney")
+        self.assertEqual(plan["site"]["id"], "example-site")
 
     def test_expand_panels(self):
         r = self.client.get("/api/plans?expand=panels")

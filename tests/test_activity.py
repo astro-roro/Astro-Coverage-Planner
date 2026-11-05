@@ -48,7 +48,7 @@ class ActivityCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             "ACP_API_TOKEN": TOKEN,
             "ACP_ACTIVITY_DB": str(self.td / "activity.sqlite"),
-            "ACP_ACTIVITY_TZ": "Australia/Sydney",
+            "ACP_ACTIVITY_TZ": "Europe/Berlin",
         })
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -127,22 +127,32 @@ class TestPosting(ActivityCase):
         return self.all_events()[0]["night"]
 
     def test_03_local_noon_is_the_cut_over(self):
-        self.assertEqual(self._night_for("2026-10-14T10:00+11:00"), "2026-10-13")
+        self.assertEqual(self._night_for("2026-10-14T10:00+02:00"), "2026-10-13")
         activity.close()
         os.environ["ACP_ACTIVITY_DB"] = str(self.td / "b.sqlite")
-        self.assertEqual(self._night_for("2026-10-14T12:00+11:00"), "2026-10-14")
+        self.assertEqual(self._night_for("2026-10-14T12:00+02:00"), "2026-10-14")
 
     def test_04_utc_times_are_read_in_the_configured_zone(self):
         self.assertEqual(self._night_for("2026-10-14T00:30:00Z"), "2026-10-13")
 
     def test_05_daylight_saving_day_does_not_move_the_cut_over(self):
-        self.assertEqual(self._night_for("2026-10-04T11:59+11:00"), "2026-10-03")
+        self.assertEqual(self._night_for("2026-03-29T11:59+02:00"), "2026-03-28")
         activity.close()
         os.environ["ACP_ACTIVITY_DB"] = str(self.td / "b.sqlite")
-        self.assertEqual(self._night_for("2026-10-04T12:00+11:00"), "2026-10-04")
+        self.assertEqual(self._night_for("2026-03-29T12:00+02:00"), "2026-03-29")
+
+    def test_05b_unset_zone_follows_the_system_zone(self):
+        os.environ.pop("ACP_ACTIVITY_TZ", None)
+        with mock.patch.dict(os.environ, {"TZ": "America/Chicago"}):
+            self.assertEqual(getattr(activity.tz(), "key", None), "America/Chicago")
+            self.assertEqual(self._night_for("2026-10-14T11:00-05:00"), "2026-10-13")
+
+    def test_05c_a_bad_zone_falls_back_to_the_system_zone(self):
+        with mock.patch.dict(os.environ, {"ACP_ACTIVITY_TZ": "Not/AZone", "TZ": "America/Chicago"}):
+            self.assertEqual(getattr(activity.tz(), "key", None), "America/Chicago")
 
     def test_06_an_explicit_night_wins(self):
-        self.post(ev(at="2026-10-20T15:00+11:00", night="2026-10-13"))
+        self.post(ev(at="2026-10-20T15:00+02:00", night="2026-10-13"))
         self.assertEqual(self.all_events()[0]["night"], "2026-10-13")
 
     def test_07_validation_rejects_alone_and_stores_the_rest(self):
@@ -199,7 +209,7 @@ class TestPosting(ActivityCase):
         self.assertEqual(out["rejected"][0]["key"], "a")
 
     def test_11_the_same_key_from_two_sources_is_two_events(self):
-        self.post(ev("k1", source="plugin"), ev("k1", source="aac"))
+        self.post(ev("k1", source="plugin"), ev("k1", source="processing"))
         self.assertEqual(len(self.all_events()), 2)
 
     def test_12_a_lower_seq_is_stale(self):
@@ -216,10 +226,10 @@ class TestPosting(ActivityCase):
 class TestResolving(ActivityCase):
     def queued(self, **kw):
         return ev("q", type="master_queued", needs_you=True, title="Dolphin OIII queued",
-                  resolve_key="master:Dolphin:110GTX:OIII", source="aac", **kw)
+                  resolve_key="master:Dolphin:110GTX:OIII", source="processing", **kw)
 
     def built(self, **kw):
-        return ev("b", type="master_built", title="Dolphin OIII built", source="aac",
+        return ev("b", type="master_built", title="Dolphin OIII built", source="processing",
                   resolves=["master:Dolphin:110GTX:OIII"], **kw)
 
     def test_13_a_build_closes_the_queued_item(self):
@@ -241,7 +251,7 @@ class TestResolving(ActivityCase):
         self.assertEqual(self.summary()["needs_you"], 0)
 
     def test_14_posted_needs_you_and_resolves_must_carry_at(self):
-        for source in ("plugin", "aac"):
+        for source in ("plugin", "processing"):
             out = self.post(
                 {"source": source, "key": "a", "title": "t", "needs_you": True, "resolve_key": "r"},
                 {"source": source, "key": "b", "title": "t", "resolves": ["r"]}).get_json()
@@ -267,7 +277,7 @@ class TestResolving(ActivityCase):
 
     def ready(self, frames=45):
         return ev("r", type="master_ready", needs_you=True, title="Dolphin Ha ready",
-                  resolve_key="edit:/m/full_master_Ha.fit", source="aac",
+                  resolve_key="edit:/m/full_master_Ha.fit", source="processing",
                   data={"frames": frames})
 
     def test_15_changed_content_reopens_and_identical_content_does_not(self):
@@ -574,7 +584,7 @@ class TestPlanEvents(ActivityCase):
                "accepted_frames": frames, "seen_seconds": seconds + 300, "seen_frames": frames + 1,
                "complete": complete, "estimated_hours": None, "measurement": None}
         return self.client.post("/api/plans/M42/accepted", headers=self.h, json={
-            "source": "aac", "at": "2026-10-12T10:05:00Z", "filed_through_night": "2026-10-11",
+            "source": "my-grader", "at": "2026-10-12T10:05:00Z", "filed_through_night": "2026-10-11",
             "min_total_frames": 10, "rows": [row]})
 
     def test_28_reaching_a_goal_through_accepted_counts(self):
@@ -685,7 +695,7 @@ class TestStoreRules(ActivityCase):
 
     def test_32_a_posted_master_gets_its_folders(self):
         os.environ["ACP_ACTIVITY_PATH_MAP"] = PATH_MAP
-        self.post(ev(source="aac", type="master_built",
+        self.post(ev(source="processing", type="master_built",
                      refs={"master": {"path": DOLPHIN_HA, "frames": 45, "hours": 3.75, "filter": "Ha"}}))
         master = self.all_events()[0]["refs"]["master"]
         self.assertEqual(master["file_name"], "full_master_Ha.fit")

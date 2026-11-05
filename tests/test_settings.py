@@ -473,7 +473,7 @@ print(json.dumps({
 
 
 class TestDockerStyleEnvironment(unittest.TestCase):
-    """What the image on Brutix sees: variables set, a token, and a user who has
+    """What the image on the home server sees: variables set, a token, and a user who has
     no folder to keep a settings file in. Nothing may change for it."""
 
     def test_variables_keep_winning_and_the_page_is_read_only(self):
@@ -881,7 +881,7 @@ class TestReviewFindings(EnvCase):
         self.assertFalse(settings.exists(), "settings were written into the container's home")
 
     def test_a_uid_with_no_passwd_entry_reads_as_not_writable(self):
-        # Docker sets HOME=/ for a uid with no passwd entry (Brutix runs as 99:100).
+        # Docker sets HOME=/ for a container running as a uid with no passwd entry.
         os.environ.pop("ACP_HOME")
         os.environ["HOME"] = "/"
         # A CI runner may export XDG_CONFIG_HOME, which would point the settings

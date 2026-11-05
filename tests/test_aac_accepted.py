@@ -2,9 +2,8 @@
 
 docs/specs/goal-panel-and-ts-order.md section 6, test A2, and the
 ACP half of A3 (each row's desired in tests/fixtures/aac_accepted_cases.json).
-The endpoint is checked against the request AAC's client sends
-(auto_pix/acp_feedback.py in Astro-Auto-Calibration) and the response table
-that client acts on.
+The endpoint is checked against the request a grader's client sends and the
+response table that client acts on.
 """
 from __future__ import annotations
 
@@ -96,20 +95,20 @@ class TestAcceptedEndpoint(unittest.TestCase):
         self.assertEqual(r.get_json()["unknown_rows"], [])
         plan = self._stored()
         ha, stars = plan["filter_rows"][0], plan["filter_rows"][1]
-        self.assertEqual(ha["aac"]["accepted_seconds"], 22320.0)
-        self.assertEqual(ha["aac"]["accepted_frames"], 74)
-        self.assertEqual(ha["aac"]["seen_frames"], 75)
-        self.assertFalse(ha["aac"]["complete"])
-        self.assertTrue(stars["aac"]["complete"])
-        self.assertEqual(plan["aac"]["filed_through_night"], "2026-10-11")
-        self.assertEqual(plan["aac"]["min_total_frames"], 10)
-        self.assertTrue(plan["aac"]["received_at"])
+        self.assertEqual(ha["grader"]["accepted_seconds"], 22320.0)
+        self.assertEqual(ha["grader"]["accepted_frames"], 74)
+        self.assertEqual(ha["grader"]["seen_frames"], 75)
+        self.assertFalse(ha["grader"]["complete"])
+        self.assertTrue(stars["grader"]["complete"])
+        self.assertEqual(plan["grader"]["filed_through_night"], "2026-10-11")
+        self.assertEqual(plan["grader"]["min_total_frames"], 10)
+        self.assertTrue(plan["grader"]["received_at"])
         self.assertEqual(ha["actual_hours"], 5.0)
 
     def test_a2_a_later_figure_may_be_lower(self):
         self._post(_request([_figures(HA_ID, "Ha", "Ha", 22320.0, 74)]))
         self._post(_request([_figures(HA_ID, "Ha", "Ha", 21240.0, 70)]))
-        self.assertEqual(self._stored()["filter_rows"][0]["aac"]["accepted_seconds"], 21240.0)
+        self.assertEqual(self._stored()["filter_rows"][0]["grader"]["accepted_seconds"], 21240.0)
 
     def test_a2_a_row_whose_template_changed_comes_back_unknown_with_its_reason(self):
         r = self._post(_request([_figures(HA_ID, "Ha", "Ha", 100.0, 1),
@@ -119,14 +118,14 @@ class TestAcceptedEndpoint(unittest.TestCase):
         unknown = {u["id"]: u["reason"] for u in r.get_json()["unknown_rows"]}
         self.assertEqual(unknown[G_ID], "row now has filter G and template G Stars")
         self.assertEqual(unknown["no-such-id"], "no such row")
-        self.assertNotIn("aac", self._stored()["filter_rows"][2])
-        self.assertIn("aac", self._stored()["filter_rows"][0])
+        self.assertNotIn("grader", self._stored()["filter_rows"][2])
+        self.assertIn("grader", self._stored()["filter_rows"][0])
 
     def test_a2_zeros_for_a_row_with_no_frames_are_stored_not_complete(self):
         r = self._post(_request([_figures(G_ID, "G", "G Stars", 0.0, 0)]))
         self.assertEqual(r.status_code, 200)
-        aac = self._stored()["filter_rows"][2]["aac"]
-        self.assertEqual((aac["accepted_frames"], aac["complete"]), (0, False))
+        block = self._stored()["filter_rows"][2]["grader"]
+        self.assertEqual((block["accepted_frames"], block["complete"]), (0, False))
 
     def test_a2_an_unknown_plan_is_404(self):
         self.assertEqual(self._post(_request([]), plan_id="nope").status_code, 404)
@@ -144,7 +143,7 @@ class TestAcceptedEndpoint(unittest.TestCase):
         for body in cases:
             with self.subTest(body=body):
                 self.assertEqual(self._post(body).status_code, 400)
-        self.assertNotIn("aac", self._stored())
+        self.assertNotIn("grader", self._stored())
 
     def test_a2_the_bearer_token_is_required_when_one_is_set(self):
         os.environ["ACP_API_TOKEN"] = "a-perfectly-ordinary-token"
@@ -163,8 +162,8 @@ class TestAcceptedEndpoint(unittest.TestCase):
         r = self.client.put("/api/plans/M42", json=edited)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         stored = self._stored()
-        self.assertEqual(stored["filter_rows"][0]["aac"]["accepted_seconds"], 22320.0)
-        self.assertEqual(stored["aac"]["filed_through_night"], "2026-10-11")
+        self.assertEqual(stored["filter_rows"][0]["grader"]["accepted_seconds"], 22320.0)
+        self.assertEqual(stored["grader"]["filed_through_night"], "2026-10-11")
 
     def test_the_progress_route_leaves_aac_figures_alone(self):
         self._post(_request([_figures(HA_ID, "Ha", "Ha", 22320.0, 74)]))
@@ -173,7 +172,7 @@ class TestAcceptedEndpoint(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         row = self._stored()["filter_rows"][0]
         self.assertEqual(row["actual_hours"], 9.0)
-        self.assertEqual(row["aac"]["accepted_seconds"], 22320.0)
+        self.assertEqual(row["grader"]["accepted_seconds"], 22320.0)
 
 
 class TestReviewFixes(unittest.TestCase):
@@ -203,15 +202,15 @@ class TestReviewFixes(unittest.TestCase):
         self._post(_request([_figures(HA_ID, "Ha", "Ha", 100.0, 1, True),
                              _figures(STARS_ID, "R", "R Stars", 100.0, 1, True)]))
         rows = self._stored()["filter_rows"]
-        self.assertEqual(rows[0]["aac"]["goal_at_send"], 6.0)
-        self.assertEqual(rows[1]["aac"]["goal_at_send"], 48.0)
+        self.assertEqual(rows[0]["grader"]["goal_at_send"], 6.0)
+        self.assertEqual(rows[1]["grader"]["goal_at_send"], 48.0)
 
     def test_a_row_that_comes_back_unknown_loses_its_stored_block(self):
         self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
-        self.assertIn("aac", self._stored()["filter_rows"][2])
+        self.assertIn("grader", self._stored()["filter_rows"][2])
         r = self._post(_request([_figures(G_ID, "G", "G Narrow", 10.0, 1)]))
         self.assertEqual([u["id"] for u in r.get_json()["unknown_rows"]], [G_ID])
-        self.assertNotIn("aac", self._stored()["filter_rows"][2])
+        self.assertNotIn("grader", self._stored()["filter_rows"][2])
 
     def _save_with(self, **changes):
         plan = self._stored()
@@ -243,17 +242,17 @@ class TestReviewFixes(unittest.TestCase):
     def test_a_save_keeps_the_block_while_filter_and_template_agree(self):
         self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
         self.assertEqual(self._save_with(target_frames=60).status_code, 200)
-        self.assertIn("aac", self._stored()["filter_rows"][2])
+        self.assertIn("grader", self._stored()["filter_rows"][2])
 
     def test_a_save_drops_the_block_when_the_template_changes(self):
         self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
         self.assertEqual(self._save_with(template="G Narrow").status_code, 200)
-        self.assertNotIn("aac", self._stored()["filter_rows"][2])
+        self.assertNotIn("grader", self._stored()["filter_rows"][2])
 
     def test_a_save_drops_the_block_when_the_filter_changes(self):
         self._post(_request([_figures(G_ID, "G", "G Stars", 10.0, 1)]))
         self.assertEqual(self._save_with(filter="B").status_code, 200)
-        self.assertNotIn("aac", self._stored()["filter_rows"][2])
+        self.assertNotIn("grader", self._stored()["filter_rows"][2])
 
     def test_the_routes_that_write_plans_hold_the_plans_lock(self):
         taken = []
@@ -298,14 +297,14 @@ class TestReviewFixes(unittest.TestCase):
         self.assertTrue(done.wait(5))
         t.join()
         self.assertEqual(result, [200])
-        self.assertIn("aac", self._stored()["filter_rows"][0])
+        self.assertIn("grader", self._stored()["filter_rows"][0])
 
     def test_the_host_exposes_its_lock_for_the_extension_to_share(self):
         self.assertIs(app.plans_lock, app_module.PLANS_LOCK)
 
 
 class TestSharedCases(unittest.TestCase):
-    """The ACP half of A3: the desired the writers push, with AAC's floor."""
+    """The ACP half of A3: the desired the writers push, with the pipeline's floor."""
 
     def _plan(self, case):
         rows = []

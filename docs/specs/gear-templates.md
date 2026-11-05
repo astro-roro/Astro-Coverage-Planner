@@ -44,8 +44,8 @@ All figures are from the scratch copy of IMAGING-PC's database taken on 12 Octob
 - The nine 15 s plans on ids 14, 16 and 19 are star rows that sit on normal-class templates: plan ids 404, 405, 408, 409, 410, 413, 415, 416 and 419. Plans 404, 405, 408, 409, 410 and 413 each hold 18 acquired and 18 accepted frames.
 - `gear.json` for the ASI6200MM Pro pins `ts_template_id` "15" to B, "12" to Ha, "4" to L, "13" to OIII and "14" to SII. Only Ha's is right (id 15 is "B Stars (ZWO...)", id 4 is a B template, id 13 is SII, id 14 is B). The pinned ids in gear are stale and the migration must not trust them.
 - `gear.json` holds filters named "Antlia Ha" and "IDAS + RED" on the ASI294MM Pro. `_FILTER_NAME_RE` (`app.py:3355`) is `^[A-Za-z0-9_+\-]{1,32}$`, which rejects a space, so `POST /api/gear` returns 400 for the whole document today. Section 4 widens the rule.
-- The second profile that appears in `plans.json` is `093effd2-29a5-4ce6-ae38-d6eea265a912`, on one plan. A camera can therefore meet more than one profile.
-- Plan `plan-mouufrs7` (G7.7-3.7) pins exposure plan ids 21, 22 and 23 in its links. No such plans exist in TS.
+- The second profile that appears in `plans.json` is `00000000-0000-4000-8000-000000000003`, on one plan. A camera can therefore meet more than one profile.
+- A science plan pins exposure plan ids 21, 22 and 23 in its links. No such plans exist in TS.
 - After every push the sync runs `refresh_template_subs` (`nina_ts_sync/rows.py:270`), which copies the sub recorded in the base (the plan's explicit `exposure`) back onto each row's `template_sub_s`. Section 8 changes its rule.
 
 ## 2. Three names for one filter
@@ -134,7 +134,7 @@ A gear template:
 | `offset` | integer | The same. |
 | `bin` | integer | 1 to 4. |
 | `starred` | boolean | See Terms. The server repairs the flag: if a filter has no starred template the first one is starred, and if several, the first. |
-| `aliases` | list of strings | Earlier names from ACP renames, newest first, at most 8. Server-owned. Used to find this template's TS row after a rename and to match a plan row, a progress entry or an AAC row that still says the old name. |
+| `aliases` | list of strings | Earlier names from ACP renames, newest first, at most 8. Server-owned. Used to find this template's TS row after a rename and to match a plan row, a progress entry or a grader's row that still says the old name. |
 | `ts_names` | list of strings | The names of the other TS templates in this template's group when adoption or Tidy linked it. Server-owned. Used only to map a plan row or a TS import that uses one of those names onto this template. Never used to look up a TS row. |
 | `ts` | object | Server-owned. Keyed by profile id. |
 
@@ -387,7 +387,7 @@ The goal panel's card list is unchanged except for the template drop-down and "+
 - A row with `template_unresolved` shows "template not in gear" in amber and its drop-down offers the camera's templates for the filter.
 - The filter drop-down marks filters not on the wheel: "SII · not on the wheel yet". They stay selectable.
 - A row on a filter that is not on the wheel shows "Not synced until SII is on the wheel" under its progress block. It adds no state to the plan.
-- Progress from the plugin and AAC's `/accepted` match a row by filter and template name exactly (goal panel spec sections 3 and 6). They now also accept the template's `aliases` and `ts_names`, so a rename between AAC reading the plans and writing back does not drop the AAC block.
+- Progress from the plugin and a grader's `/accepted` match a row by filter and template name exactly (goal panel spec sections 3 and 6). They now also accept the template's `aliases` and `ts_names`, so a rename between the grader reading the plans and writing back does not drop the grader block.
 
 ### Tests
 
@@ -397,7 +397,7 @@ The goal panel's card list is unchanged except for the template drop-down and "+
 | P2 | ACP, `tests/frontend` | Press "+ Add filter" on a plan with no rows, where L's starred template is "L" (120 s) | Row 1 is L, template "L", `template_id` of that template, sub 120, unit "h", goal 0. |
 | P3 | ACP, `tests/frontend` | Pick "R Stars" on an R row with 2 h | Unit "fr", `target_frames` 480, `template_id` the R Stars id. |
 | P4 | ACP | `POST /api/plans/<id>/progress` for a row renamed from "Ha" to "Ha 300", with the entry still saying "Ha" | The row is updated through the alias. |
-| P5 | ACP | `POST /api/plans/<id>/accepted` the same way | The row's `aac` block is stored, and `unknown_rows` is empty. |
+| P5 | ACP | `POST /api/plans/<id>/accepted` the same way | The row's `grader` block is stored, and `unknown_rows` is empty. |
 | P6 | ACP, `tests/frontend` | A row on "R (ZWO ASI6200MM Pro)" (120 s) with `template_sub_s` 180 | The row shows "180 s, template says 120 s". |
 | P7 | ACP, `tests/frontend` | A row with `template_unresolved` | "template not in gear" shows, and the drop-down lists "R (ZWO ASI6200MM Pro)" and "R Stars". |
 
@@ -673,7 +673,7 @@ Restore `gear.json.bak-*` and `plans.json.bak-*` together. The rows and the gear
 | M8 | ACP | Gain 0 in the old shape | The new template has gain 0. |
 | M9 | ACP | A plans file with a row on a filter that the migration leaves with no template | The load logs the plan id, the row has `template_unresolved: true`, and no template is assigned. |
 | M10 | ACP | M1, then a template list with no `id` fields (older plugin) | No adoption happens, the 6200 camera keeps seven templates with no `ts` entry, and `GET /api/gear/tidy` is refused. |
-| M11 | ACP | M3 with a second profile `093effd2-...` whose list has the same templates but Ha offset 10, and the first profile primary | The Ha template keeps offset -1. Its `ts` entry for the second profile has base offset -1. The notes list "Ha offset is 10 in TS and -1 in gear". |
+| M11 | ACP | M3 with a second profile `00000000-...-000000000003` whose list has the same templates but Ha offset 10, and the first profile primary | The Ha template keeps offset -1. Its `ts` entry for the second profile has base offset -1. The notes list "Ha offset is 10 in TS and -1 in gear". |
 | M12 | ACP | The 6200's primary profile is P1 and no gear template for "R Stars" exists. P2's list (with ids, capable) arrives first. | Nothing is created. P2's R Stars templates show `waiting` with the note. After P1's list arrives and adoption creates "R Stars", P2's adoption runs again and links it with the base equal to the gear values. |
 
 ## 12. Build order
