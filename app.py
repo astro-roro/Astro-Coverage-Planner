@@ -1778,6 +1778,9 @@ _add_ext_hook(app, "editor_sections")
 # Manifest key activity_cards: pages shown at the top of the Activity tab
 # (docs/extensions.md, "Activity cards").
 _add_ext_hook(app, "activity_cards")
+# activity.register_alias and filter_rows.register_block_alias: old names a
+# sender or a stored plan may still use (docs/extensions.md, "Old names").
+_add_ext_hook(app, "name_aliases")
 
 
 # Friend manifests: semicolon-separated paths in ACP_FRIEND_MANIFESTS. Each

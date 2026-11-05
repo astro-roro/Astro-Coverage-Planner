@@ -540,6 +540,24 @@ app.extensions_manifest.append({
 
 A card can send `acp:plan:reload` and the layer messages, as rail tabs and editor sections do. To put an entry in the night-by-night list instead, record an event (see [Activity types and sources](#activity-types-and-sources)).
 
+### Old names
+
+When ACP renames something a sender or a stored plan uses, an extension can keep the old name working (hook name `name_aliases`). Core ships no aliases, so the old names live with whoever used them.
+
+```python
+import activity, filter_rows
+
+def register(app):
+    activity.register_alias("source", "my_old_tool", "processing")
+    activity.register_alias("type", "my_old_alert", "processing_alert")
+    activity.register_alias("ref", "my_old_job", "job")
+    filter_rows.register_block_alias("my_old_block", "grader")
+```
+
+- `activity.register_alias(kind, old, new)` takes `kind` of `source`, `type` or `ref` (a key in an event's `refs`). A post that uses `old` is stored as `new`, and events already stored under `old` are renamed in place, so a sender still on the old name updates its stored events instead of adding copies. An alias takes effect only once `new` is a valid name on the running ACP, so it can be registered before the rename ships. `acp` can be neither side of an alias.
+- `filter_rows.register_block_alias(old, new)` records that a block stored under `old` on a plan or its rows is the block ACP now calls `new`. What ACP does with a registered block name is described where the block is documented (for the frame grader's block, `docs/api.md`, "Accepted counts").
+- `activity.aliases(kind)` and `filter_rows.BLOCK_ALIASES` show what is registered. A bad argument raises `ValueError`.
+
 ## What kinds of things make sense as extensions
 
 A few patterns that fit the model well:
