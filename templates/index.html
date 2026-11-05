@@ -68,6 +68,14 @@
          Hidden by default: stays that way when the extension isn't
          loaded, the route 404s, or there's nothing pending. -->
     <div id="tsSyncBanner" class="ts-sync-banner" role="status" aria-live="polite" hidden></div>
+
+    <!-- Filled by loadUpdateNotice() in app.js from /api/update. Hidden unless a
+         newer minor or major release is out and the user has not dismissed it. -->
+    <div id="updateBanner" class="update-banner" role="status" hidden>
+      <span id="updateBannerText"></span>
+      <a id="updateBannerLink" class="update-link" href="#" target="_blank" rel="noopener noreferrer"></a>
+      <button type="button" id="updateBannerDismiss" class="link-btn">Dismiss</button>
+    </div>
   </header>
 
   <main class="layout">
@@ -320,6 +328,11 @@
             </ul>
 
             <p class="help-version">ACP version {{ version }}</p>
+            <p id="updateHelpLine" class="help-update" hidden>
+              <span id="updateHelpText"></span>
+              <a id="updateHelpLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+              <button type="button" id="updateHelpDismiss" class="link-btn">Dismiss</button>
+            </p>
           </div>
         </section>
       </aside>
@@ -353,6 +366,7 @@
       {% endif %}
       <button type="button" class="rail-btn" data-tab="help" aria-pressed="false" aria-controls="sidePanel" aria-keyshortcuts="?">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.6v.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1.2" fill="currentColor"/></svg>
+        <span id="railUpdateDot" class="rail-dot" hidden></span>
         <span class="rail-lbl">Help</span>
         <span class="rail-tip">Help and tour (?)</span>
       </button>
