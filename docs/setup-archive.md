@@ -235,7 +235,9 @@ Each run is a separate process, so a builder that crashes leaves the web app ser
      "last_start": "2026-09-04T03:00:00", "last_finish": "2026-09-04T03:00:24",
      "last_exit_code": 0, "last_trigger": "cron", "last_error": null}
 
-`last_exit_code` is 0 for a clean run. Anything else means the builder failed, and the reason is in the app's log output.
+`last_exit_code` is 0 for a clean run. Anything else means the builder failed, and the reason is in the app's log output. The app logs at INFO, so the start and finish of each scan, and any skipped run, show in `docker logs` too.
+
+If ACP was not running at the scheduled time, or was restarted while a scan was under way, that scan never wrote a manifest. When the app starts, it compares the manifest's age with the last time the schedule should have fired. If the manifest is older, or missing, it starts one catch-up scan straight away, shown as `"last_trigger": "catchup"`. It also clears the progress left by a scan that died, so the status stops showing it. A restart in the middle of a cold scan still loses that scan's work, so avoid restarting ACP while a scan is running.
 
 ## Security and deployment notes
 
