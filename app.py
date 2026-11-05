@@ -124,10 +124,10 @@ except ImportError:
 import acp_settings
 import activity
 import shortcuts as acp_shortcuts
-import balancer
 import filter_rows as fr
 import gear_templates as gt
 from gaps import candidates_in_moc, compute_gap_moc
+from projects import project_key
 
 # Ceiling on a single acquired-hours report. Ten years of continuous imaging is
 # about 87,600 hours, so nothing honest comes close. It exists because progress
@@ -1745,7 +1745,7 @@ plans_api.bind(
     save=lambda doc: save_plans(doc),
     lock=PLANS_LOCK,
     apply_project_settings=lambda *a: apply_project_settings(*a),
-    project_key=lambda plan: balancer.project_key(plan),
+    project_key=project_key,
     now=lambda: datetime.now(timezone.utc).isoformat(),
 )
 app.plans_api = plans_api
@@ -4756,12 +4756,6 @@ def _validate_plan_payload(payload: dict) -> str | None:
         import shooting_publish as sp
         if not sp.valid_astrobin_url(astrobin):
             return "astrobin_url must be an https link on astrobin.com"
-    role = payload.get("balance_role")
-    if role not in (None, "") and role not in balancer.ROLES:
-        return "balance_role must be one of " + ", ".join(balancer.ROLES)
-    hold = payload.get("balance_hold")
-    if hold is not None and not isinstance(hold, bool):
-        return "balance_hold must be true or false"
     for key in ("vote_goals", "vote_baseline"):
         mapping = payload.get(key)
         if mapping is None:
@@ -4864,37 +4858,6 @@ def _expand_plan(plan: dict, tokens: frozenset[str], gear_data: dict | None, sit
     return out
 
 
-def _commitment_progress(plan: dict) -> list[dict]:
-    """Where each of a plan's current vote commitments stands, counted as the
-    balancer counts it (`current_done_hours`, canonical filter names). For the
-    editor's commitment line; never stored."""
-    commitments = plan.get("commitments")
-    if not isinstance(commitments, list) or not commitments:
-        return []
-    import shooting_publish as sp
-    night = activity.current_night()
-    settings = balancer.load_state(_balancer_path())["settings"]
-    day = datetime.fromisoformat(night)
-    dim = balancer.calendar.monthrange(day.year, day.month)[1]
-    elapsed = (day.day - 1) / dim
-    done = sp.current_done_hours(plan, load_manifest(), load_gear())
-    out = []
-    for c in commitments:
-        if not isinstance(c, dict) or not isinstance(c.get("month"), str):
-            continue
-        j = balancer._judge(plan, c, done, sp.canon_filter, night[:7], elapsed,
-                            settings["finish_by"], {})
-        if j["skipped"]:
-            continue
-        entry = {"month": c["month"], "done_h": round(j["done_h"], 3),
-                 "goal_h": round(j["goal_h"], 3), "met": bool(j["met"]),
-                 "behind": bool(j["behind"])}
-        if c.get("lapsed_at"):
-            entry.update({"lapsed_at": c["lapsed_at"], "lapsed_reason": c.get("lapsed_reason")})
-        out.append(entry)
-    return out
-
-
 def _ext_plan_field_entries():
     for entry in getattr(app, "plan_fields", None) or []:
         if isinstance(entry, dict):
@@ -4950,8 +4913,6 @@ def _with_goals_view(plan):
     plan = _ext_plan_view(plan)
     # A plan with no target_class reads as survey (section 6), for AAC.
     plan = {**plan, "target_class": fr.target_class_of(plan)}
-    if plan.get("commitments"):
-        plan["commitment_progress"] = _commitment_progress(plan)
     if not isinstance(plan.get("filter_rows"), list):
         # Not migrated yet (the backup failed): its own filter_goals stand.
         return plan
@@ -4990,9 +4951,6 @@ def api_plans():
     payload["updated_at"] = now
     previous = next((p for p in data.get("plans", []) if p.get("id") == payload["id"]), None)
     before = copy.deepcopy(previous) if previous is not None and activity.enabled() else None
-    err = _keep_balancer_fields(payload, previous)
-    if err:
-        return jsonify({"error": err}), 400
     err = _ext_plan_fields_on_save(payload, previous)
     if err:
         return jsonify({"error": err}), 400
@@ -5034,30 +4992,6 @@ def _keep_rows_from_old_page(payload: dict, existing: dict) -> None:
     )
 
 
-def _keep_balancer_fields(payload: dict, existing: dict | None) -> str | None:
-    """The balancer's fields on a plan saved from the editor
-    (docs/specs/imaging-balancer.md section 1, Routes). `commitments` and
-    `balancer_note` are never taken from the client. `balance_role` and
-    `balance_hold` keep the stored value when the payload leaves them out.
-    Returns an error text when the payload would give a plan with a
-    commitment a role other than pretty."""
-    existing = existing or {}
-    payload.pop("commitment_progress", None)  # derived for the editor, never stored
-    for key in ("commitments", "balancer_note"):
-        if key in existing:
-            payload[key] = copy.deepcopy(existing[key])
-        else:
-            payload.pop(key, None)
-    for key in ("balance_role", "balance_hold"):
-        if key not in payload and key in existing:
-            payload[key] = existing[key]
-    if payload.get("commitments") and payload.get("balance_role") not in (None, "pretty"):
-        return "a plan with a vote commitment must have balancer role pretty"
-    if payload.get("commitments") and not payload.get("balance_role"):
-        payload["balance_role"] = "pretty"
-    return None
-
-
 @app.route("/api/plans/<plan_id>", methods=["GET", "PUT", "DELETE"])
 @_holds_plans_lock
 def api_plan(plan_id: str):
@@ -5088,9 +5022,6 @@ def api_plan(plan_id: str):
     payload.setdefault("last_synced_at", existing.get("last_synced_at"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     _keep_rows_from_old_page(payload, existing)
-    err = _keep_balancer_fields(payload, existing)
-    if err:
-        return jsonify({"error": err}), 400
     err = _ext_plan_fields_on_save(payload, existing)
     if err:
         return jsonify({"error": err}), 400
@@ -5194,18 +5125,9 @@ def api_project_settings(project_name: str):
                 return jsonify({"error": err}), 400
             order_settings[key] = payload[key]
 
-    has_role = "balance_role" in payload
-    role = payload.get("balance_role") or None
-    if has_role and role is not None and role not in balancer.ROLES:
-        return jsonify({"error": f"balance_role must be one of {', '.join(balancer.ROLES)}"}), 400
-    has_hold = "balance_hold" in payload
-    hold = payload.get("balance_hold")
-    if has_hold and not isinstance(hold, bool):
-        return jsonify({"error": "balance_hold must be true or false"}), 400
-
     data = load_plans()
     plans = data.get("plans", [])
-    group = [p for p in plans if isinstance(p, dict) and balancer.project_key(p) == project_name]
+    group = [p for p in plans if isinstance(p, dict) and project_key(p) == project_name]
     if not group:
         return jsonify({"error": f"no plans in project {project_name!r}"}), 404
 
@@ -5216,12 +5138,6 @@ def api_project_settings(project_name: str):
         wanted["priority"] = priority
     if has_minimum_time:
         wanted["minimum_time_min"] = minimum_time_min
-    if has_role:
-        if role != "pretty" and any(p.get("commitments") for p in group):
-            return jsonify({"error": "a project with a vote commitment must have balancer role pretty"}), 400
-        wanted["balance_role"] = role
-    if has_hold:
-        wanted["balance_hold"] = hold
     ext_wanted, err = _ext_project_settings(payload, wanted)
     if err:
         return jsonify({"error": err}), 400
@@ -5243,8 +5159,6 @@ def api_project_settings(project_name: str):
         "priority": priority,
         "minimum_time_min": minimum_time_min if has_minimum_time else None,
         **{key: order_settings.get(key) for key in ORDER_SETTING_KEYS},
-        "balance_role": role if has_role else None,
-        "balance_hold": hold if has_hold else None,
         **ext_wanted,
     })
 
@@ -5275,16 +5189,15 @@ def _ext_project_settings(payload: dict, core_wanted: dict) -> tuple[dict, str |
     return out, None
 
 
-_CORE_PROJECT_KEYS = frozenset({"state", "priority", "minimum_time_min", "balance_role",
-                                "balance_hold", *ORDER_SETTING_KEYS})
+_CORE_PROJECT_KEYS = frozenset({"state", "priority", "minimum_time_min", *ORDER_SETTING_KEYS})
 
 
 def apply_project_settings(plans: list[dict], project_name: str, wanted: dict, now: str) -> dict:
-    """Set every key in `wanted` on every plan in the project (`balancer.project_key`),
+    """Set every key in `wanted` on every plan in the project (`projects.project_key`),
     stamp updated_at, and return {key: {"from": ..., "to": ...}} for the
     keys that changed. Mutates `plans` in place. Does not load, save or
     record anything."""
-    group = [p for p in plans if isinstance(p, dict) and balancer.project_key(p) == project_name]
+    group = [p for p in plans if isinstance(p, dict) and project_key(p) == project_name]
     changes: dict = {}
     for p in group:
         for k, v in wanted.items():
@@ -8041,461 +7954,6 @@ def api_quit():
     return jsonify({"status": "stopping"})
 
 
-
-# --- Imaging balancer (docs/specs/imaging-balancer.md) ------------------------
-#
-# The decision is balancer.decide, a pure function. This section feeds it
-# (plans, Activity hours, commitment progress), writes what it decides and
-# reports in Activity. Commitments are vote promises on a plan; the routes
-# here make and remove them.
-
-BALANCER_LOCK = threading.RLock()
-BALANCER_POLL_SECONDS = 30.0
-_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
-
-
-def _balancer_path() -> Path:
-    raw = (os.environ.get("BALANCER_PATH") or "").strip()
-    return Path(raw) if raw else PLANS_PATH.with_name("balancer.json")
-
-
-@app.route("/api/plans/<plan_id>/commitments", methods=["POST"])
-@_holds_plans_lock
-def api_add_commitment(plan_id: str):
-    """Mark a plan as the vote winner for a month. Copies `vote_goals` and the
-    vote baseline into a new commitment and sets the project's role to
-    pretty. `clear_other_votes: true` also moves every other plan out of the
-    vote section, which is what ends a round."""
-    import shooting_publish as sp
-    payload = request.get_json(silent=True) or {}
-    month = payload.get("month") if isinstance(payload, dict) else None
-    if not isinstance(month, str) or not _MONTH_RE.match(month):
-        return jsonify({"error": "month must be YYYY-MM"}), 400
-    data = load_plans()
-    plans = data.get("plans", [])
-    plan = next((p for p in plans if p.get("id") == plan_id), None)
-    if plan is None:
-        return jsonify({"error": "not found"}), 404
-    goals = plan.get("vote_goals")
-    if not isinstance(goals, dict) or not goals:
-        return jsonify({"error": "the plan has no vote goals; set them in the Public page section first"}), 400
-    if any(c.get("month") == month and not c.get("lapsed_at")
-           for c in plan.get("commitments") or [] if isinstance(c, dict)):
-        return jsonify({"error": f"the plan already has a commitment for {month}"}), 400
-    # A lapsed commitment for the month is replaced: adding it again is how
-    # the user revives one.
-    if plan.get("commitments"):
-        plan["commitments"] = [c for c in plan["commitments"]
-                               if not (isinstance(c, dict) and c.get("month") == month)]
-    baseline = plan.get("vote_baseline")
-    if not isinstance(baseline, dict):
-        baseline = sp.current_done_hours(plan, load_manifest(), load_gear())
-    now = datetime.now(timezone.utc).isoformat()
-    plan.setdefault("commitments", []).append({
-        "kind": "vote", "month": month,
-        "goals": copy.deepcopy(goals), "baseline": copy.deepcopy(baseline),
-        "set_at": now[:10],
-    })
-    apply_project_settings(plans, balancer.project_key(plan), {"balance_role": "pretty"}, now)
-    cleared = 0
-    if payload.get("clear_other_votes") is True:
-        for other in plans:
-            if other is not plan and other.get("public_section") == "vote":
-                other["public_section"] = "current"
-                other.pop("vote_baseline", None)
-                other["updated_at"] = now
-                cleared += 1
-    plan["updated_at"] = now
-    save_plans({**data, "version": data.get("version", 1), "plans": plans})
-    return jsonify({**_with_goals_view(plan), "_cleared_other_votes": cleared}), 201
-
-
-@app.route("/api/plans/<plan_id>/commitments/<month>", methods=["DELETE"])
-@_holds_plans_lock
-def api_remove_commitment(plan_id: str, month: str):
-    data = load_plans()
-    plans = data.get("plans", [])
-    plan = next((p for p in plans if p.get("id") == plan_id), None)
-    if plan is None:
-        return jsonify({"error": "not found"}), 404
-    kept = [c for c in plan.get("commitments") or [] if not (isinstance(c, dict) and c.get("month") == month)]
-    if len(kept) == len(plan.get("commitments") or []):
-        return jsonify({"error": f"no commitment for {month}"}), 404
-    if kept:
-        plan["commitments"] = kept
-    else:
-        plan.pop("commitments", None)
-    plan["updated_at"] = datetime.now(timezone.utc).isoformat()
-    save_plans({**data, "version": data.get("version", 1), "plans": plans})
-    return jsonify(_with_goals_view(plan))
-
-
-SEASON_WINDOW_NIGHTS = 14
-SEASON_MIN_HOURS = 1.0
-LAPSE_QUIET_NIGHTS = 21
-
-
-def _season_hours(plan: dict, night: str) -> float | None:
-    """Hours a night the plan's target spends above its site's minimum altitude
-    in astronomical darkness, averaged over the next SEASON_WINDOW_NIGHTS
-    nights. Read from the year visibility the Inventory uses (one value for
-    the 15th of each month), interpolated to the middle of the window. None
-    when the target has no coordinates, there is no site, or the calculation
-    fails (for example astropy cannot fetch its Earth orientation data)."""
-    tg = plan.get("target") if isinstance(plan.get("target"), dict) else {}
-    try:
-        ra = float(tg["center_ra_deg"]) % 360.0
-        dec = float(tg["center_dec_deg"])
-        sites = load_sites().get("sites") or DEFAULT_SITES["sites"]
-        wanted = plan.get("site_id")
-        s = next((x for x in sites if wanted and x.get("id") == wanted), sites[0])
-        site = {"lat": float(s["lat"]), "lon": float(s["lon"]),
-                "elev_m": float(s.get("elev_m") or 0.0),
-                "min_alt_deg": float(s.get("min_alt_deg") or 30.0)}
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None
-    mid = balancer.date.fromisoformat(night) + balancer.timedelta(days=SEASON_WINDOW_NIGHTS // 2)
-
-    def mid_month(year: int, month: int) -> float:
-        key = _site_cache_key(site) + (round(ra, 4), round(dec, 4), year)
-        bins = _visibility_cache.get(key)
-        if bins is None:
-            bins = compute_year_visibility(
-                [{"target_id": 0, "center_ra_deg": ra, "center_dec_deg": dec}],
-                lat=site["lat"], lon=site["lon"], elev_m=site["elev_m"],
-                min_alt_deg=site["min_alt_deg"], year=year)
-            _visibility_cache[key] = bins
-        return float(bins[0][month - 1]["hours_above_min"])
-
-    try:
-        if mid.day >= 15:
-            a = balancer.date(mid.year, mid.month, 15)
-            b = balancer.date(mid.year + (mid.month == 12), mid.month % 12 + 1, 15)
-        else:
-            a = balancer.date(mid.year - (mid.month == 1), (mid.month - 2) % 12 + 1, 15)
-            b = balancer.date(mid.year, mid.month, 15)
-        ha, hb = mid_month(a.year, a.month), mid_month(b.year, b.month)
-    except Exception:
-        logging.exception("balancer: could not work out the season for plan %s", plan.get("id"))
-        return None
-    return ha + (hb - ha) * (mid - a).days / max(1, (b - a).days)
-
-
-def _balancer_season(plans: list[dict], night: str) -> dict:
-    """Plan id to the reason its unmet vote commitment should lapse. A target
-    that spends under SEASON_MIN_HOURS a night above the site's minimum
-    altitude in darkness over the next two weeks is "out of season". When that
-    cannot be calculated, a plan that is active and not on hold, has had its
-    commitment for LAPSE_QUIET_NIGHTS nights and gained no hours in that time
-    lapses as "no hours in the last 21 nights"."""
-    cur_month = night[:7]
-    first = (balancer.date.fromisoformat(night)
-             - balancer.timedelta(days=LAPSE_QUIET_NIGHTS)).isoformat()
-    recent = None
-    out: dict = {}
-    for p in plans:
-        if not isinstance(p, dict) or not isinstance(p.get("commitments"), list):
-            continue
-        open_ones = [c for c in p["commitments"]
-                     if isinstance(c, dict) and c.get("kind", "vote") == "vote"
-                     and isinstance(c.get("month"), str) and c["month"] <= cur_month
-                     and not c.get("met_at") and not c.get("lapsed_at")]
-        if not open_ones:
-            continue
-        hours = _season_hours(p, night)
-        if hours is not None:
-            if hours < SEASON_MIN_HOURS:
-                out[p.get("id")] = "out of season"
-            continue
-        if p.get("balance_hold") is True or p.get("state") != "active":
-            continue
-        if any(str(c.get("set_at") or "9999") > first for c in open_ones):
-            continue
-        if recent is None:
-            recent = activity.progress_hours(first, night)
-        if not recent.get(p.get("id")):
-            out[p.get("id")] = f"no hours in the last {LAPSE_QUIET_NIGHTS} nights"
-    return out
-
-
-def _balancer_inputs(plans: list[dict], night: str) -> dict:
-    """Everything `decide` needs beyond plans, settings and memory."""
-    import shooting_publish as sp
-    month = night[:7]
-    project_of = {p.get("id"): balancer.project_key(p) for p in plans if isinstance(p, dict)}
-    month_hours: dict = {}
-    for pid, hours in activity.progress_hours(f"{month}-01", f"{month}-31").items():
-        if pid in project_of:
-            month_hours[project_of[pid]] = month_hours.get(project_of[pid], 0.0) + hours
-    first = (balancer.date.fromisoformat(night) - balancer.timedelta(days=balancer.RECENT_NIGHTS)).isoformat()
-    recent_hours: dict = {}
-    for pid, hours in activity.progress_hours(first, night).items():
-        if pid in project_of:
-            recent_hours[project_of[pid]] = recent_hours.get(project_of[pid], 0.0) + hours
-    manifest, gear = load_manifest(), load_gear()
-    done = {p["id"]: sp.current_done_hours(p, manifest, gear)
-            for p in plans if isinstance(p, dict) and p.get("commitments")}
-    return {"month_hours": month_hours, "done_hours": done, "canon": sp.canon_filter,
-            "newest_report_night": activity.newest_progress_night(),
-            "keep_nights": activity.keep_nights(), "recent_hours": recent_hours,
-            "season": _balancer_season(plans, night)}
-
-
-def _balancer_decide(plans: list[dict], state: dict, night: str, late: bool = False) -> dict:
-    inp = _balancer_inputs(plans, night)
-    return balancer.decide(
-        plans, inp["month_hours"], inp["done_hours"], state["settings"], state["memory"], night,
-        newest_report_night=inp["newest_report_night"], keep_nights=inp["keep_nights"],
-        canon=inp["canon"], late=late, recent_hours=inp["recent_hours"], season=inp["season"])
-
-
-def _balancer_note(change: dict, night: str) -> dict:
-    d = balancer.date.fromisoformat(night)
-    when = f"{d.day} {balancer.MONTH_NAMES[d.month - 1][:3]}"
-    return {"rule": change["rule"], "at": night,
-            "text": f"Balancer set this to {change['to'].capitalize()} on {when}: {change['note']}"}
-
-
-_balancer_attempted: dict = {}
-
-
-def _balancer_skipped(path: Path, state: dict, night: str, why: str) -> None:
-    """A scheduled run that did not complete counts as skipped. The third in
-    a row opens the blind item. Never raises: a failure to save is logged."""
-    memory = state["memory"]
-    memory["skipped_runs"] = int(memory.get("skipped_runs") or 0) + 1
-    memory["last_attempt_night"] = night
-    logging.warning("balancer run skipped: %s (%d in a row)", why, memory["skipped_runs"])
-    try:
-        balancer.save_state(path, state)
-    except Exception:
-        logging.exception("could not save balancer.json after a skipped run")
-    if memory["skipped_runs"] >= 3:
-        try:
-            activity.record(
-                type="balancer_alert", key=f"balancer_blind:{night}", night=night, severity="warn",
-                needs_you=True, resolve_key="balancer_blind",
-                title="The balancer has not completed a run in 3 nights, so priorities are not being balanced",
-                detail=why)
-        except Exception:
-            logging.exception("could not record the balancer blind item")
-
-
-def run_balancer(trigger: str = "manual", now: datetime | None = None, preview: bool = False) -> dict:
-    """One balancer run. `preview` decides and reports without writing
-    anything. Only a scheduled run (`trigger="schedule"`) sets the night's
-    attempt marker and counts toward skipped runs, so a manual "Run now"
-    never blocks the scheduled run and a failed one does not count against
-    the balancer."""
-    now = now or datetime.now(timezone.utc)
-    night = activity.night_of(now)
-    scheduled = trigger == "schedule" and not preview
-    late = now.astimezone(activity.tz()).hour >= 15
-    with BALANCER_LOCK:
-        path = _balancer_path()
-        if scheduled:
-            _balancer_attempted[str(path)] = night
-        state = balancer.load_state(path)
-        mode = state["settings"]["mode"]
-        if mode == "off" and not preview:
-            return {"ran": False, "reason": "off", "message": "The balancer is off."}
-        if not activity.enabled():
-            if scheduled:
-                _balancer_skipped(path, state, night, "Activity is off, so there are no hours to read")
-            return {"ran": False, "reason": "activity_off",
-                    "message": "Activity is off (ACP_ACTIVITY=off), so the balancer has no hours to read."}
-        try:
-            with PLANS_LOCK:
-                data = load_plans()
-                plans = data.get("plans", [])
-                if not isinstance(plans, list):
-                    raise ValueError("plans.json has no plan list")
-                result = _balancer_decide(plans, state, night, late)
-                if preview:
-                    return {"ran": True, "preview": True, **result}
-                if mode == "live" and (result["changes"] or result["met_new"] or result["lapsed_new"]):
-                    stamp = now.isoformat()
-                    for ch in result["changes"]:
-                        apply_project_settings(
-                            plans, ch["project"],
-                            {"priority": ch["to"], "balancer_note": _balancer_note(ch, night)}, stamp)
-                    for m in result["met_new"]:
-                        for p in plans:
-                            if p.get("id") != m["plan_id"]:
-                                continue
-                            listed = p.get("commitments")
-                            for c in listed if isinstance(listed, list) else []:
-                                if isinstance(c, dict) and c.get("month") == m["month"] and not c.get("met_at"):
-                                    c["met_at"] = night
-                                    p["updated_at"] = stamp
-                    for m in result["lapsed_new"]:
-                        for p in plans:
-                            if p.get("id") != m["plan_id"]:
-                                continue
-                            listed = p.get("commitments")
-                            for c in listed if isinstance(listed, list) else []:
-                                if isinstance(c, dict) and c.get("month") == m["month"] \
-                                        and not c.get("met_at") and not c.get("lapsed_at"):
-                                    c["lapsed_at"] = night
-                                    c["lapsed_reason"] = m["reason"]
-                                    p["updated_at"] = stamp
-                    save_plans({**data, "version": data.get("version", 1), "plans": plans})
-        except Exception:
-            logging.exception("balancer run failed")
-            if scheduled:
-                _balancer_skipped(path, state, night, "The run failed; see the server log")
-            return {"ran": False, "reason": "error", "message": "The balancer run failed; see the server log."}
-        was_blind = int(state["memory"].get("skipped_runs") or 0) >= 3
-        memory = result["memory"]
-        memory["skipped_runs"] = 0
-        if scheduled:
-            memory.update({"last_run_night": night, "last_attempt_night": night})
-        state["memory"] = memory
-        warnings = list(result["warnings"])
-        try:
-            balancer.save_state(path, state)
-        except Exception:
-            logging.exception("could not save balancer.json after a run")
-            warnings.append("balancer.json could not be saved, so the balancer's memory is out of date.")
-        try:
-            for item in result["items_open"]:
-                activity.record(
-                    type="balancer_alert", key=item["key"], night=night, severity="warn",
-                    needs_you=True, resolve_key=item["key"], title=item["title"],
-                    refs={"plan_id": item["plan_id"]})
-            resolves = list(result["items_resolve"]) + (["balancer_blind"] if was_blind else [])
-            activity.record(
-                type="balancer_run", key=f"balancer:{night}", night=night, title=result["title"],
-                detail=result["detail"], severity=result["severity"], data=result["data"],
-                resolves=resolves)
-        except Exception:
-            logging.exception("could not record the balancer run in Activity")
-            warnings.append("the run could not be recorded in Activity.")
-        return {"ran": True, "preview": False, **result, "warnings": warnings}
-
-
-def balancer_tick(now: datetime | None = None) -> bool:
-    """One scheduler poll: run if the balancer is due. Returns whether it ran."""
-    now = now or datetime.now(timezone.utc)
-    state = balancer.load_state(_balancer_path())
-    night = activity.night_of(now)
-    if _balancer_attempted.get(str(_balancer_path())) == night:
-        return False
-    if not balancer.is_due(now.astimezone(activity.tz()), night, state["settings"], state["memory"]):
-        return False
-    run_balancer("schedule", now)
-    return True
-
-
-_balancer_thread: threading.Thread | None = None
-_balancer_stop = threading.Event()
-
-
-def _balancer_loop() -> None:
-    while not _balancer_stop.is_set():
-        try:
-            balancer_tick()
-        except Exception:
-            logging.exception("balancer scheduler tick failed")
-        _balancer_stop.wait(BALANCER_POLL_SECONDS)
-
-
-def start_balancer_scheduler() -> bool:
-    """Start the balancer thread. Not started under the test suite
-    (ACP_SKIP_STARTUP_MIGRATION) or with ACP_BALANCER=off."""
-    global _balancer_thread
-    if os.environ.get("ACP_SKIP_STARTUP_MIGRATION"):
-        return False
-    if (os.environ.get("ACP_BALANCER") or "").strip().lower() == "off":
-        return False
-    with BALANCER_LOCK:
-        if _balancer_thread is not None and _balancer_thread.is_alive():
-            return False
-        _balancer_stop.clear()
-        _balancer_thread = threading.Thread(target=_balancer_loop, name="acp-balancer", daemon=True)
-        _balancer_thread.start()
-    logging.info("balancer scheduler started")
-    return True
-
-
-def stop_balancer_scheduler() -> None:
-    global _balancer_thread
-    _balancer_stop.set()
-    thread = _balancer_thread
-    if thread is not None:
-        thread.join(timeout=5)
-    _balancer_thread = None
-    _balancer_stop.clear()
-
-
-@app.route("/api/balancer", methods=["GET"])
-def api_balancer():
-    state = balancer.load_state(_balancer_path())
-    notes = []
-    keep = activity.keep_nights()
-    if keep is not None and keep < 31:
-        notes.append(f"Activity keeps only {keep} nights, so this month's hours may be undercounted.")
-    if not activity.enabled():
-        notes.append("Activity is off (ACP_ACTIVITY=off), so the balancer cannot run.")
-    mem = state["memory"]
-    return jsonify({
-        "settings": state["settings"],
-        "memory": {k: mem.get(k) for k in ("last_run_night", "bands", "skipped_runs")},
-        "activity_enabled": activity.enabled(), "notes": notes,
-    })
-
-
-@app.route("/api/balancer/settings", methods=["PUT"])
-def api_balancer_settings():
-    with BALANCER_LOCK:
-        path = _balancer_path()
-        state = balancer.load_state(path)
-        merged, err = balancer.validate_settings(request.get_json(silent=True), state["settings"])
-        if err:
-            return jsonify({"error": err}), 400
-        state["settings"] = merged
-        balancer.save_state(path, state)
-    return jsonify({"settings": merged})
-
-
-@app.route("/api/balancer/preview", methods=["POST"])
-def api_balancer_preview():
-    result = run_balancer("manual", preview=True)
-    return jsonify(result), (200 if result.get("ran") else 409)
-
-
-@app.route("/api/balancer/run", methods=["POST"])
-def api_balancer_run():
-    result = run_balancer("manual")
-    return jsonify(result), (200 if result.get("ran") else 409)
-
-
-@app.route("/api/balancer/tag-from-class", methods=["POST"])
-@_holds_plans_lock
-def api_balancer_tag_from_class():
-    """One-off: give a role to every project that has none, from its plans'
-    target class. Survey becomes survey and pretty becomes pretty. Science is
-    always set by hand."""
-    data = load_plans()
-    plans = data.get("plans", [])
-    projects: dict = {}
-    for p in plans:
-        if isinstance(p, dict):
-            projects.setdefault(balancer.project_key(p), []).append(p)
-    now = datetime.now(timezone.utc).isoformat()
-    tagged = []
-    for name, group in projects.items():
-        if any(p.get("balance_role") for p in group):
-            continue
-        classes = {p.get("target_class") or fr.target_class_of(p) for p in group}
-        if len(classes) == 1 and classes <= {"survey", "pretty"}:
-            apply_project_settings(plans, name, {"balance_role": classes.pop()}, now)
-            tagged.append(name)
-    if tagged:
-        save_plans({**data, "version": data.get("version", 1), "plans": plans})
-    return jsonify({"tagged": sorted(tagged)})
-
-
 def migrate_gear_at_startup() -> None:
     """Run the gear template migration before the first request
     (docs/specs/gear-templates.md section 11). It also runs lazily on the
@@ -8513,7 +7971,6 @@ def migrate_gear_at_startup() -> None:
 migrate_gear_at_startup()
 clear_dead_scan_progress()
 start_scan_scheduler()
-start_balancer_scheduler()
 start_jobs_scheduler()
 
 
