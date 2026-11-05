@@ -62,3 +62,29 @@ export function disableMapControls(doc = globalThis.document) {
     el.title = MAP_CONTROL_OFF_TITLE;
   }
 }
+
+/** Undo disableMapControls once the map has come up after all. */
+export function enableMapControls(doc = globalThis.document) {
+  for (const id of MAP_CONTROL_IDS) {
+    const el = doc?.getElementById?.(id);
+    if (!el) continue;
+    el.disabled = false;
+    if (el.title === MAP_CONTROL_LOADING_TITLE || el.title === MAP_CONTROL_OFF_TITLE) {
+      if (el.dataset?.mapTitle != null) el.title = el.dataset.mapTitle;
+      else el.removeAttribute?.("title");
+    }
+  }
+}
+
+export const MAP_CONTROL_LOADING_TITLE = "The sky map is still loading, so this control is off for a moment.";
+
+/** Turn the map-only controls off while the map loads. Remembers each title. */
+export function pauseMapControls(doc = globalThis.document) {
+  for (const id of MAP_CONTROL_IDS) {
+    const el = doc?.getElementById?.(id);
+    if (!el) continue;
+    if (el.dataset && el.dataset.mapTitle == null) el.dataset.mapTitle = el.title || "";
+    el.disabled = true;
+    el.title = MAP_CONTROL_LOADING_TITLE;
+  }
+}
