@@ -28,6 +28,7 @@ def merge_remote_into_local(plan: dict, remote: dict) -> None:
         if k in rt:
             pt[k] = rt[k]
     plan["filter_rows"] = take_rows(plan, remote)
+    take_scheduling(plan, remote)
     # "state" follows ACP's own absent-means-active convention: a remote
     # with no opinion (no project snapshot to build it from) drops the key
     # from ACP too, rather than writing a literal null that would never
@@ -36,6 +37,19 @@ def merge_remote_into_local(plan: dict, remote: dict) -> None:
         plan["state"] = remote["state"]
     else:
         plan.pop("state", None)
+
+
+def take_scheduling(plan: dict, remote: dict) -> None:
+    """Copy the plan's two scheduling switches from *remote*. The importer
+    writes only off values, so a key the remote lacks means on and is
+    dropped here too."""
+    import copy
+    from .diff import SCHEDULING_KEYS
+    for key in SCHEDULING_KEYS:
+        if key in remote:
+            plan[key] = copy.deepcopy(remote[key])
+        else:
+            plan.pop(key, None)
 
 
 def same_row_identity(a: dict, b: dict) -> bool:
@@ -123,7 +137,7 @@ def apply_auto_pull(plan: dict, remote: dict, fields: list[str]) -> None:
     the value at each path is read from *remote* and written into *plan*,
     creating intermediate dicts as needed.
     """
-    from .diff import ORDER, ROWS, align_units, split_path
+    from .diff import ORDER, ROWS, SCHEDULING, align_units, split_path
     from .rows import unfloored
     # The diff compared TS's rows with the pipeline's floor read back as the goal and
     # in each local row's unit; pull them so.
@@ -133,6 +147,9 @@ def apply_auto_pull(plan: dict, remote: dict, fields: list[str]) -> None:
     for path in sorted(fields, key=lambda f: f == ORDER):
         if path == ORDER:
             pull_order(plan, remote)
+            continue
+        if path == SCHEDULING:
+            take_scheduling(plan, remote)
             continue
         parts = split_path(path)
         if parts[0] == ROWS:

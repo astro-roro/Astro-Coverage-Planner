@@ -309,6 +309,61 @@ def panel_key(row_idx: int, col_idx: int) -> str:
     return f"{row_idx + 1},{col_idx + 1}"
 
 
+# A plan's own scheduling switch and its per-panel ones, apart from the
+# project's `state`. `target_active` is stored only as false and
+# `panel_active` only holds "row,col" keys set to false: absent means on, so
+# a plan from before these fields schedules exactly as it did. Target
+# Scheduler gets them as each target's `active` column.
+TARGET_ACTIVE_KEY = "target_active"
+PANEL_ACTIVE_KEY = "panel_active"
+
+
+def normalize_active_fields(plan: dict) -> str | None:
+    """Check and fold the two switches on a plan being saved, in place: true
+    is dropped, and so is a panel map left empty. Returns an error message,
+    or None."""
+    if TARGET_ACTIVE_KEY in plan:
+        v = plan[TARGET_ACTIVE_KEY]
+        if v is None or v is True:
+            plan.pop(TARGET_ACTIVE_KEY)
+        elif v is not False:
+            return "target_active must be true or false"
+    if PANEL_ACTIVE_KEY in plan:
+        raw = plan[PANEL_ACTIVE_KEY]
+        if raw is None:
+            plan.pop(PANEL_ACTIVE_KEY)
+            return None
+        if not isinstance(raw, dict):
+            return "panel_active must be an object of panel keys"
+        off: dict[str, bool] = {}
+        for key, v in raw.items():
+            if not valid_panel_key(key):
+                return f"panel_active key {key!r} must be a panel key like \"1,2\""
+            if not isinstance(v, bool):
+                return f"panel_active[{key!r}] must be true or false"
+            if v is False:
+                off[key] = False
+        if off:
+            plan[PANEL_ACTIVE_KEY] = off
+        else:
+            plan.pop(PANEL_ACTIVE_KEY)
+    return None
+
+
+def target_active(plan: dict | None, key: str | None = None) -> bool:
+    """Whether Target Scheduler should schedule the plan's target, or with
+    *key* the target of that mosaic panel. Off when the plan is off, or when
+    the panel is. Pass no key for a plan that reaches TS as one target, so a
+    mosaic collapsed for want of a FOV follows the plan switch alone."""
+    plan = plan or {}
+    if plan.get(TARGET_ACTIVE_KEY) is False:
+        return False
+    if key is None:
+        return True
+    panels = plan.get(PANEL_ACTIVE_KEY)
+    return not (isinstance(panels, dict) and panels.get(key) is False)
+
+
 def mosaic_dims(plan: dict | None) -> tuple[int, int]:
     """(rows, cols) of the plan's mosaic, (1, 1) when it is not one."""
     mosaic = ((plan or {}).get("target") or {}).get("mosaic")

@@ -1034,6 +1034,12 @@ body:not([data-time-aware="on"]) .plan-vis { display: none; }
 .plan-form .mosaic-row label { flex: 1 1 0; min-width: 0; }
 .plan-form .mosaic-row label > span.lab { min-width: 0; }
 .plan-form .mosaic-row input[type="number"] { width: 100%; }
+/* The plan's scheduling switch and one switch per mosaic panel. */
+.plan-form .schedule-switch input[type="checkbox"] { width: auto; }
+.plan-form .panel-switches { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; }
+.plan-form .panel-switches:empty { display: none; }
+.plan-form .panel-switches-head { flex: 1 0 100%; color: #78839a; }
+.plan-form .panel-switch { display: inline-flex; align-items: center; gap: 4px; }
 .plan-form .coord-row .hms {
   color: #78839a;
   font-family: "SF Mono", Monaco, Consolas, monospace;

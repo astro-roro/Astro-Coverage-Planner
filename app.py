@@ -4749,6 +4749,11 @@ def _validate_plan_payload(payload: dict) -> str | None:
         state = payload["state"] = "inactive"
     if state is not None and state not in PLAN_STATES:
         return f"state must be one of {', '.join(PLAN_STATES)}"
+    # The plan's own scheduling switch and its per-panel ones, apart from
+    # the project state. Stored only when off.
+    err = fr.normalize_active_fields(payload)
+    if err:
+        return err
     # Minimum time, in minutes, the same TS-owned rule as min altitude:
     # absent means 0, and a group's largest value wins (_build_ts_export).
     if "minimum_time_min" in payload:
@@ -6744,7 +6749,8 @@ def _build_ts_export(plans_list: list, gear_data: dict) -> tuple[dict, list]:
                     "ProjectId": proj_id,    # link to parent project
                     "Guid": str(uuid.uuid4()),
                     "Name": f"{base_name}{pname_suffix}",
-                    "Enabled": True,
+                    "Enabled": fr.target_active(
+                        pl, f"{panel['row'] + 1},{panel['col'] + 1}" if multi else None),
                     # Target Scheduler stores RA in HOURS, Dec in degrees.
                     "RA": panel["ra_deg"] / 15.0,
                     "Dec": panel["dec_deg"],

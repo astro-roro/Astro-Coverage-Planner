@@ -946,6 +946,7 @@ _LABELS = {
     "camera_id": "camera",
     "destination_id": "destination",
     "project_name": "project",
+    "target_active": "scheduling",
     "target.name": "target name",
     "target.center_ra_deg": "centre RA",
     "target.center_dec_deg": "centre Dec",
@@ -1063,6 +1064,9 @@ def _same(a, b) -> bool:
 
 
 def _fmt(key: str, v) -> str:
+    # The scheduling switches are stored only when off, so absent is on.
+    if v is None and (key == fr.TARGET_ACTIVE_KEY or key.startswith(fr.PANEL_ACTIVE_KEY + ".")):
+        return "on"
     if v is None:
         return "unset"
     if isinstance(v, bool):
@@ -1082,6 +1086,9 @@ def _fmt(key: str, v) -> str:
 def _label(key: str) -> str:
     if key in _LABELS:
         return _LABELS[key]
+    if key.startswith(fr.PANEL_ACTIVE_KEY + "."):
+        r, _, c = key.partition(".")[2].partition(",")
+        return f"panel R{r}C{c} scheduling"
     if key.startswith("rows."):
         parts = key.split(".")
         if len(parts) == 2:

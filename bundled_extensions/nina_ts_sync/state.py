@@ -317,6 +317,14 @@ def _share_anchor_order(targets: dict) -> None:
             entry.pop("known_rows", None)
 
 
+def _active_of(tgt) -> int:
+    """The TS target's `active` column as 0 or 1, 1 when unset."""
+    try:
+        return 0 if int(tgt.active if tgt.active is not None else 1) == 0 else 1
+    except (TypeError, ValueError):
+        return 1
+
+
 def _old_panel(old_base: dict | None, panel_key: str) -> dict:
     entry = ((old_base or {}).get("targets_by_panel") or {}).get(panel_key)
     return entry if isinstance(entry, dict) else {}
@@ -380,6 +388,7 @@ def build_base_snapshot(
                 "ra": float(tgt.ra or 0),  # hours
                 "dec": float(tgt.dec or 0),
                 "rotation": float(tgt.rotation or 0),
+                "active": _active_of(tgt),
             }
             if order_targets is None or tid in order_targets:
                 row_id_by_plan: dict[int, str] = {}
@@ -544,6 +553,7 @@ def build_base_snapshot_from_ids(
             "ra": float(tgt.ra or 0),  # hours, matching build_base_snapshot
             "dec": float(tgt.dec or 0),
             "rotation": float(tgt.rotation or 0),
+            "active": _active_of(tgt),
         }
         order, ts_rows = _order_fields(snap, tid, row_id_by_plan_by_target.get(tid, {}))
         entry["exposure_order"] = order
