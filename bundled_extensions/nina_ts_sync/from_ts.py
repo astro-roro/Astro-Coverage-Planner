@@ -46,7 +46,7 @@ import re
 import uuid
 from dataclasses import dataclass
 
-from .convert import _fov_arcmin, _mosaic_panel_centers
+from .convert import _fov_arcmin, _mosaic_panel_centers, active_fields_from_ts
 from .order import effective_plan_order
 from .reader import TSSnapshot
 from .rows import FRAME_UNIT_BELOW_S, plan_sub_s, row_filter
@@ -714,6 +714,8 @@ def import_to_acp_plans(
                     _row(rp, row_ids[rp.pair], grader_enabled=grader_enabled)
                     for rp in rows_by_target[tid]
                 ],
+                # A target made inactive in TS comes in switched off.
+                **active_fields_from_ts({"1,1": tgt.active}),
             }
             plans_out.append(plan_out)
             id_maps_out.append(_id_map_for_target_set(
@@ -831,6 +833,10 @@ def import_to_acp_plans(
                     _row(rp, row_ids[rp.pair], grader_enabled=grader_enabled)
                     for rp in rows_by_target[panel_ids[0]]
                 ],
+                # Panels made inactive in TS come in switched off.
+                **active_fields_from_ts({
+                    key: snap.targets_by_id[tid].active for key, tid in panels_by_key.items()
+                }),
             }
             plans_out.append(mosaic_plan)
             id_maps_out.append(_id_map_for_target_set(

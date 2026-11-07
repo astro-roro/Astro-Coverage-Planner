@@ -172,6 +172,63 @@ def _mosaic_panel_centers(
     return panels
 
 
+def target_active(plan: dict, key: str | None = None) -> bool:
+    """Whether a plan's target, or with *key* one mosaic panel's target,
+    should be active in Target Scheduler. Mirrors filter_rows.target_active:
+    `target_active: false` turns the plan off, `panel_active: {"r,c": false}`
+    turns one panel off, and anything absent means on. Pass no key for a
+    plan that reaches TS as a single target."""
+    if plan.get("target_active") is False:
+        return False
+    if key is None:
+        return True
+    panels = plan.get("panel_active")
+    return not (isinstance(panels, dict) and panels.get(key) is False)
+
+
+def active_fields_from_ts(active_by_panel: dict[str, int | None]) -> dict:
+    """The plan's `target_active` and `panel_active` for TS targets whose
+    `active` column is given by panel key, storing only off values.
+
+    Every target off (a single target, or a mosaic with all its panels off)
+    is `target_active: false`. Some panels off is a `panel_active` map of
+    just those. All on, or `active` unknown (None), adds nothing."""
+    off = sorted(k for k, v in active_by_panel.items() if v is not None and int(v) == 0)
+    if not off:
+        return {}
+    if len(off) == len(active_by_panel):
+        return {"target_active": False}
+    return {"panel_active": {k: False for k in off}}
+
+
+def scheduling_text(plan: dict | None) -> str | None:
+    """One comparable value for both switches, for the import diff: "on",
+    "off", or "off: R2C1, R1C2" for the panels that are off. A plan whose
+    panels are all off reads "off", the same as its own switch off, and a
+    plan that is not a mosaic ignores its panel map, as the push does. None
+    for no plan."""
+    if plan is None:
+        return None
+    if plan.get("target_active") is False:
+        return "off"
+    mosaic = (plan.get("target") or {}).get("mosaic") or {}
+    try:
+        rows = max(1, int(mosaic.get("rows") or 1))
+        cols = max(1, int(mosaic.get("cols") or 1))
+    except (TypeError, ValueError):
+        rows = cols = 1
+    if rows * cols == 1:
+        return "on"
+    panels = plan.get("panel_active") if isinstance(plan.get("panel_active"), dict) else {}
+    off = [(r, c) for r in range(1, rows + 1) for c in range(1, cols + 1)
+           if panels.get(f"{r},{c}") is False]
+    if not off:
+        return "on"
+    if len(off) == rows * cols:
+        return "off"
+    return "off: " + ", ".join(f"R{r}C{c}" for r, c in off)
+
+
 def _plan_label(plan: dict) -> str:
     """How to name one ACP plan in a message the user has to act on.
 
@@ -521,10 +578,14 @@ def build_payload(
                         "again. Nothing was written."
                     )
                 plan_id_by_target_guid[t_guid] = _plan_label(pl)
+                panel_key = f"{panel['row'] + 1},{panel['col'] + 1}"
                 target = Target(
                     projectid=0,  # filled in by upsert.py
                     name=t_name,
                     guid=t_guid,
+                    # The plan's switch, and the panel's for a mosaic that
+                    # reaches TS as panels, apart from the project state.
+                    active=1 if target_active(pl, panel_key if multi else None) else 0,
                     ra=panel["ra_deg"] / 15.0,  # TS stores RA in hours
                     dec=panel["dec_deg"],
                     rotation=rot_deg,
@@ -532,7 +593,6 @@ def build_payload(
                 payload.targets_by_project_guid[proj.guid].append(target)
 
                 plan_list = payload.plans_by_target_guid.setdefault(t_guid, [])
-                panel_key = f"{panel['row'] + 1},{panel['col'] + 1}"
                 pinned_tid = pinned_targets.get(panel_key)
                 # The base order is the target's, which is the anchor panel's
                 # (1,1): ACP's order has changed when it differs from that,

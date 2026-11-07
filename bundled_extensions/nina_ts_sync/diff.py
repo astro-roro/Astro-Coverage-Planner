@@ -56,7 +56,16 @@ _PLAN_FIELDS: list[tuple[str, str] | tuple[str, str, str]] = [
     ("target.mosaic.rows", "count"),
     ("target.mosaic.cols", "count"),
     ("target.mosaic.overlap_pct", "count"),
+    # Not a stored field: `target_active` and `panel_active` read as one
+    # value ("on", "off", "off: R2C1"), so a plan switched off and a mosaic
+    # with every panel off compare equal. See SCHEDULING below.
+    ("target.scheduling", "string"),
 ]
+
+#: The derived path for the plan's scheduling switches. Pulling it copies
+#: both `target_active` and `panel_active` from TS's side.
+SCHEDULING = "target.scheduling"
+SCHEDULING_KEYS = ("target_active", "panel_active")
 
 # Plan fields where an ACP plan without the key does not know the value, as
 # opposed to having no opinion. The editor shows an unknown value as the
@@ -364,9 +373,13 @@ def diff_plan(
             continue
         if skip_prefixes and path.startswith(skip_prefixes):
             continue
-        b = _get(base, path)
-        l = _get(local, path)
-        r = _get(remote, path)
+        if path == SCHEDULING:
+            from .convert import scheduling_text
+            b, l, r = (_MISSING if d is None else scheduling_text(d) for d in (base, local, remote))
+        else:
+            b = _get(base, path)
+            l = _get(local, path)
+            r = _get(remote, path)
         if default is not None:
             # Absence is a value here, not "no opinion", but only when the
             # side itself exists. A genuinely absent side (no base snapshot
@@ -519,6 +532,11 @@ def base_snapshot_to_plan_shape(snap: dict | None) -> dict | None:
         },
         "filter_rows": [],
     }
+    # Each target's `active` as the plan's two switches. A base from before
+    # it was recorded has none, and reads as all on.
+    if targets and all(isinstance(t, dict) and "active" in t for t in targets.values()):
+        from .convert import active_fields_from_ts
+        out.update(active_fields_from_ts({k: t.get("active") for k, t in targets.items()}))
     if proj.get("name"):
         out["project_name"] = proj["name"]
     # Both left absent when the snapshot has no project block at all (or

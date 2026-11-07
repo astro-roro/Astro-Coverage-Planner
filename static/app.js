@@ -750,6 +750,7 @@ import { ACTIVITY_PANEL_W } from "./activity.mjs";
 import { setupActivity } from "./activity-ui.mjs";
 import { createTour } from "./tour.mjs";
 import { planStateBadgeLabel } from "./plan-state.mjs";
+import { planScheduled, panelSwitchOn, setPlanScheduled, setPanelScheduled, panelList } from "./target-active.mjs";
 import { listModeFor, createNavStack } from "./panel-nav.mjs";
 import { splitAtViewSeam, crossesViewSeam, projectionHasSeam } from "./seam.mjs";
 
@@ -3889,6 +3890,7 @@ function humanFieldLabel(path, plan) {
     "target.mosaic.rows": "mosaic rows",
     "target.mosaic.cols": "mosaic cols",
     "target.mosaic.overlap_pct": "mosaic overlap",
+    "target.scheduling": "scheduling",
   };
   if (map[path]) return map[path];
   // filter_rows.<row id>.target_frames → "R Stars target frames"
@@ -8415,6 +8417,7 @@ function renderPlanEditor(plan) {
           </label>
         </div>
         <div style="font-size:11px;color:#78839a" id="mosaicSummary"></div>
+        <div id="mosaicPanelSwitches" class="panel-switches"></div>
       </fieldset>
 
       <fieldset id="planVisFieldset" class="vis-section">
@@ -8438,6 +8441,9 @@ function renderPlanEditor(plan) {
             <option value="inactive" ${(editingPlan.state||"active")==="inactive"?"selected":""}>Inactive</option>
             <option value="closed"   ${(editingPlan.state||"active")==="closed"?"selected":""}>Closed</option>
           </select>
+        </label>
+        <label class="schedule-switch" title="Off sets this plan's targets inactive in Target Scheduler. The project's state is not changed."><span class="lab">Schedule this plan</span>
+          <input type="checkbox" id="f_target_active" ${planScheduled(editingPlan) ? "checked" : ""}>
         </label>
         <label><span class="lab">Priority</span>
           <select id="f_priority">
@@ -8525,6 +8531,22 @@ function renderPlanEditor(plan) {
   });
   panel.querySelector("#openGearEditor")?.addEventListener("click", () => renderGearEditor());
 
+  // One switch per mosaic panel, keyed "row,col" like the TS sync's
+  // panels. Only drawn for a mosaic; the plan switch covers a single target.
+  const drawPanelSwitches = () => {
+    const box = document.getElementById("mosaicPanelSwitches");
+    if (!box) return;
+    const m = planMosaic(editingPlan);
+    if (m.rows * m.cols <= 1) { box.innerHTML = ""; return; }
+    const planOn = planScheduled(editingPlan);
+    box.innerHTML = `<div class="panel-switches-head">Schedule panels${planOn ? "" : " (the plan is off, so none are scheduled)"}</div>`
+      + panelList(m.rows, m.cols).map(p =>
+        `<label class="panel-switch"><input type="checkbox" data-panel-key="${esc(p.key)}" ${panelSwitchOn(editingPlan, p.key) ? "checked" : ""} ${planOn ? "" : "disabled"}> ${esc(p.label)}</label>`
+      ).join("");
+    for (const cb of box.querySelectorAll("input[data-panel-key]")) {
+      cb.addEventListener("change", e => setPanelScheduled(editingPlan, e.target.dataset.panelKey, e.target.checked));
+    }
+  };
   const updateMosaicSummary = () => {
     const m = planMosaic(editingPlan);
     const [w, h] = planFovArcmin(editingPlan);
@@ -8533,6 +8555,7 @@ function renderPlanEditor(plan) {
     const totalH = h * ((m.rows - 1) * (1 - overlap) + 1);
     const el = document.getElementById("mosaicSummary");
     if (el) el.textContent = `${m.rows * m.cols} panel${m.rows * m.cols === 1 ? "" : "s"} · total ${totalW.toFixed(1)}' × ${totalH.toFixed(1)}'`;
+    drawPanelSwitches();
   };
   updateMosaicSummary();
 
@@ -8565,6 +8588,10 @@ function renderPlanEditor(plan) {
   });
   wireFilterRows(panel);
   panel.querySelector("#f_state")?.addEventListener("change", e => { editingPlan.state = e.target.value; });
+  panel.querySelector("#f_target_active")?.addEventListener("change", e => {
+    setPlanScheduled(editingPlan, e.target.checked);
+    drawPanelSwitches();
+  });
   panel.querySelector("#f_priority")?.addEventListener("change", e => { editingPlan.priority = e.target.value; });
   panel.querySelector("#f_mintime")?.addEventListener("input", e => {
     const v = parseInt(e.target.value, 10); if (Number.isFinite(v) && v >= 0) editingPlan.minimum_time_min = v;
