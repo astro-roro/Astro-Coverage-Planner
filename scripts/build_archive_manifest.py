@@ -1488,6 +1488,25 @@ def wcs_rotation_deg(w, cx: float, cy: float) -> float | None:
     return 0.0 if pa >= 360.0 else pa
 
 
+def _plain_degree_pointing(h) -> tuple[float | None, float | None]:
+    """Pointing from bare RA and DEC keywords holding decimal degrees.
+
+    Only numeric values inside 0-360 and -90 to 90 count. A sexagesimal string
+    such as "20 45 38" is left alone, because it could be hours, not degrees.
+    """
+    ra, dec = h.get("RA"), h.get("DEC")
+    if isinstance(ra, bool) or isinstance(dec, bool):
+        return None, None
+    if not isinstance(ra, (int, float)) or not isinstance(dec, (int, float)):
+        return None, None
+    ra, dec = float(ra), float(dec)
+    if not (np.isfinite(ra) and np.isfinite(dec)):
+        return None, None
+    if not (0.0 <= ra < 360.0 and -90.0 <= dec <= 90.0):
+        return None, None
+    return ra, dec
+
+
 def read_fits_meta(path: Path) -> dict:
     """Read FITS header, extract WCS center, pixel scale, exposure, filter, date, imagetyp."""
     out = {
@@ -1663,6 +1682,14 @@ def read_fits_meta(path: Path) -> dict:
                         out["dec_deg"] = float(sc.dec.deg)
                     except Exception:
                         pass
+                else:
+                    # ZWO Seestar writes the pointing as plain RA and DEC in
+                    # decimal degrees, with no WCS and no OBJCTRA (issue #181).
+                    # Without this the frame had no position and was dropped.
+                    ra_d, dec_d = _plain_degree_pointing(h)
+                    if ra_d is not None:
+                        out["ra_deg"] = ra_d
+                        out["dec_deg"] = dec_d
             # Always record FOCALLEN + XPIXSZ so FOV can be derived from
             # physics (Method B) even when CD/CDELT is present but bogus.
             try:
