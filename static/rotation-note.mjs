@@ -19,7 +19,7 @@ export function rotationUnknown(t) {
 }
 
 // A rotation arrow with a line through it. Stroke follows the text colour.
-const ICON = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7"/><path d="M13 2.5v3h-3"/><path d="M2.5 13.5l11-11"/></svg>`;
+const ICON = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8a5 5 0 1 1-2.89-4.53"/><path d="M13 2.5v3h-3"/><path d="M2.5 2.5l11 11"/></svg>`;
 
 export function rotationUnknownButtonHtml() {
   return `<button type="button" class="rot-unknown" id="rotUnknownBtn" title="${ROTATION_UNKNOWN_TIP}" aria-label="${ROTATION_UNKNOWN_TIP}" aria-expanded="false" aria-controls="rotUnknownNote">${ICON}</button>`
