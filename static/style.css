@@ -2354,6 +2354,20 @@ input[type="checkbox"].ext-input-control { width: auto; align-self: start; }
 .hidden-toggle[aria-pressed="true"] { color: #e0e4ea; border-color: #4da6ff; }
 .hidden-note { font-size: 12px; color: #78839a; margin: 4px 0 8px; }
 
+/* Rotation unknown: a rotation arrow struck through, at the right end of the
+   filter pill row. Dim until hovered or focused. */
+.pill-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+.rot-unknown {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0;
+  background: transparent; border: 1px solid #3a4356; border-radius: 4px;
+  color: #9aa3b5; cursor: pointer;
+}
+.rot-unknown:hover, .rot-unknown:focus-visible, .rot-unknown[aria-expanded="true"] { color: #e8ecf4; border-color: #78839a; }
+.rot-unknown:focus-visible { outline: 2px solid #4da6ff; outline-offset: 1px; }
+.rot-unknown-note { flex-basis: 100%; font-size: 12px; color: #9aa3b5; margin: 4px 0 0; }
+.rot-unknown-note[hidden] { display: none; }
+
 /* Plan editor card notes (docs/specs/gear-templates.md section 7) */
 .fr-notes { grid-column: 2 / span 3; grid-row: 3; display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 10px; color: #8d99ad; }
 .fr-flag-warn { color: #f0c46a; }

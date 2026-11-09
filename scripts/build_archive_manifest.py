@@ -557,8 +557,37 @@ _MULTI_BAND = {
 _SINGLE_BAND_NAMES = set(FILTER_CANON.values()) - {"NoFilter"}
 
 
+# IRCUT is the name ZWO and others give an IR-cut filter. On a colour sensor it
+# is ordinary broadband colour data, the same as no filter (issue #181), so it
+# is treated as NoFilter there. On a mono sensor it stays a band of its own.
+_IRCUT_NAMES = {"IRCUT", "IR-CUT", "IR CUT"}
+
+
+def _is_ircut_colour(filt: str | None, colour: bool) -> bool:
+    return bool(colour and filt and filt.upper() in _IRCUT_NAMES)
+
+
+# A Seestar's "LP" filter is its built-in dual-band (Ha and OIII) filter. "LP"
+# alone means a broadband light pollution filter on other rigs, so the dual-band
+# meaning applies only when the header names a Seestar: CREATOR or TELESCOP
+# containing "seestar", or TELESCOP starting with the model names "S30" or "S50".
+def is_seestar_header(creator, telescop) -> bool:
+    c = str(creator or "").strip().lower()
+    t = str(telescop or "").strip().lower()
+    return "seestar" in c or "seestar" in t or t.startswith(("s30", "s50"))
+
+
+def seestar_filter(filt: str | None, creator, telescop) -> str | None:
+    """Rename a Seestar's built-in LP filter to Duo-Band. Other frames pass through."""
+    if filt == "LP" and is_seestar_header(creator, telescop):
+        return "Duo-Band"
+    return filt
+
+
 def bands_for(filt: str | None, colour: bool) -> list[str]:
     """Coverage bands a frame credits, given its canonical filter and sensor type."""
+    if _is_ircut_colour(filt, colour):
+        return ["R", "G", "B"]
     if not filt:
         # A colour camera with no filter recorded at all (common: OSC capture
         # apps often leave the field blank rather than writing "NoFilter")
@@ -580,7 +609,7 @@ def filter_label(filt: str | None, colour: bool) -> str:
     """Display name for the real filter behind a band credit."""
     if not filt:
         return "OSC" if colour else "Unknown"
-    if filt == "NoFilter" and colour:
+    if (filt == "NoFilter" and colour) or _is_ircut_colour(filt, colour):
         return "OSC"
     return filt
 
@@ -1567,7 +1596,9 @@ def read_fits_meta(path: Path) -> dict:
                     break
             if h is None:
                 h = hdul[0].header
-            out["filter"] = canon_filter(h.get("FILTER") or h.get("FILTRE"))
+            out["filter"] = seestar_filter(
+                canon_filter(h.get("FILTER") or h.get("FILTRE")),
+                h.get("CREATOR"), h.get("TELESCOP"))
             out["exptime"] = float(h.get("EXPTIME") or h.get("EXPOSURE") or 0) or None
             for k in ("NCOMBINE", "STACKCNT", "NSTACKED", "NSUBS", "NIMAGES"):
                 v = h.get(k)
