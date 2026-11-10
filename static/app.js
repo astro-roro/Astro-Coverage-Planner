@@ -765,6 +765,7 @@ import {
   extPostPathOk, parsePostBody, pagesFrom, withPlanId, adoptServerChanges,
 } from "./ext-ui.mjs";
 import { pickButtonState } from "./replaceable-buttons.mjs";
+import { rotationUnknown, rotationUnknownButtonHtml, wireRotationUnknown } from "./rotation-note.mjs";
 import {
   LABEL_PRETTY as _LABEL_PRETTY,
   LABEL_RANK as _LABEL_RANK,
@@ -1479,7 +1480,7 @@ function renderTargetPanel(t) {
     <div>
       <a class="back-link" id="backToList" href="#">← Back to list</a>
       <h3>Target #${t.target_id}: ${objs}</h3>
-      <div>${filterPills}</div>
+      <div class="pill-row"><span>${filterPills}</span>${rotationUnknown(t) ? rotationUnknownButtonHtml() : ""}</div>
 
       <div class="mark-finished-row">
         <span class="status-text">${finished ? "✓ " : ""}${esc(statusText)}</span>
@@ -1510,6 +1511,8 @@ function renderTargetPanel(t) {
       <h4 id="catMatchHdr" style="display:none">Nearby catalog objects</h4>
       <div id="catMatches"></div>
     </div>`;
+
+  wireRotationUnknown(panel);
 
   // Back-to-list link
   const back = document.getElementById("backToList");
