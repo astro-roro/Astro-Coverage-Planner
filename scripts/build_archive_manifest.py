@@ -2148,6 +2148,10 @@ def read_xisf_meta(path: Path) -> dict:
         # real record and the FITS keywords as a courtesy copy.
         if out["filter"] is None:
             out["filter"] = canon_filter(_xisf_prop_str(props, "Instrument:Filter:Name"))
+        # Same Seestar rule as the FITS reader. WBPP writes its masters as
+        # XISF, and a master stacked from Seestar LP subs must land in the
+        # same Duo-Band as those subs, or its hours count a second time.
+        out["filter"] = seestar_filter(out["filter"], fk("CREATOR"), fk("TELESCOP"))
         if out["exptime"] is None:
             exp = _xisf_prop_float(props, "Instrument:FrameExposureTime")
             if exp and exp > 0:
