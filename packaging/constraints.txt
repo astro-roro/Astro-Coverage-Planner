@@ -23,7 +23,7 @@ numpy==2.5.4
 scipy==1.18.1
 astroquery==0.4.11
 mocpy==0.21.0
-xisf==0.9.7
+xisf==1.0.1
 waitress==3.0.2
 croniter==6.2.4
 paramiko==5.1.0

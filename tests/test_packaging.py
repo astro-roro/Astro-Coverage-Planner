@@ -136,7 +136,9 @@ class TestStartFiles(unittest.TestCase):
         self.assertIn("'--only-binary=:all:'", ps1)
         pins = {l for l in constraint_lines(REPO / "packaging" / "constraints.txt")}
         listed = constraint_lines(REPO / "packaging" / "sdist-only.txt")
-        self.assertIn("xisf==0.9.7", listed)
+        xisf_pins = [l for l in listed if l.startswith("xisf==")]
+        self.assertEqual(len(xisf_pins), 1, "xisf must be pinned once in sdist-only.txt")
+        self.assertIn(xisf_pins[0], pins, "the xisf pin must match constraints.txt")
         self.assertTrue(set(listed) <= pins, "each source-only package must match its constraint")
 
     def test_the_start_check_reads_the_listener_port_from_its_endpoint(self):

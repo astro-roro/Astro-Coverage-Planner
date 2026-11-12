@@ -3,4 +3,4 @@
 # everything else, which stays wheels-only. Keep this list to packages that are pure
 # Python: a compiled one would need a compiler on the runner.
 # One requirement per line, pinned the same as in constraints.txt.
-xisf==0.9.7
+xisf==1.0.1
