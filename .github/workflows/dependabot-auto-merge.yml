@@ -3,14 +3,23 @@ name: Dependabot auto-merge
 # Enables auto-merge on Dependabot PRs that bump dependencies by a
 # minor or patch version. Major version bumps stay manual.
 #
+# Dependabot opens grouped PRs (see .github/dependabot.yml): the
+# pip-minor-and-patch and actions-minor-and-patch groups auto-merge, while
+# the pip-major and actions-major groups never do. The major groups are
+# recognised by their name (dependency-group ends in "-major"), as well as
+# by update-type, so a group PR cannot be auto-merged even if the metadata
+# action reports a lower update-type for a mixed PR.
+#
 # Mechanism: when Dependabot opens or updates a PR, this workflow asks
 # GitHub to enable auto-merge on it. GitHub then merges the PR as soon
 # as every pending check completes successfully — in practice, the
 # Tests workflow that runs on the same PR. If Tests fails, the PR
 # stays open for me to inspect (needs-attention.yml assigns me to it).
 #
-# Major bumps are not auto-merged; instead the owner is assigned so the
-# PR shows up as a "participating" notification.
+# Major bumps (single or grouped) are not auto-merged; instead the owner
+# is assigned once per PR so it shows up as a "participating"
+# notification. With monthly grouped PRs that is at most a couple of
+# assignments a month.
 #
 # Requires the repo setting "Allow auto-merge" to be enabled
 # (Settings → General → Pull Requests). Without that, the gh CLI call
@@ -36,17 +45,30 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Work out whether this is a major PR
+        id: kind
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          GROUP: ${{ steps.meta.outputs.dependency-group }}
+        run: |
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ] || [[ "$GROUP" == *-major ]]; then
+            echo "major=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "major=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enable auto-merge for minor + patch updates
         if: |
-          steps.meta.outputs.update-type == 'version-update:semver-minor' ||
-          steps.meta.outputs.update-type == 'version-update:semver-patch'
+          steps.kind.outputs.major != 'true' &&
+          (steps.meta.outputs.update-type == 'version-update:semver-minor' ||
+           steps.meta.outputs.update-type == 'version-update:semver-patch')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR_URL"
 
       - name: Assign owner for major updates
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: steps.kind.outputs.major == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}

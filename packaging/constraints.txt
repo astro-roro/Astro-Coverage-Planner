@@ -1,7 +1,7 @@
 # Exact versions for the packaged builds, so two builds of one tag match.
 # Used as: pip install --only-binary=:all: -c packaging/constraints.txt -r requirements.txt -r requirements-packaged.txt
 #
-# Dependabot updates this file (the pip entry for /packaging in .github/dependabot.yml)
+# Dependabot updates this file (the /packaging folder in the pip entry of .github/dependabot.yml)
 # and the smoke test in release-windows.yml catches a bad update.
 #
 # Versions resolved against PyPI for Python 3.12 on win_amd64 on 24 October 2026

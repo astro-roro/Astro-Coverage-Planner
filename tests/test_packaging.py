@@ -109,7 +109,7 @@ class TestPins(unittest.TestCase):
         tests_yml = (REPO / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
         self.assertIn("requirements.txt requirements-packaged.txt", tests_yml)
         dependabot = (REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8")
-        self.assertIn("directory: /packaging", dependabot)
+        self.assertIn("- /packaging", dependabot)
 
 
 class TestStartFiles(unittest.TestCase):
