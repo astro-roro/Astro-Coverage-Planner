@@ -1,12 +1,19 @@
 version: 2
 updates:
-  # Python dependencies (requirements.txt). One grouped PR per week for
-  # minor + patch updates; major versions stay as individual PRs so a
-  # breaking change can't slip into a bulk-merge.
+  # Python dependencies: requirements.txt and packaging/constraints.txt. One
+  # entry covers both folders, so a bump of one package is one PR touching
+  # both files. Runs monthly. Two grouped PRs per run: minor + patch updates
+  # together (auto-merged when Tests pass), and all major updates together
+  # (never auto-merged, the owner reviews it). The group names are used by
+  # .github/workflows/dependabot-auto-merge.yml, so keep them in step.
+  # Security updates ignore the schedule and group rules above (they are
+  # raised as soon as an advisory appears); they arrive as their own PRs.
   - package-ecosystem: pip
-    directory: /
+    directories:
+      - /
+      - /packaging
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 10
     groups:
       pip-minor-and-patch:
@@ -16,35 +23,23 @@ updates:
         update-types:
           - minor
           - patch
-    commit-message:
-      prefix: "deps"
-      include: scope
-
-  # Exact versions for the packaged downloads (packaging/constraints.txt). The
-  # smoke test in release-windows.yml catches a bad update. Same grouping rule.
-  - package-ecosystem: pip
-    directory: /packaging
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      packaging-minor-and-patch:
+      pip-major:
         applies-to: version-updates
         patterns:
           - "*"
         update-types:
-          - minor
-          - patch
+          - major
     commit-message:
       prefix: "deps"
       include: scope
 
-  # GitHub Actions versions referenced in workflow files. Same grouping
-  # rule — minor + patch bundled, majors split out.
+  # GitHub Actions versions referenced in workflow files. Monthly, same two
+  # groups: minor + patch bundled and auto-merged, majors bundled and left
+  # for the owner.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 10
     groups:
       actions-minor-and-patch:
@@ -54,6 +49,12 @@ updates:
         update-types:
           - minor
           - patch
+      actions-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
     commit-message:
       prefix: "ci"
       include: scope

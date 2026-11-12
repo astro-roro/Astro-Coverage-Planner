@@ -203,7 +203,7 @@ If you find a sharp edge, that's on me, not the model. PRs and issues welcome. :
 
 Hygiene for the supply chain is automated end-to-end:
 
-- **Dependabot** monitors both the Python dependencies (`requirements.txt`) and the GitHub Actions versions referenced in workflows, opening weekly update PRs.
+- **Dependabot** monitors both the Python dependencies (`requirements.txt`) and the GitHub Actions versions referenced in workflows, opening monthly update PRs: one for minor and patch updates (auto-merged when tests pass) and one for major updates (reviewed by hand).
 - **Minor and patch updates auto-merge** once the test workflow passes — small bumps land without manual intervention. Major version updates stay as separate PRs for me to review by hand.
 - **Every update is tested before merge.** The test suite runs on every push and every PR via [`tests.yml`](.github/workflows/tests.yml); the container build in [`publish.yml`](.github/workflows/publish.yml) is gated on it passing, so a broken commit can't make it into the published image.
 - **The Docker base image is pinned** to a specific Python version (see `Dockerfile`) — no `python:latest`.
