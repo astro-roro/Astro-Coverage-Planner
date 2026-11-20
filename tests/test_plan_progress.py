@@ -284,13 +284,13 @@ class TestEditorSaveKeepsProgress(unittest.TestCase):
 
     def test_stored_panel_map_is_kept(self):
         plan = self.client.get("/api/plans/p1").get_json()
-        _row(plan, "Ha")["panels"] = {"0_0": 4.0}
+        _row(plan, "Ha")["panels"] = {"1,1": 4.0}
         self.client.put("/api/plans/p1", json={**plan, "reset_progress": True})
         stale = copy.deepcopy(self.stale)
         _row(stale, "Ha").pop("panels", None)
         self.client.put("/api/plans/p1", json=stale)
         stored = _row(self.client.get("/api/plans/p1").get_json(), "Ha")
-        self.assertEqual(stored["panels"], {"0_0": 4.0})
+        self.assertEqual(stored["panels"], {"1,1": 4.0})
         self.assertEqual(stored["actual_hours"], 4.0)
 
     def test_reset_progress_takes_the_clients_figures(self):
