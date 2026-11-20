@@ -3604,6 +3604,40 @@ def resolve_destination_paths(destination: dict | None) -> dict:
     raise ValueError(f"destination {destination.get('id')!r}: unsupported kind {kind!r}")
 
 
+def _export_dirs() -> list[Path]:
+    """Folders a sync may write a destination's export file into: the
+    exports folder, plus any listed in export_dirs (the settings file or
+    ACP_EXPORT_DIRS)."""
+    extra = acp_settings.effective("export_dirs") or []
+    return [ZIP_OUTPUT_DIR, *(Path(p).expanduser() for p in extra)]
+
+
+def _inside(path: str, root: str) -> bool:
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different drives on Windows
+        return False
+
+
+def _export_path_allowed(path: Path) -> bool:
+    """True when *path* sits inside one of the export folders.
+
+    Checked on the text first, so a path outside every folder is refused
+    without touching the disk (a network path on Windows would otherwise be
+    opened). Then checked again with links resolved, so a link inside an
+    export folder cannot point the write somewhere else."""
+    if not path.is_absolute():
+        return False
+    roots = [d for d in _export_dirs() if d.is_absolute()]
+    text = os.path.normpath(str(path))
+    lexical = [r for r in roots if _inside(text, os.path.normpath(str(r)))]
+    if not lexical:
+        return False
+    real = os.path.realpath(text)
+    return any(_inside(real, os.path.realpath(r)) for r in lexical)
+
+
 @app.route("/api/destinations", methods=["GET", "POST"])
 def api_destinations():
     """Read/write the full destinations list. GET returns
@@ -3620,6 +3654,9 @@ def api_destinations():
             for d in data.get("destinations", [])
         ]}
         return jsonify(out)
+    refused = _restricted_refusal()
+    if refused:
+        return refused
     payload = request.get_json(silent=True) or {}
     dests = payload.get("destinations")
     if not isinstance(dests, list):
@@ -6832,7 +6869,14 @@ def api_sync():
     ZIP_OUTPUT_DIR. Omitting it preserves the pre-multi-rig behaviour (all
     non-closed plans, global paths) so the existing NINA plugin integration
     keeps working unchanged.
+
+    It writes files, so with no token only a local caller may run it. It
+    takes no body, so the plugin's bare POST keeps working, which is why it
+    checks the Origin rather than demanding JSON.
     """
+    refused = _caller_refusal() or _origin_refused()
+    if refused:
+        return refused
     body = request.get_json(silent=True) or {}
     destination_id = body.get("destination_id") or request.args.get("destination_id")
 
@@ -6871,6 +6915,11 @@ def api_sync():
     ts_db_for_version = resolved["ts_db_path"]
     if resolved["zip_path"] is not None:
         zip_path = resolved["zip_path"]
+        if not _export_path_allowed(zip_path):
+            return jsonify({
+                "error": f"destination {destination_id!r}: export_path must be inside "
+                         "the exports folder or a folder listed in export_dirs "
+                         "(settings file or ACP_EXPORT_DIRS)"}), 400
         zip_path.parent.mkdir(parents=True, exist_ok=True)
         download_url = None
     else:
@@ -7498,17 +7547,28 @@ def _client_is_loopback() -> bool:
             and "X-Forwarded-For" not in request.headers)
 
 
+def _request_hostname() -> str:
+    """The Host header without its port, lower case."""
+    raw = request.headers.get("Host", "").strip().lower()
+    if raw.startswith("["):
+        return raw[1:].split("]", 1)[0]
+    if raw.count(":") == 1:
+        return raw.split(":", 1)[0]
+    return raw
+
+
 def _host_is_loopback() -> bool:
     """The Host header names this machine. A page on another site that
     rebinds its DNS name to 127.0.0.1 still sends its own name here."""
-    raw = request.headers.get("Host", "").strip().lower()
-    if raw.startswith("["):
-        host = raw[1:].split("]", 1)[0]
-    elif raw.count(":") == 1:
-        host = raw.split(":", 1)[0]
-    else:
-        host = raw
-    return host in _LOOPBACK_HOSTS
+    return _request_hostname() in _LOOPBACK_HOSTS
+
+
+def _extra_allowed_hosts() -> frozenset[str]:
+    """Names besides loopback that ACP answers to with no token set, from
+    ACP_ALLOWED_HOSTS (comma separated), for a reverse proxy or a LAN
+    address. Read fresh so a test or a restart-free change takes effect."""
+    raw = os.environ.get("ACP_ALLOWED_HOSTS", "")
+    return frozenset(h.strip().lower().strip("[]") for h in raw.split(",") if h.strip())
 
 
 def _authorised_client() -> bool:
@@ -7521,17 +7581,32 @@ def _authorised_client() -> bool:
 
 
 @app.before_request
-def _packaged_host_guard():
-    """DNS rebinding: in packaged mode, answer only to a loopback Host name.
+def _host_guard():
+    """DNS rebinding: with no token set, answer only to a loopback Host name.
     A page on another site that rebinds its name to 127.0.0.1 still sends its
-    own name here. A packaged build has no reverse proxy, so the check is safe
-    on every route. With a token set, _api_gate has already demanded a bearer
+    own name here. With a token set, _api_gate has already demanded a bearer
     header or the session cookie by the time this runs, so only the tokenless
-    case needs it. A source install checks the restricted routes only (see
-    _restricted_refusal), because a proxy with a hostname would lock out its
-    own users."""
-    if _packaged() and not _api_auth_token() and not _host_is_loopback():
-        return jsonify({"error": "bad_host"}), 400
+    case needs it.
+
+    A source or Docker install behind a reverse proxy, or reached by its LAN
+    address, lists those names in ACP_ALLOWED_HOSTS. A packaged build has no
+    proxy and ignores that list. The names in it pass this check only: the
+    restricted routes still demand a loopback name (see _restricted_refusal)."""
+    if _api_auth_token() or _host_is_loopback():
+        return None
+    if not _packaged() and _request_hostname() in _extra_allowed_hosts():
+        return None
+    return jsonify({"error": "bad_host"}), 400
+
+
+def _caller_refusal():
+    """With no token, refuse anyone but a loopback client using a loopback
+    name. With a token the gate has already checked the caller."""
+    if not _api_auth_token():
+        if not _client_is_loopback():
+            return jsonify({"error": "forbidden"}), 403
+        if not _host_is_loopback():
+            return jsonify({"error": "bad_host"}), 400
     return None
 
 
@@ -7543,11 +7618,9 @@ def _restricted_refusal():
     preflight ACP never answers, so the type check stops cross-site writes
     even from a page that gets past the Origin test.
     """
-    if not _api_auth_token():
-        if not _client_is_loopback():
-            return jsonify({"error": "forbidden"}), 403
-        if not _host_is_loopback():
-            return jsonify({"error": "bad_host"}), 400
+    refused = _caller_refusal()
+    if refused:
+        return refused
     if request.mimetype != "application/json":
         return jsonify({"error": "unsupported_media_type"}), 415
     return _origin_refused()
@@ -7573,7 +7646,7 @@ def _settings_view(authorised: bool) -> dict:
     keys = {}
     for name, info in resolved.items():
         entry = {"source": info["source"], "locked": info["locked"]}
-        hidden = name in ("fits_roots", "manifest_path") and not authorised
+        hidden = name in ("fits_roots", "manifest_path", "export_dirs") and not authorised
         if not hidden:
             entry["value"] = info["value"]
         keys[name] = entry

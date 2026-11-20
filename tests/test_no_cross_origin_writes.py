@@ -137,7 +137,9 @@ class TestPreflightFreeWritesParseNothing(unittest.TestCase):
                     r = self.client.post(path, data=body,
                                          content_type=ctype,
                                          headers={"Origin": EVIL})
-                    self.assertEqual(r.status_code, 400, f"{ctype} {path}")
+                    # 415 is the restricted routes refusing a body that is
+                    # not JSON before reading it, which is stricter still.
+                    self.assertIn(r.status_code, (400, 415), f"{ctype} {path}")
 
     def test_the_same_body_as_json_is_accepted(self):
         """The refusal above is about the content type, not the body."""

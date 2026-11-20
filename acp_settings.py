@@ -31,6 +31,9 @@ ENV_VARS = {
     "manifest_path": "MANIFEST_PATH",
     "port": "PORT",
     "scan_cron": "ACP_SCAN_CRON",
+    # Extra folders a sync may write a destination's export file into, on top
+    # of the exports folder. File or environment only, never the page.
+    "export_dirs": "ACP_EXPORT_DIRS",
 }
 DEFAULT_PORT = 5555
 
@@ -233,14 +236,17 @@ _FROM_ENV = {
     "manifest_path": _text,
     "port": _port,
     "scan_cron": _text,
+    "export_dirs": lambda raw: parse_roots(raw) or None,
 }
 _FROM_FILE = {
     "fits_roots": _file_roots,
     "manifest_path": _text,
     "port": _port,
     "scan_cron": _text,
+    "export_dirs": _file_roots,
 }
-_DEFAULTS = {"fits_roots": [], "manifest_path": None, "port": DEFAULT_PORT, "scan_cron": None}
+_DEFAULTS = {"fits_roots": [], "manifest_path": None, "port": DEFAULT_PORT, "scan_cron": None,
+             "export_dirs": []}
 
 
 def resolve_all(env: Mapping[str, str] | None = None,
