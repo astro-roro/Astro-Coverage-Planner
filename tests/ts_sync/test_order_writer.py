@@ -271,7 +271,8 @@ def test_f1_a_new_switch_frequency_rebuilds_the_rows_in_blocks_of_3(conn):
 
 
 def _route_sync(host, db):
-    r = host.client.post("/api/ext/nina-ts-sync/sync", json={"profile_id": P, "db_path": str(db)})
+    host.use_db(db)
+    r = host.client.post("/api/ext/nina-ts-sync/sync", json={"profile_id": P})
     assert r.status_code == 200, r.get_json()
     return r.get_json()["report"]
 

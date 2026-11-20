@@ -88,8 +88,10 @@ def test_the_sync_route_keeps_the_base_of_an_unwritten_setting(tmp_path, monkeyp
     host.write_plans([plan("a", project_name="M31", filter_switch_frequency=0)])
     url = "/api/ext/nina-ts-sync/sync"
 
+    host.use_db(db)
+
     def sync():
-        r = host.client.post(url, json={"profile_id": P, "db_path": str(db)})
+        r = host.client.post(url, json={"profile_id": P})
         assert r.status_code == 200, r.get_json()
         return host.plan("a")["ts_links"][P]["base_snapshot"]["project"]["filterswitchfrequency"]
 

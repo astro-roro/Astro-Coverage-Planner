@@ -88,13 +88,15 @@ def write_transaction(
     """Open the DB, verify schema, take a backup, run the body in a tx.
 
     Yields ``(conn, backup_path)``. Commits on clean exit, rolls back on any
-    exception. The backup is taken *before* the transaction begins so if the
-    write phase fails, the user has an exact copy of the pre-write state.
+    exception. The schema is checked first, so no copy is ever made of a
+    file that is not a Target Scheduler database. The backup is then taken
+    *before* the transaction begins so if the write phase fails, the user
+    has an exact copy of the pre-write state.
     """
-    backup_path: Path | None = backup_db(db_path) if make_backup else None
     conn = open_connection(db_path, read_only=False)
     try:
         assert_supported_version(conn)
+        backup_path: Path | None = backup_db(db_path) if make_backup else None
         conn.execute("BEGIN IMMEDIATE")
         try:
             yield conn, backup_path
