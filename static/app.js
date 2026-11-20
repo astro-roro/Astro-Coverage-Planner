@@ -3830,7 +3830,7 @@ function renderTsOnlyNew(tsNew, newImports) {
         <input type="checkbox" data-ts-new="${esc(key)}" ${checked ? "checked" : ""}>
         <div>
           <div>${esc(p.project_name)} / ${esc(p.target_name)}</div>
-          <div class="ext-diff-meta">${(p.filters || []).join(", ")} · mosaic ${p.mosaic ? `${p.mosaic.rows}×${p.mosaic.cols}` : "1×1"}</div>
+          <div class="ext-diff-meta">${esc((p.filters || []).join(", "))} · mosaic ${p.mosaic ? `${p.mosaic.rows}×${p.mosaic.cols}` : "1×1"}</div>
         </div>
       </label>
     `;
@@ -7803,7 +7803,7 @@ function planRowHtml(pl, { withProject = true } = {}) {
   const projHidden = Object.hasOwn(hiddenMarks.projects, planProject(pl));
   if (selfHidden || projHidden) rowClass += " is-hidden";
   return `<li class="${rowClass}" data-plan-id="${esc(pl.id)}" tabindex="0">
-      <span class="plan-pri-dot plan-pri-${pri}" title="${priLabel} priority"></span>
+      <span class="plan-pri-dot plan-pri-${esc(pri)}" title="${esc(priLabel)} priority"></span>
       <span class="plan-name">${name}${stateBadge}${projHidden && !selfHidden
         ? `<span class="hidden-via" title="Unhide the project to show this plan">project hidden</span>` : ""}</span>
       ${visCell}
@@ -8352,7 +8352,7 @@ function renderPlanEditor(plan) {
     : 0;
 
   const telOpts = (gear.telescopes || []).map(t =>
-    `<option value="${esc(t.id)}" ${t.id === editingPlan.telescope_id ? "selected" : ""}>${esc(t.name)} (${t.focal_length_mm}mm)</option>`
+    `<option value="${esc(t.id)}" ${t.id === editingPlan.telescope_id ? "selected" : ""}>${esc(t.name)} (${esc(t.focal_length_mm)}mm)</option>`
   ).join("") || `<option value="">(no telescopes, open Edit gear)</option>`;
   const camOpts = (gear.cameras || []).map(c =>
     `<option value="${esc(c.id)}" ${c.id === editingPlan.camera_id ? "selected" : ""}>${esc(c.name)}</option>`
@@ -8460,10 +8460,10 @@ function renderPlanEditor(plan) {
         </label>
         ${projectMateCount > 0 ? `<div class="proj-settings-note" style="font-size:11px;color:#78839a">State, priority and minimum time apply to all ${projectMateCount + 1} plans in project ${esc(editingPlan.project_name)}.</div>` : ""}
         <label><span class="lab">Min altitude (°)</span>
-          <input type="number" step="1" min="0" max="90" id="f_minalt" value="${editingPlan.min_altitude_deg ?? 30}">
+          <input type="number" step="1" min="0" max="90" id="f_minalt" value="${esc(editingPlan.min_altitude_deg ?? 30)}">
         </label>
         <label><span class="lab">Meridian window (min, 0 = none)</span>
-          <input type="number" step="1" min="0" id="f_merid" value="${editingPlan.meridian_window_min ?? 0}">
+          <input type="number" step="1" min="0" id="f_merid" value="${esc(editingPlan.meridian_window_min ?? 0)}">
         </label>
         <label><span class="lab">Notes</span>
           <textarea id="f_notes">${esc(editingPlan.notes || "")}</textarea>

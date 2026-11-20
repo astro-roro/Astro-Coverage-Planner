@@ -3999,6 +3999,12 @@ _FILTER_NAME_RE = gt.FILTER_NAME_RE
 
 
 def _validate_gear_payload(payload: dict) -> str | None:
+    telescopes = payload.get("telescopes") or []
+    if isinstance(telescopes, list):
+        for i, t in enumerate(telescopes):
+            if (isinstance(t, dict) and t.get("focal_length_mm") is not None
+                    and not _finite_number(t["focal_length_mm"])):
+                return f"telescopes[{i}].focal_length_mm must be a finite number"
     cameras = payload.get("cameras") or []
     if not isinstance(cameras, list):
         return "cameras must be a list"
@@ -4657,6 +4663,12 @@ def api_gear_telescope_colour():
     return jsonify(out)
 
 
+def _finite_number(v) -> bool:
+    """An int or float that is not a bool, NaN or infinite. Strings fail."""
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
+
+
 def _validate_plan_payload(payload: dict) -> str | None:
     """Defence-in-depth check on a plan dict before it lands in plans.json.
 
@@ -4685,6 +4697,12 @@ def _validate_plan_payload(payload: dict) -> str | None:
         return "payload must be a JSON object"
     if not payload.get("id") or not isinstance(payload["id"], str):
         return "id required (non-empty string)"
+    priority = payload.get("priority")
+    if priority is not None and priority not in PRIORITY_RANK:
+        return f"priority must be one of {', '.join(PRIORITY_RANK)}"
+    for key in ("min_altitude_deg", "meridian_window_min"):
+        if payload.get(key) is not None and not _finite_number(payload[key]):
+            return f"{key} must be a finite number"
     target = payload.get("target")
     if target is not None:
         if not isinstance(target, dict):
