@@ -53,6 +53,25 @@ class TestRejectedFolders(unittest.TestCase):
     def test_an_ordinary_folder_is_not(self):
         self.assertFalse(bam.is_rejected_bucket("/S/sess1/og"))
 
+    def test_bad_inside_a_longer_name_is_not_a_reject_folder(self):
+        for path in (r"C:/Users/Abadi/M31/og", r"D:/Astro/Sinbad/og",
+                     "/S/Badlands/og", "/S/Bad Tolz/og"):
+            self.assertFalse(bam.is_rejected_bucket(path), path)
+
+    def test_separated_names_still_count(self):
+        self.assertTrue(bam.is_rejected_bucket("/S/sess1/bad_frames"))
+        self.assertTrue(bam.is_rejected_bucket("/S/sess1/Rejects"))
+
+    def test_folders_above_the_scan_root_do_not_count(self):
+        from pathlib import Path
+        old = bam.NAS_ROOTS
+        bam.NAS_ROOTS = [Path("/data/bad/archive")]
+        try:
+            self.assertFalse(bam.is_rejected_bucket("/data/bad/archive/M31/og"))
+            self.assertTrue(bam.is_rejected_bucket("/data/bad/archive/M31/rejected"))
+        finally:
+            bam.NAS_ROOTS = old
+
 
 class TestCountHelpersGateOnRole(unittest.TestCase):
     def test_a_master_is_never_captured_or_accepted(self):

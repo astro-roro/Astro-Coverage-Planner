@@ -957,6 +957,40 @@ def keep_grader(payload: dict, existing: dict | None) -> None:
         payload.update(stored_blocks(existing))
 
 
+RESET_PROGRESS_KEY = "reset_progress"
+
+
+def keep_progress(payload: dict, existing: dict | None) -> None:
+    """Put the stored acquired hours back on a plan a client is saving.
+
+    The editor holds the plan as it was when the page loaded, while the plugin
+    keeps posting progress. Saving the stale copy would wind the hours back,
+    so each row the client echoes (matched by row id, same filter and
+    template) takes `actual_hours` and `panels` from what is stored. A client
+    that really wants its own figures sends `reset_progress: true` on the
+    plan. The flag is consumed here and never stored. A row the client added
+    has nothing stored and keeps what it sent.
+    """
+    reset = payload.pop(RESET_PROGRESS_KEY, False) is True
+    if reset or not isinstance(existing, dict):
+        return
+    stored = {r.get("id"): r for r in rows_of(existing) if r.get("id") is not None}
+    rows = payload.get("filter_rows")
+    if not isinstance(rows, list):
+        return
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        old = stored.get(r.get("id"))
+        if old is None or not same_identity(old, r):
+            continue
+        for key in ("actual_hours", "panels"):
+            if key in old:
+                r[key] = copy.deepcopy(old[key])
+            else:
+                r.pop(key, None)
+
+
 def same_identity(a: dict, b: dict) -> bool:
     """Whether two rows name the same filter and template, the pair the
     grader's figures are reported against."""

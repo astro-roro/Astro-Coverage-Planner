@@ -120,3 +120,22 @@ class TestDraftToActiveMigration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFreshInstall(unittest.TestCase):
+    def setUp(self):
+        self.plans_path = _fresh_plans_path()
+        self.client = app.test_client()
+
+    def test_a_draft_plan_saved_on_a_fresh_install_is_still_draft_after_a_restart(self):
+        self.assertFalse(self.plans_path.exists())
+        r = self.client.post("/api/plans", json=_plan("p1", state="draft"))
+        self.assertEqual(r.status_code, 201)
+        stored = json.loads(self.plans_path.read_text(encoding="utf-8"))
+        self.assertEqual(stored.get("settings_migrated"), 1)
+        self.assertEqual(stored.get("filter_rows_migrated"), 1)
+        # A restart: the cache is empty and the file is loaded again.
+        app_module._plans_cache = None
+        app_module._plans_cache_mtime = None
+        data = app_module.load_plans()
+        self.assertEqual([p["state"] for p in data["plans"]], ["draft"])

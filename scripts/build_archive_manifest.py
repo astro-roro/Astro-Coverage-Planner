@@ -226,18 +226,38 @@ def rig_label(key):
     return f"{scope} + {cam}"
 
 
-REJECT_FOLDER_TOKENS = ("rejected", "bad")
+REJECT_FOLDER_TOKENS = ("rejected", "rejects", "reject", "bad")
+_REJECT_WORD_SPLIT = re.compile(r"[_\-.]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _below_scan_root(bucket):
+    """The path segments under whichever scan root holds the bucket, so the
+    scan root and the folders above it (a home folder, a site name) never
+    count. A bucket under no known root keeps all its segments."""
+    text = str(bucket).replace("\\", "/")
+    for root in [*NAS_ROOTS, FULL_MASTERS]:
+        prefix = str(root).replace("\\", "/").rstrip("/") + "/"
+        if text.casefold().startswith(prefix.casefold()):
+            text = text[len(prefix):]
+            break
+    return [seg for seg in re.split(r"/+", text) if seg]
 
 
 def is_rejected_bucket(bucket):
-    """True when any path segment (either slash style) names a reject folder."""
+    """True when a folder below the scan root is named as a reject folder.
+
+    A segment counts when one of its words is a reject token, where words
+    split on ``_``, ``-``, ``.`` and a lower-to-upper case change: ``Rejected``,
+    ``bad_frames`` and ``BadFrames`` count, ``Sinbad``, ``Badlands`` and
+    ``Bad Tolz`` do not.
+    """
     if not bucket:
         return False
-    segments = re.split(r"[\\/]+", str(bucket))
-    return any(
-        any(tok in seg.casefold() for tok in REJECT_FOLDER_TOKENS)
-        for seg in segments
-    )
+    for seg in _below_scan_root(bucket):
+        words = [w.casefold() for w in _REJECT_WORD_SPLIT.split(seg) if w]
+        if any(w in REJECT_FOLDER_TOKENS for w in words):
+            return True
+    return False
 
 
 def _member_tag(member, key, default):

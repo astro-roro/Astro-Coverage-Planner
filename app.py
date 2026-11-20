@@ -1071,7 +1071,10 @@ def repair_plan_templates() -> bool:
 def load_plans() -> dict:
     global _plans_cache, _plans_cache_mtime
     if not PLANS_PATH.exists():
-        return {"version": 1, "plans": []}
+        # A new install has nothing to migrate. Both flags go in so they reach
+        # the file on the first save; without them the next start would read
+        # the new file as an old one and turn every Draft plan Active.
+        return {"version": 1, "plans": [], "settings_migrated": 1, "filter_rows_migrated": 1}
     mtime = PLANS_PATH.stat().st_mtime
     if _plans_cache is None or _plans_cache_mtime != mtime:
         _plans_cache = json.loads(PLANS_PATH.read_text(encoding="utf-8"))
@@ -4930,6 +4933,7 @@ def api_plans():
     if err:
         return jsonify({"error": err}), 400
     fr.keep_grader(payload, previous)
+    fr.keep_progress(payload, previous)
     fr.sync_actuals(payload)
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
@@ -5000,6 +5004,7 @@ def api_plan(plan_id: str):
     if err:
         return jsonify({"error": err}), 400
     fr.keep_grader(payload, existing)
+    fr.keep_progress(payload, existing)
     fr.sync_actuals(payload)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
