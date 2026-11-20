@@ -37,9 +37,10 @@ def host(tmp_path, monkeypatch):
 
 
 def _sync(host, db, **body):
+    host.use_db(db)
     return host.client.post(
         "/api/ext/nina-ts-sync/sync",
-        json={"profile_id": GEAR_PROFILE, "db_path": str(db), "profile_name": "Foo", **body})
+        json={"profile_id": GEAR_PROFILE, "profile_name": "Foo", **body})
 
 
 def _gear_ha(host, hours=3.0):
@@ -206,7 +207,8 @@ def test_a_plugin_sync_body_with_only_a_profile_id_gets_its_wheel_from_the_store
     host.write_plans([_gear_ha(host)])
     host.fingerprints[GEAR_PROFILE] = _acp_entry()
     db = sc.make_template_db(tmp_path / "ts.sqlite")
-    r = host.client.post("/api/ext/nina-ts-sync/sync", json={"profile_id": GEAR_PROFILE, "db_path": str(db)})
+    host.use_db(db)
+    r = host.client.post("/api/ext/nina-ts-sync/sync", json={"profile_id": GEAR_PROFILE})
     assert r.status_code == 200, r.get_json()
     row = sqlite3.connect(db).execute(
         "SELECT filtername, defaultexposure FROM exposuretemplate WHERE name = 'Ha 600'").fetchone()

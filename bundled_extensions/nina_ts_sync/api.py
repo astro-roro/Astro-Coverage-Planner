@@ -16,9 +16,10 @@ the merge engine in import_merge.py, shared with uploads.
 
 Body for all POSTs (JSON):
     {
-        "profile_id": "<NINA profile id>",
-        "db_path":    "<optional override; falls back to env+OS default>"
+        "profile_id": "<NINA profile id>"
     }
+The database is the one ``ACP_TS_DB_PATH`` names, or NINA's default
+location. A request never chooses it: a ``db_path`` in the body is ignored.
 The /import/apply route additionally accepts ``"overwrite": true`` to
 replace the contents of data/plans.json wholesale; default refuses if any
 plans exist. /import/resolve takes ``"decisions"`` (per-plan-id verdicts:
@@ -133,7 +134,7 @@ def status():
 def preview_route():
     body = request.get_json(silent=True) or {}
     try:
-        path = resolve_db_path(body.get("db_path"))
+        path = resolve_db_path()
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
     profile_id = (body.get("profile_id") or "").strip()
@@ -414,7 +415,7 @@ def sync_route():
 def _sync_locked(pending: list):
     body = request.get_json(silent=True) or {}
     try:
-        path = resolve_db_path(body.get("db_path"))
+        path = resolve_db_path()
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
     profile_id = (body.get("profile_id") or "").strip()
@@ -532,7 +533,7 @@ def _read_snapshot(path, profile_id: str):
 def import_preview_route():
     body = request.get_json(silent=True) or {}
     try:
-        path = resolve_db_path(body.get("db_path"))
+        path = resolve_db_path()
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
     profile_id = (body.get("profile_id") or "").strip()
@@ -577,7 +578,7 @@ def import_apply_route():
     """
     body = request.get_json(silent=True) or {}
     try:
-        path = resolve_db_path(body.get("db_path"))
+        path = resolve_db_path()
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
     profile_id = (body.get("profile_id") or "").strip()
@@ -719,7 +720,7 @@ def sync_acquired_route():
     """
     body = request.get_json(silent=True) or {}
     try:
-        path = resolve_db_path(body.get("db_path"))
+        path = resolve_db_path()
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
     profile_id = (body.get("profile_id") or "").strip()
@@ -762,7 +763,7 @@ def sync_acquired_route():
 def import_diff_route():
     body = request.get_json(silent=True) or {}
     try:
-        path = resolve_db_path(body.get("db_path"))
+        path = resolve_db_path()
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
     profile_id = (body.get("profile_id") or "").strip()
@@ -789,7 +790,7 @@ def import_resolve_route():
     """
     body = request.get_json(silent=True) or {}
     try:
-        path = resolve_db_path(body.get("db_path"))
+        path = resolve_db_path()
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 400
     profile_id = (body.get("profile_id") or "").strip()

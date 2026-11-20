@@ -34,8 +34,9 @@ def _set_acquired(db, target_name, subs):
 
 
 def _sync(host, db):
+    host.use_db(db)
     r = host.client.post("/api/ext/nina-ts-sync/sync-acquired",
-                         json={"profile_id": P, "db_path": str(db)})
+                         json={"profile_id": P})
     assert r.status_code == 200, r.get_json()
     return r.get_json()
 

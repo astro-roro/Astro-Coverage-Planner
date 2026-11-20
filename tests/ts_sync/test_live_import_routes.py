@@ -41,8 +41,9 @@ def ha(hours):
 
 
 def _post(host, route, db, profile=P, **body):
+    host.use_db(db)
     return host.client.post(f"/api/ext/nina-ts-sync{route}",
-                            json={"profile_id": profile, "db_path": str(db), **body})
+                            json={"profile_id": profile, **body})
 
 
 def test_import_diff_keeps_its_shape_and_scope(host, tmp_path):

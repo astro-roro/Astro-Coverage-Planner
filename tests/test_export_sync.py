@@ -217,7 +217,7 @@ class TestSyncDestinationScoping(unittest.TestCase):
             {"id": "home", "label": "Home Rig", "kind": "local_db",
              "ts_db_path": "/fake/home/schedulerdb.sqlite"},
             {"id": "remote", "label": "Remote Rig", "kind": "shared_file",
-             "export_path": str(Path(tempfile.mkdtemp()) / "remote-sync.zip")},
+             "export_path": str(app_module.ZIP_OUTPUT_DIR / "remote" / "remote-sync.zip")},
         ]})
 
     def test_no_destination_id_syncs_all_plans_legacy_style(self):

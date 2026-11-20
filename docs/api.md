@@ -73,6 +73,8 @@ Two credentials are accepted, and both are compared with `hmac.compare_digest` r
 
 **A session cookie** is what a browser uses. Navigating to any page without a credential returns the sign-in form with status 401. Posting the token to `POST /login` sets `acp_session`, which is `HttpOnly`, `SameSite=Strict`, `Secure` when the request arrived over https, and valid for 30 days. `POST /logout` clears it. The cookie value is derived from the token rather than being the token, so what sits in the cookie jar is not the string you paste into the plugin.
 
+With `ACP_API_TOKEN` unset, every route answers 400 `{"error": "bad_host"}` to a request whose `Host` is not `localhost`, `127.0.0.1` or `[::1]`. This stops a web page on another site from reaching ACP through a DNS name it has pointed at your machine. If you reach a tokenless ACP by another name, such as a reverse proxy's hostname or the server's LAN address, list those names in `ACP_ALLOWED_HOSTS`, separated by commas and without the port (for example `ACP_ALLOWED_HOSTS=acp.home.example,192.168.1.20`). Those names open the ordinary routes only. The routes that write a file or change settings still need a caller on the same machine, or the token. A packaged build ignores `ACP_ALLOWED_HOSTS`, since it listens on the same machine only. With the token set, the token is the check and the `Host` header is not looked at.
+
 Until 2026-09-07 the gate covered `/api/*` only, and the page and static files were served to anyone. The effect was that turning the token on gave you the app shell and a 401 on every fetch it made, so the browser UI was dead and nobody would enable the one setting that closes the LAN exposure. The gate now covers every path except `/login` and `/favicon.ico`.
 
 The API sends no CORS headers and grants no preflight, deliberately. It used to send `Access-Control-Allow-Origin: *` on reads and answer the preflight, on the reasoning that withholding the header from write responses kept writes closed. That is half right: it stops an attacker reading the reply, not sending the request. Since the preflight listed `PUT` and `DELETE` as allowed, any web page a user visited could delete their plans or publish one, silently, because ACP normally runs on the same machine as their browser.
@@ -83,7 +85,7 @@ Nothing needs it. The NINA plugin is a desktop HTTP client and never sees CORS, 
 
 The routes behind the settings file described in [the archive setup guide](setup-archive.md#the-settings-file).
 
-`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to, and always false inside a container), `error` (`null`, or `settings_file_corrupt`), `packaged` (true when a launcher started ACP), `shortcuts` (`{available, value}`), `update_check` (`{value, locked}`, locked when `ACP_UPDATE_CHECK` is set) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots` and `manifest_path` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
+`GET /api/settings` answers every client with `version`, `first_run` (no folders set and no manifest yet), `writable` (false when ACP has no folder it can write a settings file to, and always false inside a container), `error` (`null`, or `settings_file_corrupt`), `packaged` (true when a launcher started ACP), `shortcuts` (`{available, value}`), `update_check` (`{value, locked}`, locked when `ACP_UPDATE_CHECK` is set) and `keys`. Each entry in `keys` has `source` (`env`, `file` or `default`) and `locked` (true when the environment sets it), and a `value` except that `fits_roots`, `manifest_path` and `export_dirs` carry no `value` for a client that is not authorised. An authorised client also gets `data_dir`.
 
 An authorised client is one that passed the access gate with the bearer token or session cookie, or, when `ACP_API_TOKEN` is not set, one connecting from the same machine (`127.0.0.1`, `::1`) with no `X-Forwarded-For` header and a `Host` of `localhost`, `127.0.0.1` or `[::1]`. The `Host` rule stops a web page on another site from reaching ACP through a DNS name it has pointed at your machine.
 
@@ -109,7 +111,7 @@ A successful `PUT` of `fits_roots` returns the settings view plus `warnings`, a 
 
 `PUT /api/settings` with `{"shortcuts": true}` makes the Start menu and desktop links (Windows) or the applications-menu entry (Linux), and `false` deletes the files ACP made. It answers 400 `unavailable` where shortcuts are not supported (a source install, Docker, Mac) and 500 `shortcuts_failed` if the files could not be made, in which case the answer is not recorded. The file also records `shortcuts_app_dir`, the folder the links point into, so the launcher can repoint them if the folder is moved.
 
-In a packaged build every route, not only the restricted ones, answers 400 `bad_host` to a request whose `Host` is not a loopback name, unless the request carries the access token. This stops DNS rebinding. `POST /api/quit` stops the server, the tray icon and the single-instance lock together, the same as the tray's Quit ACP item, and is refused with 409 while a scan runs.
+With no token, every route, not only the restricted ones, answers 400 `bad_host` to a request whose `Host` is not a loopback name or one listed in `ACP_ALLOWED_HOSTS` (see [Optional bearer-token auth](#optional-bearer-token-auth)). `POST /api/quit` stops the server, the tray icon and the single-instance lock together, the same as the tray's Quit ACP item, and is refused with 409 while a scan runs.
 
 `POST /api/scan/start` and `POST /api/catalogues/fetch` follow the same rules as `PUT`: an authorised client, a JSON body (`{}` will do) and a matching `Origin`. The scan claims its slot before it answers, so two quick requests give one 202 and one 409. Scan failures show up in `GET /api/scan/status` as `last_error_kind` with a fixed message.
 
@@ -377,6 +379,10 @@ Each destination is:
 ```
 
 `kind` is `"local_db"` (requires `ts_db_path`, the TS sqlite ACP reads `PRAGMA user_version` from when syncing) or `"shared_file"` (requires `export_path`, the file `/api/sync` writes to directly; `acquired_path` is optional and is where a NUC-side daemon can write acquisition progress back for ACP to poll).
+
+An `export_path` must be an absolute path inside the exports folder (`ZIP_OUTPUT_DIR`) or inside a folder listed in `export_dirs`. Set `export_dirs` in the settings file as a list of folders, or in `ACP_EXPORT_DIRS` as folders separated by semicolons. The page cannot change it. A sync to a destination whose `export_path` is outside all of them answers 400 and writes nothing.
+
+`POST /api/destinations` and `POST /api/sync` write files, so with `ACP_API_TOKEN` unset they answer only a caller on the same machine using a loopback name: anyone else gets 403 `forbidden` or 400 `bad_host`. Both refuse a cross-site `Origin`, and `POST /api/destinations` needs a JSON body. With the token set, any caller holding it may use them, as before.
 
 A plan opts into a destination via its own `destination_id` field. The first time destinations are declared, any existing plan without a `destination_id` is backfilled to the first destination, once: the migration is flagged in `destinations.json` so it never re-runs after a plan is explicitly unassigned.
 

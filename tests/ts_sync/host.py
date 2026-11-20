@@ -72,6 +72,7 @@ class FakeHost:
         self.template_result_calls: list = []
         self.capability_calls: list = []
         self.links_capable: dict = {}
+        self._monkeypatch = monkeypatch
 
         mod = types.ModuleType("app")
         mod.PLANS_PATH = self.plans_path
@@ -153,6 +154,11 @@ class FakeHost:
         self.activity: list[dict] = []
         if activity:
             app.record_activity = lambda **fields: self.activity.append(fields)
+
+    def use_db(self, db: Path) -> None:
+        """Point the extension at *db* the way an owner does, through the
+        environment. The routes never take a database path from a request."""
+        self._monkeypatch.setenv("ACP_TS_DB_PATH", str(db))
 
     # -- gear.json --------------------------------------------------------
 
