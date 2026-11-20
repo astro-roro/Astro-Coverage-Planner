@@ -7,6 +7,7 @@ watched fill up is worse than being a session stale.
 """
 from __future__ import annotations
 
+import copy
 import json
 import sys
 import tempfile
@@ -247,6 +248,58 @@ class TestProgressValidation(unittest.TestCase):
         self.assertEqual(
             self.client.get("/api/plans/p1").get_json()["filter_goals"]["Ha"]["actual_hours"],
             1.0)
+
+
+class TestEditorSaveKeepsProgress(unittest.TestCase):
+    """An editor save carries the plan as the page loaded it. Progress the
+    plugin posted since then must survive."""
+
+    def setUp(self):
+        _redirect_state()
+        self.client = app.test_client()
+        _write_plans([_plan({"Ha": {"target_hours": 6.0, "sub_exposure_s": 300,
+                                    "actual_hours": 1.0}})])
+        page = self.client.get("/api/plans").get_json()["plans"][0]
+        page.pop("filter_goals", None)
+        self.stale = page
+        r = self.client.post("/api/plans/p1/progress",
+                             json={"filters": {"Ha": {"acquired_hours": 4.0}}})
+        self.assertEqual(r.get_json()["updated"], {"Ha": 4.0})
+
+    def _stored_ha(self):
+        plan = self.client.get("/api/plans/p1").get_json()
+        return _row(plan, "Ha")["actual_hours"]
+
+    def test_post_keeps_stored_hours(self):
+        stale = copy.deepcopy(self.stale)
+        stale["priority"] = "high"
+        r = self.client.post("/api/plans", json=stale)
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(self._stored_ha(), 4.0)
+
+    def test_put_keeps_stored_hours(self):
+        r = self.client.put("/api/plans/p1", json=copy.deepcopy(self.stale))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._stored_ha(), 4.0)
+
+    def test_stored_panel_map_is_kept(self):
+        plan = self.client.get("/api/plans/p1").get_json()
+        _row(plan, "Ha")["panels"] = {"0_0": 4.0}
+        self.client.put("/api/plans/p1", json={**plan, "reset_progress": True})
+        stale = copy.deepcopy(self.stale)
+        _row(stale, "Ha").pop("panels", None)
+        self.client.put("/api/plans/p1", json=stale)
+        stored = _row(self.client.get("/api/plans/p1").get_json(), "Ha")
+        self.assertEqual(stored["panels"], {"0_0": 4.0})
+        self.assertEqual(stored["actual_hours"], 4.0)
+
+    def test_reset_progress_takes_the_clients_figures(self):
+        body = copy.deepcopy(self.stale)
+        body["reset_progress"] = True
+        r = self.client.put("/api/plans/p1", json=body)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._stored_ha(), 1.0)
+        self.assertNotIn("reset_progress", self.client.get("/api/plans/p1").get_json())
 
 
 if __name__ == "__main__":

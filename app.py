@@ -4933,6 +4933,7 @@ def api_plans():
     if err:
         return jsonify({"error": err}), 400
     fr.keep_grader(payload, previous)
+    fr.keep_progress(payload, previous)
     fr.sync_actuals(payload)
     plans = [p for p in data.get("plans", []) if p.get("id") != payload["id"]]
     plans.append(payload)
@@ -5003,6 +5004,7 @@ def api_plan(plan_id: str):
     if err:
         return jsonify({"error": err}), 400
     fr.keep_grader(payload, existing)
+    fr.keep_progress(payload, existing)
     fr.sync_actuals(payload)
     plans[idx] = payload
     save_plans({**data, "version": data.get("version", 1), "plans": plans})
