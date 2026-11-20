@@ -10,6 +10,7 @@ container whose user has no home folder means "no settings file".
 """
 from __future__ import annotations
 
+import encodings.utf_8_sig  # noqa: F401  load the codec now, not on first read
 import json
 import os
 import shutil
