@@ -233,6 +233,25 @@ class TestFileHandling(unittest.TestCase):
         self.path.write_text("[1, 2]", encoding="utf-8")
         self.assertEqual(acp_settings.load_file(self.path)[1], "corrupt")
 
+    def test_a_file_with_a_bom_is_read(self):
+        self.path.parent.mkdir()
+        self.path.write_bytes(b"\xef\xbb\xbf" + b'{"fits_roots": ["/a"]}')
+        self.assertEqual(acp_settings.load_file(self.path), ({"fits_roots": ["/a"]}, None))
+
+    def test_a_file_that_is_not_utf8_counts_as_corrupt_and_does_not_raise(self):
+        self.path.parent.mkdir()
+        self.path.write_bytes('{"fits_roots": ["C:\\Users\\Jos\u00e9"]}'.encode("cp1252"))
+        self.assertEqual(acp_settings.load_file(self.path), ({}, "corrupt"))
+
+    def test_saving_after_an_unreadable_read_refuses_and_keeps_the_file(self):
+        self.path.parent.mkdir()
+        self.path.write_text('{"fits_roots": ["/a"], "port": 1234}', encoding="utf-8")
+        before = self.path.read_text(encoding="utf-8")
+        with mock.patch.object(acp_settings, "load_file", return_value=({}, "unreadable")):
+            with self.assertRaises(OSError):
+                acp_settings.save(self.path, {"shortcuts": True})
+        self.assertEqual(self.path.read_text(encoding="utf-8"), before)
+
     def test_s15_shortcuts_round_trips_null_true_false(self):
         for value in (None, True, False):
             acp_settings.save(self.path, {"shortcuts": value})

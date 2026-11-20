@@ -150,9 +150,12 @@ def load_file(path: PurePath | None) -> tuple[dict, str | None]:
         return {}, None
     path = Path(path)
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig drops a leading BOM, which Notepad and PowerShell 5 write.
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return {}, None
+    except UnicodeDecodeError:
+        return {}, "corrupt"
     except OSError:
         return {}, "unreadable"
     try:
@@ -177,7 +180,9 @@ def _back_up_corrupt(path: Path) -> None:
 def save(path: PurePath, updates: Mapping) -> dict:
     """Merge ``updates`` into the file atomically and return what was written.
     Keys this version does not know are kept. A corrupt file is backed up
-    first, and the write is refused (OSError) if the backup fails."""
+    first, and the write is refused (OSError) if the backup fails. The write is
+    also refused (OSError) when the file exists but cannot be read, so the
+    settings it holds are not replaced by the changed keys alone."""
     scripts = str(REPO_ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
@@ -185,6 +190,9 @@ def save(path: PurePath, updates: Mapping) -> dict:
 
     path = Path(path)
     current, error = load_file(path)
+    if error == "unreadable":
+        # Merging into {} would drop every setting the file holds.
+        raise OSError(f"settings file {path} could not be read; not saving over it")
     if error == "corrupt":
         _back_up_corrupt(path)
     merged = {**current, **updates, "version": SETTINGS_VERSION}
