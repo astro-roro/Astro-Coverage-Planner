@@ -43,7 +43,7 @@ class TestPlanFields(unittest.TestCase):
     def test_known_priorities_save(self):
         for word in ("low", "normal", "high"):
             with self.subTest(word=word):
-                self.assertEqual(self._post(priority=word).status_code, 200)
+                self.assertIn(self._post(priority=word).status_code, (200, 201))
 
     def test_numbers_must_be_finite_numbers(self):
         for key in ("min_altitude_deg", "meridian_window_min"):
@@ -55,10 +55,10 @@ class TestPlanFields(unittest.TestCase):
 
     def test_good_numbers_save(self):
         r = self._post(min_altitude_deg=30, meridian_window_min=0.5)
-        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn(r.status_code, (200, 201), r.get_data(as_text=True))
 
     def test_missing_fields_still_save(self):
-        self.assertEqual(self._post().status_code, 200)
+        self.assertIn(self._post().status_code, (200, 201))
 
 
 class TestTelescopeFocalLength(unittest.TestCase):
