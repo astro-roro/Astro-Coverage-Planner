@@ -61,7 +61,7 @@ packaging==26.3
 pycparser==3.12
 pyerfa==2.0.1.5
 pynacl==1.6.2
-python-dateutil==3.0.0
+python-dateutil==4.0.0
 pyvo==1.10.0
 pyyaml==6.0.3
 requests==2.34.2
