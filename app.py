@@ -1071,7 +1071,10 @@ def repair_plan_templates() -> bool:
 def load_plans() -> dict:
     global _plans_cache, _plans_cache_mtime
     if not PLANS_PATH.exists():
-        return {"version": 1, "plans": []}
+        # A new install has nothing to migrate. Both flags go in so they reach
+        # the file on the first save; without them the next start would read
+        # the new file as an old one and turn every Draft plan Active.
+        return {"version": 1, "plans": [], "settings_migrated": 1, "filter_rows_migrated": 1}
     mtime = PLANS_PATH.stat().st_mtime
     if _plans_cache is None or _plans_cache_mtime != mtime:
         _plans_cache = json.loads(PLANS_PATH.read_text(encoding="utf-8"))
