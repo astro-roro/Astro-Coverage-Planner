@@ -351,8 +351,12 @@ class TestQuitRoute(EnvCase):
             resp = self.client.get(path, headers={"Host": "localhost:5555"})
             self.assertEqual((resp.status_code, path), (200, path))
 
-    def test_a_source_install_does_not_apply_the_host_check_to_every_route(self):
+    def test_a_source_install_answers_a_listed_proxy_name(self):
         os.environ.pop("ACP_PACKAGED")
+        self.addCleanup(os.environ.pop, "ACP_ALLOWED_HOSTS", None)
+        resp = self.client.get("/api/version", headers={"Host": "acp.example.net"})
+        self.assertEqual(resp.status_code, 400)
+        os.environ["ACP_ALLOWED_HOSTS"] = "acp.example.net"
         resp = self.client.get("/api/version", headers={"Host": "acp.example.net"})
         self.assertEqual(resp.status_code, 200)
 
